@@ -1,0 +1,28 @@
+{
+  "name": "@claw-vault/agent",
+  "version": "0.1.0",
+  "description": "Claw Vault agent CLI + MCP server",
+  "type": "module",
+  "bin": {
+    "claw-vault": "./dist/bin/claw-vault.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/bin/claw-vault.js",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "commander": "^13.1.0",
+    "libsodium-wrappers": "^0.7.15"
+  },
+  "devDependencies": {
+    "@types/libsodium-wrappers": "^0.7.14",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
