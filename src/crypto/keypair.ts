@@ -1,5 +1,7 @@
 import sodium from 'libsodium-wrappers';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { execSync } from 'child_process';
+import { platform } from 'os';
 import { paths } from '../config/paths.js';
 
 export interface Keypair {
@@ -23,6 +25,22 @@ export function saveKeypair(keypair: Keypair): void {
     encoding: 'utf8',
     mode: 0o644,
   });
+  restrictPrivateKeyPermissions();
+}
+
+function restrictPrivateKeyPermissions(): void {
+  if (platform() !== 'win32') return;
+
+  try {
+    // Remove inherited permissions, grant only current user full control
+    execSync(
+      `icacls "${paths.privateKey}" /inheritance:r /grant:r "%USERNAME%:F"`,
+      { stdio: 'ignore' },
+    );
+  } catch {
+    console.warn(`  Warning: could not restrict permissions on ${paths.privateKey}`);
+    console.warn('  Protect this file manually — it contains your private key.');
+  }
 }
 
 export function loadKeypair(): Keypair {

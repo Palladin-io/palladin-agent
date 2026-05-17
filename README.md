@@ -76,7 +76,13 @@ Agent:    ✓ active
 
 ### Claude Desktop
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Edit the config file for your platform:
+
+| OS | Path |
+|----|------|
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
 
 ```json
 {
@@ -133,6 +139,12 @@ Restart Claude Desktop. The agent must be **Active** before tools work.
 | `~/.claw-vault/config.json` | `{ "apiKey": "cv_...", "host": "https://..." }` |
 
 Override the default directory with `CLAW_VAULT_HOME=/custom/path`.
+
+## Windows notes
+
+- File permissions: `icacls` is used to restrict `agent.key` to the current user only. If `icacls` fails, a warning is printed — protect the file manually.
+- PowerShell / cmd both work for running `claw-vault` commands after `npm link`.
+- Line endings: no issues — all files are written as UTF-8 text.
 
 ## Development
 
