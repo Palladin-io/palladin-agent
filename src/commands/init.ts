@@ -9,8 +9,8 @@ export function initCommand(): Command {
     .option('--force', 'Overwrite existing keypair')
     .action(async (opts: { force?: boolean }) => {
       if (existsSync(paths.privateKey) && !opts.force) {
-        console.error('Keypair already exists. Use --force to overwrite.');
-        process.exit(1);
+        console.log('Keypair already exists. Use --force to overwrite.');
+        return;
       }
 
       const keypair = await generateKeypair();

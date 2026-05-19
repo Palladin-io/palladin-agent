@@ -10,7 +10,9 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/bin/claw-vault.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "prepare": "tsc",
+    "postprepare": "node dist/bin/claw-vault.js init"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
