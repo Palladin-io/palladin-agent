@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { saveConfig } from '../config/config.js';
-import { loadKeypair, publicKeyBase64 } from '../crypto/keypair.js';
+import { ensureKeypair, publicKeyBase64 } from '../crypto/keypair.js';
 import { registerAgent } from '../http/agent-api.js';
 
 export function connectCommand(): Command {
@@ -14,7 +14,7 @@ export function connectCommand(): Command {
         process.exit(1);
       }
 
-      const keypair = loadKeypair();
+      const keypair = await ensureKeypair();
       const config = { apiKey, host: opts.host.replace(/\/$/, '') };
       saveConfig(config);
 

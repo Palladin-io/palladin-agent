@@ -53,6 +53,15 @@ export function loadKeypair(): Keypair {
   return { publicKey, privateKey };
 }
 
+/** Loads the keypair, generating and persisting one automatically if it doesn't exist yet. */
+export async function ensureKeypair(): Promise<Keypair> {
+  if (existsSync(paths.privateKey)) return loadKeypair();
+  const keypair = await generateKeypair();
+  saveKeypair(keypair);
+  console.log(`✓ Keypair generated (${paths.privateKey})`);
+  return keypair;
+}
+
 export function publicKeyBase64(keypair: Keypair): string {
   return Buffer.from(keypair.publicKey).toString('base64');
 }
