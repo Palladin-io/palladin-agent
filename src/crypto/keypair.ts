@@ -1,4 +1,5 @@
-import sodium from 'libsodium-wrappers';
+import { x25519 } from '@noble/curves/ed25519.js';
+import { randomBytes } from 'crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { platform } from 'os';
@@ -10,9 +11,9 @@ export interface Keypair {
 }
 
 export async function generateKeypair(): Promise<Keypair> {
-  await sodium.ready;
-  const keypair = sodium.crypto_box_keypair();
-  return { publicKey: keypair.publicKey, privateKey: keypair.privateKey };
+  const privateKey = randomBytes(32);
+  const publicKey = x25519.getPublicKey(privateKey);
+  return { publicKey, privateKey };
 }
 
 export function saveKeypair(keypair: Keypair): void {
