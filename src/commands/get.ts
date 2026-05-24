@@ -17,9 +17,9 @@ export function getCommand(getProfile: GetProfile): Command {
         process.exit(1);
       }
       const entry = rest.join('/');
-      const { paths } = getProfile();
+      const { name, paths } = getProfile();
       const config  = loadConfig(paths);
-      const keypair = loadKeypair(paths);
+      const keypair = await loadKeypair(name, paths);
       const res = await apiFetch(
         `/api/vaults/${encodeURIComponent(vault)}/entries/${encodeURIComponent(entry)}`,
         config,

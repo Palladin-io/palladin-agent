@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { saveConfig } from '../config/config.js';
 import { ensureKeypair, publicKeyBase64 } from '../crypto/keypair.js';
+import { detectKeyTier, tierLabel, tierUpgradeHint } from '../crypto/secure-storage.js';
 import { registerAgent } from '../http/agent-api.js';
 import { ProfilePaths } from '../config/paths.js';
 
@@ -18,13 +19,17 @@ export function connectCommand(getProfile: GetProfile): Command {
       }
 
       const { name, paths } = getProfile();
-      const keypair = await ensureKeypair(paths);
+      const keypair = await ensureKeypair(name, paths);
       const config = { apiKey, host: opts.host.replace(/\/$/, '') };
       saveConfig(config, paths);
 
+      const tier = await detectKeyTier(name, paths);
       console.log(`  Profile:    ${name}`);
       console.log(`  Host:       ${config.host}`);
       console.log(`  Public key: ${publicKeyBase64(keypair)}`);
+      console.log(`  Security:   ${tierLabel(tier)}`);
+      const hint = tierUpgradeHint(tier, name);
+      if (hint) console.log(hint);
       console.log('');
 
       const result = await registerAgent(config, keypair);

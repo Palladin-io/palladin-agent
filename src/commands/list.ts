@@ -10,9 +10,9 @@ export function listCommand(getProfile: GetProfile): Command {
   return new Command('list')
     .description('List accessible vaults')
     .action(async () => {
-      const { paths } = getProfile();
+      const { name, paths } = getProfile();
       const config  = loadConfig(paths);
-      const keypair = loadKeypair(paths);
+      const keypair = await loadKeypair(name, paths);
       const res = await apiFetch('/api/vaults', config, keypair);
       if (!res.ok) {
         console.error(`Error: ${res.status} ${res.statusText}`);

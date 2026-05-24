@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { existsSync } from 'fs';
 import { loadConfig } from '../config/config.js';
 import { loadKeypair, publicKeyBase64 } from '../crypto/keypair.js';
+import { detectKeyTier, hasPrivateKey, tierLabel, tierUpgradeHint } from '../crypto/secure-storage.js';
 import { registerAgent } from '../http/agent-api.js';
 import { ProfilePaths } from '../config/paths.js';
 
@@ -13,22 +14,25 @@ export function statusCommand(getProfile: GetProfile): Command {
     .action(async () => {
       const { name, paths } = getProfile();
 
-      const hasKeypair = existsSync(paths.privateKey);
+      const hasKeypair = await hasPrivateKey(name, paths);
       const hasConfig  = existsSync(paths.config);
+      const tier       = await detectKeyTier(name, paths);
 
       console.log(`Profile:  ${name}`);
-      console.log('Keypair:  ' + (hasKeypair ? `✓ ${paths.privateKey}` : '✗ not found (run: claw-vault init)'));
-      console.log('Config:   ' + (hasConfig  ? `✓ ${paths.config}`     : '✗ not found (run: claw-vault connect)'));
+      console.log('Keypair:  ' + (hasKeypair ? `✓ ${tierLabel(tier)}` : '✗ not found (run: claw-vault init)'));
+      console.log('Config:   ' + (hasConfig  ? `✓ ${paths.config}` : '✗ not found (run: claw-vault connect)'));
 
       if (!hasKeypair || !hasConfig) {
         process.exit(1);
       }
 
       const config  = loadConfig(paths);
-      const keypair = loadKeypair(paths);
+      const keypair = await loadKeypair(name, paths);
 
       console.log(`Host:     ${config.host}`);
       console.log(`Key:      ${publicKeyBase64(keypair)}`);
+      const hint = tierUpgradeHint(tier, name);
+      if (hint) console.log(hint);
       console.log('');
 
       const result = await registerAgent(config, keypair);

@@ -15,9 +15,9 @@ export function mcpServeCommand(getProfile: GetProfile): Command {
       new Command('serve')
         .description('Start MCP server for AI agent use')
         .action(async () => {
-          const { paths } = getProfile();
+          const { name, paths } = getProfile();
           const config  = loadConfig(paths);
-          const keypair = loadKeypair(paths);
+          const keypair = await loadKeypair(name, paths);
 
           const server = new McpServer({
             name: 'claw-vault',

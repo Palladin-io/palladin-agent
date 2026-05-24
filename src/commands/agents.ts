@@ -10,6 +10,7 @@ import {
 } from '../config/registry.js';
 import { profilePaths } from '../config/paths.js';
 import { generateKeypair, saveKeypair, publicKeyBase64 } from '../crypto/keypair.js';
+import { tierLabel, tierUpgradeHint } from '../crypto/secure-storage.js';
 
 const NAME_RE = /^[a-z0-9_-]+$/i;
 
@@ -58,12 +59,14 @@ export function agentsCommand(): Command {
         const paths = profilePaths(name);
         mkdirSync(paths.root, { recursive: true });
         const keypair = await generateKeypair();
-        saveKeypair(keypair, paths);
+        const tier = await saveKeypair(keypair, name, paths);
         saveRegistry(updated);
 
         console.log(`✓ Agent "${name}" created`);
-        console.log(`  Private key: ${paths.privateKey}`);
         console.log(`  Public key:  ${publicKeyBase64(keypair)}`);
+        console.log(`  Security:    ${tierLabel(tier)}`);
+        const hint = tierUpgradeHint(tier, name);
+        if (hint) console.log(hint);
         console.log('');
         console.log(`Next: claw-vault --id ${name} connect <api-key> --host <host>`);
       }),
