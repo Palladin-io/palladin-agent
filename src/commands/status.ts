@@ -1,17 +1,22 @@
 import { Command } from 'commander';
 import { existsSync } from 'fs';
-import { paths } from '../config/paths.js';
 import { loadConfig } from '../config/config.js';
 import { loadKeypair, publicKeyBase64 } from '../crypto/keypair.js';
 import { registerAgent } from '../http/agent-api.js';
+import { ProfilePaths } from '../config/paths.js';
 
-export function statusCommand(): Command {
+type GetProfile = () => { name: string; paths: ProfilePaths };
+
+export function statusCommand(getProfile: GetProfile): Command {
   return new Command('status')
     .description('Show connection and agent registration status')
     .action(async () => {
+      const { name, paths } = getProfile();
+
       const hasKeypair = existsSync(paths.privateKey);
       const hasConfig  = existsSync(paths.config);
 
+      console.log(`Profile:  ${name}`);
       console.log('Keypair:  ' + (hasKeypair ? `✓ ${paths.privateKey}` : '✗ not found (run: claw-vault init)'));
       console.log('Config:   ' + (hasConfig  ? `✓ ${paths.config}`     : '✗ not found (run: claw-vault connect)'));
 
@@ -19,8 +24,8 @@ export function statusCommand(): Command {
         process.exit(1);
       }
 
-      const config  = loadConfig();
-      const keypair = loadKeypair();
+      const config  = loadConfig(paths);
+      const keypair = loadKeypair(paths);
 
       console.log(`Host:     ${config.host}`);
       console.log(`Key:      ${publicKeyBase64(keypair)}`);
@@ -37,8 +42,9 @@ export function statusCommand(): Command {
 
         case 'active':
           console.log('Agent:    ✓ active');
-          console.log(`          ID:   ${result.agentId}`);
-          if (result.name) console.log(`          Name: ${result.name}`);
+          console.log(`          ID:           ${result.agentId}`);
+          if (result.name) console.log(`          Backend name: ${result.name}`);
+          console.log(`          Local alias:  ${name}`);
           break;
 
         case 'deactivated':

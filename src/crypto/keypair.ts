@@ -3,7 +3,7 @@ import { randomBytes } from 'crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { platform } from 'os';
-import { paths } from '../config/paths.js';
+import { ProfilePaths } from '../config/paths.js';
 
 export interface Keypair {
   publicKey: Uint8Array;
@@ -16,7 +16,7 @@ export async function generateKeypair(): Promise<Keypair> {
   return { publicKey, privateKey };
 }
 
-export function saveKeypair(keypair: Keypair): void {
+export function saveKeypair(keypair: Keypair, paths: ProfilePaths): void {
   mkdirSync(paths.root, { recursive: true });
   writeFileSync(paths.privateKey, Buffer.from(keypair.privateKey).toString('base64'), {
     encoding: 'utf8',
@@ -26,38 +26,35 @@ export function saveKeypair(keypair: Keypair): void {
     encoding: 'utf8',
     mode: 0o644,
   });
-  restrictPrivateKeyPermissions();
+  restrictPrivateKeyPermissions(paths.privateKey);
 }
 
-function restrictPrivateKeyPermissions(): void {
+function restrictPrivateKeyPermissions(privateKeyPath: string): void {
   if (platform() !== 'win32') return;
-
   try {
-    // Remove inherited permissions, grant only current user full control
     execSync(
-      `icacls "${paths.privateKey}" /inheritance:r /grant:r "%USERNAME%:F"`,
+      `icacls "${privateKeyPath}" /inheritance:r /grant:r "%USERNAME%:F"`,
       { stdio: 'ignore' },
     );
   } catch {
-    console.warn(`  Warning: could not restrict permissions on ${paths.privateKey}`);
+    console.warn(`  Warning: could not restrict permissions on ${privateKeyPath}`);
     console.warn('  Protect this file manually — it contains your private key.');
   }
 }
 
-export function loadKeypair(): Keypair {
+export function loadKeypair(paths: ProfilePaths): Keypair {
   if (!existsSync(paths.privateKey)) {
-    throw new Error(`No keypair found. Run: claw-vault init`);
+    throw new Error('No keypair found. Run: claw-vault init');
   }
   const privateKey = new Uint8Array(Buffer.from(readFileSync(paths.privateKey, 'utf8'), 'base64'));
-  const publicKey = new Uint8Array(Buffer.from(readFileSync(paths.publicKey, 'utf8'), 'base64'));
+  const publicKey  = new Uint8Array(Buffer.from(readFileSync(paths.publicKey,  'utf8'), 'base64'));
   return { publicKey, privateKey };
 }
 
-/** Loads the keypair, generating and persisting one automatically if it doesn't exist yet. */
-export async function ensureKeypair(): Promise<Keypair> {
-  if (existsSync(paths.privateKey)) return loadKeypair();
+export async function ensureKeypair(paths: ProfilePaths): Promise<Keypair> {
+  if (existsSync(paths.privateKey)) return loadKeypair(paths);
   const keypair = await generateKeypair();
-  saveKeypair(keypair);
+  saveKeypair(keypair, paths);
   console.log(`✓ Keypair generated (${paths.privateKey})`);
   return keypair;
 }

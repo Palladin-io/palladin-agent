@@ -2,8 +2,11 @@ import { Command } from 'commander';
 import { saveConfig } from '../config/config.js';
 import { ensureKeypair, publicKeyBase64 } from '../crypto/keypair.js';
 import { registerAgent } from '../http/agent-api.js';
+import { ProfilePaths } from '../config/paths.js';
 
-export function connectCommand(): Command {
+type GetProfile = () => { name: string; paths: ProfilePaths };
+
+export function connectCommand(getProfile: GetProfile): Command {
   return new Command('connect')
     .description('Connect agent to a Claw Vault server and register it')
     .argument('<api-key>', 'API key (must start with cv_)')
@@ -14,10 +17,12 @@ export function connectCommand(): Command {
         process.exit(1);
       }
 
-      const keypair = await ensureKeypair();
+      const { name, paths } = getProfile();
+      const keypair = await ensureKeypair(paths);
       const config = { apiKey, host: opts.host.replace(/\/$/, '') };
-      saveConfig(config);
+      saveConfig(config, paths);
 
+      console.log(`  Profile:    ${name}`);
       console.log(`  Host:       ${config.host}`);
       console.log(`  Public key: ${publicKeyBase64(keypair)}`);
       console.log('');
