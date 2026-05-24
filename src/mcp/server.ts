@@ -20,7 +20,7 @@ export function mcpServeCommand(getProfile: GetProfile): Command {
           const keypair = await loadKeypair(name, paths);
 
           const server = new McpServer({
-            name: 'claw-vault',
+            name: 'Claw Vault Agents',
             version: '0.1.0',
           });
 
