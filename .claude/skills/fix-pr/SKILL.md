@@ -1,0 +1,111 @@
+---
+name: fix-pr
+description: Implementuje poprawki na podstawie komentarzy review — czyta nierozwiązane uwagi, modyfikuje kod, buduje, commituje, odpowiada na komentarze i resolvuje wątki.
+argument-hint: <pr-number>
+disable-model-invocation: true
+allowed-tools: Read Write Edit Grep Glob Bash(gh pr *) Bash(gh api *) Bash(gh api graphql *) Bash(git *) Bash(npm *)
+effort: high
+---
+
+# Fix PR — Claw Vault Agent CLI
+
+## Kontekst PR
+
+**Metadane:**
+!`gh pr view $ARGUMENTS --json number,title,headRefName,baseRefName,author 2>/dev/null`
+
+**Poprzednie review (REQUEST_CHANGES do naprawy):**
+!`gh pr view $ARGUMENTS --json reviews 2>/dev/null`
+
+**Komentarze inline:**
+!`gh api repos/$(gh repo view --json nameWithOwner --jq '.nameWithOwner')/pulls/$ARGUMENTS/comments 2>/dev/null`
+
+**Zmienione pliki:**
+!`gh pr diff $ARGUMENTS --name-only 2>/dev/null`
+
+---
+
+## Jak przeprowadzić naprawę
+
+### Krok 1 — przygotuj branch
+
+```bash
+HEAD=$(gh pr view $ARGUMENTS --json headRefName --jq '.headRefName')
+git fetch origin "$HEAD"
+git checkout "$HEAD"
+```
+
+### Krok 2 — przeanalizuj komentarze
+
+Przeczytaj wszystkie nierozwiązane komentarze. Dla każdego:
+- Zrozum problem — użyj `Read`, `Grep`, `Glob` żeby przejrzeć powiązany kod
+- Ustal konkretną zmianę do wprowadzenia
+
+### Krok 3 — wprowadź poprawki
+
+Edytuj pliki używając `Edit`. Przestrzegaj konwencji (CLAUDE.md):
+- Klucz prywatny: keychain primary (`storePrivateKey`) → env var → plik `0o600`
+- Wszystkie komendy przez `getProfile()` — nigdy hardcoded `~/.claw-vault/`
+- Operacje na registry przez helpery (`registryAddAgent` etc.) — nigdy bezpośrednia mutacja
+- `@napi-rs/keyring` przez `try/catch` w dynamic import — graceful fallback, nigdy throw
+- Nigdy nie loguj klucza prywatnego ani API key w `console.*`
+
+### Krok 4 — zbuduj i sprawdź typy
+
+```bash
+npm ci
+npm run lint
+npm run build
+```
+
+Jeśli lint lub build nie przechodzą — napraw przed przejściem dalej.
+
+### Krok 5 — commituj
+
+```bash
+git add [konkretne pliki]
+git commit -m "fix: [opis co naprawiono]"
+git push
+```
+
+Commit message po polsku, zwięzły.
+
+### Krok 6 — odpowiedz na komentarze i resolvuj wątki
+
+```bash
+REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+
+gh api "repos/${REPO}/pulls/$ARGUMENTS/comments/{COMMENT_ID}/replies" \
+  --method POST \
+  --field body="✅ Naprawione — [opis co zostało zrobione]."
+
+gh api graphql -f query='
+  query($owner:String!,$repo:String!,$pr:Int!) {
+    repository(owner:$owner,name:$repo) {
+      pullRequest(number:$pr) {
+        reviewThreads(first:50) {
+          nodes { id isResolved comments(first:1) { nodes { databaseId } } }
+        }
+      }
+    }
+  }
+' -f owner="$(echo $REPO | cut -d/ -f1)" \
+  -f repo="$(echo $REPO | cut -d/ -f2)" \
+  -F pr=$ARGUMENTS
+
+gh api graphql \
+  -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' \
+  -f id="{THREAD_NODE_ID}"
+```
+
+### Krok 7 — podsumowanie na PR
+
+```bash
+gh pr comment $ARGUMENTS --body "## 🔧 Fix PR — podsumowanie
+
+### Naprawione
+- \`ścieżka/do/pliku.ts:42\` — co zmieniono
+
+### Świadomie pominięte
+- [opcjonalnie]"
+```
