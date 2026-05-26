@@ -10,7 +10,7 @@ import {
 } from '../config/registry.js';
 import { profilePaths } from '../config/paths.js';
 import { generateKeypair, saveKeypair, publicKeyBase64 } from '../crypto/keypair.js';
-import { tierLabel, tierUpgradeHint } from '../crypto/secure-storage.js';
+import { tierLabel, tierUpgradeHint, deletePrivateKey, migrateKeychainEntry } from '../crypto/secure-storage.js';
 
 const NAME_RE = /^[a-z0-9_-]+$/i;
 
@@ -48,6 +48,7 @@ export function agentsCommand(): Command {
       .action(async (name: string) => {
         validateName(name);
         const registry = loadRegistry();
+        const isFirst = registry.agents.length === 0;
         let updated;
         try {
           updated = registryAddAgent(registry, name);
@@ -55,6 +56,7 @@ export function agentsCommand(): Command {
           console.error(`Error: ${(err as Error).message}`);
           process.exit(1);
         }
+        if (isFirst) updated = { ...updated, default: name };
 
         const paths = profilePaths(name);
         mkdirSync(paths.root, { recursive: true });
@@ -76,7 +78,7 @@ export function agentsCommand(): Command {
     new Command('delete')
       .description('Delete an agent profile and its keypair')
       .argument('<name>', 'profile name')
-      .action((name: string) => {
+      .action(async (name: string) => {
         const registry = loadRegistry();
         let updated;
         try {
@@ -87,6 +89,7 @@ export function agentsCommand(): Command {
         }
 
         const paths = profilePaths(name);
+        await deletePrivateKey(name, paths);
         if (existsSync(paths.root)) {
           rmSync(paths.root, { recursive: true });
         }
@@ -118,7 +121,7 @@ export function agentsCommand(): Command {
       .description('Rename an agent profile')
       .argument('<old-name>', 'current profile name')
       .argument('<new-name>', 'new profile name')
-      .action((oldName: string, newName: string) => {
+      .action(async (oldName: string, newName: string) => {
         validateName(newName);
         const registry = loadRegistry();
         let updated;
@@ -129,6 +132,7 @@ export function agentsCommand(): Command {
           process.exit(1);
         }
 
+        await migrateKeychainEntry(oldName, newName);
         const oldPaths = profilePaths(oldName);
         const newPaths = profilePaths(newName);
         if (existsSync(oldPaths.root)) {

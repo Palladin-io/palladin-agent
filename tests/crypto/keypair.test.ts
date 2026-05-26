@@ -3,10 +3,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('../../src/crypto/secure-storage.js', () => ({
   storePrivateKey: vi.fn().mockResolvedValue('keychain'),
   loadPrivateKey:  vi.fn(),
+  hasPrivateKey:   vi.fn(),
 }))
 
 import { generateKeypair, loadKeypair, ensureKeypair, publicKeyBase64 } from '../../src/crypto/keypair.js'
-import { storePrivateKey, loadPrivateKey } from '../../src/crypto/secure-storage.js'
+import { storePrivateKey, loadPrivateKey, hasPrivateKey } from '../../src/crypto/secure-storage.js'
 import { profilePaths } from '../../src/config/paths.js'
 
 const TEST_PATHS = profilePaths('default')
@@ -61,6 +62,7 @@ describe('ensureKeypair', () => {
   it('returns existing keypair without generating a new one', async () => {
     const existing = await generateKeypair()
     const base64 = Buffer.from(existing.privateKey).toString('base64')
+    vi.mocked(hasPrivateKey).mockResolvedValue(true)
     vi.mocked(loadPrivateKey).mockResolvedValue({ value: base64, tier: 'file' })
 
     const result = await ensureKeypair('default', TEST_PATHS)
@@ -70,7 +72,7 @@ describe('ensureKeypair', () => {
   })
 
   it('generates and stores a new keypair when none exists', async () => {
-    vi.mocked(loadPrivateKey).mockRejectedValue(new Error('No keypair found'))
+    vi.mocked(hasPrivateKey).mockResolvedValue(false)
 
     const result = await ensureKeypair('default', TEST_PATHS)
 

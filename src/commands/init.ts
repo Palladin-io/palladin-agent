@@ -1,8 +1,8 @@
 import { Command } from 'commander';
-import { existsSync, mkdirSync } from 'fs';
+import { mkdirSync } from 'fs';
 import { generateKeypair, saveKeypair, publicKeyBase64 } from '../crypto/keypair.js';
 import { loadRegistry, saveRegistry } from '../config/registry.js';
-import { tierLabel, tierUpgradeHint } from '../crypto/secure-storage.js';
+import { tierLabel, tierUpgradeHint, hasPrivateKey } from '../crypto/secure-storage.js';
 import { ProfilePaths } from '../config/paths.js';
 
 type GetProfile = () => { name: string; paths: ProfilePaths };
@@ -14,7 +14,7 @@ export function initCommand(getProfile: GetProfile): Command {
     .action(async (opts: { force?: boolean }) => {
       const { name, paths } = getProfile();
 
-      if (existsSync(paths.privateKey) && !opts.force) {
+      if (await hasPrivateKey(name, paths) && !opts.force) {
         console.log('Keypair already exists. Use --force to overwrite.');
         return;
       }

@@ -1,8 +1,7 @@
 import { x25519 } from '@noble/curves/ed25519.js';
 import { randomBytes } from 'crypto';
-import { existsSync } from 'fs';
 import { ProfilePaths } from '../config/paths.js';
-import { loadPrivateKey, storePrivateKey } from './secure-storage.js';
+import { loadPrivateKey, storePrivateKey, hasPrivateKey } from './secure-storage.js';
 
 export interface Keypair {
   publicKey: Uint8Array;
@@ -28,10 +27,8 @@ export async function loadKeypair(profile: string, paths: ProfilePaths): Promise
 }
 
 export async function ensureKeypair(profile: string, paths: ProfilePaths): Promise<Keypair> {
-  const { value } = await loadPrivateKey(profile, paths).catch(() => ({ value: null as string | null }));
-  if (value) {
-    const privateKey = new Uint8Array(Buffer.from(value, 'base64'));
-    return { publicKey: x25519.getPublicKey(privateKey), privateKey };
+  if (await hasPrivateKey(profile, paths)) {
+    return loadKeypair(profile, paths);
   }
   const keypair = await generateKeypair();
   const tier = await saveKeypair(keypair, profile, paths);

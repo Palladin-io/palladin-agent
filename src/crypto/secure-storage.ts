@@ -97,6 +97,25 @@ export async function detectKeyTier(profile: string, paths: ProfilePaths): Promi
   return 'file';
 }
 
+/** Delete the private key from all tiers (keychain + file). Called on agent delete. */
+export async function deletePrivateKey(profile: string, paths: ProfilePaths): Promise<void> {
+  await keychainDelete(profile);
+  if (existsSync(paths.privateKey)) unlinkSync(paths.privateKey);
+  if (existsSync(paths.publicKey))  unlinkSync(paths.publicKey);
+}
+
+/**
+ * Migrate keychain entry from oldProfile to newProfile.
+ * Called on agent rename. No-op if key is not in keychain.
+ */
+export async function migrateKeychainEntry(oldProfile: string, newProfile: string): Promise<void> {
+  const value = await keychainGet(oldProfile);
+  if (value) {
+    await keychainSet(newProfile, value);
+    await keychainDelete(oldProfile);
+  }
+}
+
 /** Returns true if a private key is available via any tier. */
 export async function hasPrivateKey(profile: string, paths: ProfilePaths): Promise<boolean> {
   if (await keychainGet(profile)) return true;
