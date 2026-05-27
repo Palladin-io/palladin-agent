@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { mkdirSync } from 'fs';
 import { generateKeypair, saveKeypair, publicKeyBase64 } from '../crypto/keypair.js';
-import { loadRegistry, saveRegistry } from '../config/registry.js';
+import { loadRegistry, saveRegistry, registryAddAgent } from '../config/registry.js';
 import { tierLabel, tierUpgradeHint, hasPrivateKey } from '../crypto/secure-storage.js';
 import { ProfilePaths } from '../config/paths.js';
 
@@ -21,9 +21,10 @@ export function initCommand(getProfile: GetProfile): Command {
 
       const registry = loadRegistry();
       if (!registry.agents.some(a => a.name === name)) {
-        registry.agents.push({ name, createdAt: new Date().toISOString() });
-        if (registry.agents.length === 1) registry.default = name;
-        saveRegistry(registry);
+        const isFirst = registry.agents.length === 0;
+        let updated = registryAddAgent(registry, name);
+        if (isFirst) updated = { ...updated, default: name };
+        saveRegistry(updated);
       }
 
       mkdirSync(paths.root, { recursive: true });

@@ -111,8 +111,8 @@ export async function deletePrivateKey(profile: string, paths: ProfilePaths): Pr
 export async function migrateKeychainEntry(oldProfile: string, newProfile: string): Promise<void> {
   const value = await keychainGet(oldProfile);
   if (value) {
-    await keychainSet(newProfile, value);
-    await keychainDelete(oldProfile);
+    const migrated = await keychainSet(newProfile, value);
+    if (migrated) await keychainDelete(oldProfile);
   }
 }
 

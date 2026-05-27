@@ -8,6 +8,7 @@ import { statusCommand } from '../commands/status.js';
 import { listCommand } from '../commands/list.js';
 import { getCommand } from '../commands/get.js';
 import { agentsCommand } from '../commands/agents.js';
+import { securityCommand } from '../commands/security.js';
 import { mcpServeCommand } from '../mcp/server.js';
 
 const program = new Command();
@@ -31,6 +32,7 @@ program.addCommand(statusCommand(getProfile));
 program.addCommand(listCommand(getProfile));
 program.addCommand(getCommand(getProfile));
 program.addCommand(agentsCommand());
+program.addCommand(securityCommand(getProfile));
 program.addCommand(mcpServeCommand(getProfile));
 
 program.parse();
