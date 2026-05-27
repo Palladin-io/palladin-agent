@@ -11,7 +11,7 @@ export function connectCommand(getProfile: GetProfile): Command {
   return new Command('connect')
     .description('Connect agent to a Claw Vault server and register it')
     .argument('<api-key>', 'API key (must start with cv_)')
-    .requiredOption('--host <host>', 'Claw Vault server URL')
+    .option('--host <host>', 'Claw Vault server URL', 'https://api.clawvault.io')
     .action(async (apiKey: string, opts: { host: string }) => {
       if (!apiKey.startsWith('cv_')) {
         console.error('Error: invalid API key — must start with cv_');
