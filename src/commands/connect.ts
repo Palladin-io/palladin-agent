@@ -33,7 +33,8 @@ export function connectCommand(getProfile: GetProfile): Command {
       if (hint) console.log(hint);
       console.log('');
 
-      const result = await registerAgent(config, keypair, opts.id);
+      const displayName = opts.id ?? (name !== 'default' ? name : undefined);
+      const result = await registerAgent(config, keypair, displayName);
 
       switch (result.status) {
         case 'pending':
