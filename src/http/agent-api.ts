@@ -1,3 +1,4 @@
+import os from 'os';
 import { AgentConfig } from '../config/config.js';
 import { Keypair, publicKeyBase64 } from '../crypto/keypair.js';
 
@@ -11,12 +12,18 @@ export type AgentRegistrationResult =
 export async function registerAgent(
   config: AgentConfig,
   keypair: Keypair,
+  name?: string,
 ): Promise<AgentRegistrationResult> {
   const headers = new Headers({
-    'X-Api-Key':    config.apiKey,
-    'X-Agent-Key':  publicKeyBase64(keypair),
-    'Content-Type': 'application/json',
+    'X-Api-Key':         config.apiKey,
+    'X-Agent-Key':       publicKeyBase64(keypair),
+    'X-Agent-Hostname':  os.hostname(),
+    'Content-Type':      'application/json',
   });
+
+  if (name) {
+    headers.set('X-Agent-Name', name);
+  }
 
   let res: Response;
   try {
