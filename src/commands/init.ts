@@ -20,18 +20,20 @@ export function initCommand(getProfile: GetProfile): Command {
       }
 
       const registry = loadRegistry();
+      let effectiveDefault = registry.default;
       if (!registry.agents.some(a => a.name === name)) {
         const isFirst = registry.agents.length === 0;
         let updated = registryAddAgent(registry, name);
         if (isFirst) updated = { ...updated, default: name };
         saveRegistry(updated);
+        effectiveDefault = updated.default;
       }
 
       mkdirSync(paths.root, { recursive: true });
       const keypair = await generateKeypair();
       const tier = await saveKeypair(keypair, name, paths);
 
-      const idFlag = name !== registry.default ? ` --id ${name}` : '';
+      const idFlag = name !== effectiveDefault ? ` --id ${name}` : '';
       console.log('✓ Keypair generated');
       console.log(`  Profile:     ${name}`);
       console.log(`  Public key:  ${publicKeyBase64(keypair)}`);

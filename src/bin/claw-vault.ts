@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { loadRegistry } from '../config/registry.js';
-import { profilePaths, ProfilePaths } from '../config/paths.js';
+import { profilePaths, validateProfileName, ProfilePaths } from '../config/paths.js';
 import { initCommand } from '../commands/init.js';
 import { connectCommand } from '../commands/connect.js';
 import { statusCommand } from '../commands/status.js';
@@ -21,6 +21,7 @@ program
 
 const getProfile = (): { name: string; paths: ProfilePaths } => {
   const id = program.opts<{ id?: string }>().id;
+  if (id !== undefined) validateProfileName(id);
   const registry = loadRegistry();
   const name = id ?? registry.default;
   return { name, paths: profilePaths(name) };

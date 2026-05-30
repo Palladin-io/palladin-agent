@@ -8,18 +8,9 @@ import {
   registrySetDefault,
   registryRenameAgent,
 } from '../config/registry.js';
-import { profilePaths } from '../config/paths.js';
+import { profilePaths, validateProfileName } from '../config/paths.js';
 import { generateKeypair, saveKeypair, publicKeyBase64 } from '../crypto/keypair.js';
 import { tierLabel, tierUpgradeHint, deletePrivateKey, migrateKeychainEntry } from '../crypto/secure-storage.js';
-
-const NAME_RE = /^[a-z0-9_-]+$/i;
-
-function validateName(name: string): void {
-  if (!NAME_RE.test(name)) {
-    console.error('Error: name must contain only letters, digits, hyphens, or underscores');
-    process.exit(1);
-  }
-}
 
 export function agentsCommand(): Command {
   const cmd = new Command('agents').description('Manage agent profiles');
@@ -46,7 +37,7 @@ export function agentsCommand(): Command {
       .description('Create a new agent profile with a fresh keypair')
       .argument('<name>', 'profile name')
       .action(async (name: string) => {
-        validateName(name);
+        validateProfileName(name);
         const registry = loadRegistry();
         const isFirst = registry.agents.length === 0;
         let updated;
@@ -122,7 +113,7 @@ export function agentsCommand(): Command {
       .argument('<old-name>', 'current profile name')
       .argument('<new-name>', 'new profile name')
       .action(async (oldName: string, newName: string) => {
-        validateName(newName);
+        validateProfileName(newName);
         const registry = loadRegistry();
         let updated;
         try {

@@ -1,5 +1,6 @@
 import { Command } from 'commander';
-import { upgradeToKeychain } from '../crypto/secure-storage.js';
+import { existsSync } from 'fs';
+import { upgradeToKeychain, detectKeyTier } from '../crypto/secure-storage.js';
 import { ProfilePaths } from '../config/paths.js';
 
 type GetProfile = () => { name: string; paths: ProfilePaths };
@@ -12,11 +13,23 @@ export function securityCommand(getProfile: GetProfile): Command {
       .description('Move private key from file to OS keychain')
       .action(async () => {
         const { name, paths } = getProfile();
+
+        const currentTier = await detectKeyTier(name, paths);
+        if (currentTier === 'keychain') {
+          console.log('Key is already stored in the OS keychain — nothing to do.');
+          return;
+        }
+
+        if (!existsSync(paths.privateKey)) {
+          console.log('No file-based key found. Run: claw-vault init');
+          return;
+        }
+
         const success = await upgradeToKeychain(name, paths);
         if (success) {
           console.log('✓ Key moved to OS keychain');
         } else {
-          console.log('Key is already in keychain, or no file-based key found, or keychain unavailable.');
+          console.log('Keychain unavailable on this system. Install @napi-rs/keyring to enable keychain support.');
         }
       }),
   );
