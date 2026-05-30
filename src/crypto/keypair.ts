@@ -1,9 +1,7 @@
 import { x25519 } from '@noble/curves/ed25519.js';
 import { randomBytes } from 'crypto';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { execSync } from 'child_process';
-import { platform } from 'os';
-import { paths } from '../config/paths.js';
+import { ProfilePaths } from '../config/paths.js';
+import { loadPrivateKey, storePrivateKey, hasPrivateKey } from './secure-storage.js';
 
 export interface Keypair {
   publicKey: Uint8Array;
@@ -16,49 +14,25 @@ export async function generateKeypair(): Promise<Keypair> {
   return { publicKey, privateKey };
 }
 
-export function saveKeypair(keypair: Keypair): void {
-  mkdirSync(paths.root, { recursive: true });
-  writeFileSync(paths.privateKey, Buffer.from(keypair.privateKey).toString('base64'), {
-    encoding: 'utf8',
-    mode: 0o600,
-  });
-  writeFileSync(paths.publicKey, Buffer.from(keypair.publicKey).toString('base64'), {
-    encoding: 'utf8',
-    mode: 0o644,
-  });
-  restrictPrivateKeyPermissions();
+export async function saveKeypair(keypair: Keypair, profile: string, paths: ProfilePaths) {
+  const base64 = Buffer.from(keypair.privateKey).toString('base64');
+  return storePrivateKey(profile, paths, base64);
 }
 
-function restrictPrivateKeyPermissions(): void {
-  if (platform() !== 'win32') return;
-
-  try {
-    // Remove inherited permissions, grant only current user full control
-    execSync(
-      `icacls "${paths.privateKey}" /inheritance:r /grant:r "%USERNAME%:F"`,
-      { stdio: 'ignore' },
-    );
-  } catch {
-    console.warn(`  Warning: could not restrict permissions on ${paths.privateKey}`);
-    console.warn('  Protect this file manually — it contains your private key.');
-  }
-}
-
-export function loadKeypair(): Keypair {
-  if (!existsSync(paths.privateKey)) {
-    throw new Error(`No keypair found. Run: claw-vault init`);
-  }
-  const privateKey = new Uint8Array(Buffer.from(readFileSync(paths.privateKey, 'utf8'), 'base64'));
-  const publicKey = new Uint8Array(Buffer.from(readFileSync(paths.publicKey, 'utf8'), 'base64'));
+export async function loadKeypair(profile: string, paths: ProfilePaths): Promise<Keypair> {
+  const { value } = await loadPrivateKey(profile, paths);
+  const privateKey = new Uint8Array(Buffer.from(value, 'base64'));
+  const publicKey  = x25519.getPublicKey(privateKey);
   return { publicKey, privateKey };
 }
 
-/** Loads the keypair, generating and persisting one automatically if it doesn't exist yet. */
-export async function ensureKeypair(): Promise<Keypair> {
-  if (existsSync(paths.privateKey)) return loadKeypair();
+export async function ensureKeypair(profile: string, paths: ProfilePaths): Promise<Keypair> {
+  if (await hasPrivateKey(profile, paths)) {
+    return loadKeypair(profile, paths);
+  }
   const keypair = await generateKeypair();
-  saveKeypair(keypair);
-  console.log(`✓ Keypair generated (${paths.privateKey})`);
+  const tier = await saveKeypair(keypair, profile, paths);
+  console.log(`✓ Keypair generated (${tier === 'keychain' ? 'stored in OS keychain' : paths.root})`);
   return keypair;
 }
 

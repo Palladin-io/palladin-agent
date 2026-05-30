@@ -1,0 +1,103 @@
+name: "Claude Code: Fix PR"
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Numer PR do naprawy"
+        required: true
+      user_context:
+        description: "Dodatkowe instrukcje (opcjonalne)"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  CLAUDE_MODEL: claude-opus-4-7
+
+jobs:
+  fix:
+    name: Claude Code Fix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Resolve PR number and checkout branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number }}
+        run: |
+          echo "number=$INPUT_PR_NUMBER" >> "$GITHUB_OUTPUT"
+          HEAD=$(gh pr view "$INPUT_PR_NUMBER" --repo "${{ github.repository }}" --json headRefName --jq '.headRefName')
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch PR review data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr view "$PR" --json number,title,headRefName,baseRefName,author > /tmp/pr_meta.json
+          gh pr view "$PR" --json reviews > /tmp/pr_reviews.json
+          gh api "repos/${REPO}/pulls/${PR}/comments" > /tmp/pr_inline_comments.json
+          gh pr diff "$PR" --name-only > /tmp/pr_files.txt
+          gh pr diff "$PR" > /tmp/pr_diff.patch
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Run Claude Code fix
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          USER_CONTEXT: ${{ github.event.inputs.user_context }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          npm ci
+
+          {
+            echo '## Pre-fetched dane PR'
+            echo ''
+            echo '- /tmp/pr_meta.json — metadane PR'
+            echo '- /tmp/pr_reviews.json — poprzednie review z werdyktami'
+            echo '- /tmp/pr_inline_comments.json — komentarze inline do zaadresowania'
+            echo '- /tmp/pr_files.txt — zmienione pliki'
+            echo '- /tmp/pr_diff.patch — pełny diff'
+            echo ''
+            echo '---'
+            echo ''
+            sed "s/\$ARGUMENTS/${PR}/g" .claude/skills/fix-pr/SKILL.md \
+              | grep -v '^!`'
+            if [ -n "$USER_CONTEXT" ]; then
+              echo ''
+              echo '## Dodatkowe instrukcje'
+              echo ''
+              echo "$USER_CONTEXT"
+            fi
+          } > /tmp/fix_prompt.md
+
+          claude -p \
+            --model "$CLAUDE_MODEL" \
+            --max-turns 50 \
+            --dangerously-skip-permissions \
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(gh:*),Bash(jq:*),Bash(git:*),Bash(npm:*)" \
+            < /tmp/fix_prompt.md

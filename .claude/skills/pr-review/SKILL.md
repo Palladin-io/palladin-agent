@@ -1,0 +1,114 @@
+---
+name: pr-review
+description: Reviews a pull request in the Claw Vault Agent CLI for TypeScript correctness, security (key storage, no plaintext secrets), CLI UX, and Node.js best practices. Posts findings as a structured GitHub PR comment.
+argument-hint: <pr-number>
+disable-model-invocation: true
+allowed-tools: Read Grep Glob Bash(gh pr view *) Bash(gh pr diff *) Bash(gh pr comment *) Bash(gh api *) Bash(gh api graphql *) Bash(git log *)
+effort: high
+---
+
+# PR Review — Claw Vault Agent CLI
+
+## Pull Request Context
+
+**Metadata:**
+!`gh pr view $ARGUMENTS --json number,title,body,author,additions,deletions,changedFiles,baseRefName,headRefName 2>/dev/null || echo "PR metadata unavailable"`
+
+**Changed files:**
+!`gh pr diff $ARGUMENTS --name-only 2>/dev/null || echo "No changed files"`
+
+**Diff (first 50 000 chars):**
+!`gh pr diff $ARGUMENTS 2>/dev/null | head -c 50000`
+
+---
+
+## How to Conduct the Review
+
+0. **Sprawdź poprzednie komentarze** — zanim przejdziesz do nowego kodu, przeczytaj `/tmp/pr_reviews.json` i `/tmp/pr_inline_comments.json`. Dla każdego wątku REQUEST_CHANGES: ustal czy problem został zaadresowany w aktualnym diffie.
+1. Read `CLAUDE.md` — source of truth for project conventions.
+2. Load [criteria.md](criteria.md) — detailed review checklist. Read it fully before starting.
+3. For each changed file: use `Read`, `Grep`, `Glob` to explore related files beyond the diff.
+4. Cite **file path and line number** for every issue.
+5. One clear sentence per finding.
+
+## Review Focus Areas
+
+Cover all sections from `criteria.md`:
+- TypeScript: strict mode, no `any`, async/await correctness
+- Security: key storage tiers, no plaintext secrets in logs or files, `@napi-rs/keyring` optional handling
+- Multi-profile: all commands use `getProfile()`, registry consistency
+- CLI UX: clear error messages, correct exit codes, security tier shown where needed
+- File permissions: `0o600` for sensitive files
+- Build: `npm run build` and `npm run lint` pass
+
+## Output
+
+Submit a proper GitHub pull request review — inline file comments + a final verdict. Do NOT use `gh pr comment`.
+
+### Step 0 — obsłuż poprzednie komentarze
+
+Dla każdego wątku z poprzednich review (`/tmp/pr_reviews.json`, `/tmp/pr_inline_comments.json`):
+
+**Jeśli problem został zaadresowany** — odpowiedz na komentarz i rozwiąż wątek:
+```bash
+REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+gh api "repos/${REPO}/pulls/$ARGUMENTS/comments/{COMMENT_ID}/replies" \
+  --method POST --field body="✅ Zaadresowane — [opis co zostało zrobione]."
+
+gh api graphql -f query='
+  query($owner:String!,$repo:String!,$pr:Int!) {
+    repository(owner:$owner,name:$repo) {
+      pullRequest(number:$pr) {
+        reviewThreads(first:50) {
+          nodes { id isResolved comments(first:1) { nodes { databaseId } } }
+        }
+      }
+    }
+  }
+' -f owner="$(echo $REPO | cut -d/ -f1)" \
+  -f repo="$(echo $REPO | cut -d/ -f2)" \
+  -F pr=$ARGUMENTS \
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false) | {id, commentId: .comments.nodes[0].databaseId}'
+
+gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' \
+  -f id="{THREAD_NODE_ID}"
+```
+
+**Jeśli problem NIE został zaadresowany** — wymień go w `body` nowego review z odwołaniem.
+
+### Step 1 — determine the verdict
+
+- `REQUEST_CHANGES` — any Critical or Warning findings
+- `APPROVE` — only Suggestions / Highlights, or a clean PR
+- `COMMENT` — only if literally cannot determine a verdict
+
+### Step 2 — build `/tmp/review.json`
+
+```json
+{
+  "body": "## 🔍 PR Review — Claw Vault Agent CLI\n\n### Summary\n2–3 sentence verdict.\n\n### ✅ Highlights\n- good pattern noted",
+  "event": "REQUEST_CHANGES",
+  "comments": [
+    {
+      "path": "src/crypto/secure-storage.ts",
+      "line": 42,
+      "side": "RIGHT",
+      "body": "🚨 **Critical** — one-sentence explanation."
+    }
+  ]
+}
+```
+
+### Step 3 — submit
+
+```bash
+REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+gh api "repos/${REPO}/pulls/$ARGUMENTS/reviews" --method POST --input /tmp/review.json
+```
+
+### Rules
+
+- **Inline comments** — only on lines present in the diff (`/tmp/pr_diff.patch`).
+- **`line`** — file line number (not diff position). **`side`** — always `"RIGHT"` for added/changed lines.
+- **Severity prefix** — `🚨 Critical —`, `⚠️ Warning —`, or `💡 Suggestion —`.
+- Omit `"comments"` key entirely if there are no file-level findings.

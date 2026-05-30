@@ -1,7 +1,12 @@
 import { Command } from 'commander';
+import { loadConfig } from '../config/config.js';
+import { loadKeypair } from '../crypto/keypair.js';
 import { apiFetch } from '../http/client.js';
+import { ProfilePaths } from '../config/paths.js';
 
-export function getCommand(): Command {
+type GetProfile = () => { name: string; paths: ProfilePaths };
+
+export function getCommand(getProfile: GetProfile): Command {
   return new Command('get')
     .description('Fetch a credential by vault/entry path')
     .argument('<path>', 'vault/entry (e.g. my-vault/db-password)')
@@ -12,7 +17,14 @@ export function getCommand(): Command {
         process.exit(1);
       }
       const entry = rest.join('/');
-      const res = await apiFetch(`/api/vaults/${encodeURIComponent(vault)}/entries/${encodeURIComponent(entry)}`);
+      const { name, paths } = getProfile();
+      const config  = loadConfig(paths);
+      const keypair = await loadKeypair(name, paths);
+      const res = await apiFetch(
+        `/api/vaults/${encodeURIComponent(vault)}/entries/${encodeURIComponent(entry)}`,
+        config,
+        keypair,
+      );
       if (!res.ok) {
         console.error(`Error: ${res.status} ${res.statusText}`);
         process.exit(1);

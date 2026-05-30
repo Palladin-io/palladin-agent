@@ -1,29 +1,38 @@
 import { Command } from 'commander';
 import { existsSync } from 'fs';
-import { paths } from '../config/paths.js';
 import { loadConfig } from '../config/config.js';
 import { loadKeypair, publicKeyBase64 } from '../crypto/keypair.js';
+import { detectKeyTier, hasPrivateKey, tierLabel, tierUpgradeHint } from '../crypto/secure-storage.js';
 import { registerAgent } from '../http/agent-api.js';
+import { ProfilePaths } from '../config/paths.js';
 
-export function statusCommand(): Command {
+type GetProfile = () => { name: string; paths: ProfilePaths };
+
+export function statusCommand(getProfile: GetProfile): Command {
   return new Command('status')
     .description('Show connection and agent registration status')
     .action(async () => {
-      const hasKeypair = existsSync(paths.privateKey);
-      const hasConfig  = existsSync(paths.config);
+      const { name, paths } = getProfile();
 
-      console.log('Keypair:  ' + (hasKeypair ? `✓ ${paths.privateKey}` : '✗ not found (run: claw-vault init)'));
-      console.log('Config:   ' + (hasConfig  ? `✓ ${paths.config}`     : '✗ not found (run: claw-vault connect)'));
+      const hasKeypair = await hasPrivateKey(name, paths);
+      const hasConfig  = existsSync(paths.config);
+      const tier       = await detectKeyTier(name, paths);
+
+      console.log(`Profile:  ${name}`);
+      console.log('Keypair:  ' + (hasKeypair ? `✓ ${tierLabel(tier)}` : '✗ not found (run: claw-vault init)'));
+      console.log('Config:   ' + (hasConfig  ? `✓ ${paths.config}` : '✗ not found (run: claw-vault connect)'));
 
       if (!hasKeypair || !hasConfig) {
         process.exit(1);
       }
 
-      const config  = loadConfig();
-      const keypair = loadKeypair();
+      const config  = loadConfig(paths);
+      const keypair = await loadKeypair(name, paths);
 
       console.log(`Host:     ${config.host}`);
       console.log(`Key:      ${publicKeyBase64(keypair)}`);
+      const hint = tierUpgradeHint(tier, name);
+      if (hint) console.log(hint);
       console.log('');
 
       const result = await registerAgent(config, keypair);
@@ -37,8 +46,9 @@ export function statusCommand(): Command {
 
         case 'active':
           console.log('Agent:    ✓ active');
-          console.log(`          ID:   ${result.agentId}`);
-          if (result.name) console.log(`          Name: ${result.name}`);
+          console.log(`          ID:           ${result.agentId}`);
+          if (result.name) console.log(`          Backend name: ${result.name}`);
+          console.log(`          Local alias:  ${name}`);
           break;
 
         case 'deactivated':

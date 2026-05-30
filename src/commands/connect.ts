@@ -1,28 +1,40 @@
 import { Command } from 'commander';
 import { saveConfig } from '../config/config.js';
 import { ensureKeypair, publicKeyBase64 } from '../crypto/keypair.js';
+import { detectKeyTier, tierLabel, tierUpgradeHint } from '../crypto/secure-storage.js';
 import { registerAgent } from '../http/agent-api.js';
+import { ProfilePaths } from '../config/paths.js';
 
-export function connectCommand(): Command {
+type GetProfile = () => { name: string; paths: ProfilePaths };
+
+export function connectCommand(getProfile: GetProfile): Command {
   return new Command('connect')
     .description('Connect agent to a Claw Vault server and register it')
     .argument('<api-key>', 'API key (must start with cv_)')
-    .requiredOption('--host <host>', 'Claw Vault server URL')
-    .action(async (apiKey: string, opts: { host: string }) => {
+    .option('--host <host>', 'Claw Vault server URL', 'https://api.clawvault.io')
+    .option('--id <name>', 'Agent display name to register with')
+    .action(async (apiKey: string, opts: { host: string; id?: string }) => {
       if (!apiKey.startsWith('cv_')) {
         console.error('Error: invalid API key — must start with cv_');
         process.exit(1);
       }
 
-      const keypair = await ensureKeypair();
+      const { name, paths } = getProfile();
+      const keypair = await ensureKeypair(name, paths);
       const config = { apiKey, host: opts.host.replace(/\/$/, '') };
-      saveConfig(config);
+      saveConfig(config, paths);
 
+      const tier = await detectKeyTier(name, paths);
+      console.log(`  Profile:    ${name}`);
       console.log(`  Host:       ${config.host}`);
       console.log(`  Public key: ${publicKeyBase64(keypair)}`);
+      console.log(`  Security:   ${tierLabel(tier)}`);
+      const hint = tierUpgradeHint(tier, name);
+      if (hint) console.log(hint);
       console.log('');
 
-      const result = await registerAgent(config, keypair);
+      const displayName = opts.id ?? (name !== 'default' ? name : undefined);
+      const result = await registerAgent(config, keypair, displayName);
 
       switch (result.status) {
         case 'pending':

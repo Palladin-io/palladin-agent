@@ -4,19 +4,23 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { loadConfig } from '../config/config.js';
 import { loadKeypair } from '../crypto/keypair.js';
 import { registerTools } from './tools.js';
+import { ProfilePaths } from '../config/paths.js';
 
-export function mcpServeCommand(): Command {
+type GetProfile = () => { name: string; paths: ProfilePaths };
+
+export function mcpServeCommand(getProfile: GetProfile): Command {
   return new Command('mcp')
     .description('MCP server commands')
     .addCommand(
       new Command('serve')
         .description('Start MCP server for AI agent use')
         .action(async () => {
-          const config = loadConfig();
-          const keypair = loadKeypair();
+          const { name, paths } = getProfile();
+          const config  = loadConfig(paths);
+          const keypair = await loadKeypair(name, paths);
 
           const server = new McpServer({
-            name: 'claw-vault',
+            name: 'Claw Vault Agents',
             version: '0.1.0',
           });
 
@@ -24,6 +28,6 @@ export function mcpServeCommand(): Command {
 
           const transport = new StdioServerTransport();
           await server.connect(transport);
-        })
+        }),
     );
 }
