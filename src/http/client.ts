@@ -12,6 +12,11 @@ export async function apiFetch(
   headers.set('X-Api-Key',        config.apiKey);
   headers.set('X-Agent-Key',      publicKeyBase64(keypair));
   headers.set('X-Agent-Hostname', os.hostname());
-  headers.set('Content-Type',     'application/json');
+  // Only declare a JSON body when one is actually sent. On bodyless requests (GET) an
+  // application/json content-type makes FastEndpoints bind the request from the (empty) body
+  // and ignore query-string params — which 400s query-bound endpoints like entry discovery.
+  if (init?.body !== undefined && init?.body !== null) {
+    headers.set('Content-Type', 'application/json');
+  }
   return fetch(`${config.host}${path}`, { ...init, headers });
 }
