@@ -4,6 +4,7 @@ import { AgentConfig } from '../config/config.js';
 import { Keypair } from '../crypto/keypair.js';
 import {
   AgentApiError,
+  searchEntries,
   requestAccess,
   getGrantStatus,
   deliverCredential,
@@ -25,14 +26,31 @@ function errorMessage(err: unknown): string {
   return `Unexpected error: ${(err as Error).message ?? String(err)}`;
 }
 
-// NOTE: discovery tools (list_vaults / list_entries) are intentionally NOT exposed here.
-// The backend has no agent-facing discovery endpoint: /api/vaults and
-// /api/vaults/{id}/entries are JwtBearer (user) endpoints — ListEntries additionally
-// requires VaultManage + vault membership — so they return 401 under agent-auth
-// (X-Api-Key + X-Agent-Key). The CVT-44 scaffold wired them as placeholders; they never
-// worked for an agent. Agent discovery is a separate backend task. For now the agent must
-// be given the entryId out-of-band (e.g. from the user/config) before request_access.
+// Discovery is org-wide via GET /api/agent/entries (agent-auth, metadata only).
+// The legacy CVT-44 placeholders list_vaults / list_entries called JwtBearer (user)
+// endpoints and returned 401 under agent-auth — they are intentionally not exposed.
 export function registerTools(server: McpServer, config: AgentConfig, keypair: Keypair): void {
+  server.registerTool(
+    'search_entries',
+    {
+      description:
+        "Search vault entries by name/url/description (e.g. 'facebook') across the agent's organization. " +
+        'Returns candidates (id, vaultId, name, url, description) — metadata only, no secrets. ' +
+        'Pick one and call request_access with its vaultId+entryId.',
+      inputSchema: z.object({
+        query: z.string().min(2).describe('Search term — matched against entry name, url and description (min 2 chars)'),
+      }),
+    },
+    async ({ query }) => {
+      try {
+        const result = await searchEntries(config, keypair, query.trim());
+        return ok(JSON.stringify(result, null, 2));
+      } catch (err) {
+        return fail(errorMessage(err));
+      }
+    }
+  );
+
   server.registerTool(
     'request_access',
     {

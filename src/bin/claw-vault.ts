@@ -9,6 +9,12 @@ import { listCommand } from '../commands/list.js';
 import { getCommand } from '../commands/get.js';
 import { agentsCommand } from '../commands/agents.js';
 import { securityCommand } from '../commands/security.js';
+import {
+  searchCommand,
+  requestAccessCommand,
+  grantStatusCommand,
+  retrieveCommand,
+} from '../commands/credentials.js';
 import { mcpServeCommand } from '../mcp/server.js';
 
 const program = new Command();
@@ -34,6 +40,10 @@ program.addCommand(listCommand(getProfile));
 program.addCommand(getCommand(getProfile));
 program.addCommand(agentsCommand());
 program.addCommand(securityCommand(getProfile));
+program.addCommand(searchCommand(getProfile));
+program.addCommand(requestAccessCommand(getProfile));
+program.addCommand(grantStatusCommand(getProfile));
+program.addCommand(retrieveCommand(getProfile));
 program.addCommand(mcpServeCommand(getProfile));
 
 program.parse();

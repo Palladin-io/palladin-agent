@@ -53,6 +53,44 @@ export async function registerAgent(
   return { status: 'unreachable', error: `HTTP ${res.status}` };
 }
 
+// ── Discovery (CVT-144) ──────────────────────────────────────────────────────
+// Org-wide entry search. Metadata only — never ciphertext. Starting point of the
+// flow: search_entries → request_access → get_grant_status → retrieve_credential.
+
+export interface EntrySearchItem {
+  entryId: string;
+  vaultId: string;
+  label: string;
+  urlDomain: string | null;
+  description: string | null;
+}
+
+export interface EntrySearchResult {
+  items: EntrySearchItem[];
+  nextCursor: string | null;
+}
+
+/**
+ * Search entry metadata across every vault in the agent's organization.
+ * `query` must be at least 2 characters (server-enforced MinLength 2).
+ */
+export async function searchEntries(
+  config: AgentConfig,
+  keypair: Keypair,
+  query: string,
+  options?: { cursor?: string; pageSize?: number },
+): Promise<EntrySearchResult> {
+  const params = new URLSearchParams({ query });
+  if (options?.cursor) params.set('cursor', options.cursor);
+  if (options?.pageSize) params.set('pageSize', String(options.pageSize));
+
+  const res = await apiFetch(`/api/agent/entries?${params.toString()}`, config, keypair);
+  if (!res.ok) {
+    throw new AgentApiError(res.status, `entry search failed (HTTP ${res.status})`);
+  }
+  return await res.json() as EntrySearchResult;
+}
+
 // ── Credential access flow (CVT-61) ──────────────────────────────────────────
 // Grant lifecycle the agent drives: request-access (creates Pending grant) →
 // poll status until Active → deliver (returns ciphertext, decrypted locally).
