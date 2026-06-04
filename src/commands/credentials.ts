@@ -100,13 +100,13 @@ export function getCredentialCommand(getProfile: GetProfile): Command {
         }
         case 'pending':
           if (result.created) {
-            console.log(`Dostępu jeszcze nie ma — założono grant (id ${result.grantId}), czeka na zatwierdzenie. Spróbuj ponownie za chwilę.`);
+            console.log(`No access yet — access requested (grant ${result.grantId}), awaiting approval. Try again shortly.`);
           } else {
-            console.log(`Grant czeka na zatwierdzenie (id ${result.grantId}). Spróbuj ponownie za chwilę.`);
+            console.log(`Access request is pending approval (grant ${result.grantId}). Try again shortly.`);
           }
           return;
         default:
-          fail(`Brak dostępu: ${result.access}`);
+          fail(`No access: ${result.access}`);
       }
     });
 }
