@@ -5,16 +5,9 @@ import { profilePaths, validateProfileName, ProfilePaths } from '../config/paths
 import { initCommand } from '../commands/init.js';
 import { connectCommand } from '../commands/connect.js';
 import { statusCommand } from '../commands/status.js';
-import { listCommand } from '../commands/list.js';
-import { getCommand } from '../commands/get.js';
 import { agentsCommand } from '../commands/agents.js';
 import { securityCommand } from '../commands/security.js';
-import {
-  searchCommand,
-  requestAccessCommand,
-  grantStatusCommand,
-  retrieveCommand,
-} from '../commands/credentials.js';
+import { searchCommand, getCredentialCommand } from '../commands/credentials.js';
 import { mcpServeCommand } from '../mcp/server.js';
 
 const program = new Command();
@@ -36,14 +29,10 @@ const getProfile = (): { name: string; paths: ProfilePaths } => {
 program.addCommand(initCommand(getProfile));
 program.addCommand(connectCommand(getProfile));
 program.addCommand(statusCommand(getProfile));
-program.addCommand(listCommand(getProfile));
-program.addCommand(getCommand(getProfile));
 program.addCommand(agentsCommand());
 program.addCommand(securityCommand(getProfile));
 program.addCommand(searchCommand(getProfile));
-program.addCommand(requestAccessCommand(getProfile));
-program.addCommand(grantStatusCommand(getProfile));
-program.addCommand(retrieveCommand(getProfile));
+program.addCommand(getCredentialCommand(getProfile));
 program.addCommand(mcpServeCommand(getProfile));
 
 program.parse();

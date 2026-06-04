@@ -91,25 +91,6 @@ export async function searchEntries(
   return await res.json() as EntrySearchResult;
 }
 
-// ── Credential access flow (CVT-61) ──────────────────────────────────────────
-// Grant lifecycle the agent drives: request-access (creates Pending grant) →
-// poll status until Active → deliver (returns ciphertext, decrypted locally).
-
-export type GrantStatus =
-  | 'Pending' | 'Active' | 'Denied' | 'Revoked' | 'Expired' | 'Consumed';
-
-export interface RequestAccessResult {
-  grantId: string;
-  status: GrantStatus;
-}
-
-export interface GrantStatusResult {
-  grantId: string;
-  status: GrantStatus;
-  expiresAt: string | null;
-  queryLimit: number | null;
-}
-
 /** Raised for any non-success HTTP response so callers can surface a clear message. */
 export class AgentApiError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -118,81 +99,59 @@ export class AgentApiError extends Error {
   }
 }
 
+// ── Unified credential access (CVT-61) ───────────────────────────────────────
+// A single call drives the whole flow. The agent calls get_credential; if it has
+// no grant yet the server creates a pending one (user approves in the panel) and
+// returns access:"pending". The agent calls again; once approved the server
+// returns access:"granted" with the encrypted envelope, decrypted locally.
+
+/** Discriminated result of POST .../credential, keyed on `access`. */
+export type CredentialAccess =
+  /** Approved: encrypted envelope present, decrypt locally. */
+  | ({ access: 'granted'; entryId: string; label: string } & EncryptedCredential)
+  /** Awaiting user approval. `created` = the grant was just requested by this call. */
+  | { access: 'pending'; grantId: string; created?: boolean }
+  /** Terminal "no access" states. */
+  | { access: 'denied' }
+  | { access: 'revoked' }
+  | { access: 'expired' }
+  | { access: 'consumed' }
+  /** FULL grant covers the entry but no wrapped material exists yet. */
+  | { access: 'unavailable' }
+  /** Agent is deactivated. */
+  | { access: 'blocked' };
+
 /**
- * Ask the user to grant access to a single entry. Idempotent server-side: an
- * existing Pending/Active grant for the same entry is returned as-is.
+ * Get (or request) a credential in one call.
+ *
+ * The endpoint encodes the outcome in the `access` field across several HTTP
+ * statuses (200/202/403/429), so any of those carries a valid body we parse.
+ * Only a genuine transport/validation failure (e.g. 400 "reason required", 5xx)
+ * is surfaced as an AgentApiError. Decryption is left to the caller so plaintext
+ * never passes through this transport layer.
  */
-export async function requestAccess(
+export async function getCredential(
   config: AgentConfig,
   keypair: Keypair,
   vaultId: string,
   entryId: string,
-  reason: string,
-): Promise<RequestAccessResult> {
+  reason?: string,
+): Promise<CredentialAccess> {
   const res = await apiFetch(
-    `/api/agent/vaults/${encodeURIComponent(vaultId)}/request-access`,
+    `/api/agent/vaults/${encodeURIComponent(vaultId)}/entries/${encodeURIComponent(entryId)}/credential`,
     config,
     keypair,
-    { method: 'POST', body: JSON.stringify({ entryId, reason }) },
-  );
-  if (!res.ok) {
-    throw new AgentApiError(res.status, `request-access failed (HTTP ${res.status})`);
-  }
-  return await res.json() as RequestAccessResult;
-}
-
-/** Poll the status of one of this agent's own grants. */
-export async function getGrantStatus(
-  config: AgentConfig,
-  keypair: Keypair,
-  vaultId: string,
-  grantId: string,
-): Promise<GrantStatusResult> {
-  const res = await apiFetch(
-    `/api/agent/vaults/${encodeURIComponent(vaultId)}/grants/${encodeURIComponent(grantId)}/status`,
-    config,
-    keypair,
-  );
-  if (res.status === 404) {
-    throw new AgentApiError(404, 'Grant not found — it may belong to another agent or never existed.');
-  }
-  if (!res.ok) {
-    throw new AgentApiError(res.status, `grant status failed (HTTP ${res.status})`);
-  }
-  return await res.json() as GrantStatusResult;
-}
-
-/**
- * Fetch the encrypted credential envelope. The ONLY call that returns ciphertext.
- * HTTP status codes are mapped to actionable errors:
- *   403 → grant expired
- *   404 → no active grant (request access first) / material not yet available
- *   429 → query limit reached (grant consumed)
- * Decryption is done by the caller via `decryptCredential` so the plaintext is
- * never marshalled through this transport layer.
- */
-export async function deliverCredential(
-  config: AgentConfig,
-  keypair: Keypair,
-  vaultId: string,
-  entryId: string,
-): Promise<{ entryId: string; label: string } & EncryptedCredential> {
-  const res = await apiFetch(
-    `/api/agent/vaults/${encodeURIComponent(vaultId)}/credentials/${encodeURIComponent(entryId)}`,
-    config,
-    keypair,
+    { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) },
   );
 
-  switch (res.status) {
-    case 403:
-      throw new AgentApiError(403, 'Grant expired — request access again.');
-    case 404:
-      throw new AgentApiError(404, 'No active grant for this entry — call request_access first and wait for approval.');
-    case 429:
-      throw new AgentApiError(429, 'Query limit reached — this grant is consumed. Request access again.');
+  // 200 (granted/unavailable), 202 (pending), 403 (denied/revoked/expired/blocked)
+  // and 429 (consumed) all return a JSON body with the `access` discriminator.
+  if (res.status === 200 || res.status === 202 || res.status === 403 || res.status === 429) {
+    return await res.json() as CredentialAccess;
   }
-  if (!res.ok) {
-    throw new AgentApiError(res.status, `credential delivery failed (HTTP ${res.status})`);
+
+  if (res.status === 400) {
+    throw new AgentApiError(400, 'A reason is required to request access to this entry — pass --reason.');
   }
-  return await res.json() as { entryId: string; label: string } & EncryptedCredential;
+  throw new AgentApiError(res.status, `credential request failed (HTTP ${res.status})`);
 }

@@ -5,9 +5,7 @@ import { Keypair } from '../crypto/keypair.js';
 import {
   AgentApiError,
   searchEntries,
-  requestAccess,
-  getGrantStatus,
-  deliverCredential,
+  getCredential,
 } from '../http/agent-api.js';
 import { decryptCredential } from '../crypto/decrypt.js';
 
@@ -36,7 +34,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
       description:
         "Search vault entries by name/url/description (e.g. 'facebook') across the agent's organization. " +
         'Returns candidates (id, vaultId, name, url, description) — metadata only, no secrets. ' +
-        'Pick one and call request_access with its vaultId+entryId.',
+        'Pick one and call get_credential with its vaultId+entryId.',
       inputSchema: z.object({
         query: z.string().min(2).describe('Search term — matched against entry name, url and description (min 2 chars)'),
       }),
@@ -52,61 +50,30 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
   );
 
   server.registerTool(
-    'request_access',
+    'get_credential',
     {
       description:
-        'Request user approval to access a single credential entry. Creates a pending grant the user must approve in the Claw Vault panel. Returns { grantId, status }. Poll get_grant_status until the status is "Active", then call retrieve_credential.',
+        "Get a credential. If the agent has no grant yet, this requests one (user approves in the panel) and returns access:'pending' — call again shortly. Returns access:'granted' with the decrypted secret once approved.",
       inputSchema: z.object({
         vaultId: z.string().describe('Vault ID'),
-        entryId: z.string().describe('Entry ID to request access to'),
-        reason: z.string().describe('Human-readable justification shown to the approving user'),
+        entryId: z.string().describe('Entry ID'),
+        reason: z.string().optional().describe('Justification shown to the approving user (required when first requesting access)'),
       }),
     },
     async ({ vaultId, entryId, reason }) => {
       try {
-        const result = await requestAccess(config, keypair, vaultId, entryId, reason.trim());
+        const result = await getCredential(config, keypair, vaultId, entryId, reason?.trim());
+        if (result.access === 'granted') {
+          const secret = await decryptCredential(result, keypair);
+          return ok(JSON.stringify(
+            { access: 'granted', entryId: result.entryId, label: result.label, secret },
+            null,
+            2,
+          ));
+        }
+        // pending / denied / revoked / expired / consumed / unavailable / blocked:
+        // return the discriminated status as-is (no secret).
         return ok(JSON.stringify(result, null, 2));
-      } catch (err) {
-        return fail(errorMessage(err));
-      }
-    }
-  );
-
-  server.registerTool(
-    'get_grant_status',
-    {
-      description:
-        'Check the status of a previously requested grant. Returns { grantId, status, expiresAt, queryLimit }. Status is one of Pending, Active, Denied, Revoked, Expired, Consumed. When Active, call retrieve_credential. This does NOT block — poll it yourself (e.g. every few seconds) while waiting for the user to approve.',
-      inputSchema: z.object({
-        vaultId: z.string().describe('Vault ID'),
-        grantId: z.string().describe('Grant ID returned by request_access'),
-      }),
-    },
-    async ({ vaultId, grantId }) => {
-      try {
-        const result = await getGrantStatus(config, keypair, vaultId, grantId);
-        return ok(JSON.stringify(result, null, 2));
-      } catch (err) {
-        return fail(errorMessage(err));
-      }
-    }
-  );
-
-  server.registerTool(
-    'retrieve_credential',
-    {
-      description:
-        'Retrieve and locally decrypt a credential for an entry the agent has an active grant for. The secret is decrypted on this machine with the agent private key (which never leaves it) and returned as plaintext. Requires an Active grant — call request_access first if you get "no active grant". Each retrieval may count against the grant query limit.',
-      inputSchema: z.object({
-        vaultId: z.string().describe('Vault ID'),
-        entryId: z.string().describe('Entry ID to retrieve'),
-      }),
-    },
-    async ({ vaultId, entryId }) => {
-      try {
-        const envelope = await deliverCredential(config, keypair, vaultId, entryId);
-        const secret = await decryptCredential(envelope, keypair);
-        return ok(JSON.stringify({ entryId: envelope.entryId, label: envelope.label, secret }, null, 2));
       } catch (err) {
         return fail(errorMessage(err));
       }

@@ -5,9 +5,7 @@ import { ProfilePaths } from '../config/paths.js';
 import {
   AgentApiError,
   searchEntries,
-  requestAccess,
-  getGrantStatus,
-  deliverCredential,
+  getCredential,
 } from '../http/agent-api.js';
 import { decryptCredential } from '../crypto/decrypt.js';
 
@@ -69,61 +67,46 @@ export function searchCommand(getProfile: GetProfile): Command {
     });
 }
 
-/** claw-vault request-access <vaultId> <entryId> --reason <reason> */
-export function requestAccessCommand(getProfile: GetProfile): Command {
-  return new Command('request-access')
-    .description('Request user approval to access an entry (creates a pending grant)')
+/**
+ * claw-vault get <vaultId> <entryId> [--reason <reason>]   (alias: retrieve)
+ *
+ * One call for the whole flow. On first use (no grant yet) the server creates a
+ * pending grant and returns access:"pending"; call again once the user approves
+ * to get access:"granted" with the secret decrypted locally.
+ */
+export function getCredentialCommand(getProfile: GetProfile): Command {
+  return new Command('get')
+    .alias('retrieve')
+    .description('Get a credential — requests a grant on first use, returns the decrypted secret once approved')
     .argument('<vaultId>', 'vault ID')
     .argument('<entryId>', 'entry ID')
-    .requiredOption('--reason <reason>', 'justification shown to the approving user')
-    .action(async (vaultId: string, entryId: string, opts: { reason: string }) => {
+    .option('--reason <reason>', 'justification shown to the approving user (required on first request)')
+    .action(async (vaultId: string, entryId: string, opts: { reason?: string }) => {
       const { config, keypair } = await profileContext(getProfile);
+
+      let result;
       try {
-        const result = await requestAccess(config, keypair, vaultId, entryId, opts.reason.trim());
-        console.log(JSON.stringify(result, null, 2));
-        if (result.status === 'Pending') {
-          console.log('\nWaiting for user approval. Poll with: claw-vault grant-status ' + result.grantId + ' ' + vaultId);
+        result = await getCredential(config, keypair, vaultId, entryId, opts.reason?.trim());
+      } catch (err) {
+        fail(describe(err));
+      }
+
+      switch (result.access) {
+        case 'granted': {
+          const secret = await decryptCredential(result, keypair);
+          // Intentional plaintext output: this is the requested result for the user.
+          console.log(JSON.stringify({ entryId: result.entryId, label: result.label, secret }, null, 2));
+          return;
         }
-      } catch (err) {
-        fail(describe(err));
-      }
-    });
-}
-
-/** claw-vault grant-status <grantId> <vaultId> */
-export function grantStatusCommand(getProfile: GetProfile): Command {
-  // The status endpoint is scoped per vault (GET .../vaults/{vaultId}/grants/{grantId}/status),
-  // so vaultId is required alongside the grantId.
-  return new Command('grant-status')
-    .description('Check the status of a previously requested grant')
-    .argument('<grantId>', 'grant ID returned by request-access')
-    .argument('<vaultId>', 'vault ID the grant belongs to')
-    .action(async (grantId: string, vaultId: string) => {
-      const { config, keypair } = await profileContext(getProfile);
-      try {
-        const result = await getGrantStatus(config, keypair, vaultId, grantId);
-        console.log(JSON.stringify(result, null, 2));
-      } catch (err) {
-        fail(describe(err));
-      }
-    });
-}
-
-/** claw-vault retrieve <vaultId> <entryId> — delivery + local X25519 decrypt. */
-export function retrieveCommand(getProfile: GetProfile): Command {
-  return new Command('retrieve')
-    .description('Retrieve and locally decrypt a credential (requires an active grant)')
-    .argument('<vaultId>', 'vault ID')
-    .argument('<entryId>', 'entry ID')
-    .action(async (vaultId: string, entryId: string) => {
-      const { config, keypair } = await profileContext(getProfile);
-      try {
-        const envelope = await deliverCredential(config, keypair, vaultId, entryId);
-        const secret = await decryptCredential(envelope, keypair);
-        // Intentional plaintext output: this is the requested result for the user.
-        console.log(JSON.stringify({ entryId: envelope.entryId, label: envelope.label, secret }, null, 2));
-      } catch (err) {
-        fail(describe(err));
+        case 'pending':
+          if (result.created) {
+            console.log(`Dostępu jeszcze nie ma — założono grant (id ${result.grantId}), czeka na zatwierdzenie. Spróbuj ponownie za chwilę.`);
+          } else {
+            console.log(`Grant czeka na zatwierdzenie (id ${result.grantId}). Spróbuj ponownie za chwilę.`);
+          }
+          return;
+        default:
+          fail(`Brak dostępu: ${result.access}`);
       }
     });
 }
