@@ -7,7 +7,8 @@ import { connectCommand } from '../commands/connect.js';
 import { statusCommand } from '../commands/status.js';
 import { agentsCommand } from '../commands/agents.js';
 import { securityCommand } from '../commands/security.js';
-import { searchCommand, getCredentialCommand } from '../commands/credentials.js';
+import { searchCommand, getCredentialCommand, execCommand } from '../commands/credentials.js';
+import { injectCommand } from '../commands/inject.js';
 import { mcpServeCommand } from '../mcp/server.js';
 
 const program = new Command();
@@ -33,6 +34,8 @@ program.addCommand(agentsCommand());
 program.addCommand(securityCommand(getProfile));
 program.addCommand(searchCommand(getProfile));
 program.addCommand(getCredentialCommand(getProfile));
+program.addCommand(execCommand(getProfile));
+program.addCommand(injectCommand(getProfile));
 program.addCommand(mcpServeCommand(getProfile));
 
 program.parse();

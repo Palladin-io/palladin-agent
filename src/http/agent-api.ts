@@ -105,10 +105,16 @@ export class AgentApiError extends Error {
 // returns access:"pending". The agent calls again; once approved the server
 // returns access:"granted" with the encrypted envelope, decrypted locally.
 
+/** How the agent intends to use the credential (CVT-149). Mirrors backend GrantMethods flag names. */
+export type CredentialMethod = 'get' | 'exec' | 'inject';
+
 /** Discriminated result of POST .../credential, keyed on `access`. */
 export type CredentialAccess =
-  /** Approved: encrypted envelope present, decrypt locally. */
-  | ({ access: 'granted'; entryId: string; label: string } & EncryptedCredential)
+  /**
+   * Approved: encrypted envelope present, decrypt locally. `urlDomain` is the entry's backend-bound
+   * domain — the TRUSTED source for inject's anti-phishing origin check (never the page or agent).
+   */
+  | ({ access: 'granted'; entryId: string; label: string; urlDomain: string | null } & EncryptedCredential)
   /** Awaiting user approval. `created` = the grant was just requested by this call. */
   | { access: 'pending'; grantId: string; created?: boolean }
   /** Terminal "no access" states. */
@@ -116,6 +122,8 @@ export type CredentialAccess =
   | { access: 'revoked' }
   | { access: 'expired' }
   | { access: 'consumed' }
+  /** The grant does not whitelist the method the agent asked for (CVT-149). */
+  | { access: 'method-not-allowed' }
   /** FULL grant covers the entry but no wrapped material exists yet. */
   | { access: 'unavailable' }
   /** Agent is deactivated. */
@@ -130,21 +138,43 @@ export type CredentialAccess =
  * is surfaced as an AgentApiError. Decryption is left to the caller so plaintext
  * never passes through this transport layer.
  */
+export interface GetCredentialOptions {
+  reason?: string;
+  /** Delivery method the agent intends to use (CVT-149). Defaults server-side to `get`. */
+  method?: CredentialMethod;
+  /**
+   * Methods to put on the grant if this call has to create a Pending one. Defaults server-side to
+   * the delivery method, so a plain `exec` call requests exec access.
+   */
+  requestedMethods?: CredentialMethod[];
+}
+
 export async function getCredential(
   config: AgentConfig,
   keypair: Keypair,
   vaultId: string,
   entryId: string,
-  reason?: string,
+  options?: GetCredentialOptions,
 ): Promise<CredentialAccess> {
+  const body: Record<string, unknown> = {};
+  if (options?.reason) {
+    body.reason = options.reason;
+  }
+  if (options?.method) {
+    body.method = methodFlag(options.method);
+  }
+  if (options?.requestedMethods && options.requestedMethods.length > 0) {
+    body.requestedMethods = options.requestedMethods.map(methodFlag).join(', ');
+  }
+
   const res = await apiFetch(
     `/api/agent/vaults/${encodeURIComponent(vaultId)}/entries/${encodeURIComponent(entryId)}/credential`,
     config,
     keypair,
-    { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) },
+    { method: 'POST', body: JSON.stringify(body) },
   );
 
-  // 200 (granted/unavailable), 202 (pending), 403 (denied/revoked/expired/blocked)
+  // 200 (granted/unavailable), 202 (pending), 403 (denied/revoked/expired/blocked/method-not-allowed)
   // and 429 (consumed) all return a JSON body with the `access` discriminator.
   if (res.status === 200 || res.status === 202 || res.status === 403 || res.status === 429) {
     return await res.json() as CredentialAccess;
@@ -154,4 +184,9 @@ export async function getCredential(
     throw new AgentApiError(400, 'A reason is required to request access to this entry — pass --reason.');
   }
   throw new AgentApiError(res.status, `credential request failed (HTTP ${res.status})`);
+}
+
+// The backend binds GrantMethods (a [Flags] enum) from its PascalCase member names.
+function methodFlag(method: CredentialMethod): string {
+  return { get: 'Get', exec: 'Exec', inject: 'Inject' }[method];
 }

@@ -6,8 +6,13 @@ import {
   AgentApiError,
   searchEntries,
   getCredential,
+  CredentialMethod,
 } from '../http/agent-api.js';
 import { decryptCredential } from '../crypto/decrypt.js';
+import { parseSecret } from '../crypto/secret.js';
+import { accessMessage, GET_EXPOSURE_WARNING } from '../credential/access.js';
+import { runExecCapture } from '../exec/run-exec.js';
+import { injectCredential, InjectablePage } from '../inject/inject-runner.js';
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
@@ -34,7 +39,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
       description:
         "Search vault entries by name/url/description (e.g. 'facebook') across the agent's organization. " +
         'Returns candidates (id, vaultId, name, url, description) — metadata only, no secrets. ' +
-        'Pick one and call get_credential with its vaultId+entryId.',
+        'Pick one and call get_credential / exec_with_credential / inject_credential with its vaultId+entryId.',
       inputSchema: z.object({
         query: z.string().min(2).describe('Search term — matched against entry name, url and description (min 2 chars)'),
       }),
@@ -53,7 +58,9 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
     'get_credential',
     {
       description:
-        "Get a credential. If the agent has no grant yet, this requests one (user approves in the panel) and returns access:'pending' — call again shortly. Returns access:'granted' with the decrypted secret once approved.",
+        "Get a credential as PLAINTEXT. WARNING: this places the secret in your context — on a hosted model it leaves the user's machine. " +
+        'Prefer exec_with_credential (runs a command with the secret in its environment) or inject_credential (fills a login form) so the secret never enters your context. ' +
+        "If the agent has no grant yet, this requests one (user approves in the panel) and returns access:'pending' — call again shortly.",
       inputSchema: z.object({
         vaultId: z.string().describe('Vault ID'),
         entryId: z.string().describe('Entry ID'),
@@ -62,21 +69,129 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
     },
     async ({ vaultId, entryId, reason }) => {
       try {
-        const result = await getCredential(config, keypair, vaultId, entryId, reason?.trim());
+        const result = await getCredential(config, keypair, vaultId, entryId, { reason: reason?.trim(), method: 'get' });
         if (result.access === 'granted') {
           const secret = await decryptCredential(result, keypair);
           return ok(JSON.stringify(
-            { access: 'granted', entryId: result.entryId, label: result.label, secret },
+            { access: 'granted', entryId: result.entryId, label: result.label, secret, warning: GET_EXPOSURE_WARNING },
             null,
             2,
           ));
         }
-        // pending / denied / revoked / expired / consumed / unavailable / blocked:
-        // return the discriminated status as-is (no secret).
-        return ok(JSON.stringify(result, null, 2));
+        const grantId = result.access === 'pending' ? result.grantId : undefined;
+        return ok(JSON.stringify({ access: result.access, message: accessMessage(result.access, 'get', grantId) }, null, 2));
       } catch (err) {
         return fail(errorMessage(err));
       }
     }
   );
+
+  server.registerTool(
+    'exec_with_credential',
+    {
+      description:
+        'Run a shell command with the credential injected as environment variables (CLAW_SECRET, CLAW_USERNAME, CLAW_PASSWORD, CLAW_<FIELD>). ' +
+        'The secret is NOT returned to you — only the command output (with the secret masked) and exit code. ' +
+        'Use this instead of get_credential whenever the secret is only needed to authenticate a command (curl, psql, git, …).',
+      inputSchema: z.object({
+        vaultId: z.string().describe('Vault ID'),
+        entryId: z.string().describe('Entry ID'),
+        command: z.array(z.string()).min(1).describe('Command and args, e.g. ["curl","-u","$CLAW_USERNAME:$CLAW_PASSWORD","https://api…"]'),
+        reason: z.string().optional().describe('Justification shown to the approving user (required when first requesting access)'),
+      }),
+    },
+    async ({ vaultId, entryId, command, reason }) => {
+      const resolved = await resolveForTool(config, keypair, vaultId, entryId, 'exec', reason);
+      if ('error' in resolved) {
+        return fail(resolved.error);
+      }
+      const result = await runExecCapture(command, resolved.secret);
+      return ok(JSON.stringify({ exitCode: result.code, stdout: result.stdout, stderr: result.stderr }, null, 2));
+    }
+  );
+
+  server.registerTool(
+    'inject_credential',
+    {
+      description:
+        "Fill a login form in a browser you control over the Chrome DevTools Protocol. The secret is typed into the page and NEVER returned to you. " +
+        "The page's origin is verified against the entry's bound domain first (anti-phishing) — navigate to the real login page before calling. " +
+        'Launch your browser with --remote-debugging-port and pass its CDP endpoint.',
+      inputSchema: z.object({
+        vaultId: z.string().describe('Vault ID'),
+        entryId: z.string().describe('Entry ID'),
+        cdp: z.string().describe('CDP endpoint of your running browser, e.g. http://localhost:9222'),
+        reason: z.string().optional().describe('Justification shown to the approving user (required when first requesting access)'),
+        pageUrl: z.string().optional().describe('Pick the open page whose URL starts with this prefix (default: first page)'),
+        usernameSelector: z.string().optional().describe('Override CSS selector for the username field'),
+        passwordSelector: z.string().optional().describe('Override CSS selector for the password field'),
+        submitSelector: z.string().optional().describe('Override CSS selector for the submit button'),
+      }),
+    },
+    async ({ vaultId, entryId, cdp, reason, pageUrl, usernameSelector, passwordSelector, submitSelector }) => {
+      const resolved = await resolveForTool(config, keypair, vaultId, entryId, 'inject', reason);
+      if ('error' in resolved) {
+        return fail(resolved.error);
+      }
+      if (!resolved.urlDomain) {
+        return fail('entry has no bound URL — inject is only allowed for entries with a known site (anti-phishing).');
+      }
+
+      let chromium: typeof import('playwright-core').chromium;
+      try {
+        ({ chromium } = await import('playwright-core'));
+      } catch {
+        return fail('inject requires playwright-core (npm i -g playwright-core).');
+      }
+
+      let browser: import('playwright-core').Browser;
+      try {
+        browser = await chromium.connectOverCDP(cdp);
+      } catch (err) {
+        return fail(`could not connect to the browser at ${cdp}: ${(err as Error).message}`);
+      }
+
+      try {
+        const pages = browser.contexts().flatMap((ctx) => ctx.pages());
+        const page = pageUrl ? pages.find((p) => p.url().startsWith(pageUrl)) ?? pages[0] : pages[0];
+        if (!page) {
+          return fail('no open page found in the connected browser.');
+        }
+        const result = await injectCredential(page as unknown as InjectablePage, resolved.secret, {
+          entryDomain: resolved.urlDomain,
+          overrides: { usernameSelector, passwordSelector, submitSelector },
+        });
+        return result.ok
+          ? ok(JSON.stringify({ ok: true, steps: result.steps }, null, 2))
+          : fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})`);
+      } finally {
+        await browser.close();
+      }
+    }
+  );
+}
+
+/**
+ * Shared resolve for the exec/inject tools: returns the parsed secret + trusted domain, or an
+ * `error` string for any non-granted access state (so the tool reports it without throwing).
+ */
+async function resolveForTool(
+  config: AgentConfig,
+  keypair: Keypair,
+  vaultId: string,
+  entryId: string,
+  method: CredentialMethod,
+  reason?: string,
+): Promise<{ secret: ReturnType<typeof parseSecret>; urlDomain: string | null } | { error: string }> {
+  try {
+    const result = await getCredential(config, keypair, vaultId, entryId, { reason: reason?.trim(), method });
+    if (result.access !== 'granted') {
+      const grantId = result.access === 'pending' ? result.grantId : undefined;
+      return { error: accessMessage(result.access, method, grantId) };
+    }
+    const plaintext = await decryptCredential(result, keypair);
+    return { secret: parseSecret(plaintext), urlDomain: result.urlDomain };
+  } catch (err) {
+    return { error: errorMessage(err) };
+  }
 }

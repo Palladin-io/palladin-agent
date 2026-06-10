@@ -1,13 +1,17 @@
 import { Command } from 'commander';
 import { loadConfig } from '../config/config.js';
-import { loadKeypair } from '../crypto/keypair.js';
+import { loadKeypair, Keypair } from '../crypto/keypair.js';
 import { ProfilePaths } from '../config/paths.js';
 import {
   AgentApiError,
   searchEntries,
   getCredential,
+  CredentialMethod,
 } from '../http/agent-api.js';
 import { decryptCredential } from '../crypto/decrypt.js';
+import { parseSecret } from '../crypto/secret.js';
+import { accessMessage, GET_EXPOSURE_WARNING } from '../credential/access.js';
+import { runExec } from '../exec/run-exec.js';
 
 type GetProfile = () => { name: string; paths: ProfilePaths };
 
@@ -70,43 +74,104 @@ export function searchCommand(getProfile: GetProfile): Command {
 /**
  * claw-vault get <vaultId> <entryId> [--reason <reason>]   (alias: retrieve)
  *
- * One call for the whole flow. On first use (no grant yet) the server creates a
- * pending grant and returns access:"pending"; call again once the user approves
- * to get access:"granted" with the secret decrypted locally.
+ * Returns the decrypted secret as plaintext on stdout. This puts the secret in the agent's context;
+ * prefer `exec`/`inject` for hosted LLMs. Requests a grant on first use (method=get).
  */
 export function getCredentialCommand(getProfile: GetProfile): Command {
   return new Command('get')
     .alias('retrieve')
-    .description('Get a credential — requests a grant on first use, returns the decrypted secret once approved')
+    .description('Get a credential as plaintext — requests a grant on first use, returns the secret once approved')
     .argument('<vaultId>', 'vault ID')
     .argument('<entryId>', 'entry ID')
     .option('--reason <reason>', 'justification shown to the approving user (required on first request)')
-    .action(async (vaultId: string, entryId: string, opts: { reason?: string }) => {
+    .option('--quiet', 'suppress the LLM-exposure warning')
+    .action(async (vaultId: string, entryId: string, opts: { reason?: string; quiet?: boolean }) => {
       const { config, keypair } = await profileContext(getProfile);
 
       let result;
       try {
-        result = await getCredential(config, keypair, vaultId, entryId, opts.reason?.trim());
+        result = await getCredential(config, keypair, vaultId, entryId, {
+          reason: opts.reason?.trim(),
+          method: 'get',
+        });
       } catch (err) {
         fail(describe(err));
       }
 
-      switch (result.access) {
-        case 'granted': {
-          const secret = await decryptCredential(result, keypair);
-          // Intentional plaintext output: this is the requested result for the user.
-          console.log(JSON.stringify({ entryId: result.entryId, label: result.label, secret }, null, 2));
-          return;
+      if (result.access === 'granted') {
+        const secret = await decryptCredential(result, keypair);
+        // Intentional plaintext output: this is the requested result for the user.
+        console.log(JSON.stringify({ entryId: result.entryId, label: result.label, secret }, null, 2));
+        if (!opts.quiet) {
+          console.error(GET_EXPOSURE_WARNING);
         }
-        case 'pending':
-          if (result.created) {
-            console.log(`No access yet — access requested (grant ${result.grantId}), awaiting approval. Try again shortly.`);
-          } else {
-            console.log(`Access request is pending approval (grant ${result.grantId}). Try again shortly.`);
-          }
-          return;
-        default:
-          fail(`No access: ${result.access}`);
+        return;
       }
+
+      const grantId = result.access === 'pending' ? result.grantId : undefined;
+      const message = accessMessage(result.access, 'get', grantId);
+      // Pending is an expected intermediate state, not a failure.
+      if (result.access === 'pending') {
+        console.log(message);
+        return;
+      }
+      fail(message);
     });
 }
+
+/**
+ * claw-vault exec <vaultId> <entryId> -- <command> [args...]
+ *
+ * Fetches the credential with method=exec and runs the command with the secret injected as
+ * environment variables (CLAW_SECRET / CLAW_USERNAME / CLAW_PASSWORD / CLAW_<FIELD>). The plaintext
+ * never reaches the agent's stdout — only the subprocess's output (with the secret masked) does.
+ */
+export function execCommand(getProfile: GetProfile): Command {
+  return new Command('exec')
+    .description('Run a command with the credential injected as env vars — the secret never enters the agent context')
+    .argument('<vaultId>', 'vault ID')
+    .argument('<entryId>', 'entry ID')
+    .argument('<command...>', 'command and args to run (use -- to separate, e.g. exec V E -- curl -u $CLAW_USERNAME:$CLAW_PASSWORD ...)')
+    .option('--reason <reason>', 'justification shown to the approving user (required on first request)')
+    .action(async (vaultId: string, entryId: string, command: string[], opts: { reason?: string }) => {
+      if (command.length === 0) {
+        fail('No command given. Usage: claw-vault exec <vaultId> <entryId> -- <command> [args...]');
+      }
+      const { config, keypair } = await profileContext(getProfile);
+
+      const { secret } = await resolveSecret(config, keypair, vaultId, entryId, 'exec', opts.reason);
+      const code = await runExec(command, secret);
+      process.exit(code);
+    });
+}
+
+/**
+ * Shared fetch+decrypt for exec/inject: resolves the grant for `method`, surfaces every non-granted
+ * state as a clear error, and returns the parsed plaintext plus the entry's trusted bound domain
+ * (for inject's origin gate). The plaintext is held only in memory.
+ */
+async function resolveSecret(
+  config: Parameters<typeof getCredential>[0],
+  keypair: Keypair,
+  vaultId: string,
+  entryId: string,
+  method: CredentialMethod,
+  reason?: string,
+) {
+  let result;
+  try {
+    result = await getCredential(config, keypair, vaultId, entryId, { reason: reason?.trim(), method });
+  } catch (err) {
+    fail(describe(err));
+  }
+
+  if (result.access !== 'granted') {
+    const grantId = result.access === 'pending' ? result.grantId : undefined;
+    fail(accessMessage(result.access, method, grantId));
+  }
+
+  const plaintext = await decryptCredential(result, keypair);
+  return { secret: parseSecret(plaintext), urlDomain: result.urlDomain, label: result.label };
+}
+
+export { resolveSecret };

@@ -79,7 +79,7 @@ describe('getCredential', () => {
     const fetchSpy = mockFetch(202, { access: 'pending', grantId: 'g1', created: true })
     vi.stubGlobal('fetch', fetchSpy)
 
-    await getCredential(config, keypair, 'v1', 'e1', 'login to post')
+    await getCredential(config, keypair, 'v1', 'e1', { reason: 'login to post' })
 
     const url = fetchSpy.mock.calls[0]![0] as string
     expect(url).toBe('http://localhost:5000/api/agent/vaults/v1/entries/e1/credential')
@@ -110,7 +110,7 @@ describe('getCredential', () => {
   it('parses pending on 202 with created flag', async () => {
     vi.stubGlobal('fetch', mockFetch(202, { access: 'pending', grantId: 'g1', created: true }))
 
-    const result = await getCredential(config, keypair, 'v1', 'e1', 'r')
+    const result = await getCredential(config, keypair, 'v1', 'e1', { reason: 'r' })
 
     expect(result).toEqual({ access: 'pending', grantId: 'g1', created: true })
   })
