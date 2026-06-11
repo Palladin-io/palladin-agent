@@ -2,6 +2,7 @@ import { parseHTML } from 'linkedom';
 import { ParsedSecret } from '../crypto/secret.js';
 import { checkOrigin } from './origin-check.js';
 import { detectLoginFields, DetectedFields, SelectorOverrides } from './field-detection.js';
+import { classifyInjectOutcome, InjectOutcome } from './outcome.js';
 
 // Structural subset of the Playwright Page we use — keeps this module testable with a fake page and
 // avoids a hard compile-time dependency on playwright-core's types at every call site.
@@ -24,7 +25,18 @@ export interface InjectOptions {
 }
 
 export type InjectResult =
-  | { ok: true; steps: string[] }
+  | {
+      ok: true;
+      steps: string[];
+      /**
+       * Best-effort observation of the post-submit auth outcome (CVT-151 follow-up). `succeeded` /
+       * `rejected` are HINTS, not guarantees; `unknown` is the honest default (and is used whenever
+       * we did not submit). The agent makes the final call from its own browser/task result. A
+       * `rejected` outcome means the form was driven correctly but the credential was likely refused
+       * — NOT a heuristic miss, so it is not reported as one.
+       */
+      outcome: InjectOutcome;
+    }
   | {
       ok: false;
       reason: string;
@@ -39,6 +51,8 @@ export type InjectResult =
 
 const DEFAULT_PASSWORD_STEP_TIMEOUT = 8000;
 const POLL_INTERVAL = 400;
+// How long to let the page settle after the final submit before observing the outcome.
+const OUTCOME_SETTLE_MS = 1500;
 
 /**
  * Fill (and optionally submit) the login form on `page` with `secret` (CVT-151).
@@ -84,29 +98,50 @@ export async function injectCredential(
     return fail('no login form detected on the current page');
   }
 
+  // After a final submit, observe (best-effort) whether the credential was accepted. Honest default
+  // is `unknown`; only navigation-away or an ARIA error cue move it off that. Never blocks success.
+  const observe = async (preUrl: string): Promise<InjectResult> => {
+    try {
+      await page.waitForTimeout(OUTCOME_SETTLE_MS);
+      const outcome = classifyInjectOutcome({ preUrl, postUrl: page.url(), postHtml: await page.content() });
+      if (outcome === 'rejected') {
+        steps.push('post-submit: credential appears rejected');
+      } else if (outcome === 'succeeded') {
+        steps.push('post-submit: navigated away (login likely succeeded)');
+      }
+      return { ok: true, steps, outcome };
+    } catch {
+      return { ok: true, steps, outcome: 'unknown' };
+    }
+  };
+
   // Combined form: fill both, submit once.
   if (fields.step === 'combined') {
     await fillUsername(page, fields, secret, steps);
     await fillPassword(page, fields, secret, steps);
-    if (submit) {
-      await clickSubmit(page, fields, steps);
+    if (!submit) {
+      return { ok: true, steps, outcome: 'unknown' };
     }
-    return { ok: true, steps };
+    const preUrl = page.url();
+    await clickSubmit(page, fields, steps);
+    return observe(preUrl);
   }
 
   // Password-only view (username already entered elsewhere, or a re-auth page).
   if (fields.step === 'password-step') {
     await fillPassword(page, fields, secret, steps);
-    if (submit) {
-      await clickSubmit(page, fields, steps);
+    if (!submit) {
+      return { ok: true, steps, outcome: 'unknown' };
     }
-    return { ok: true, steps };
+    const preUrl = page.url();
+    await clickSubmit(page, fields, steps);
+    return observe(preUrl);
   }
 
   // Username-step view: fill username, submit, wait for the password view, then fill it.
   await fillUsername(page, fields, secret, steps);
   if (!submit) {
-    return { ok: true, steps };
+    return { ok: true, steps, outcome: 'unknown' };
   }
   await clickSubmit(page, fields, steps);
 
@@ -127,8 +162,9 @@ export async function injectCredential(
     return fail('password field not detected on the second step');
   }
   await fillPassword(page, fields, secret, steps);
+  const preUrl = page.url();
   await clickSubmit(page, fields, steps);
-  return { ok: true, steps };
+  return observe(preUrl);
 }
 
 async function detect(page: InjectablePage, overrides?: SelectorOverrides): Promise<DetectedFields> {

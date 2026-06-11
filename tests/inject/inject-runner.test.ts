@@ -10,6 +10,8 @@ interface FakeOptions {
   url: string;
   /** Sequence of HTML views returned by content() on each call (multi-step). */
   views: string[];
+  /** Post-final-submit page state, for outcome classification. */
+  afterSubmit?: { url?: string; view?: string };
 }
 
 class FakePage implements InjectablePage {
@@ -37,9 +39,15 @@ class FakePage implements InjectablePage {
 
   async click(selector: string): Promise<void> {
     this.clicks.push(selector);
-    // Advance to the next view, modelling the password step appearing after submit.
     if (this.viewIndex < this.opts.views.length - 1) {
+      // Advance to the next view, modelling the password step appearing after submit.
       this.viewIndex += 1;
+    } else if (this.opts.afterSubmit) {
+      // Final submit — model the post-submit page (navigation and/or a new view) so outcome
+      // observation has something to classify.
+      if (this.opts.afterSubmit.url) this.currentUrl = this.opts.afterSubmit.url;
+      if (this.opts.afterSubmit.view) this.opts.views = [this.opts.afterSubmit.view];
+      this.viewIndex = 0;
     }
   }
 
@@ -73,6 +81,43 @@ describe('injectCredential', () => {
     expect(page.filled['#email']).toBe('alice');
     expect(page.filled['#password']).toBe('pw');
     expect(page.clicks).toContain('#go');
+  });
+
+  it('reports outcome "succeeded" when the page navigates away with no password field', async () => {
+    const page = new FakePage({
+      url: 'https://github.com/login',
+      views: [COMBINED],
+      afterSubmit: { url: 'https://github.com/dashboard', view: '<main>Welcome back</main>' },
+    });
+    const result = await injectCredential(page, credential('alice', 'pw'), { entryDomain: 'github.com' });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.outcome).toBe('succeeded');
+  });
+
+  it('reports outcome "rejected" when an ARIA error appears after submit (wrong password)', async () => {
+    const page = new FakePage({
+      url: 'https://github.com/login',
+      views: [COMBINED],
+      afterSubmit: { view: `<form><input type="password" id="password"><div role="alert">Incorrect password</div></form>` },
+    });
+    const result = await injectCredential(page, credential('alice', 'wrong'), { entryDomain: 'github.com' });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.outcome).toBe('rejected');
+  });
+
+  it('reports outcome "unknown" when there is no clear post-submit signal', async () => {
+    const page = new FakePage({ url: 'https://github.com/login', views: [COMBINED] });
+    const result = await injectCredential(page, credential('alice', 'pw'), { entryDomain: 'github.com' });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.outcome).toBe('unknown');
+  });
+
+  it('outcome is "unknown" when not submitting (submit:false)', async () => {
+    const page = new FakePage({ url: 'https://github.com/login', views: [COMBINED] });
+    const result = await injectCredential(page, credential('alice', 'pw'), { entryDomain: 'github.com', submit: false });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.outcome).toBe('unknown');
+    expect(page.clicks).toEqual([]);
   });
 
   it('refuses to type on an origin mismatch (phishing) and fills nothing', async () => {

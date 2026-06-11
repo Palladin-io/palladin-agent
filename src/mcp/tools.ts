@@ -164,7 +164,10 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
           overrides: { usernameSelector, passwordSelector, submitSelector },
         });
         if (result.ok) {
-          return ok(JSON.stringify({ ok: true, steps: result.steps }, null, 2));
+          // `outcome` is a best-effort hint (succeeded/rejected/unknown) — the agent confirms from
+          // its own browser. `rejected` means the form was driven fine but the credential was
+          // likely refused (stale password), NOT a heuristic miss.
+          return ok(JSON.stringify({ ok: true, steps: result.steps, outcome: result.outcome }, null, 2));
         }
         if (result.diagnostic) {
           const report = buildFailureReport({

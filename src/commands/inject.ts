@@ -123,6 +123,18 @@ export function injectCommand(getProfile: GetProfile): Command {
           fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})`);
         }
         console.log(`Injected into ${label}: ${result.steps.join(' → ')}`);
+        // Honest, best-effort signal — the agent makes the final call from its own browser.
+        if (result.outcome === 'rejected') {
+          console.error(
+            'Warning: the credential appears to have been rejected (wrong password / sign-in error). ' +
+            'The stored credential may be stale — verify in your browser.',
+          );
+        } else if (result.outcome === 'unknown') {
+          console.error(
+            'Note: could not confirm the login outcome (no clear success/error signal — possible 2FA, ' +
+            'captcha, or a slow page). Check your browser to confirm.',
+          );
+        }
       } finally {
         await browser.close();
       }
