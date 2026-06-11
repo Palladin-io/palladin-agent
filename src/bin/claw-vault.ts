@@ -9,6 +9,7 @@ import { agentsCommand } from '../commands/agents.js';
 import { securityCommand } from '../commands/security.js';
 import { searchCommand, getCredentialCommand, execCommand } from '../commands/credentials.js';
 import { injectCommand } from '../commands/inject.js';
+import { injectFailuresCommand } from '../commands/inject-failures.js';
 import { mcpServeCommand } from '../mcp/server.js';
 
 const program = new Command();
@@ -36,6 +37,7 @@ program.addCommand(searchCommand(getProfile));
 program.addCommand(getCredentialCommand(getProfile));
 program.addCommand(execCommand(getProfile));
 program.addCommand(injectCommand(getProfile));
+program.addCommand(injectFailuresCommand());
 program.addCommand(mcpServeCommand(getProfile));
 
 program.parse();
