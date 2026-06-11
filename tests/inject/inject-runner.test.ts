@@ -109,12 +109,24 @@ describe('injectCredential', () => {
     expect(page.filled['#password']).toBe('pw');
   });
 
-  it('fails clearly when no login form is present', async () => {
+  it('fails clearly when no login form is present, and attaches a diagnostic snapshot', async () => {
     const page = new FakePage({ url: 'https://github.com/', views: ['<div>nothing here</div>'] });
     const result = await injectCredential(page, credential('alice', 'pw'), { entryDomain: 'github.com' });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain('no login form');
+      // The diagnostic carries the page HTML+URL so the caller can persist a redacted report.
+      expect(result.diagnostic).toBeDefined();
+      expect(result.diagnostic!.url).toBe('https://github.com/');
+    }
+  });
+
+  it('attaches a diagnostic even on an origin mismatch (so misses are captured)', async () => {
+    const page = new FakePage({ url: 'https://github.com.evil.tld/login', views: [COMBINED] });
+    const result = await injectCredential(page, credential('alice', 'pw'), { entryDomain: 'github.com' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.diagnostic).toBeDefined();
     }
   });
 

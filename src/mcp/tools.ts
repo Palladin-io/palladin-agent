@@ -13,6 +13,7 @@ import { parseSecret } from '../crypto/secret.js';
 import { accessMessage, GET_EXPOSURE_WARNING } from '../credential/access.js';
 import { runExecCapture } from '../exec/run-exec.js';
 import { injectCredential, InjectablePage } from '../inject/inject-runner.js';
+import { buildFailureReport, writeFailureReport } from '../inject/failure-report.js';
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
@@ -161,9 +162,21 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
           entryDomain: resolved.urlDomain,
           overrides: { usernameSelector, passwordSelector, submitSelector },
         });
-        return result.ok
-          ? ok(JSON.stringify({ ok: true, steps: result.steps }, null, 2))
-          : fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})`);
+        if (result.ok) {
+          return ok(JSON.stringify({ ok: true, steps: result.steps }, null, 2));
+        }
+        if (result.diagnostic) {
+          writeFailureReport(buildFailureReport({
+            reason: result.reason,
+            steps: result.steps,
+            vaultId,
+            entryId,
+            entryDomain: resolved.urlDomain,
+            pageUrl: result.diagnostic.url,
+            html: result.diagnostic.html,
+          }));
+        }
+        return fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})`);
       } finally {
         await browser.close();
       }

@@ -4,6 +4,7 @@ import { loadKeypair } from '../crypto/keypair.js';
 import { ProfilePaths } from '../config/paths.js';
 import { SelectorOverrides } from '../inject/field-detection.js';
 import { injectCredential, InjectablePage } from '../inject/inject-runner.js';
+import { buildFailureReport, writeFailureReport } from '../inject/failure-report.js';
 import { resolveSecret } from './credentials.js';
 
 type GetProfile = () => { name: string; paths: ProfilePaths };
@@ -88,7 +89,22 @@ export function injectCommand(getProfile: GetProfile): Command {
         });
 
         if (!result.ok) {
-          fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})`);
+          // Persist a redacted, value-free snapshot so a real-world miss can improve the heuristic
+          // later. Best-effort: never blocks the error the user sees.
+          let savedTo: string | null = null;
+          if (result.diagnostic) {
+            savedTo = writeFailureReport(buildFailureReport({
+              reason: result.reason,
+              steps: result.steps,
+              vaultId,
+              entryId,
+              entryDomain: urlDomain,
+              pageUrl: result.diagnostic.url,
+              html: result.diagnostic.html,
+            }));
+          }
+          const note = savedTo ? ` (diagnostic saved to ${savedTo})` : '';
+          fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})${note}`);
         }
         console.log(`Injected into ${label}: ${result.steps.join(' → ')}`);
       } finally {

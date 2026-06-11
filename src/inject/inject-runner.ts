@@ -25,7 +25,17 @@ export interface InjectOptions {
 
 export type InjectResult =
   | { ok: true; steps: string[] }
-  | { ok: false; reason: string; steps: string[] };
+  | {
+      ok: false;
+      reason: string;
+      steps: string[];
+      /**
+       * The page HTML at failure time and its URL, so the caller can persist a redacted, value-free
+       * diagnostic (CVT-151 follow-up). Omitted only when failure happened before any page read
+       * (e.g. origin mismatch — we still pass it so misses are captured). Never contains secrets.
+       */
+      diagnostic?: { html: string; url: string };
+    };
 
 const DEFAULT_PASSWORD_STEP_TIMEOUT = 8000;
 const POLL_INTERVAL = 400;
@@ -49,16 +59,29 @@ export async function injectCredential(
   const steps: string[] = [];
   const submit = options.submit ?? true;
 
+  // Build a failure result with a structural (value-free) diagnostic snapshot of the current page,
+  // so the caller can persist it for offline heuristic improvement. Reading content() must never
+  // break the failure path, so it is best-effort.
+  const fail = async (reason: string): Promise<InjectResult> => {
+    let diagnostic: { html: string; url: string } | undefined;
+    try {
+      diagnostic = { html: await page.content(), url: page.url() };
+    } catch {
+      diagnostic = undefined;
+    }
+    return { ok: false, reason, steps, diagnostic };
+  };
+
   const origin = checkOrigin(page.url(), options.entryDomain);
   if (!origin.ok) {
-    return { ok: false, reason: origin.reason, steps };
+    return fail(origin.reason);
   }
   steps.push(`origin verified: ${origin.registrableDomain}`);
 
   let fields = await detect(page, options.overrides);
 
   if (fields.step === 'none') {
-    return { ok: false, reason: 'no login form detected on the current page', steps };
+    return fail('no login form detected on the current page');
   }
 
   // Combined form: fill both, submit once.
@@ -89,19 +112,19 @@ export async function injectCredential(
 
   const appeared = await waitForPasswordStep(page, options.passwordStepTimeoutMs ?? DEFAULT_PASSWORD_STEP_TIMEOUT);
   if (!appeared) {
-    return { ok: false, reason: 'submitted the identifier but the password field never appeared', steps };
+    return fail('submitted the identifier but the password field never appeared');
   }
   steps.push('password step appeared');
 
   // Re-verify origin after the navigation/transition — the password view could be a different page.
   const postNav = checkOrigin(page.url(), options.entryDomain);
   if (!postNav.ok) {
-    return { ok: false, reason: `after the username step the origin changed: ${postNav.reason}`, steps };
+    return fail(`after the username step the origin changed: ${postNav.reason}`);
   }
 
   fields = await detect(page, options.overrides);
   if (!fields.passwordSelector) {
-    return { ok: false, reason: 'password field not detected on the second step', steps };
+    return fail('password field not detected on the second step');
   }
   await fillPassword(page, fields, secret, steps);
   await clickSubmit(page, fields, steps);
