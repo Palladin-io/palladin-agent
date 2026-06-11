@@ -5,6 +5,7 @@ import { ProfilePaths } from '../config/paths.js';
 import { SelectorOverrides } from '../inject/field-detection.js';
 import { injectCredential, InjectablePage } from '../inject/inject-runner.js';
 import { buildFailureReport, writeFailureReport } from '../inject/failure-report.js';
+import { uploadInjectFailure } from '../http/agent-api.js';
 import { resolveSecret } from './credentials.js';
 
 type GetProfile = () => { name: string; paths: ProfilePaths };
@@ -97,11 +98,11 @@ export function injectCommand(getProfile: GetProfile): Command {
         });
 
         if (!result.ok) {
-          // Persist a redacted, value-free snapshot so a real-world miss can improve the heuristic
-          // later. Best-effort: never blocks the error the user sees.
-          let savedTo: string | null = null;
+          // Capture a redacted, value-free snapshot so a real-world miss can improve site support.
+          // Best-effort, two-pronged: upload to the backend (near-real-time team visibility, CVT-155)
+          // AND keep a local JSONL copy as the offline fallback. Neither blocks the user's error.
           if (result.diagnostic) {
-            savedTo = writeFailureReport(buildFailureReport({
+            const report = buildFailureReport({
               reason: result.reason,
               steps: result.steps,
               vaultId,
@@ -109,10 +110,17 @@ export function injectCommand(getProfile: GetProfile): Command {
               entryDomain: urlDomain,
               pageUrl: result.diagnostic.url,
               html: result.diagnostic.html,
-            }));
+            });
+            writeFailureReport(report);
+            await uploadInjectFailure(config, keypair, {
+              entryId,
+              domain: report.entryDomain,
+              reason: report.reason,
+              pageOrigin: report.pageOrigin,
+              controls: report.controls,
+            });
           }
-          const note = savedTo ? ` (diagnostic saved to ${savedTo})` : '';
-          fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})${note}`);
+          fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})`);
         }
         console.log(`Injected into ${label}: ${result.steps.join(' → ')}`);
       } finally {

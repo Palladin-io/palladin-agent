@@ -91,6 +91,42 @@ export async function searchEntries(
   return await res.json() as EntrySearchResult;
 }
 
+// ── Inject failure telemetry (CVT-155) ───────────────────────────────────────
+// Reports a REDACTED inject diagnostic to the backend so the team sees unsupported
+// sites in near-real-time. Carries no field values, no secret, only the origin.
+
+export interface InjectFailureUpload {
+  entryId: string;
+  domain: string | null;
+  reason: string;
+  pageOrigin: string | null;
+  controls: unknown[];
+}
+
+/**
+ * Best-effort upload of a redacted inject-failure report. Never throws — telemetry must not break
+ * the command, and the local JSONL copy is the offline fallback. Returns true when the backend
+ * accepted it. Disabled by CLAW_VAULT_NO_DIAGNOSTICS=1.
+ */
+export async function uploadInjectFailure(
+  config: AgentConfig,
+  keypair: Keypair,
+  body: InjectFailureUpload,
+): Promise<boolean> {
+  if (process.env['CLAW_VAULT_NO_DIAGNOSTICS'] === '1') {
+    return false;
+  }
+  try {
+    const res = await apiFetch('/api/agent/inject-failures', config, keypair, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Raised for any non-success HTTP response so callers can surface a clear message. */
 export class AgentApiError extends Error {
   constructor(public readonly status: number, message: string) {

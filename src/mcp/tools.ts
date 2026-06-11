@@ -6,6 +6,7 @@ import {
   AgentApiError,
   searchEntries,
   getCredential,
+  uploadInjectFailure,
   CredentialMethod,
 } from '../http/agent-api.js';
 import { decryptCredential } from '../crypto/decrypt.js';
@@ -166,7 +167,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
           return ok(JSON.stringify({ ok: true, steps: result.steps }, null, 2));
         }
         if (result.diagnostic) {
-          writeFailureReport(buildFailureReport({
+          const report = buildFailureReport({
             reason: result.reason,
             steps: result.steps,
             vaultId,
@@ -174,7 +175,15 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
             entryDomain: resolved.urlDomain,
             pageUrl: result.diagnostic.url,
             html: result.diagnostic.html,
-          }));
+          });
+          writeFailureReport(report);
+          await uploadInjectFailure(config, keypair, {
+            entryId,
+            domain: report.entryDomain,
+            reason: report.reason,
+            pageOrigin: report.pageOrigin,
+            controls: report.controls,
+          });
         }
         return fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})`);
       } finally {
