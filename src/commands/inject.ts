@@ -66,8 +66,16 @@ export function injectCommand(getProfile: GetProfile): Command {
         fail('inject requires playwright-core. Install it: npm i -g playwright-core');
       }
 
+      // inject drives the browser over the Chrome DevTools Protocol, so the agent's browser must be
+      // Chromium-family (Chrome, Edge, Brave, Chromium, Arc, Opera) launched with
+      // --remote-debugging-port. Firefox (Juggler) and WebKit/Safari do not expose CDP and are not
+      // supported by this path.
       const browser = await chromium.connectOverCDP(opts.cdp).catch((err) => {
-        fail(`could not connect to the browser at ${opts.cdp}: ${err.message}`);
+        fail(
+          `could not connect over CDP at ${opts.cdp}: ${err.message}. ` +
+          'inject requires a Chromium-based browser (Chrome/Edge/Brave/Chromium) started with ' +
+          '--remote-debugging-port. Firefox and Safari are not supported.',
+        );
       });
 
       try {

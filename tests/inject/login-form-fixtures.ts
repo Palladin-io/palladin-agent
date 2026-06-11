@@ -206,6 +206,51 @@ const services: LoginFixture[] = [
   { name: 'iCloud', domain: 'icloud.com', html: usernameStepForm({ userId: 'account_name_text_field', userName: 'accountName', userType: 'email', userAutocomplete: 'username', nextText: 'Continue' }), expect: USERNAME_STEP },
 ];
 
+// ── Localisation: detection must not depend on the page's UI language ────────────────────────────
+// The strong signals (name/id code attributes, autocomplete, type=email, button[type=submit]) are
+// language-invariant; these prove a non-English UI is still driven correctly.
+const localized: LoginFixture[] = [
+  {
+    name: 'Facebook in Polish (name=email/pass invariant, button "Zaloguj się")',
+    domain: 'facebook.com',
+    html: `<!doctype html><html lang="pl"><body><form>
+      <input type="text" name="email" id="email" placeholder="Adres e-mail lub numer telefonu">
+      <input type="password" name="pass" id="pass" placeholder="Hasło">
+      <button type="submit">Zaloguj się</button>
+    </form></body></html>`,
+    expect: COMBINED,
+  },
+  {
+    name: 'Google in German — identifier step (autocomplete invariant, button "Weiter")',
+    domain: 'google.com',
+    html: `<!doctype html><html lang="de"><body><form>
+      <input type="email" name="identifier" id="identifierId" autocomplete="username" placeholder="E-Mail oder Telefonnummer">
+      <button type="submit">Weiter</button>
+    </form></body></html>`,
+    expect: USERNAME_STEP,
+  },
+  {
+    name: 'Spanish form — only localised aria-label, no code attrs (fallback-tier)',
+    domain: 'example.es',
+    html: `<!doctype html><html lang="es"><body><form>
+      <input type="text" aria-label="Correo electrónico o teléfono">
+      <input type="password" aria-label="Contraseña">
+      <button type="submit">Iniciar sesión</button>
+    </form></body></html>`,
+    expect: COMBINED,
+  },
+  {
+    name: 'Japanese form — submit button without type, text "ログイン"',
+    domain: 'example.jp',
+    html: `<!doctype html><html lang="ja"><body><form>
+      <input type="email" name="email" autocomplete="username">
+      <input type="password" name="password" autocomplete="current-password">
+      <button>ログイン</button>
+    </form></body></html>`,
+    expect: COMBINED,
+  },
+];
+
 // ── Real-world edge cases the heuristic must survive ─────────────────────────────────────────────
 const edgeCases: LoginFixture[] = [
   {
@@ -255,4 +300,4 @@ const edgeCases: LoginFixture[] = [
   },
 ];
 
-export const LOGIN_FIXTURES: LoginFixture[] = [...services, ...edgeCases];
+export const LOGIN_FIXTURES: LoginFixture[] = [...services, ...localized, ...edgeCases];

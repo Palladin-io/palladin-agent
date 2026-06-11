@@ -42,16 +42,38 @@ interface DocumentLike {
 
 const USERNAME_AUTOCOMPLETE = ['username', 'email'];
 // Token patterns matched against name/id/placeholder/aria-label of a candidate text/email input.
+// NOTE on localisation: the strong detection signals (autocomplete, input[type=email], and the
+// name/id attributes — which are developer code, not UI text) are language-INVARIANT, so this token
+// list only matters as a fallback when a field exposes ONLY a localised placeholder/aria-label. The
+// English tokens cover the code-attribute case; the extra-language tokens widen the placeholder/
+// aria-label fallback for the biggest locales. Real misses are recorded by the failure-capture
+// (with the localised strings) so this list can be extended deliberately rather than by guesswork.
 const USERNAME_TOKENS = [
+  // English / code attributes (the common case, language-independent in practice)
   'email', 'e-mail', 'username', 'user-name', 'userid', 'user-id', 'user', 'login',
   'loginid', 'login-id', 'account', 'identifier', 'ident', 'phone', 'mobile', 'msisdn',
+  // Localised placeholder/aria-label fallbacks (major locales)
+  'correo', 'courriel', 'correo-electrónico', 'correo electrónico', // es / fr
+  'usuario', 'utilisateur', 'benutzer', 'benutzername', // es / fr / de
+  'identifiant', 'anmeldung', 'konto', 'cuenta', 'compte', // fr / de / es
+  'teléfono', 'telefon', 'téléphone', 'móvil', 'handy', 'numer', 'numéro', // phone, various
+  'e-poczta', 'poczta', 'użytkownik', 'login-użytkownika', // pl
 ];
 // Tokens that disqualify a text input from being the username (search boxes, OTP, etc.).
-const USERNAME_NEGATIVE_TOKENS = ['search', 'query', 'otp', 'code', 'token', 'captcha', 'coupon', 'promo', 'zip', 'postal'];
+const USERNAME_NEGATIVE_TOKENS = ['search', 'query', 'suche', 'recherche', 'buscar', 'szukaj', 'otp', 'code', 'token', 'captcha', 'coupon', 'promo', 'zip', 'postal'];
 
+// Submit detection prefers button[type=submit]/input[type=submit] (language-invariant) FIRST; this
+// token list is only a fallback for buttons without an explicit submit type. Hence the multi-locale
+// verbs — but most real forms never reach this branch.
 const SUBMIT_TOKENS = [
-  'login', 'log-in', 'signin', 'sign-in', 'submit', 'continue', 'next', 'connexion',
-  'anmelden', 'einloggen', 'entrar', 'iniciar', 'accedi', 'continuar', 'weiter',
+  'login', 'log-in', 'signin', 'sign-in', 'submit', 'continue', 'next',
+  'connexion', 'connecter', 'suivant', // fr
+  'anmelden', 'einloggen', 'weiter', // de
+  'entrar', 'iniciar', 'continuar', 'siguiente', 'acceder', // es
+  'accedi', 'avanti', // it
+  'zaloguj', 'dalej', 'kontynuuj', // pl
+  'войти', 'продолжить', // ru
+  'ログイン', '次へ', // ja
 ];
 
 function attrs(el: ElementLike): string {
