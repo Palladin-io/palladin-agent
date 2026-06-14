@@ -62,7 +62,13 @@ function readReports(dir: string): InjectFailureReport[] {
   }
   const reports: InjectFailureReport[] = [];
   for (const file of files) {
-    const content = readFileSync(join(dir, file), 'utf8');
+    let content: string;
+    try {
+      content = readFileSync(join(dir, file), 'utf8');
+    } catch {
+      // A file rotated/removed mid-loop or unreadable (EACCES) — skip it, don't abort the report.
+      continue;
+    }
     for (const line of content.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
