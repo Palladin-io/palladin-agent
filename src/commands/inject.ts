@@ -7,6 +7,8 @@ import { injectCredential, InjectablePage } from '../inject/inject-runner.js';
 import { buildFailureReport, writeFailureReport } from '../inject/failure-report.js';
 import { uploadInjectFailure } from '../http/agent-api.js';
 import { resolveSecret } from './credentials.js';
+import { addWaitOptions, parseWaitCli, RawWaitOpts } from '../credential/wait-options.js';
+import { exitCodeForAccess } from '../credential/exit-codes.js';
 
 type GetProfile = () => { name: string; paths: ProfilePaths };
 
@@ -28,7 +30,7 @@ function fail(message: string): never {
  * and pass --cdp http://localhost:9222 (or the ws:// endpoint).
  */
 export function injectCommand(getProfile: GetProfile): Command {
-  return new Command('inject')
+  const cmd = new Command('inject')
     .description("Fill a login form in the agent's browser (over CDP) — the secret never enters the agent context")
     .argument('<vaultId>', 'vault ID')
     .argument('<entryId>', 'entry ID')
@@ -38,8 +40,9 @@ export function injectCommand(getProfile: GetProfile): Command {
     .option('--password-selector <css>', 'override: CSS selector for the password field')
     .option('--submit-selector <css>', 'override: CSS selector for the submit button')
     .option('--no-submit', 'fill the form but do not submit')
-    .option('--page-url <url>', 'pick the open page whose URL starts with this prefix (default: first page)')
-    .action(async (vaultId: string, entryId: string, opts: {
+    .option('--page-url <url>', 'pick the open page whose URL starts with this prefix (default: first page)');
+  addWaitOptions(cmd);
+  return cmd.action(async (vaultId: string, entryId: string, opts: {
       cdp: string;
       reason?: string;
       usernameSelector?: string;
@@ -47,12 +50,17 @@ export function injectCommand(getProfile: GetProfile): Command {
       submitSelector?: string;
       submit?: boolean;
       pageUrl?: string;
-    }) => {
+    } & RawWaitOpts) => {
       const { name, paths } = getProfile();
       const config = loadConfig(paths);
       const keypair = await loadKeypair(name, paths);
 
-      const { secret, urlDomain, label } = await resolveSecret(config, keypair, vaultId, entryId, 'inject', opts.reason);
+      const resolved = await resolveSecret(config, keypair, vaultId, entryId, 'inject', opts.reason, parseWaitCli(opts));
+      if (!resolved.ok) {
+        console.error(`Error: ${resolved.message}`);
+        process.exit(exitCodeForAccess(resolved.access));
+      }
+      const { secret, urlDomain, label } = resolved;
 
       if (!urlDomain) {
         fail(`entry "${label}" has no bound URL — inject is only allowed for entries with a known site (anti-phishing).`);

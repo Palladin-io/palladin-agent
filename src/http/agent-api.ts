@@ -151,8 +151,12 @@ export type CredentialAccess =
    * domain — the TRUSTED source for inject's anti-phishing origin check (never the page or agent).
    */
   | ({ access: 'granted'; entryId: string; label: string; urlDomain: string | null } & EncryptedCredential)
-  /** Awaiting user approval. `created` = the grant was just requested by this call. */
-  | { access: 'pending'; grantId: string; created?: boolean }
+  /**
+   * Awaiting user approval. `created` = the grant was just requested by this call. The optional
+   * `pollIntervalMs` / `maxWaitMs` are the org's approval-wait policy (CVT-157) — the CLI uses them
+   * as defaults for its long-poll when no explicit `--wait` / `--poll-interval` flag is given.
+   */
+  | { access: 'pending'; grantId: string; created?: boolean; pollIntervalMs?: number; maxWaitMs?: number }
   /** Terminal "no access" states. */
   | { access: 'denied' }
   | { access: 'revoked' }
