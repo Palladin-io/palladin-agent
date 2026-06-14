@@ -25,10 +25,14 @@ concurrency:
 
 jobs:
   review:
+    # Manual dispatch always runs. Auto PR review is skipped for draft or WIP-titled
+    # PRs (work-in-progress) so the reviewer fires only once the PR is ready.
     if: >
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
-       github.actor != 'github-actions[bot]') ||
-      github.event_name == 'workflow_dispatch'
+       github.actor != 'github-actions[bot]' &&
+       github.event.pull_request.draft == false &&
+       !startsWith(github.event.pull_request.title, 'WIP'))
     name: Claude Code Review
     runs-on: ubuntu-latest
     timeout-minutes: 30
