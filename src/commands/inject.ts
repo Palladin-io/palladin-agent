@@ -4,6 +4,7 @@ import { loadKeypair } from '../crypto/keypair.js';
 import { ProfilePaths } from '../config/paths.js';
 import { SelectorOverrides } from '../inject/field-detection.js';
 import { injectCredential, InjectablePage } from '../inject/inject-runner.js';
+import { checkOrigin } from '../inject/origin-check.js';
 import { buildFailureReport, writeFailureReport } from '../inject/failure-report.js';
 import { uploadInjectFailure } from '../http/agent-api.js';
 import { resolveSecret } from './credentials.js';
@@ -41,6 +42,7 @@ export function injectCommand(getProfile: GetProfile): Command {
     .option('--submit-selector <css>', 'override: CSS selector for the submit button')
     .option('--no-submit', 'fill the form but do not submit')
     .option('--page-url <url>', 'pick the open page whose URL starts with this prefix (default: first page)')
+    .option('--fill-only', 'secure-fill primitive: type the secret into the given --password/--username-selector ONLY (no auto-detection, no submit unless --submit-selector). The agent drives navigation/clicks itself.')
     .option('--verbose', 'log a value-free trace of detection + actions to stderr (debugging)');
   addWaitOptions(cmd);
   return cmd.action(async (vaultId: string, entryId: string, opts: {
@@ -51,6 +53,7 @@ export function injectCommand(getProfile: GetProfile): Command {
       submitSelector?: string;
       submit?: boolean;
       pageUrl?: string;
+      fillOnly?: boolean;
       verbose?: boolean;
     } & RawWaitOpts) => {
       const { name, paths } = getProfile();
@@ -95,13 +98,48 @@ export function injectCommand(getProfile: GetProfile): Command {
           fail('no open page found in the connected browser — open the login page first.');
         }
 
+        // Visible-first adapter: resolve every selector to the first VISIBLE match. SPA login pages
+        // (X / Facebook) render an inert, aria-hidden copy of the form behind the modal, so a raw
+        // selector matches 2+ elements and Playwright's strict mode throws. Scoping to the visible
+        // one fixes that for both --fill-only and auto detection.
+        const injectable = toInjectable(page);
+
+        // --fill-only (CVT-158): the agent has already navigated to the right step (e.g. via the
+        // Playwright MCP) and tells us the visible field selector. We ONLY type the secret — no
+        // auto-detection, no submit unless an explicit --submit-selector is given. The origin gate
+        // still applies; the secret is typed via fill() and never enters the agent context.
+        if (opts.fillOnly) {
+          if (!opts.passwordSelector && !opts.usernameSelector) {
+            fail('--fill-only requires --password-selector and/or --username-selector (the visible field to type into).');
+          }
+          const origin = checkOrigin(injectable.url(), urlDomain);
+          if (!origin.ok) {
+            fail(origin.reason);
+          }
+          const did: string[] = [];
+          if (opts.usernameSelector && secret.username !== null) {
+            await injectable.fill(opts.usernameSelector, secret.username);
+            did.push('username');
+          }
+          if (opts.passwordSelector) {
+            await injectable.fill(opts.passwordSelector, secret.password);
+            did.push('password');
+          }
+          if (opts.submitSelector && opts.submit !== false) {
+            await injectable.click(opts.submitSelector);
+            did.push('submitted');
+          }
+          console.log(`Filled ${label} (fill-only): ${did.join(' → ') || 'nothing'}`);
+          return;
+        }
+
         const overrides: SelectorOverrides = {
           usernameSelector: opts.usernameSelector,
           passwordSelector: opts.passwordSelector,
           submitSelector: opts.submitSelector,
         };
 
-        const result = await injectCredential(page as unknown as InjectablePage, secret, {
+        const result = await injectCredential(injectable, secret, {
           entryDomain: urlDomain,
           overrides,
           submit: opts.submit,
@@ -150,6 +188,22 @@ export function injectCommand(getProfile: GetProfile): Command {
         await browser.close();
       }
     });
+}
+
+// Wrap a Playwright Page as an [InjectablePage] whose every selector resolves to the first VISIBLE
+// match (`.filter({ visible: true }).first()`). This is what makes fill/click robust on SPA login
+// pages that render an inert, aria-hidden duplicate of the form behind the modal — a raw selector
+// would match 2+ nodes and Playwright strict mode would throw.
+function toInjectable(page: import('playwright-core').Page): InjectablePage {
+  const visibleFirst = (selector: string) => page.locator(selector).filter({ visible: true }).first();
+  return {
+    url: () => page.url(),
+    content: () => page.content(),
+    fill: (selector, value) => visibleFirst(selector).fill(value),
+    click: (selector) => visibleFirst(selector).click(),
+    waitForTimeout: (ms) => page.waitForTimeout(ms),
+    isVisible: (selector) => visibleFirst(selector).isVisible().catch(() => false),
+  };
 }
 
 // Pick the target page across all CDP contexts: the first whose URL matches the prefix, else the
