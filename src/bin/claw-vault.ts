@@ -5,10 +5,11 @@ import { profilePaths, validateProfileName, ProfilePaths } from '../config/paths
 import { initCommand } from '../commands/init.js';
 import { connectCommand } from '../commands/connect.js';
 import { statusCommand } from '../commands/status.js';
-import { listCommand } from '../commands/list.js';
-import { getCommand } from '../commands/get.js';
 import { agentsCommand } from '../commands/agents.js';
 import { securityCommand } from '../commands/security.js';
+import { searchCommand, getCredentialCommand, execCommand } from '../commands/credentials.js';
+import { injectCommand } from '../commands/inject.js';
+import { injectFailuresCommand } from '../commands/inject-failures.js';
 import { mcpServeCommand } from '../mcp/server.js';
 
 const program = new Command();
@@ -30,10 +31,13 @@ const getProfile = (): { name: string; paths: ProfilePaths } => {
 program.addCommand(initCommand(getProfile));
 program.addCommand(connectCommand(getProfile));
 program.addCommand(statusCommand(getProfile));
-program.addCommand(listCommand(getProfile));
-program.addCommand(getCommand(getProfile));
 program.addCommand(agentsCommand());
 program.addCommand(securityCommand(getProfile));
+program.addCommand(searchCommand(getProfile));
+program.addCommand(getCredentialCommand(getProfile));
+program.addCommand(execCommand(getProfile));
+program.addCommand(injectCommand(getProfile));
+program.addCommand(injectFailuresCommand());
 program.addCommand(mcpServeCommand(getProfile));
 
 program.parse();
