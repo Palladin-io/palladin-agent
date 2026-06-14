@@ -12,6 +12,8 @@ export interface InjectablePage {
   fill(selector: string, value: string): Promise<void>;
   click(selector: string): Promise<void>;
   waitForTimeout(ms: number): Promise<void>;
+  /** Whether a selector resolves to a visible element. Optional so fakes/tests can omit it. */
+  isVisible?(selector: string): Promise<boolean>;
 }
 
 export interface InjectOptions {
@@ -22,6 +24,8 @@ export interface InjectOptions {
   submit?: boolean;
   /** Max time to wait for the password field to appear on a multi-step form. */
   passwordStepTimeoutMs?: number;
+  /** Optional value-free trace sink (CVT-157, `--verbose`). Never receives secret values. */
+  log?: (message: string) => void;
 }
 
 export type InjectResult =
@@ -72,6 +76,7 @@ export async function injectCredential(
 ): Promise<InjectResult> {
   const steps: string[] = [];
   const submit = options.submit ?? true;
+  const log = options.log ?? (() => {});
 
   // Build a failure result with a structural (value-free) diagnostic snapshot of the current page,
   // so the caller can persist it for offline heuristic improvement. Reading content() must never
@@ -92,7 +97,8 @@ export async function injectCredential(
   }
   steps.push(`origin verified: ${origin.registrableDomain}`);
 
-  let fields = await detect(page, options.overrides);
+  try {
+  let fields = await detect(page, options.overrides, log);
 
   if (fields.step === 'none') {
     return fail('no login form detected on the current page');
@@ -123,7 +129,7 @@ export async function injectCredential(
       return { ok: true, steps, outcome: 'unknown' };
     }
     const preUrl = page.url();
-    await clickSubmit(page, fields, steps);
+    await clickSubmit(page, fields, steps, log);
     return observe(preUrl);
   }
 
@@ -134,7 +140,7 @@ export async function injectCredential(
       return { ok: true, steps, outcome: 'unknown' };
     }
     const preUrl = page.url();
-    await clickSubmit(page, fields, steps);
+    await clickSubmit(page, fields, steps, log);
     return observe(preUrl);
   }
 
@@ -143,7 +149,7 @@ export async function injectCredential(
   if (!submit) {
     return { ok: true, steps, outcome: 'unknown' };
   }
-  await clickSubmit(page, fields, steps);
+  await clickSubmit(page, fields, steps, log);
 
   const appeared = await waitForPasswordStep(page, options.passwordStepTimeoutMs ?? DEFAULT_PASSWORD_STEP_TIMEOUT);
   if (!appeared) {
@@ -157,20 +163,35 @@ export async function injectCredential(
     return fail(`after the username step the origin changed: ${postNav.reason}`);
   }
 
-  fields = await detect(page, options.overrides);
+  fields = await detect(page, options.overrides, log);
   if (!fields.passwordSelector) {
     return fail('password field not detected on the second step');
   }
   await fillPassword(page, fields, secret, steps);
   const preUrl = page.url();
-  await clickSubmit(page, fields, steps);
+  await clickSubmit(page, fields, steps, log);
   return observe(preUrl);
+  } catch (err) {
+    // Any Playwright action error (fill/click timeout, detached node…) becomes a graceful failure
+    // WITH a value-free diagnostic — never an uncaught crash that bypasses failure-capture (CVT-157).
+    log(`action error: ${(err as Error).message}`);
+    return fail(`browser action failed: ${(err as Error).message}`);
+  }
 }
 
-async function detect(page: InjectablePage, overrides?: SelectorOverrides): Promise<DetectedFields> {
+async function detect(
+  page: InjectablePage,
+  overrides?: SelectorOverrides,
+  log: (m: string) => void = () => {},
+): Promise<DetectedFields> {
   const html = await page.content();
   const { document } = parseHTML(html);
-  return detectLoginFields(document as unknown as Parameters<typeof detectLoginFields>[0], overrides);
+  const fields = detectLoginFields(document as unknown as Parameters<typeof detectLoginFields>[0], overrides);
+  log(
+    `detected: step=${fields.step} user=${fields.usernameSelector ?? '-'} ` +
+      `pass=${fields.passwordSelector ?? '-'} submit=[${fields.submitCandidates.join(', ') || '-'}]`,
+  );
+  return fields;
 }
 
 async function waitForPasswordStep(page: InjectablePage, timeoutMs: number): Promise<boolean> {
@@ -201,11 +222,45 @@ async function fillPassword(page: InjectablePage, fields: DetectedFields, secret
   steps.push('filled password');
 }
 
-async function clickSubmit(page: InjectablePage, fields: DetectedFields, steps: string[]): Promise<void> {
-  if (!fields.submitSelector) {
+async function clickSubmit(
+  page: InjectablePage,
+  fields: DetectedFields,
+  steps: string[],
+  log: (m: string) => void = () => {},
+): Promise<void> {
+  const candidates = fields.submitCandidates.length > 0
+    ? fields.submitCandidates
+    : fields.submitSelector
+      ? [fields.submitSelector]
+      : [];
+  if (candidates.length === 0) {
     steps.push('no submit button found — left form filled');
+    log('submit: no candidates detected');
     return;
   }
-  await page.click(fields.submitSelector);
-  steps.push('submitted');
+
+  // Pure-DOM detection can't see CSS visibility, so the first candidate may be hidden (e.g. a
+  // Facebook hidden `input[type=submit]`). Click the first that is actually visible; if the page
+  // can't tell us (no isVisible), fall back to the first candidate.
+  for (const selector of candidates) {
+    let visible = true;
+    if (page.isVisible) {
+      try {
+        visible = await page.isVisible(selector);
+      } catch {
+        visible = false;
+      }
+    }
+    log(`submit candidate ${selector}: visible=${visible}`);
+    if (!visible) {
+      continue;
+    }
+    await page.click(selector);
+    steps.push('submitted');
+    log(`submit: clicked ${selector}`);
+    return;
+  }
+
+  steps.push('no clickable submit button found — left form filled');
+  log('submit: candidates found but none visible');
 }

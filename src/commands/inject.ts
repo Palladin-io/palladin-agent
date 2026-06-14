@@ -40,7 +40,8 @@ export function injectCommand(getProfile: GetProfile): Command {
     .option('--password-selector <css>', 'override: CSS selector for the password field')
     .option('--submit-selector <css>', 'override: CSS selector for the submit button')
     .option('--no-submit', 'fill the form but do not submit')
-    .option('--page-url <url>', 'pick the open page whose URL starts with this prefix (default: first page)');
+    .option('--page-url <url>', 'pick the open page whose URL starts with this prefix (default: first page)')
+    .option('--verbose', 'log a value-free trace of detection + actions to stderr (debugging)');
   addWaitOptions(cmd);
   return cmd.action(async (vaultId: string, entryId: string, opts: {
       cdp: string;
@@ -50,6 +51,7 @@ export function injectCommand(getProfile: GetProfile): Command {
       submitSelector?: string;
       submit?: boolean;
       pageUrl?: string;
+      verbose?: boolean;
     } & RawWaitOpts) => {
       const { name, paths } = getProfile();
       const config = loadConfig(paths);
@@ -103,6 +105,7 @@ export function injectCommand(getProfile: GetProfile): Command {
           entryDomain: urlDomain,
           overrides,
           submit: opts.submit,
+          log: opts.verbose ? (m) => console.error(`[inject] ${m}`) : undefined,
         });
 
         if (!result.ok) {

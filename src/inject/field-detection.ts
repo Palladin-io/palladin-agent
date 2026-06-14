@@ -19,7 +19,14 @@ export interface DetectedFields {
   step: LoginStep;
   usernameSelector: string | null;
   passwordSelector: string | null;
+  /** The best submit/next candidate (first of [submitCandidates]); null when none found. */
   submitSelector: string | null;
+  /**
+   * All plausible submit/next controls in priority order. The runner clicks the first one that is
+   * actually visible at click time — pure-DOM detection cannot see CSS visibility, so an explicit
+   * `input[type=submit]` may be hidden (e.g. Facebook) while the real control is a `div[role=button]`.
+   */
+  submitCandidates: string[];
 }
 
 export interface SelectorOverrides {
@@ -32,6 +39,7 @@ export interface SelectorOverrides {
 // one without pulling in lib.dom types at every call site.
 interface ElementLike {
   readonly tagName: string;
+  readonly textContent?: string | null;
   getAttribute(name: string): string | null;
   closest(selector: string): ElementLike | null;
 }
@@ -94,20 +102,35 @@ function escapeAttr(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-// Build a stable, specific selector for an element: prefer id, then name, then a structural fallback.
+// Build a stable, specific selector for an element. Prefer id, then attributes that uniquely
+// identify SPA controls (data-testid, name, aria-label), then type/role — a bare tag is the last
+// resort. The aria-label / data-testid / role steps matter for `div[role=button]` submit controls
+// (X / Facebook) that carry no id or name.
 function selectorFor(el: ElementLike): string {
   const tag = el.tagName.toLowerCase();
   const id = el.getAttribute('id');
   if (id) {
     return `#${cssEscapeId(id)}`;
   }
+  const testid = el.getAttribute('data-testid');
+  if (testid) {
+    return `${tag}[data-testid="${escapeAttr(testid)}"]`;
+  }
   const name = el.getAttribute('name');
   if (name) {
     return `${tag}[name="${escapeAttr(name)}"]`;
   }
+  const ariaLabel = el.getAttribute('aria-label');
+  if (ariaLabel) {
+    return `${tag}[aria-label="${escapeAttr(ariaLabel)}"]`;
+  }
   const type = el.getAttribute('type');
   if (type) {
     return `${tag}[type="${escapeAttr(type)}"]`;
+  }
+  const role = el.getAttribute('role');
+  if (role) {
+    return `${tag}[role="${escapeAttr(role)}"]`;
   }
   return tag;
 }
@@ -210,7 +233,46 @@ function findUsername(doc: DocumentLike, password: ElementLike | null): ElementL
   return null;
 }
 
-function findSubmit(doc: DocumentLike, anchor: ElementLike | null): ElementLike | null {
+// Normalise away spaces / hyphens / underscores so a label like "Log in" matches the token "login"
+// and "Sign-in" matches "signin". Applied to both sides of the submit-token comparison.
+function normSubmit(value: string): string {
+  return value.toLowerCase().replace(/[\s_-]+/g, '');
+}
+
+const SUBMIT_TOKENS_NORM = SUBMIT_TOKENS.map(normSubmit);
+
+// A button's submit "label" — its visible text PLUS code attributes. textContent is what carries the
+// label on SPA buttons (X/Facebook render submit as `div[role=button]` with the word as text, not as
+// value/aria-label), so it is essential here.
+function submitLabel(el: ElementLike): string {
+  return normSubmit(
+    [
+      el.getAttribute('value'),
+      el.getAttribute('aria-label'),
+      el.getAttribute('id'),
+      el.getAttribute('name'),
+      el.getAttribute('data-testid'),
+      el.textContent ?? null,
+    ]
+      .filter((v): v is string => !!v)
+      .join(' '),
+  );
+}
+
+function matchesSubmit(el: ElementLike): boolean {
+  const label = submitLabel(el);
+  return SUBMIT_TOKENS_NORM.some((t) => label.includes(t));
+}
+
+/**
+ * Submit/next candidates in priority order (dedup, never hidden):
+ *   1. explicit `button[type=submit]` / `input[type=submit]`
+ *   2. `button` / `[role=button]` / `a[role=button]` whose label matches a submit/next verb
+ *      (incl. visible text — covers SPA `div[role=button]` controls)
+ *   3. a lone button in the form, by elimination
+ * The runner picks the first that is actually visible at click time.
+ */
+function findSubmitCandidates(doc: DocumentLike, anchor: ElementLike | null): ElementLike[] {
   const form = anchor?.closest('form') ?? null;
   const scope = (selector: string): ElementLike[] => {
     const all = toArray(doc.querySelectorAll(selector)).filter((el) => !isHidden(el));
@@ -221,25 +283,26 @@ function findSubmit(doc: DocumentLike, anchor: ElementLike | null): ElementLike 
     return inForm.length > 0 ? inForm : all;
   };
 
-  const explicitSubmit = scope('button[type="submit"], input[type="submit"]')[0];
-  if (explicitSubmit) {
-    return explicitSubmit;
-  }
+  const out: ElementLike[] = [];
+  const add = (el: ElementLike | undefined | null): void => {
+    if (el && !out.includes(el)) {
+      out.push(el);
+    }
+  };
 
-  const buttons = scope('button, input[type="button"], [role="button"]');
-  const byToken = buttons.find((el) => {
-    const text = [el.getAttribute('value'), el.getAttribute('aria-label'), el.getAttribute('id'), el.getAttribute('name')]
-      .filter((v): v is string => !!v)
-      .join(' ')
-      .toLowerCase();
-    return hasToken(text, SUBMIT_TOKENS);
-  });
-  if (byToken) {
-    return byToken;
+  for (const el of scope('button[type="submit"], input[type="submit"]')) {
+    add(el);
   }
-
-  // A single button in the form is the submit by elimination.
-  return buttons.length === 1 ? buttons[0] ?? null : null;
+  const buttons = scope('button, input[type="button"], [role="button"], a[role="button"]');
+  for (const el of buttons) {
+    if (matchesSubmit(el)) {
+      add(el);
+    }
+  }
+  if (buttons.length === 1) {
+    add(buttons[0]);
+  }
+  return out;
 }
 
 export function detectLoginFields(doc: DocumentLike, overrides?: SelectorOverrides): DetectedFields {
@@ -249,11 +312,14 @@ export function detectLoginFields(doc: DocumentLike, overrides?: SelectorOverrid
     : findUsername(doc, password);
 
   const anchor = password ?? username;
-  const submit = overrides?.submitSelector ? doc.querySelector(overrides.submitSelector) : findSubmit(doc, anchor);
 
   const usernameSelector = overrides?.usernameSelector ?? (username ? selectorFor(username) : null);
   const passwordSelector = overrides?.passwordSelector ?? (password ? selectorFor(password) : null);
-  const submitSelector = overrides?.submitSelector ?? (submit ? selectorFor(submit) : null);
+
+  const submitCandidates = overrides?.submitSelector
+    ? [overrides.submitSelector]
+    : findSubmitCandidates(doc, anchor).map(selectorFor);
+  const submitSelector = submitCandidates[0] ?? null;
 
   let step: LoginStep;
   if (password && username) {
@@ -266,5 +332,5 @@ export function detectLoginFields(doc: DocumentLike, overrides?: SelectorOverrid
     step = 'none';
   }
 
-  return { step, usernameSelector, passwordSelector, submitSelector };
+  return { step, usernameSelector, passwordSelector, submitSelector, submitCandidates };
 }
