@@ -135,14 +135,18 @@ export async function uploadInjectFailure(
 // reason/code. Reporting a stale credential does NOT create a new one — issuing a
 // fresh credential stays a human action in the panel for now.
 
-/** Why the credential is being reported as not working. Mirrors the values the backend expects. */
-export type StaleReasonCode =
-  /** A login attempt was refused (e.g. inject observed a `rejected` outcome / 401). */
-  | 'login_rejected'
-  /** The agent could not authenticate with the credential through some other path. */
-  | 'auth_failed'
-  /** The user/agent is reporting it manually with no machine signal. */
-  | 'manual';
+/**
+ * Why the credential is being reported as not working. Mirrors the values the backend expects.
+ * Single-sourced as a const tuple so the CLI and MCP tool validate against the same set.
+ */
+export const STALE_REASON_CODES = ['login_rejected', 'auth_failed', 'manual'] as const;
+
+/**
+ * - `login_rejected` — a login attempt was refused (e.g. inject observed a `rejected` outcome / 401).
+ * - `auth_failed`    — the agent could not authenticate with the credential through some other path.
+ * - `manual`         — reported manually with no machine signal.
+ */
+export type StaleReasonCode = (typeof STALE_REASON_CODES)[number];
 
 export interface ReportCredentialStaleInput {
   vaultId: string;
@@ -157,8 +161,9 @@ export interface ReportCredentialStaleInput {
  * Report a credential as not working so the backend emits `credential_stale` to the vault members.
  *
  * Manual reports (the `report-stale` command) surface a clear error on failure so the agent knows
- * the report did not land. The inject/exec auto-report path wraps this in {@link tryReportCredentialStale},
- * which is best-effort and never throws (telemetry must not break the command).
+ * the report did not land. The inject auto-report path (on a `rejected` outcome) wraps this in
+ * {@link tryReportCredentialStale}, which is best-effort and never throws (telemetry must not break
+ * the command). exec has no outcome classification, so it never auto-reports.
  *
  * Disabled by CLAW_VAULT_NO_DIAGNOSTICS=1 — like the inject-failure telemetry, this is a diagnostic
  * signal and respects the same opt-out.
@@ -191,9 +196,10 @@ export async function reportCredentialStale(
 }
 
 /**
- * Best-effort variant of {@link reportCredentialStale} for the inject/exec auto-report path: returns
- * `true` when the backend accepted the report, `false` on any error or when diagnostics are opted
- * out. Never throws — an auto-report failure must not mask the real command result.
+ * Best-effort variant of {@link reportCredentialStale} for the inject auto-report path (on a
+ * `rejected` outcome): returns `true` when the backend accepted the report, `false` on any error or
+ * when diagnostics are opted out. Never throws — an auto-report failure must not mask the real
+ * command result.
  */
 export async function tryReportCredentialStale(
   config: AgentConfig,

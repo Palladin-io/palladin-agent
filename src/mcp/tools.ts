@@ -9,6 +9,7 @@ import {
   uploadInjectFailure,
   tryReportCredentialStale,
   reportCredentialStale,
+  STALE_REASON_CODES,
   CredentialMethod,
 } from '../http/agent-api.js';
 import { decryptCredential } from '../crypto/decrypt.js';
@@ -214,12 +215,14 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
       inputSchema: z.object({
         vaultId: z.string().describe('Vault ID'),
         entryId: z.string().describe('Entry ID'),
+        code: z.enum(STALE_REASON_CODES).optional()
+          .describe('Cause: login_rejected (a login was refused) | auth_failed (could not authenticate some other way) | manual (default)'),
         note: z.string().optional().describe('Short note for the owner — NEVER include the secret or any typed value'),
       }),
     },
-    async ({ vaultId, entryId, note }) => {
+    async ({ vaultId, entryId, code, note }) => {
       try {
-        await reportCredentialStale(config, keypair, { vaultId, entryId, code: 'auth_failed', note: note?.trim() || undefined });
+        await reportCredentialStale(config, keypair, { vaultId, entryId, code: code ?? 'manual', note: note?.trim() || undefined });
         return ok('Reported the credential as not working — the vault owners have been notified to rotate it.');
       } catch (err) {
         return fail(errorMessage(err));
