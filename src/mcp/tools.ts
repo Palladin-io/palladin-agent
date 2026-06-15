@@ -7,6 +7,8 @@ import {
   searchEntries,
   getCredential,
   uploadInjectFailure,
+  tryReportCredentialStale,
+  reportCredentialStale,
   CredentialMethod,
 } from '../http/agent-api.js';
 import { decryptCredential } from '../crypto/decrypt.js';
@@ -167,7 +169,13 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
           // `outcome` is a best-effort hint (succeeded/rejected/unknown) — the agent confirms from
           // its own browser. `rejected` means the form was driven fine but the credential was
           // likely refused (stale password), NOT a heuristic miss.
-          return ok(JSON.stringify({ ok: true, steps: result.steps, outcome: result.outcome }, null, 2));
+          let reportedStale = false;
+          if (result.outcome === 'rejected') {
+            // Auto-report the likely-stale credential so the vault owners get a `credential_stale`
+            // notification (CVT-162). Best-effort, no secret, never blocks the tool result.
+            reportedStale = await tryReportCredentialStale(config, keypair, { vaultId, entryId, code: 'login_rejected' });
+          }
+          return ok(JSON.stringify({ ok: true, steps: result.steps, outcome: result.outcome, reportedStale }, null, 2));
         }
         if (result.diagnostic) {
           const report = buildFailureReport({
@@ -191,6 +199,30 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
         return fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})`);
       } finally {
         await browser.close();
+      }
+    }
+  );
+
+  server.registerTool(
+    'report_credential_stale',
+    {
+      description:
+        'Report that a stored credential did NOT work (wrong/expired password, login refused). ' +
+        'This notifies the vault owners so they can rotate it. Send NO secret and no typed values — only the entry reference and an optional note. ' +
+        'It does NOT create a new credential; issuing a fresh one is a human action in the panel. ' +
+        'inject_credential already auto-reports when it observes a `rejected` outcome — use this for failures it cannot see (e.g. an API 401).',
+      inputSchema: z.object({
+        vaultId: z.string().describe('Vault ID'),
+        entryId: z.string().describe('Entry ID'),
+        note: z.string().optional().describe('Short note for the owner — NEVER include the secret or any typed value'),
+      }),
+    },
+    async ({ vaultId, entryId, note }) => {
+      try {
+        await reportCredentialStale(config, keypair, { vaultId, entryId, code: 'auth_failed', note: note?.trim() || undefined });
+        return ok('Reported the credential as not working — the vault owners have been notified to rotate it.');
+      } catch (err) {
+        return fail(errorMessage(err));
       }
     }
   );

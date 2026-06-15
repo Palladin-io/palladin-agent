@@ -6,7 +6,7 @@ import { SelectorOverrides } from '../inject/field-detection.js';
 import { injectCredential, InjectablePage } from '../inject/inject-runner.js';
 import { checkOrigin } from '../inject/origin-check.js';
 import { buildFailureReport, writeFailureReport } from '../inject/failure-report.js';
-import { uploadInjectFailure } from '../http/agent-api.js';
+import { uploadInjectFailure, tryReportCredentialStale } from '../http/agent-api.js';
 import { resolveSecret } from './credentials.js';
 import { addWaitOptions, parseWaitCli, RawWaitOpts } from '../credential/wait-options.js';
 import { exitCodeForAccess } from '../credential/exit-codes.js';
@@ -174,9 +174,18 @@ export function injectCommand(getProfile: GetProfile): Command {
         console.log(`Injected into ${label}: ${result.steps.join(' → ')}`);
         // Honest, best-effort signal — the agent makes the final call from its own browser.
         if (result.outcome === 'rejected') {
+          // The form was driven correctly but the credential was refused → very likely stale.
+          // Auto-report it so the vault owners get a `credential_stale` notification (CVT-162).
+          // Best-effort and silent on failure: never sends the secret, never blocks the command.
+          const reported = await tryReportCredentialStale(config, keypair, {
+            vaultId,
+            entryId,
+            code: 'login_rejected',
+          });
           console.error(
             'Warning: the credential appears to have been rejected (wrong password / sign-in error). ' +
-            'The stored credential may be stale — verify in your browser.',
+            'The stored credential may be stale — verify in your browser.' +
+            (reported ? ' Reported it as not working — the vault owners have been notified.' : ''),
           );
         } else if (result.outcome === 'unknown') {
           console.error(

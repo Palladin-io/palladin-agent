@@ -127,6 +127,90 @@ export async function uploadInjectFailure(
   }
 }
 
+// ── Stale-credential reporting (CVT-162 — Notification Center) ────────────────
+// The agent tells the backend that a stored credential did not work (wrong/expired
+// password, login refused). The backend turns this into a `credential_stale`
+// notification for the vault's members (see Notification Center design). Carries
+// no secret and no field values — only the entry/vault reference + a redacted
+// reason/code. Reporting a stale credential does NOT create a new one — issuing a
+// fresh credential stays a human action in the panel for now.
+
+/** Why the credential is being reported as not working. Mirrors the values the backend expects. */
+export type StaleReasonCode =
+  /** A login attempt was refused (e.g. inject observed a `rejected` outcome / 401). */
+  | 'login_rejected'
+  /** The agent could not authenticate with the credential through some other path. */
+  | 'auth_failed'
+  /** The user/agent is reporting it manually with no machine signal. */
+  | 'manual';
+
+export interface ReportCredentialStaleInput {
+  vaultId: string;
+  entryId: string;
+  /** Machine-readable cause, defaults to `manual`. */
+  code?: StaleReasonCode;
+  /** Optional free-text note for the vault owner. NEVER include the secret or typed values. */
+  note?: string;
+}
+
+/**
+ * Report a credential as not working so the backend emits `credential_stale` to the vault members.
+ *
+ * Manual reports (the `report-stale` command) surface a clear error on failure so the agent knows
+ * the report did not land. The inject/exec auto-report path wraps this in {@link tryReportCredentialStale},
+ * which is best-effort and never throws (telemetry must not break the command).
+ *
+ * Disabled by CLAW_VAULT_NO_DIAGNOSTICS=1 — like the inject-failure telemetry, this is a diagnostic
+ * signal and respects the same opt-out.
+ *
+ * NOTE (backend contract, to sync with CVT-163): assumed agent-facing endpoint
+ *   POST /api/agent/vaults/{vaultId}/entries/{entryId}/credential-failure
+ *   body { code, note? }  → 200/202 on accept
+ * Headers are the standard agent auth set (X-Api-Key, X-Agent-Key, X-Agent-Hostname) added by apiFetch.
+ */
+export async function reportCredentialStale(
+  config: AgentConfig,
+  keypair: Keypair,
+  input: ReportCredentialStaleInput,
+): Promise<void> {
+  const body: Record<string, unknown> = { code: input.code ?? 'manual' };
+  if (input.note) {
+    body.note = input.note;
+  }
+
+  const res = await apiFetch(
+    `/api/agent/vaults/${encodeURIComponent(input.vaultId)}/entries/${encodeURIComponent(input.entryId)}/credential-failure`,
+    config,
+    keypair,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+
+  if (!res.ok) {
+    throw new AgentApiError(res.status, `could not report the credential as stale (HTTP ${res.status})`);
+  }
+}
+
+/**
+ * Best-effort variant of {@link reportCredentialStale} for the inject/exec auto-report path: returns
+ * `true` when the backend accepted the report, `false` on any error or when diagnostics are opted
+ * out. Never throws — an auto-report failure must not mask the real command result.
+ */
+export async function tryReportCredentialStale(
+  config: AgentConfig,
+  keypair: Keypair,
+  input: ReportCredentialStaleInput,
+): Promise<boolean> {
+  if (process.env['CLAW_VAULT_NO_DIAGNOSTICS'] === '1') {
+    return false;
+  }
+  try {
+    await reportCredentialStale(config, keypair, input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Raised for any non-success HTTP response so callers can surface a clear message. */
 export class AgentApiError extends Error {
   constructor(public readonly status: number, message: string) {

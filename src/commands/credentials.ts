@@ -6,8 +6,10 @@ import {
   AgentApiError,
   searchEntries,
   getCredential,
+  reportCredentialStale,
   CredentialAccess,
   CredentialMethod,
+  StaleReasonCode,
 } from '../http/agent-api.js';
 import { decryptCredential } from '../crypto/decrypt.js';
 import { ParsedSecret, parseSecret } from '../crypto/secret.js';
@@ -78,6 +80,44 @@ export function searchCommand(getProfile: GetProfile): Command {
       if (result.nextCursor) {
         console.log('(more results available — refine your query)');
       }
+    });
+}
+
+const STALE_CODES: readonly StaleReasonCode[] = ['login_rejected', 'auth_failed', 'manual'];
+
+/**
+ * claw-vault report-stale <vaultId> <entryId> [--note <text>] [--code <code>]
+ *
+ * Tells the backend that the stored credential did not work (wrong/expired password, login refused),
+ * which surfaces a `credential_stale` notification to the vault's members so they can rotate it. No
+ * secret or typed value is ever sent — only the entry reference, a reason code, and an optional note.
+ * This does NOT create a new credential; issuing a fresh one stays a human action in the panel.
+ */
+export function reportStaleCommand(getProfile: GetProfile): Command {
+  return new Command('report-stale')
+    .description('Report a credential as not working — notifies the vault owners so they can rotate it (sends no secret)')
+    .argument('<vaultId>', 'vault ID')
+    .argument('<entryId>', 'entry ID')
+    .option('--note <text>', 'short note for the owner (never include the secret or any typed value)')
+    .option(`--code <code>`, `cause: ${STALE_CODES.join(' | ')} (default: manual)`)
+    .action(async (vaultId: string, entryId: string, opts: { note?: string; code?: string }) => {
+      const code = opts.code?.trim();
+      if (code !== undefined && !STALE_CODES.includes(code as StaleReasonCode)) {
+        fail(`invalid --code "${code}". Use one of: ${STALE_CODES.join(', ')}.`);
+      }
+
+      const { config, keypair } = await profileContext(getProfile);
+      try {
+        await reportCredentialStale(config, keypair, {
+          vaultId: vaultId.trim(),
+          entryId: entryId.trim(),
+          code: (code as StaleReasonCode) ?? 'manual',
+          note: opts.note?.trim() || undefined,
+        });
+      } catch (err) {
+        fail(describe(err));
+      }
+      console.log('Reported credential as not working — the vault owners have been notified to rotate it.');
     });
 }
 
