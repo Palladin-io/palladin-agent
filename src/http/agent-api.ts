@@ -21,10 +21,9 @@ export async function registerAgent(
   type?: string,
 ): Promise<AgentRegistrationResult> {
   const headers = new Headers({
-    'X-Api-Key':         config.apiKey,
-    'X-Agent-Key':       publicKeyBase64(keypair),
-    'X-Agent-Hostname':  os.hostname(),
-    'Content-Type':      'application/json',
+    'X-Api-Key':        config.apiKey,
+    'X-Agent-Key':      publicKeyBase64(keypair),
+    'X-Agent-Hostname': os.hostname(),
   });
 
   if (name) {
@@ -34,19 +33,14 @@ export async function registerAgent(
   if (trimmedType) {
     headers.set('X-Agent-Type', trimmedType);
   }
-
-  // Signing pubkey is sent once at connect (body field), never per-request.
-  const enrollBody = signingPublicKeyBase64
-    ? JSON.stringify({ signingPublicKey: signingPublicKeyBase64 })
-    : undefined;
+  // Signing pubkey is sent once at connect, in a header — never per-request.
+  if (signingPublicKeyBase64) {
+    headers.set('X-Agent-Signing-Key', signingPublicKeyBase64);
+  }
 
   let res: Response;
   try {
-    res = await fetch(`${config.host}/api/agent/me`, {
-      method: enrollBody ? 'POST' : 'GET',
-      headers,
-      body: enrollBody,
-    });
+    res = await fetch(`${config.host}/api/agent/me`, { headers });
   } catch (err) {
     return { status: 'unreachable', error: String(err) };
   }

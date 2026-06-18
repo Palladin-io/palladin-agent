@@ -36,7 +36,7 @@ export function connectCommand(getProfile: GetProfile): Command {
       if (cliType && hasEntry) {
         saveRegistry(registrySetAgentType(registry, name, cliType));
       }
-      const effectiveType = cliType ?? registry.agents.find(a => a.name === name)?.type;
+      const effectiveType = cliType ?? registry.agents.find(a => a.name === name)?.type ?? 'Unknown';
 
       const tier = await detectKeyTier(name, paths);
       console.log(`  Profile:     ${name}`);
