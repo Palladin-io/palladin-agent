@@ -1,8 +1,10 @@
 import os from 'os';
 import { AgentConfig } from '../config/config.js';
 import { Keypair, publicKeyBase64 } from '../crypto/keypair.js';
-import { apiFetch } from './client.js';
+import { apiFetch, SigningContext } from './client.js';
 import { EncryptedCredential } from '../crypto/decrypt.js';
+
+export type { SigningContext } from './client.js';
 
 export type AgentRegistrationResult =
   | { status: 'pending';     agentId: string }
@@ -11,10 +13,21 @@ export type AgentRegistrationResult =
   | { status: 'invalid_key' }
   | { status: 'unreachable'; error: string };
 
+/**
+ * Enroll/identify the agent. The X25519 box key goes in X-Agent-Key (as before); the Ed25519
+ * SIGNING public key is sent ONCE at connect — base64 in the `signingPublicKey` body field — so the
+ * backend stores it as Agent.SigningPublicKey and verifies every subsequent request's signature
+ * (CVT-157, pinned contract v1).
+ *
+ * The signing public key is sent at CONNECT TIME (here), never as a per-request header. The
+ * per-request proof-of-possession headers (X-Agent-Id/Timestamp/Nonce/Signature) carry the
+ * SIGNATURE on each call, not the key itself — the backend already has the key from enrollment.
+ */
 export async function registerAgent(
   config: AgentConfig,
   keypair: Keypair,
   name?: string,
+  signingPublicKeyBase64?: string,
 ): Promise<AgentRegistrationResult> {
   const headers = new Headers({
     'X-Api-Key':         config.apiKey,
@@ -27,9 +40,19 @@ export async function registerAgent(
     headers.set('X-Agent-Name', name);
   }
 
+  // Connect payload carries the Ed25519 signing public key in the `signingPublicKey` field
+  // (pinned contract v1) — alongside the X25519 box public key (X-Agent-Key header).
+  const enrollBody = signingPublicKeyBase64
+    ? JSON.stringify({ signingPublicKey: signingPublicKeyBase64 })
+    : undefined;
+
   let res: Response;
   try {
-    res = await fetch(`${config.host}/api/agent/me`, { headers });
+    res = await fetch(`${config.host}/api/agent/me`, {
+      method: enrollBody ? 'POST' : 'GET',
+      headers,
+      body: enrollBody,
+    });
   } catch (err) {
     return { status: 'unreachable', error: String(err) };
   }
@@ -79,12 +102,13 @@ export async function searchEntries(
   keypair: Keypair,
   query: string,
   options?: { cursor?: string; pageSize?: number },
+  signing?: SigningContext,
 ): Promise<EntrySearchResult> {
   const params = new URLSearchParams({ query });
   if (options?.cursor) params.set('cursor', options.cursor);
   if (options?.pageSize) params.set('pageSize', String(options.pageSize));
 
-  const res = await apiFetch(`/api/agent/entries?${params.toString()}`, config, keypair);
+  const res = await apiFetch(`/api/agent/entries?${params.toString()}`, config, keypair, undefined, signing);
   if (!res.ok) {
     throw new AgentApiError(res.status, `entry search failed (HTTP ${res.status})`);
   }
@@ -112,6 +136,7 @@ export async function uploadInjectFailure(
   config: AgentConfig,
   keypair: Keypair,
   body: InjectFailureUpload,
+  signing?: SigningContext,
 ): Promise<boolean> {
   if (process.env['CLAW_VAULT_NO_DIAGNOSTICS'] === '1') {
     return false;
@@ -120,7 +145,7 @@ export async function uploadInjectFailure(
     const res = await apiFetch('/api/agent/inject-failures', config, keypair, {
       method: 'POST',
       body: JSON.stringify(body),
-    });
+    }, signing);
     return res.ok;
   } catch {
     return false;
@@ -171,12 +196,15 @@ export interface ReportCredentialStaleInput {
  * NOTE (backend contract, to sync with CVT-163): assumed agent-facing endpoint
  *   POST /api/agent/vaults/{vaultId}/entries/{entryId}/credential-failure
  *   body { code, note? }  → 200/202 on accept
- * Headers are the standard agent auth set (X-Api-Key, X-Agent-Key, X-Agent-Hostname) added by apiFetch.
+ * Headers are the standard agent auth set (X-Api-Key, X-Agent-Key, X-Agent-Hostname) plus the
+ * per-request signature (X-Agent-Id/Timestamp/Nonce/Signature) added by apiFetch when `signing` is
+ * supplied (CVT-157). Like every authenticated agent call, this report is signed.
  */
 export async function reportCredentialStale(
   config: AgentConfig,
   keypair: Keypair,
   input: ReportCredentialStaleInput,
+  signing?: SigningContext,
 ): Promise<void> {
   const body: Record<string, unknown> = { code: input.code ?? 'manual' };
   if (input.note) {
@@ -188,6 +216,7 @@ export async function reportCredentialStale(
     config,
     keypair,
     { method: 'POST', body: JSON.stringify(body) },
+    signing,
   );
 
   if (!res.ok) {
@@ -205,12 +234,13 @@ export async function tryReportCredentialStale(
   config: AgentConfig,
   keypair: Keypair,
   input: ReportCredentialStaleInput,
+  signing?: SigningContext,
 ): Promise<boolean> {
   if (process.env['CLAW_VAULT_NO_DIAGNOSTICS'] === '1') {
     return false;
   }
   try {
-    await reportCredentialStale(config, keypair, input);
+    await reportCredentialStale(config, keypair, input, signing);
     return true;
   } catch {
     return false;
@@ -285,6 +315,7 @@ export async function getCredential(
   vaultId: string,
   entryId: string,
   options?: GetCredentialOptions,
+  signing?: SigningContext,
 ): Promise<CredentialAccess> {
   const body: Record<string, unknown> = {};
   if (options?.reason) {
@@ -302,6 +333,7 @@ export async function getCredential(
     config,
     keypair,
     { method: 'POST', body: JSON.stringify(body) },
+    signing,
   );
 
   // 200 (granted/unavailable), 202 (pending), 403 (denied/revoked/expired/blocked/method-not-allowed)
