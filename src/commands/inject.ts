@@ -1,12 +1,11 @@
 import { Command } from 'commander';
-import { loadConfig } from '../config/config.js';
-import { loadKeypair } from '../crypto/keypair.js';
 import { ProfilePaths } from '../config/paths.js';
 import { SelectorOverrides } from '../inject/field-detection.js';
 import { injectCredential, InjectablePage } from '../inject/inject-runner.js';
 import { checkOrigin } from '../inject/origin-check.js';
 import { buildFailureReport, writeFailureReport } from '../inject/failure-report.js';
 import { uploadInjectFailure } from '../http/agent-api.js';
+import { resolveAgentContext } from '../http/agent-context.js';
 import { resolveSecret } from './credentials.js';
 import { addWaitOptions, parseWaitCli, RawWaitOpts } from '../credential/wait-options.js';
 import { exitCodeForAccess } from '../credential/exit-codes.js';
@@ -57,10 +56,9 @@ export function injectCommand(getProfile: GetProfile): Command {
       verbose?: boolean;
     } & RawWaitOpts) => {
       const { name, paths } = getProfile();
-      const config = loadConfig(paths);
-      const keypair = await loadKeypair(name, paths);
+      const { config, keypair, signing } = await resolveAgentContext(name, paths);
 
-      const resolved = await resolveSecret(config, keypair, vaultId, entryId, 'inject', opts.reason, parseWaitCli(opts));
+      const resolved = await resolveSecret(config, keypair, vaultId, entryId, 'inject', opts.reason, parseWaitCli(opts), signing);
       if (!resolved.ok) {
         console.error(`Error: ${resolved.message}`);
         process.exit(exitCodeForAccess(resolved.access));
@@ -167,7 +165,7 @@ export function injectCommand(getProfile: GetProfile): Command {
               reason: report.reason,
               pageOrigin: report.pageOrigin,
               controls: report.controls,
-            });
+            }, signing);
           }
           fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})`);
         }

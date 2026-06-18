@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { loadConfig } from '../config/config.js';
-import { loadKeypair, Keypair } from '../crypto/keypair.js';
+import { Keypair } from '../crypto/keypair.js';
 import { ProfilePaths } from '../config/paths.js';
 import {
   AgentApiError,
@@ -8,7 +8,9 @@ import {
   getCredential,
   CredentialAccess,
   CredentialMethod,
+  SigningContext,
 } from '../http/agent-api.js';
+import { resolveAgentContext } from '../http/agent-context.js';
 import { decryptCredential } from '../crypto/decrypt.js';
 import { ParsedSecret, parseSecret } from '../crypto/secret.js';
 import { accessMessage, GET_EXPOSURE_WARNING } from '../credential/access.js';
@@ -37,9 +39,7 @@ function describe(err: unknown): string {
 
 async function profileContext(getProfile: GetProfile) {
   const { name, paths } = getProfile();
-  const config = loadConfig(paths);
-  const keypair = await loadKeypair(name, paths);
-  return { config, keypair };
+  return resolveAgentContext(name, paths);
 }
 
 /** claw-vault search <query> — discovery (entry metadata, no secrets). */
@@ -49,10 +49,10 @@ export function searchCommand(getProfile: GetProfile): Command {
     .argument('<query>', 'search term (min 2 chars)')
     .option('--json', 'output raw JSON')
     .action(async (query: string, opts: { json?: boolean }) => {
-      const { config, keypair } = await profileContext(getProfile);
+      const { config, keypair, signing } = await profileContext(getProfile);
       let result;
       try {
-        result = await searchEntries(config, keypair, query.trim());
+        result = await searchEntries(config, keypair, query.trim(), undefined, signing);
       } catch (err) {
         fail(describe(err));
       }
@@ -94,12 +94,13 @@ async function getCredentialWaiting(
   vaultId: string,
   entryId: string,
   opts: { reason?: string; method: CredentialMethod; wait: WaitCliOptions },
+  signing?: SigningContext,
 ): Promise<CredentialAccess> {
   const call = () =>
     getCredential(config, keypair, vaultId, entryId, {
       reason: opts.reason?.trim(),
       method: opts.method,
-    });
+    }, signing);
 
   let result = await call();
   if (result.access !== 'pending') return result;
@@ -135,7 +136,7 @@ export function getCredentialCommand(getProfile: GetProfile): Command {
   addWaitOptions(cmd);
   return cmd.action(
     async (vaultId: string, entryId: string, opts: { reason?: string; quiet?: boolean } & RawWaitOpts) => {
-      const { config, keypair } = await profileContext(getProfile);
+      const { config, keypair, signing } = await profileContext(getProfile);
 
       let result;
       try {
@@ -143,7 +144,7 @@ export function getCredentialCommand(getProfile: GetProfile): Command {
           reason: opts.reason,
           method: 'get',
           wait: parseWaitCli(opts),
-        });
+        }, signing);
       } catch (err) {
         fail(describe(err));
       }
@@ -187,9 +188,9 @@ export function execCommand(getProfile: GetProfile): Command {
       if (command.length === 0) {
         fail('No command given. Usage: claw-vault exec <vaultId> <entryId> -- <command> [args...]');
       }
-      const { config, keypair } = await profileContext(getProfile);
+      const { config, keypair, signing } = await profileContext(getProfile);
 
-      const resolved = await resolveSecret(config, keypair, vaultId, entryId, 'exec', opts.reason, parseWaitCli(opts));
+      const resolved = await resolveSecret(config, keypair, vaultId, entryId, 'exec', opts.reason, parseWaitCli(opts), signing);
       if (!resolved.ok) {
         console.error(`Error: ${resolved.message}`);
         process.exit(exitCodeForAccess(resolved.access));
@@ -220,10 +221,11 @@ async function resolveSecret(
   method: CredentialMethod,
   reason?: string,
   wait: WaitCliOptions = {},
+  signing?: SigningContext,
 ): Promise<ResolvedSecret> {
   let result;
   try {
-    result = await getCredentialWaiting(config, keypair, vaultId, entryId, { reason, method, wait });
+    result = await getCredentialWaiting(config, keypair, vaultId, entryId, { reason, method, wait }, signing);
   } catch (err) {
     fail(describe(err));
   }

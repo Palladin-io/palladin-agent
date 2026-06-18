@@ -1,6 +1,7 @@
 import { Command } from 'commander';
-import { saveConfig } from '../config/config.js';
+import { saveConfig, AgentConfig } from '../config/config.js';
 import { ensureKeypair, publicKeyBase64 } from '../crypto/keypair.js';
+import { ensureSigningKeypair, signingPublicKeyBase64 } from '../crypto/signing.js';
 import { detectKeyTier, tierLabel, tierUpgradeHint } from '../crypto/secure-storage.js';
 import { registerAgent } from '../http/agent-api.js';
 import { ProfilePaths } from '../config/paths.js';
@@ -21,20 +22,33 @@ export function connectCommand(getProfile: GetProfile): Command {
 
       const { name, paths } = getProfile();
       const keypair = await ensureKeypair(name, paths);
-      const config = { apiKey, host: opts.host.replace(/\/$/, '') };
+      // Ed25519 signing key for per-request proof-of-possession (CVT-157). Generated alongside the
+      // box key; its PUBLIC key is sent at enrollment so the backend can verify every request.
+      const signingKeypair = await ensureSigningKeypair(name, paths);
+      const signingPubKey = signingPublicKeyBase64(signingKeypair);
+
+      const config: AgentConfig = { apiKey, host: opts.host.replace(/\/$/, ''), signingPublicKey: signingPubKey };
       saveConfig(config, paths);
 
       const tier = await detectKeyTier(name, paths);
-      console.log(`  Profile:    ${name}`);
-      console.log(`  Host:       ${config.host}`);
-      console.log(`  Public key: ${publicKeyBase64(keypair)}`);
-      console.log(`  Security:   ${tierLabel(tier)}`);
+      console.log(`  Profile:     ${name}`);
+      console.log(`  Host:        ${config.host}`);
+      console.log(`  Public key:  ${publicKeyBase64(keypair)}`);
+      console.log(`  Signing key: ${signingPubKey}`);
+      console.log(`  Security:    ${tierLabel(tier)}`);
       const hint = tierUpgradeHint(tier, name);
       if (hint) console.log(hint);
       console.log('');
 
       const displayName = opts.id ?? (name !== 'default' ? name : undefined);
-      const result = await registerAgent(config, keypair, displayName);
+      const result = await registerAgent(config, keypair, displayName, signingPubKey);
+
+      // Persist the backend agentId so subsequent commands can sign requests (X-Agent-Id +
+      // signature canonical). Saved for both pending and active — signing applies once the key is
+      // registered, regardless of approval state.
+      if (result.status === 'pending' || result.status === 'active' || result.status === 'deactivated') {
+        saveConfig({ ...config, agentId: result.agentId }, paths);
+      }
 
       switch (result.status) {
         case 'pending':
