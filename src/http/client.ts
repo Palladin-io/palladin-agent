@@ -3,11 +3,6 @@ import { AgentConfig } from '../config/config.js';
 import { Keypair, publicKeyBase64 } from '../crypto/keypair.js';
 import { SigningKeypair, buildSignatureHeaders } from '../crypto/signing.js';
 
-/**
- * Proof-of-possession material for request signing (CVT-157). When present, apiFetch adds the
- * X-Agent-Id / X-Agent-Timestamp / X-Agent-Nonce / X-Agent-Signature headers so the backend can
- * verify the request was signed by the agent's Ed25519 key.
- */
 export interface SigningContext {
   agentId: string;
   keypair: SigningKeypair;
@@ -24,16 +19,12 @@ export async function apiFetch(
   headers.set('X-Api-Key',        config.apiKey);
   headers.set('X-Agent-Key',      publicKeyBase64(keypair));
   headers.set('X-Agent-Hostname', os.hostname());
-  // Only declare a JSON body when one is actually sent. On bodyless requests (GET) an
-  // application/json content-type makes FastEndpoints bind the request from the (empty) body
-  // and ignore query-string params — which 400s query-bound endpoints like entry discovery.
+  // No JSON content-type on bodyless GETs — FastEndpoints would bind from the empty body and ignore query params.
   const body = init?.body;
   if (body !== undefined && body !== null) {
     headers.set('Content-Type', 'application/json');
   }
 
-  // Signature must cover the SAME bytes the server reads. The path is signed including its query
-  // string; the canonical hashes the raw body bytes (empty body → sha256 of zero bytes).
   if (signing) {
     const sig = await buildSignatureHeaders({
       agentId: signing.agentId,
@@ -50,12 +41,10 @@ export async function apiFetch(
   return fetch(`${config.host}${path}`, { ...init, headers });
 }
 
-/** The signed canonical hashes the raw body bytes. Only the body shapes the CLI sends are supported. */
 function normalizeBody(body: BodyInit | null | undefined): string | Uint8Array {
   if (body === undefined || body === null) return '';
   if (typeof body === 'string') return body;
   if (body instanceof Uint8Array) return body;
-  // The CLI only ever sends JSON strings (or no body). Anything else would sign a hash that does not
-  // match the wire bytes, so fail loudly rather than send an unverifiable request.
+  // Anything else would sign a hash that doesn't match the wire bytes.
   throw new Error('apiFetch: unsupported request body type for signing (expected string or Uint8Array)');
 }

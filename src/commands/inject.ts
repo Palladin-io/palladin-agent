@@ -17,18 +17,6 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-/**
- * claw-vault inject <vaultId> <entryId> --cdp <ws-endpoint> [selectors]
- *
- * Connects to the agent's already-running browser over the Chrome DevTools Protocol, verifies the
- * active page's origin against the entry's backend-bound domain (anti-phishing), then fills and
- * submits the login form. The secret is typed into the page via Playwright `fill()` — it never
- * enters the agent's LLM context and we never run agent-provided JavaScript.
- *
- * The agent is expected to launch its browser with a CDP endpoint, e.g.
- *   chromium --remote-debugging-port=9222
- * and pass --cdp http://localhost:9222 (or the ws:// endpoint).
- */
 export function injectCommand(getProfile: GetProfile): Command {
   const cmd = new Command('inject')
     .description("Fill a login form in the agent's browser (over CDP) — the secret never enters the agent context")
@@ -69,8 +57,7 @@ export function injectCommand(getProfile: GetProfile): Command {
         fail(`entry "${label}" has no bound URL — inject is only allowed for entries with a known site (anti-phishing).`);
       }
 
-      // playwright-core is an optional/heavy dependency; import lazily so `get`/`exec`/`search` work
-      // without a browser stack installed.
+      // Lazy import so get/exec/search work without the browser stack installed.
       let chromium: typeof import('playwright-core').chromium;
       try {
         ({ chromium } = await import('playwright-core'));
@@ -78,10 +65,7 @@ export function injectCommand(getProfile: GetProfile): Command {
         fail('inject requires playwright-core. Install it: npm i -g playwright-core');
       }
 
-      // inject drives the browser over the Chrome DevTools Protocol, so the agent's browser must be
-      // Chromium-family (Chrome, Edge, Brave, Chromium, Arc, Opera) launched with
-      // --remote-debugging-port. Firefox (Juggler) and WebKit/Safari do not expose CDP and are not
-      // supported by this path.
+      // CDP is Chromium-only — Firefox/WebKit don't expose it.
       const browser = await chromium.connectOverCDP(opts.cdp).catch((err) => {
         fail(
           `could not connect over CDP at ${opts.cdp}: ${err.message}. ` +
@@ -96,16 +80,9 @@ export function injectCommand(getProfile: GetProfile): Command {
           fail('no open page found in the connected browser — open the login page first.');
         }
 
-        // Visible-first adapter: resolve every selector to the first VISIBLE match. SPA login pages
-        // (X / Facebook) render an inert, aria-hidden copy of the form behind the modal, so a raw
-        // selector matches 2+ elements and Playwright's strict mode throws. Scoping to the visible
-        // one fixes that for both --fill-only and auto detection.
+        // Visible-first: SPA login pages render a hidden duplicate form that trips Playwright strict mode.
         const injectable = toInjectable(page);
 
-        // --fill-only (CVT-158): the agent has already navigated to the right step (e.g. via the
-        // Playwright MCP) and tells us the visible field selector. We ONLY type the secret — no
-        // auto-detection, no submit unless an explicit --submit-selector is given. The origin gate
-        // still applies; the secret is typed via fill() and never enters the agent context.
         if (opts.fillOnly) {
           if (!opts.passwordSelector && !opts.usernameSelector) {
             fail('--fill-only requires --password-selector and/or --username-selector (the visible field to type into).');
@@ -145,9 +122,7 @@ export function injectCommand(getProfile: GetProfile): Command {
         });
 
         if (!result.ok) {
-          // Capture a redacted, value-free snapshot so a real-world miss can improve site support.
-          // Best-effort, two-pronged: upload to the backend (near-real-time team visibility, CVT-155)
-          // AND keep a local JSONL copy as the offline fallback. Neither blocks the user's error.
+          // Redacted, value-free diagnostic: uploaded + kept locally, never blocks the error.
           if (result.diagnostic) {
             const report = buildFailureReport({
               reason: result.reason,
@@ -170,11 +145,8 @@ export function injectCommand(getProfile: GetProfile): Command {
           fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})`);
         }
         console.log(`Injected into ${label}: ${result.steps.join(' → ')}`);
-        // Honest, best-effort signal — the agent makes the final call from its own browser.
         if (result.outcome === 'rejected') {
-          // The form was driven correctly but the credential was refused → very likely stale.
-          // Auto-report it so the vault owners get a `credential_stale` notification (CVT-162).
-          // Best-effort and silent on failure: never sends the secret, never blocks the command.
+          // Credential refused → likely stale; auto-report (no secret sent, never blocks).
           const reported = await tryReportCredentialStale(config, keypair, {
             vaultId,
             entryId,
@@ -197,10 +169,7 @@ export function injectCommand(getProfile: GetProfile): Command {
     });
 }
 
-// Wrap a Playwright Page as an [InjectablePage] whose every selector resolves to the first VISIBLE
-// match (`.filter({ visible: true }).first()`). This is what makes fill/click robust on SPA login
-// pages that render an inert, aria-hidden duplicate of the form behind the modal — a raw selector
-// would match 2+ nodes and Playwright strict mode would throw.
+// Every selector resolves to the first VISIBLE match — robust against SPA hidden duplicate forms.
 function toInjectable(page: import('playwright-core').Page): InjectablePage {
   const visibleFirst = (selector: string) => page.locator(selector).filter({ visible: true }).first();
   return {
@@ -213,8 +182,6 @@ function toInjectable(page: import('playwright-core').Page): InjectablePage {
   };
 }
 
-// Pick the target page across all CDP contexts: the first whose URL matches the prefix, else the
-// first page. Returns undefined when the browser has no pages.
 function pickPage(
   browser: import('playwright-core').Browser,
   urlPrefix?: string,

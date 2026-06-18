@@ -22,8 +22,6 @@ export function connectCommand(getProfile: GetProfile): Command {
 
       const { name, paths } = getProfile();
       const keypair = await ensureKeypair(name, paths);
-      // Ed25519 signing key for per-request proof-of-possession (CVT-157). Generated alongside the
-      // box key; its PUBLIC key is sent at enrollment so the backend can verify every request.
       const signingKeypair = await ensureSigningKeypair(name, paths);
       const signingPubKey = signingPublicKeyBase64(signingKeypair);
 
@@ -43,9 +41,7 @@ export function connectCommand(getProfile: GetProfile): Command {
       const displayName = opts.id ?? (name !== 'default' ? name : undefined);
       const result = await registerAgent(config, keypair, displayName, signingPubKey);
 
-      // Persist the backend agentId so subsequent commands can sign requests (X-Agent-Id +
-      // signature canonical). Saved for both pending and active — signing applies once the key is
-      // registered, regardless of approval state.
+      // agentId is needed to sign later requests; persisted regardless of approval state.
       if (result.status === 'pending' || result.status === 'active' || result.status === 'deactivated') {
         saveConfig({ ...config, agentId: result.agentId }, paths);
       }

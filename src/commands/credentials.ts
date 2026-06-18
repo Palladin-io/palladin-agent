@@ -84,14 +84,6 @@ export function searchCommand(getProfile: GetProfile): Command {
     });
 }
 
-/**
- * claw-vault report-stale <vaultId> <entryId> [--note <text>] [--code <code>]
- *
- * Tells the backend that the stored credential did not work (wrong/expired password, login refused),
- * which surfaces a `credential_stale` notification to the vault's members so they can rotate it. No
- * secret or typed value is ever sent — only the entry reference, a reason code, and an optional note.
- * This does NOT create a new credential; issuing a fresh one stays a human action in the panel.
- */
 export function reportStaleCommand(getProfile: GetProfile): Command {
   return new Command('report-stale')
     .description('Report a credential as not working — notifies the vault owners so they can rotate it (sends no secret)')
@@ -120,13 +112,6 @@ export function reportStaleCommand(getProfile: GetProfile): Command {
     });
 }
 
-/**
- * Fetch the credential once and, if the grant is still pending, long-poll the backend until it is
- * approved, reaches a terminal state, or the wait budget runs out (CVT-157). A heartbeat is emitted
- * on stderr while waiting so the host sees the process is alive; the wait is configurable CLI >
- * backend > default. The first POST creates the pending grant; subsequent polls reuse it (the
- * endpoint is idempotent for an in-flight pending), so no duplicate requests are created.
- */
 async function getCredentialWaiting(
   config: ReturnType<typeof loadConfig>,
   keypair: Keypair,
@@ -157,13 +142,6 @@ async function getCredentialWaiting(
   });
 }
 
-/**
- * claw-vault get <vaultId> <entryId> [--reason <reason>]   (alias: retrieve)
- *
- * Returns the decrypted secret as plaintext on stdout. This puts the secret in the agent's context;
- * prefer `exec`/`inject` for hosted LLMs. Requests a grant on first use (method=get) and, by
- * default, waits for approval (see the wait flags).
- */
 export function getCredentialCommand(getProfile: GetProfile): Command {
   const cmd = new Command('get')
     .alias('retrieve')
@@ -198,8 +176,7 @@ export function getCredentialCommand(getProfile: GetProfile): Command {
         return;
       }
 
-      // Non-granted after the wait: report on stderr and exit with a code the agent can branch on
-      // (75 = still pending / retryable, 77 = denied & friends).
+      // Exit code lets the agent branch: 75 = retryable/pending, 77 = denied.
       const grantId = result.access === 'pending' ? result.grantId : undefined;
       console.error(`Error: ${accessMessage(result.access, 'get', grantId)}`);
       process.exit(exitCodeForAccess(result.access));
@@ -207,13 +184,6 @@ export function getCredentialCommand(getProfile: GetProfile): Command {
   );
 }
 
-/**
- * claw-vault exec <vaultId> <entryId> -- <command> [args...]
- *
- * Fetches the credential with method=exec and runs the command with the secret injected as
- * environment variables (CLAW_SECRET / CLAW_USERNAME / CLAW_PASSWORD / CLAW_<FIELD>). The plaintext
- * never reaches the agent's stdout — only the subprocess's output (with the secret masked) does.
- */
 export function execCommand(getProfile: GetProfile): Command {
   const cmd = new Command('exec')
     .description('Run a command with the credential injected as env vars — the secret never enters the agent context')
@@ -240,18 +210,11 @@ export function execCommand(getProfile: GetProfile): Command {
   );
 }
 
-/** Outcome of [resolveSecret] — either the parsed plaintext or a non-granted state to exit on. */
 export type ResolvedSecret =
   | { ok: true; secret: ParsedSecret; urlDomain: string | null; label: string }
   | { ok: false; access: Exclude<CredentialAccess['access'], 'granted'>; message: string };
 
-/**
- * Shared fetch+decrypt for exec/inject: fetches the grant for `method` (waiting for approval per the
- * CLI/backend policy), and on success returns the parsed plaintext plus the entry's trusted bound
- * domain (for inject's origin gate). On any non-granted state it returns `{ ok: false }` with a
- * ready message + the access kind so the caller can pick the right exit code. The plaintext is held
- * only in memory.
- */
+// Shared fetch+decrypt for exec/inject; plaintext is held only in memory.
 async function resolveSecret(
   config: ReturnType<typeof loadConfig>,
   keypair: Keypair,

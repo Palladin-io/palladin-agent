@@ -13,16 +13,6 @@ export type AgentRegistrationResult =
   | { status: 'invalid_key' }
   | { status: 'unreachable'; error: string };
 
-/**
- * Enroll/identify the agent. The X25519 box key goes in X-Agent-Key (as before); the Ed25519
- * SIGNING public key is sent ONCE at connect — base64 in the `signingPublicKey` body field — so the
- * backend stores it as Agent.SigningPublicKey and verifies every subsequent request's signature
- * (CVT-157, pinned contract v1).
- *
- * The signing public key is sent at CONNECT TIME (here), never as a per-request header. The
- * per-request proof-of-possession headers (X-Agent-Id/Timestamp/Nonce/Signature) carry the
- * SIGNATURE on each call, not the key itself — the backend already has the key from enrollment.
- */
 export async function registerAgent(
   config: AgentConfig,
   keypair: Keypair,
@@ -40,8 +30,7 @@ export async function registerAgent(
     headers.set('X-Agent-Name', name);
   }
 
-  // Connect payload carries the Ed25519 signing public key in the `signingPublicKey` field
-  // (pinned contract v1) — alongside the X25519 box public key (X-Agent-Key header).
+  // Signing pubkey is sent once at connect (body field), never per-request.
   const enrollBody = signingPublicKeyBase64
     ? JSON.stringify({ signingPublicKey: signingPublicKeyBase64 })
     : undefined;
@@ -115,10 +104,7 @@ export async function searchEntries(
   return await res.json() as EntrySearchResult;
 }
 
-// ── Inject failure telemetry (CVT-155) ───────────────────────────────────────
-// Reports a REDACTED inject diagnostic to the backend so the team sees unsupported
-// sites in near-real-time. Carries no field values, no secret, only the origin.
-
+// Redacted inject diagnostic — no field values, no secret, only the origin.
 export interface InjectFailureUpload {
   entryId: string;
   domain: string | null;
@@ -127,11 +113,7 @@ export interface InjectFailureUpload {
   controls: unknown[];
 }
 
-/**
- * Best-effort upload of a redacted inject-failure report. Never throws — telemetry must not break
- * the command, and the local JSONL copy is the offline fallback. Returns true when the backend
- * accepted it. Disabled by CLAW_VAULT_NO_DIAGNOSTICS=1.
- */
+// Best-effort: never throws (the local JSONL copy is the offline fallback).
 export async function uploadInjectFailure(
   config: AgentConfig,
   keypair: Keypair,
@@ -152,54 +134,18 @@ export async function uploadInjectFailure(
   }
 }
 
-// ── Stale-credential reporting (CVT-162 — Notification Center) ────────────────
-// The agent tells the backend that a stored credential did not work (wrong/expired
-// password, login refused). The backend turns this into a `credential_stale`
-// notification for the vault's members (see Notification Center design). Carries
-// no secret and no field values — only the entry/vault reference + a redacted
-// reason/code. Reporting a stale credential does NOT create a new one — issuing a
-// fresh credential stays a human action in the panel for now.
-
-/**
- * Why the credential is being reported as not working. Mirrors the values the backend expects.
- * Single-sourced as a const tuple so the CLI and MCP tool validate against the same set.
- */
 export const STALE_REASON_CODES = ['login_rejected', 'auth_failed', 'manual'] as const;
 
-/**
- * - `login_rejected` — a login attempt was refused (e.g. inject observed a `rejected` outcome / 401).
- * - `auth_failed`    — the agent could not authenticate with the credential through some other path.
- * - `manual`         — reported manually with no machine signal.
- */
 export type StaleReasonCode = (typeof STALE_REASON_CODES)[number];
 
 export interface ReportCredentialStaleInput {
   vaultId: string;
   entryId: string;
-  /** Machine-readable cause, defaults to `manual`. */
   code?: StaleReasonCode;
-  /** Optional free-text note for the vault owner. NEVER include the secret or typed values. */
+  // NEVER include the secret or typed values.
   note?: string;
 }
 
-/**
- * Report a credential as not working so the backend emits `credential_stale` to the vault members.
- *
- * Manual reports (the `report-stale` command) surface a clear error on failure so the agent knows
- * the report did not land. The inject auto-report path (on a `rejected` outcome) wraps this in
- * {@link tryReportCredentialStale}, which is best-effort and never throws (telemetry must not break
- * the command). exec has no outcome classification, so it never auto-reports.
- *
- * Disabled by CLAW_VAULT_NO_DIAGNOSTICS=1 — like the inject-failure telemetry, this is a diagnostic
- * signal and respects the same opt-out.
- *
- * NOTE (backend contract, to sync with CVT-163): assumed agent-facing endpoint
- *   POST /api/agent/vaults/{vaultId}/entries/{entryId}/credential-failure
- *   body { code, note? }  → 200/202 on accept
- * Headers are the standard agent auth set (X-Api-Key, X-Agent-Key, X-Agent-Hostname) plus the
- * per-request signature (X-Agent-Id/Timestamp/Nonce/Signature) added by apiFetch when `signing` is
- * supplied (CVT-157). Like every authenticated agent call, this report is signed.
- */
 export async function reportCredentialStale(
   config: AgentConfig,
   keypair: Keypair,
@@ -224,12 +170,7 @@ export async function reportCredentialStale(
   }
 }
 
-/**
- * Best-effort variant of {@link reportCredentialStale} for the inject auto-report path (on a
- * `rejected` outcome): returns `true` when the backend accepted the report, `false` on any error or
- * when diagnostics are opted out. Never throws — an auto-report failure must not mask the real
- * command result.
- */
+// Best-effort: never throws, so an auto-report failure can't mask the real command result.
 export async function tryReportCredentialStale(
   config: AgentConfig,
   keypair: Keypair,
