@@ -4,6 +4,7 @@ import { clawVaultRoot, registryPath, legacyPaths, profilePaths } from './paths.
 export interface AgentEntry {
   name: string;
   createdAt: string;
+  type?: string;
 }
 
 export interface Registry {
@@ -26,11 +27,25 @@ export function saveRegistry(registry: Registry): void {
   writeFileSync(registryPath, JSON.stringify(registry, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
-export function registryAddAgent(registry: Registry, name: string): Registry {
+export function registryAddAgent(registry: Registry, name: string, type?: string): Registry {
   if (registry.agents.some(a => a.name === name)) {
     throw new Error(`Agent "${name}" already exists.`);
   }
-  return { ...registry, agents: [...registry.agents, { name, createdAt: new Date().toISOString() }] };
+  const entry: AgentEntry = { name, createdAt: new Date().toISOString() };
+  const trimmed = type?.trim();
+  if (trimmed) entry.type = trimmed;
+  return { ...registry, agents: [...registry.agents, entry] };
+}
+
+export function registrySetAgentType(registry: Registry, name: string, type: string): Registry {
+  if (!registry.agents.some(a => a.name === name)) {
+    throw new Error(`Agent "${name}" not found.`);
+  }
+  const trimmed = type.trim();
+  return {
+    ...registry,
+    agents: registry.agents.map(a => a.name === name ? { ...a, type: trimmed || undefined } : a),
+  };
 }
 
 export function registryDeleteAgent(registry: Registry, name: string): Registry {

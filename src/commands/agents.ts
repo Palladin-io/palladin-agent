@@ -36,13 +36,14 @@ export function agentsCommand(): Command {
     new Command('create')
       .description('Create a new agent profile with a fresh keypair')
       .argument('<name>', 'profile name')
-      .action(async (name: string) => {
+      .option('--type <type>', 'agent type/category, free-form e.g. ci, browser, backend')
+      .action(async (name: string, opts: { type?: string }) => {
         validateProfileName(name);
         const registry = loadRegistry();
         const isFirst = registry.agents.length === 0;
         let updated;
         try {
-          updated = registryAddAgent(registry, name);
+          updated = registryAddAgent(registry, name, opts.type);
         } catch (err) {
           console.error(`Error: ${(err as Error).message}`);
           process.exit(1);

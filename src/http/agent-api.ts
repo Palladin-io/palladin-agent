@@ -18,6 +18,7 @@ export async function registerAgent(
   keypair: Keypair,
   name?: string,
   signingPublicKeyBase64?: string,
+  type?: string,
 ): Promise<AgentRegistrationResult> {
   const headers = new Headers({
     'X-Api-Key':         config.apiKey,
@@ -28,6 +29,10 @@ export async function registerAgent(
 
   if (name) {
     headers.set('X-Agent-Name', name);
+  }
+  const trimmedType = type?.trim();
+  if (trimmedType) {
+    headers.set('X-Agent-Type', trimmedType);
   }
 
   // Signing pubkey is sent once at connect (body field), never per-request.

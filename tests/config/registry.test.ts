@@ -7,6 +7,7 @@ import {
   registryDeleteAgent,
   registrySetDefault,
   registryRenameAgent,
+  registrySetAgentType,
   loadRegistry,
   saveRegistry,
   type Registry,
@@ -35,6 +36,50 @@ describe('registryAddAgent', () => {
   it('stores an ISO createdAt timestamp', () => {
     const result = registryAddAgent(base, 'cursor')
     expect(() => new Date(result.agents[1]!.createdAt)).not.toThrow()
+  })
+
+  it('stores a trimmed type when given', () => {
+    const result = registryAddAgent(base, 'cursor', '  ci  ')
+    expect(result.agents[1]?.type).toBe('ci')
+  })
+
+  it('omits type when not given or blank', () => {
+    expect(registryAddAgent(base, 'cursor').agents[1]?.type).toBeUndefined()
+    expect(registryAddAgent(base, 'browser', '   ').agents[1]?.type).toBeUndefined()
+  })
+})
+
+describe('registrySetAgentType', () => {
+  const base: Registry = {
+    default: 'default',
+    agents: [
+      { name: 'default', createdAt: '2026-01-01T00:00:00.000Z' },
+      { name: 'cursor',  createdAt: '2026-01-01T00:00:00.000Z', type: 'browser' },
+    ],
+  }
+
+  it('sets the type on an existing agent', () => {
+    const result = registrySetAgentType(base, 'default', 'ci')
+    expect(result.agents.find(a => a.name === 'default')?.type).toBe('ci')
+  })
+
+  it('overwrites an existing type (trimmed)', () => {
+    const result = registrySetAgentType(base, 'cursor', '  backend ')
+    expect(result.agents.find(a => a.name === 'cursor')?.type).toBe('backend')
+  })
+
+  it('clears the type when given a blank value', () => {
+    const result = registrySetAgentType(base, 'cursor', '   ')
+    expect(result.agents.find(a => a.name === 'cursor')?.type).toBeUndefined()
+  })
+
+  it('throws when agent does not exist', () => {
+    expect(() => registrySetAgentType(base, 'ghost', 'ci')).toThrow('not found')
+  })
+
+  it('does not mutate the original registry', () => {
+    registrySetAgentType(base, 'default', 'ci')
+    expect(base.agents.find(a => a.name === 'default')?.type).toBeUndefined()
   })
 })
 
