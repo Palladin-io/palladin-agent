@@ -11,7 +11,7 @@ function activeResponse(): Response {
     ok: true,
     status: 200,
     headers: new Headers(),
-    json: async () => ({ id: 'agent-1', name: 'CI', status: 'Active' }),
+    json: async () => ({ agentId: 'agent-1', name: 'CI', status: 'active' }),
   } as unknown as Response;
 }
 
@@ -51,5 +51,14 @@ describe('registerAgent enrollment contract', () => {
     await registerAgent(config, boxKeypair, 'CI', 'signpub==', '  ci  ');
 
     expect(callOf(spy).headers.get('X-Agent-Type')).toBe('ci');
+  });
+
+  it('parses the active response into agentId / name / status', async () => {
+    const spy = vi.fn().mockResolvedValue(activeResponse());
+    vi.stubGlobal('fetch', spy);
+
+    const result = await registerAgent(config, boxKeypair, 'CI', 'signpub==', 'ci');
+
+    expect(result).toEqual({ status: 'active', agentId: 'agent-1', name: 'CI' });
   });
 });

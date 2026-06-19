@@ -20,11 +20,13 @@ function envVarName(profile: string, kind: KeyKind): string {
   return `${base}${suffix}`;
 }
 
-function keyFiles(paths: ProfilePaths, kind: KeyKind): { privateKey: string; publicKey: string } {
+// 'box' keeps a separate public-key file; 'signing' does not — the Ed25519 public key
+// is the trailing 32 bytes of the secret, so there is no standalone signing.pub to track.
+function keyFiles(paths: ProfilePaths, kind: KeyKind): { privateKey: string; publicKey?: string } {
   if (kind === 'box') {
     return { privateKey: paths.privateKey, publicKey: paths.publicKey };
   }
-  return { privateKey: join(paths.root, 'signing.key'), publicKey: join(paths.root, 'signing.pub') };
+  return { privateKey: join(paths.root, 'signing.key') };
 }
 
 async function keychainGet(profile: string, kind: KeyKind): Promise<string | null> {
@@ -69,7 +71,7 @@ export async function storeKey(
   const stored = await keychainSet(profile, kind, base64Key);
   if (stored) {
     if (existsSync(files.privateKey)) unlinkSync(files.privateKey);
-    if (existsSync(files.publicKey))  unlinkSync(files.publicKey);
+    if (files.publicKey && existsSync(files.publicKey)) unlinkSync(files.publicKey);
     return 'keychain';
   }
 
@@ -118,7 +120,7 @@ export async function deleteKey(profile: string, paths: ProfilePaths, kind: KeyK
   await keychainDelete(profile, kind);
   const files = keyFiles(paths, kind);
   if (existsSync(files.privateKey)) unlinkSync(files.privateKey);
-  if (existsSync(files.publicKey))  unlinkSync(files.publicKey);
+  if (files.publicKey && existsSync(files.publicKey)) unlinkSync(files.publicKey);
 }
 
 export async function upgradeKeyToKeychain(profile: string, paths: ProfilePaths, kind: KeyKind): Promise<boolean> {
@@ -128,7 +130,7 @@ export async function upgradeKeyToKeychain(profile: string, paths: ProfilePaths,
   const stored = await keychainSet(profile, kind, base64Key);
   if (stored) {
     if (existsSync(files.privateKey)) unlinkSync(files.privateKey);
-    if (existsSync(files.publicKey))  unlinkSync(files.publicKey);
+    if (files.publicKey && existsSync(files.publicKey)) unlinkSync(files.publicKey);
     return true;
   }
   return false;
