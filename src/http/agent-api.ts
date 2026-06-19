@@ -54,11 +54,11 @@ export async function registerAgent(
   }
 
   if (res.ok) {
-    const body = await res.json() as { id: string; name: string | null; status: string };
-    if (body.status === 'Deactivated') {
-      return { status: 'deactivated', agentId: body.id };
+    const body = await res.json() as { agentId: string; name: string | null; status: string };
+    if (body.status === 'deactivated') {
+      return { status: 'deactivated', agentId: body.agentId };
     }
-    return { status: 'active', agentId: body.id, name: body.name };
+    return { status: 'active', agentId: body.agentId, name: body.name };
   }
 
   return { status: 'unreachable', error: `HTTP ${res.status}` };
