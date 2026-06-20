@@ -32,11 +32,14 @@ export function statusCommand(getProfile: GetProfile): Command {
       // Backfill / register the signing key for agents enrolled before signing existed (CVT-157).
       const signingKeypair = await ensureSigningKeypair(name, paths);
       const signingPubKey = signingPublicKeyBase64(signingKeypair);
+      const signingTier = await detectKeyTier(name, paths, 'signing');
 
-      console.log(`Host:        ${config.host}`);
-      console.log(`Key:         ${publicKeyBase64(keypair)}`);
-      console.log(`Signing key: ${signingPubKey}`);
-      const hint = tierUpgradeHint(tier, name);
+      console.log(`Host:         ${config.host}`);
+      console.log(`Key:          ${publicKeyBase64(keypair)}`);
+      console.log(`Signing key:  ${signingPubKey}`);
+      console.log(`Signing tier: ${tierLabel(signingTier)}`);
+      // Hint to upgrade when either key still lives outside the OS keychain.
+      const hint = tierUpgradeHint(tier, name) ?? tierUpgradeHint(signingTier, name);
       if (hint) console.log(hint);
       console.log('');
 

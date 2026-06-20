@@ -55,10 +55,18 @@ export async function registerAgent(
 
   if (res.ok) {
     const body = await res.json() as { agentId: string; name: string | null; status: string };
-    if (body.status === 'deactivated') {
-      return { status: 'deactivated', agentId: body.agentId };
+    switch (body.status) {
+      case 'active':
+        return { status: 'active', agentId: body.agentId, name: body.name };
+      case 'deactivated':
+        return { status: 'deactivated', agentId: body.agentId };
+      case 'pending':
+        return { status: 'pending', agentId: body.agentId };
+      default:
+        // Fail loud on contract drift rather than silently assuming the agent is
+        // approved — an agent must never grant itself access it wasn't given.
+        throw new AgentApiError(res.status, `unexpected agent status from server: "${body.status}"`);
     }
-    return { status: 'active', agentId: body.agentId, name: body.name };
   }
 
   return { status: 'unreachable', error: `HTTP ${res.status}` };

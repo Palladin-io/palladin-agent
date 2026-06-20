@@ -15,6 +15,15 @@ function activeResponse(): Response {
   } as unknown as Response;
 }
 
+function bodyResponse(status: string): Response {
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers(),
+    json: async () => ({ agentId: 'agent-1', name: null, status }),
+  } as unknown as Response;
+}
+
 function callOf(spy: ReturnType<typeof vi.fn>): { url: string; init: RequestInit; headers: Headers } {
   const [url, init] = spy.mock.calls[0]! as [string, RequestInit];
   return { url, init, headers: init.headers as Headers };
@@ -60,5 +69,19 @@ describe('registerAgent enrollment contract', () => {
     const result = await registerAgent(config, boxKeypair, 'CI', 'signpub==', 'ci');
 
     expect(result).toEqual({ status: 'active', agentId: 'agent-1', name: 'CI' });
+  });
+
+  it('maps deactivated / pending body statuses explicitly', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(bodyResponse('deactivated')));
+    expect(await registerAgent(config, boxKeypair)).toEqual({ status: 'deactivated', agentId: 'agent-1' });
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(bodyResponse('pending')));
+    expect(await registerAgent(config, boxKeypair)).toEqual({ status: 'pending', agentId: 'agent-1' });
+  });
+
+  it('throws on an unknown status instead of assuming active', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(bodyResponse('suspended')));
+
+    await expect(registerAgent(config, boxKeypair)).rejects.toThrow(/unexpected agent status.*suspended/);
   });
 });

@@ -36,7 +36,10 @@ export function connectCommand(getProfile: GetProfile): Command {
       if (cliType && hasEntry) {
         saveRegistry(registrySetAgentType(registry, name, cliType));
       }
-      const effectiveType = cliType ?? registry.agents.find(a => a.name === name)?.type ?? 'Unknown';
+      // Leave the type header off (undefined) when neither --type nor a stored type exists:
+      // the backend preserves an existing agent's type on reconnect and only defaults to
+      // "Unknown" at first enrollment. Sending a sentinel here would reset a known type.
+      const effectiveType = cliType ?? registry.agents.find(a => a.name === name)?.type;
 
       const tier = await detectKeyTier(name, paths);
       console.log(`  Profile:     ${name}`);
