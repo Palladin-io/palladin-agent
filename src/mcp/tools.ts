@@ -175,7 +175,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
           if (result.outcome === 'rejected') {
             // Auto-report the likely-stale credential so the vault owners get a `credential_stale`
             // notification (CVT-162). Best-effort, no secret, never blocks the tool result.
-            reportedStale = await tryReportCredentialStale(config, keypair, { vaultId, entryId, code: 'login_rejected' });
+            reportedStale = await tryReportCredentialStale(config, keypair, { vaultId, entryId, code: 'login_rejected' }, signing);
           }
           return ok(JSON.stringify({ ok: true, steps: result.steps, outcome: result.outcome, reportedStale }, null, 2));
         }
