@@ -7,7 +7,11 @@ import {
   searchEntries,
   getCredential,
   uploadInjectFailure,
+  tryReportCredentialStale,
+  reportCredentialStale,
+  STALE_REASON_CODES,
   CredentialMethod,
+  SigningContext,
 } from '../http/agent-api.js';
 import { decryptCredential } from '../crypto/decrypt.js';
 import { parseSecret } from '../crypto/secret.js';
@@ -34,7 +38,7 @@ function errorMessage(err: unknown): string {
 // Discovery is org-wide via GET /api/agent/entries (agent-auth, metadata only).
 // The legacy CVT-44 placeholders list_vaults / list_entries called JwtBearer (user)
 // endpoints and returned 401 under agent-auth — they are intentionally not exposed.
-export function registerTools(server: McpServer, config: AgentConfig, keypair: Keypair): void {
+export function registerTools(server: McpServer, config: AgentConfig, keypair: Keypair, signing?: SigningContext): void {
   server.registerTool(
     'search_entries',
     {
@@ -48,7 +52,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
     },
     async ({ query }) => {
       try {
-        const result = await searchEntries(config, keypair, query.trim());
+        const result = await searchEntries(config, keypair, query.trim(), undefined, signing);
         return ok(JSON.stringify(result, null, 2));
       } catch (err) {
         return fail(errorMessage(err));
@@ -71,7 +75,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
     },
     async ({ vaultId, entryId, reason }) => {
       try {
-        const result = await getCredential(config, keypair, vaultId, entryId, { reason: reason?.trim(), method: 'get' });
+        const result = await getCredential(config, keypair, vaultId, entryId, { reason: reason?.trim(), method: 'get' }, signing);
         if (result.access === 'granted') {
           const secret = await decryptCredential(result, keypair);
           return ok(JSON.stringify(
@@ -103,7 +107,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
       }),
     },
     async ({ vaultId, entryId, command, reason }) => {
-      const resolved = await resolveForTool(config, keypair, vaultId, entryId, 'exec', reason);
+      const resolved = await resolveForTool(config, keypair, vaultId, entryId, 'exec', reason, signing);
       if ('error' in resolved) {
         return fail(resolved.error);
       }
@@ -131,7 +135,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
       }),
     },
     async ({ vaultId, entryId, cdp, reason, pageUrl, usernameSelector, passwordSelector, submitSelector }) => {
-      const resolved = await resolveForTool(config, keypair, vaultId, entryId, 'inject', reason);
+      const resolved = await resolveForTool(config, keypair, vaultId, entryId, 'inject', reason, signing);
       if ('error' in resolved) {
         return fail(resolved.error);
       }
@@ -167,7 +171,13 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
           // `outcome` is a best-effort hint (succeeded/rejected/unknown) — the agent confirms from
           // its own browser. `rejected` means the form was driven fine but the credential was
           // likely refused (stale password), NOT a heuristic miss.
-          return ok(JSON.stringify({ ok: true, steps: result.steps, outcome: result.outcome }, null, 2));
+          let reportedStale = false;
+          if (result.outcome === 'rejected') {
+            // Auto-report the likely-stale credential so the vault owners get a `credential_stale`
+            // notification (CVT-162). Best-effort, no secret, never blocks the tool result.
+            reportedStale = await tryReportCredentialStale(config, keypair, { vaultId, entryId, code: 'login_rejected' }, signing);
+          }
+          return ok(JSON.stringify({ ok: true, steps: result.steps, outcome: result.outcome, reportedStale }, null, 2));
         }
         if (result.diagnostic) {
           const report = buildFailureReport({
@@ -186,11 +196,37 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
             reason: report.reason,
             pageOrigin: report.pageOrigin,
             controls: report.controls,
-          });
+          }, signing);
         }
         return fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})`);
       } finally {
         await browser.close();
+      }
+    }
+  );
+
+  server.registerTool(
+    'report_credential_stale',
+    {
+      description:
+        'Report that a stored credential did NOT work (wrong/expired password, login refused). ' +
+        'This notifies the vault owners so they can rotate it. Send NO secret and no typed values — only the entry reference and an optional note. ' +
+        'It does NOT create a new credential; issuing a fresh one is a human action in the panel. ' +
+        'inject_credential already auto-reports when it observes a `rejected` outcome — use this for failures it cannot see (e.g. an API 401).',
+      inputSchema: z.object({
+        vaultId: z.string().describe('Vault ID'),
+        entryId: z.string().describe('Entry ID'),
+        code: z.enum(STALE_REASON_CODES).optional()
+          .describe('Cause: login_rejected (a login was refused) | auth_failed (could not authenticate some other way) | manual (default)'),
+        note: z.string().optional().describe('Short note for the owner — NEVER include the secret or any typed value'),
+      }),
+    },
+    async ({ vaultId, entryId, code, note }) => {
+      try {
+        await reportCredentialStale(config, keypair, { vaultId, entryId, code: code ?? 'manual', note: note?.trim() || undefined }, signing);
+        return ok('Reported the credential as not working — the vault owners have been notified to rotate it.');
+      } catch (err) {
+        return fail(errorMessage(err));
       }
     }
   );
@@ -207,9 +243,10 @@ async function resolveForTool(
   entryId: string,
   method: CredentialMethod,
   reason?: string,
+  signing?: SigningContext,
 ): Promise<{ secret: ReturnType<typeof parseSecret>; urlDomain: string | null } | { error: string }> {
   try {
-    const result = await getCredential(config, keypair, vaultId, entryId, { reason: reason?.trim(), method });
+    const result = await getCredential(config, keypair, vaultId, entryId, { reason: reason?.trim(), method }, signing);
     if (result.access !== 'granted') {
       const grantId = result.access === 'pending' ? result.grantId : undefined;
       return { error: accessMessage(result.access, method, grantId) };

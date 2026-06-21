@@ -1,0 +1,87 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { registerAgent } from '../../src/http/agent-api.js';
+import type { AgentConfig } from '../../src/config/config.js';
+import type { Keypair } from '../../src/crypto/keypair.js';
+
+const config: AgentConfig = { apiKey: 'cv_test', host: 'http://localhost:5000' };
+const boxKeypair: Keypair = { publicKey: new Uint8Array(32).fill(1), privateKey: new Uint8Array(32).fill(2) };
+
+function activeResponse(): Response {
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers(),
+    json: async () => ({ agentId: 'agent-1', name: 'CI', status: 'active' }),
+  } as unknown as Response;
+}
+
+function bodyResponse(status: string): Response {
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers(),
+    json: async () => ({ agentId: 'agent-1', name: null, status }),
+  } as unknown as Response;
+}
+
+function callOf(spy: ReturnType<typeof vi.fn>): { url: string; init: RequestInit; headers: Headers } {
+  const [url, init] = spy.mock.calls[0]! as [string, RequestInit];
+  return { url, init, headers: init.headers as Headers };
+}
+
+describe('registerAgent enrollment contract', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('uses GET with no body', async () => {
+    const spy = vi.fn().mockResolvedValue(activeResponse());
+    vi.stubGlobal('fetch', spy);
+
+    await registerAgent(config, boxKeypair, 'CI', 'signpub==', 'ci');
+
+    const { url, init } = callOf(spy);
+    expect(url).toBe('http://localhost:5000/api/agent/me');
+    expect(init.method ?? 'GET').toBe('GET');
+    expect(init.body).toBeUndefined();
+  });
+
+  it('sends the signing public key in the X-Agent-Signing-Key header', async () => {
+    const spy = vi.fn().mockResolvedValue(activeResponse());
+    vi.stubGlobal('fetch', spy);
+
+    await registerAgent(config, boxKeypair, 'CI', 'signpub==', 'ci');
+
+    expect(callOf(spy).headers.get('X-Agent-Signing-Key')).toBe('signpub==');
+  });
+
+  it('sends X-Agent-Type when a type is given (trimmed)', async () => {
+    const spy = vi.fn().mockResolvedValue(activeResponse());
+    vi.stubGlobal('fetch', spy);
+
+    await registerAgent(config, boxKeypair, 'CI', 'signpub==', '  ci  ');
+
+    expect(callOf(spy).headers.get('X-Agent-Type')).toBe('ci');
+  });
+
+  it('parses the active response into agentId / name / status', async () => {
+    const spy = vi.fn().mockResolvedValue(activeResponse());
+    vi.stubGlobal('fetch', spy);
+
+    const result = await registerAgent(config, boxKeypair, 'CI', 'signpub==', 'ci');
+
+    expect(result).toEqual({ status: 'active', agentId: 'agent-1', name: 'CI' });
+  });
+
+  it('maps deactivated / pending body statuses explicitly', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(bodyResponse('deactivated')));
+    expect(await registerAgent(config, boxKeypair)).toEqual({ status: 'deactivated', agentId: 'agent-1' });
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(bodyResponse('pending')));
+    expect(await registerAgent(config, boxKeypair)).toEqual({ status: 'pending', agentId: 'agent-1' });
+  });
+
+  it('throws on an unknown status instead of assuming active', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(bodyResponse('suspended')));
+
+    await expect(registerAgent(config, boxKeypair)).rejects.toThrow(/unexpected agent status.*suspended/);
+  });
+});

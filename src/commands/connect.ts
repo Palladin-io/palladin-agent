@@ -1,8 +1,10 @@
 import { Command } from 'commander';
-import { saveConfig } from '../config/config.js';
+import { saveConfig, AgentConfig } from '../config/config.js';
 import { ensureKeypair, publicKeyBase64 } from '../crypto/keypair.js';
+import { ensureSigningKeypair, signingPublicKeyBase64 } from '../crypto/signing.js';
 import { detectKeyTier, tierLabel, tierUpgradeHint } from '../crypto/secure-storage.js';
 import { registerAgent } from '../http/agent-api.js';
+import { loadRegistry, saveRegistry, registrySetAgentType } from '../config/registry.js';
 import { ProfilePaths } from '../config/paths.js';
 
 type GetProfile = () => { name: string; paths: ProfilePaths };
@@ -13,7 +15,8 @@ export function connectCommand(getProfile: GetProfile): Command {
     .argument('<api-key>', 'API key (must start with cv_)')
     .option('--host <host>', 'Claw Vault server URL', 'https://api.clawvault.io')
     .option('--id <name>', 'Agent display name to register with')
-    .action(async (apiKey: string, opts: { host: string; id?: string }) => {
+    .option('--type <type>', 'agent type/category, free-form e.g. ci, browser, backend')
+    .action(async (apiKey: string, opts: { host: string; id?: string; type?: string }) => {
       if (!apiKey.startsWith('cv_')) {
         console.error('Error: invalid API key — must start with cv_');
         process.exit(1);
@@ -21,20 +24,40 @@ export function connectCommand(getProfile: GetProfile): Command {
 
       const { name, paths } = getProfile();
       const keypair = await ensureKeypair(name, paths);
-      const config = { apiKey, host: opts.host.replace(/\/$/, '') };
+      const signingKeypair = await ensureSigningKeypair(name, paths);
+      const signingPubKey = signingPublicKeyBase64(signingKeypair);
+
+      const config: AgentConfig = { apiKey, host: opts.host.replace(/\/$/, ''), signingPublicKey: signingPubKey };
       saveConfig(config, paths);
 
+      const cliType = opts.type?.trim();
+      const registry = loadRegistry();
+      const hasEntry = registry.agents.some(a => a.name === name);
+      if (cliType && hasEntry) {
+        saveRegistry(registrySetAgentType(registry, name, cliType));
+      }
+      // Leave the type header off (undefined) when neither --type nor a stored type exists:
+      // the backend preserves an existing agent's type on reconnect and only defaults to
+      // "Unknown" at first enrollment. Sending a sentinel here would reset a known type.
+      const effectiveType = cliType ?? registry.agents.find(a => a.name === name)?.type;
+
       const tier = await detectKeyTier(name, paths);
-      console.log(`  Profile:    ${name}`);
-      console.log(`  Host:       ${config.host}`);
-      console.log(`  Public key: ${publicKeyBase64(keypair)}`);
-      console.log(`  Security:   ${tierLabel(tier)}`);
+      console.log(`  Profile:     ${name}`);
+      console.log(`  Host:        ${config.host}`);
+      console.log(`  Public key:  ${publicKeyBase64(keypair)}`);
+      console.log(`  Signing key: ${signingPubKey}`);
+      console.log(`  Security:    ${tierLabel(tier)}`);
       const hint = tierUpgradeHint(tier, name);
       if (hint) console.log(hint);
       console.log('');
 
       const displayName = opts.id ?? (name !== 'default' ? name : undefined);
-      const result = await registerAgent(config, keypair, displayName);
+      const result = await registerAgent(config, keypair, displayName, signingPubKey, effectiveType);
+
+      // agentId is needed to sign later requests; persisted regardless of approval state.
+      if (result.status === 'pending' || result.status === 'active' || result.status === 'deactivated') {
+        saveConfig({ ...config, agentId: result.agentId }, paths);
+      }
 
       switch (result.status) {
         case 'pending':

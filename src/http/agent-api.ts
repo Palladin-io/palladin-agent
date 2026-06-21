@@ -1,8 +1,10 @@
 import os from 'os';
 import { AgentConfig } from '../config/config.js';
 import { Keypair, publicKeyBase64 } from '../crypto/keypair.js';
-import { apiFetch } from './client.js';
+import { apiFetch, SigningContext } from './client.js';
 import { EncryptedCredential } from '../crypto/decrypt.js';
+
+export type { SigningContext } from './client.js';
 
 export type AgentRegistrationResult =
   | { status: 'pending';     agentId: string }
@@ -15,16 +17,25 @@ export async function registerAgent(
   config: AgentConfig,
   keypair: Keypair,
   name?: string,
+  signingPublicKeyBase64?: string,
+  type?: string,
 ): Promise<AgentRegistrationResult> {
   const headers = new Headers({
-    'X-Api-Key':         config.apiKey,
-    'X-Agent-Key':       publicKeyBase64(keypair),
-    'X-Agent-Hostname':  os.hostname(),
-    'Content-Type':      'application/json',
+    'X-Api-Key':        config.apiKey,
+    'X-Agent-Key':      publicKeyBase64(keypair),
+    'X-Agent-Hostname': os.hostname(),
   });
 
   if (name) {
     headers.set('X-Agent-Name', name);
+  }
+  const trimmedType = type?.trim();
+  if (trimmedType) {
+    headers.set('X-Agent-Type', trimmedType);
+  }
+  // Signing pubkey is sent once at connect, in a header — never per-request.
+  if (signingPublicKeyBase64) {
+    headers.set('X-Agent-Signing-Key', signingPublicKeyBase64);
   }
 
   let res: Response;
@@ -43,11 +54,19 @@ export async function registerAgent(
   }
 
   if (res.ok) {
-    const body = await res.json() as { id: string; name: string | null; status: string };
-    if (body.status === 'Deactivated') {
-      return { status: 'deactivated', agentId: body.id };
+    const body = await res.json() as { agentId: string; name: string | null; status: string };
+    switch (body.status) {
+      case 'active':
+        return { status: 'active', agentId: body.agentId, name: body.name };
+      case 'deactivated':
+        return { status: 'deactivated', agentId: body.agentId };
+      case 'pending':
+        return { status: 'pending', agentId: body.agentId };
+      default:
+        // Fail loud on contract drift rather than silently assuming the agent is
+        // approved — an agent must never grant itself access it wasn't given.
+        throw new AgentApiError(res.status, `unexpected agent status from server: "${body.status}"`);
     }
-    return { status: 'active', agentId: body.id, name: body.name };
   }
 
   return { status: 'unreachable', error: `HTTP ${res.status}` };
@@ -79,22 +98,20 @@ export async function searchEntries(
   keypair: Keypair,
   query: string,
   options?: { cursor?: string; pageSize?: number },
+  signing?: SigningContext,
 ): Promise<EntrySearchResult> {
   const params = new URLSearchParams({ query });
   if (options?.cursor) params.set('cursor', options.cursor);
   if (options?.pageSize) params.set('pageSize', String(options.pageSize));
 
-  const res = await apiFetch(`/api/agent/entries?${params.toString()}`, config, keypair);
+  const res = await apiFetch(`/api/agent/entries?${params.toString()}`, config, keypair, undefined, signing);
   if (!res.ok) {
     throw new AgentApiError(res.status, `entry search failed (HTTP ${res.status})`);
   }
   return await res.json() as EntrySearchResult;
 }
 
-// ── Inject failure telemetry (CVT-155) ───────────────────────────────────────
-// Reports a REDACTED inject diagnostic to the backend so the team sees unsupported
-// sites in near-real-time. Carries no field values, no secret, only the origin.
-
+// Redacted inject diagnostic — no field values, no secret, only the origin.
 export interface InjectFailureUpload {
   entryId: string;
   domain: string | null;
@@ -103,15 +120,12 @@ export interface InjectFailureUpload {
   controls: unknown[];
 }
 
-/**
- * Best-effort upload of a redacted inject-failure report. Never throws — telemetry must not break
- * the command, and the local JSONL copy is the offline fallback. Returns true when the backend
- * accepted it. Disabled by CLAW_VAULT_NO_DIAGNOSTICS=1.
- */
+// Best-effort: never throws (the local JSONL copy is the offline fallback).
 export async function uploadInjectFailure(
   config: AgentConfig,
   keypair: Keypair,
   body: InjectFailureUpload,
+  signing?: SigningContext,
 ): Promise<boolean> {
   if (process.env['CLAW_VAULT_NO_DIAGNOSTICS'] === '1') {
     return false;
@@ -120,8 +134,62 @@ export async function uploadInjectFailure(
     const res = await apiFetch('/api/agent/inject-failures', config, keypair, {
       method: 'POST',
       body: JSON.stringify(body),
-    });
+    }, signing);
     return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export const STALE_REASON_CODES = ['login_rejected', 'auth_failed', 'manual'] as const;
+
+export type StaleReasonCode = (typeof STALE_REASON_CODES)[number];
+
+export interface ReportCredentialStaleInput {
+  vaultId: string;
+  entryId: string;
+  code?: StaleReasonCode;
+  // NEVER include the secret or typed values.
+  note?: string;
+}
+
+export async function reportCredentialStale(
+  config: AgentConfig,
+  keypair: Keypair,
+  input: ReportCredentialStaleInput,
+  signing?: SigningContext,
+): Promise<void> {
+  const body: Record<string, unknown> = { code: input.code ?? 'manual' };
+  if (input.note) {
+    body.note = input.note;
+  }
+
+  const res = await apiFetch(
+    `/api/agent/vaults/${encodeURIComponent(input.vaultId)}/entries/${encodeURIComponent(input.entryId)}/credential-failure`,
+    config,
+    keypair,
+    { method: 'POST', body: JSON.stringify(body) },
+    signing,
+  );
+
+  if (!res.ok) {
+    throw new AgentApiError(res.status, `could not report the credential as stale (HTTP ${res.status})`);
+  }
+}
+
+// Best-effort: never throws, so an auto-report failure can't mask the real command result.
+export async function tryReportCredentialStale(
+  config: AgentConfig,
+  keypair: Keypair,
+  input: ReportCredentialStaleInput,
+  signing?: SigningContext,
+): Promise<boolean> {
+  if (process.env['CLAW_VAULT_NO_DIAGNOSTICS'] === '1') {
+    return false;
+  }
+  try {
+    await reportCredentialStale(config, keypair, input, signing);
+    return true;
   } catch {
     return false;
   }
@@ -195,6 +263,7 @@ export async function getCredential(
   vaultId: string,
   entryId: string,
   options?: GetCredentialOptions,
+  signing?: SigningContext,
 ): Promise<CredentialAccess> {
   const body: Record<string, unknown> = {};
   if (options?.reason) {
@@ -212,6 +281,7 @@ export async function getCredential(
     config,
     keypair,
     { method: 'POST', body: JSON.stringify(body) },
+    signing,
   );
 
   // 200 (granted/unavailable), 202 (pending), 403 (denied/revoked/expired/blocked/method-not-allowed)

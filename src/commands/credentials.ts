@@ -1,14 +1,19 @@
 import { Command } from 'commander';
 import { loadConfig } from '../config/config.js';
-import { loadKeypair, Keypair } from '../crypto/keypair.js';
+import { Keypair } from '../crypto/keypair.js';
 import { ProfilePaths } from '../config/paths.js';
 import {
   AgentApiError,
   searchEntries,
   getCredential,
+  reportCredentialStale,
   CredentialAccess,
   CredentialMethod,
+  StaleReasonCode,
+  STALE_REASON_CODES,
+  SigningContext,
 } from '../http/agent-api.js';
+import { resolveAgentContext } from '../http/agent-context.js';
 import { decryptCredential } from '../crypto/decrypt.js';
 import { ParsedSecret, parseSecret } from '../crypto/secret.js';
 import { accessMessage, GET_EXPOSURE_WARNING } from '../credential/access.js';
@@ -37,9 +42,7 @@ function describe(err: unknown): string {
 
 async function profileContext(getProfile: GetProfile) {
   const { name, paths } = getProfile();
-  const config = loadConfig(paths);
-  const keypair = await loadKeypair(name, paths);
-  return { config, keypair };
+  return resolveAgentContext(name, paths);
 }
 
 /** claw-vault search <query> — discovery (entry metadata, no secrets). */
@@ -49,10 +52,10 @@ export function searchCommand(getProfile: GetProfile): Command {
     .argument('<query>', 'search term (min 2 chars)')
     .option('--json', 'output raw JSON')
     .action(async (query: string, opts: { json?: boolean }) => {
-      const { config, keypair } = await profileContext(getProfile);
+      const { config, keypair, signing } = await profileContext(getProfile);
       let result;
       try {
-        result = await searchEntries(config, keypair, query.trim());
+        result = await searchEntries(config, keypair, query.trim(), undefined, signing);
       } catch (err) {
         fail(describe(err));
       }
@@ -81,25 +84,47 @@ export function searchCommand(getProfile: GetProfile): Command {
     });
 }
 
-/**
- * Fetch the credential once and, if the grant is still pending, long-poll the backend until it is
- * approved, reaches a terminal state, or the wait budget runs out (CVT-157). A heartbeat is emitted
- * on stderr while waiting so the host sees the process is alive; the wait is configurable CLI >
- * backend > default. The first POST creates the pending grant; subsequent polls reuse it (the
- * endpoint is idempotent for an in-flight pending), so no duplicate requests are created.
- */
+export function reportStaleCommand(getProfile: GetProfile): Command {
+  return new Command('report-stale')
+    .description('Report a credential as not working — notifies the vault owners so they can rotate it (sends no secret)')
+    .argument('<vaultId>', 'vault ID')
+    .argument('<entryId>', 'entry ID')
+    .option('--note <text>', 'short note for the owner (never include the secret or any typed value)')
+    .option(`--code <code>`, `cause: ${STALE_REASON_CODES.join(' | ')} (default: manual)`)
+    .action(async (vaultId: string, entryId: string, opts: { note?: string; code?: string }) => {
+      const code = opts.code?.trim();
+      if (code !== undefined && !STALE_REASON_CODES.includes(code as StaleReasonCode)) {
+        fail(`invalid --code "${code}". Use one of: ${STALE_REASON_CODES.join(', ')}.`);
+      }
+
+      const { config, keypair, signing } = await profileContext(getProfile);
+      try {
+        await reportCredentialStale(config, keypair, {
+          vaultId: vaultId.trim(),
+          entryId: entryId.trim(),
+          code: (code as StaleReasonCode) ?? 'manual',
+          note: opts.note?.trim() || undefined,
+        }, signing);
+      } catch (err) {
+        fail(describe(err));
+      }
+      console.log('Reported credential as not working — the vault owners have been notified to rotate it.');
+    });
+}
+
 async function getCredentialWaiting(
   config: ReturnType<typeof loadConfig>,
   keypair: Keypair,
   vaultId: string,
   entryId: string,
   opts: { reason?: string; method: CredentialMethod; wait: WaitCliOptions },
+  signing?: SigningContext,
 ): Promise<CredentialAccess> {
   const call = () =>
     getCredential(config, keypair, vaultId, entryId, {
       reason: opts.reason?.trim(),
       method: opts.method,
-    });
+    }, signing);
 
   let result = await call();
   if (result.access !== 'pending') return result;
@@ -117,13 +142,6 @@ async function getCredentialWaiting(
   });
 }
 
-/**
- * claw-vault get <vaultId> <entryId> [--reason <reason>]   (alias: retrieve)
- *
- * Returns the decrypted secret as plaintext on stdout. This puts the secret in the agent's context;
- * prefer `exec`/`inject` for hosted LLMs. Requests a grant on first use (method=get) and, by
- * default, waits for approval (see the wait flags).
- */
 export function getCredentialCommand(getProfile: GetProfile): Command {
   const cmd = new Command('get')
     .alias('retrieve')
@@ -135,7 +153,7 @@ export function getCredentialCommand(getProfile: GetProfile): Command {
   addWaitOptions(cmd);
   return cmd.action(
     async (vaultId: string, entryId: string, opts: { reason?: string; quiet?: boolean } & RawWaitOpts) => {
-      const { config, keypair } = await profileContext(getProfile);
+      const { config, keypair, signing } = await profileContext(getProfile);
 
       let result;
       try {
@@ -143,7 +161,7 @@ export function getCredentialCommand(getProfile: GetProfile): Command {
           reason: opts.reason,
           method: 'get',
           wait: parseWaitCli(opts),
-        });
+        }, signing);
       } catch (err) {
         fail(describe(err));
       }
@@ -158,8 +176,7 @@ export function getCredentialCommand(getProfile: GetProfile): Command {
         return;
       }
 
-      // Non-granted after the wait: report on stderr and exit with a code the agent can branch on
-      // (75 = still pending / retryable, 77 = denied & friends).
+      // Exit code lets the agent branch: 75 = retryable/pending, 77 = denied.
       const grantId = result.access === 'pending' ? result.grantId : undefined;
       console.error(`Error: ${accessMessage(result.access, 'get', grantId)}`);
       process.exit(exitCodeForAccess(result.access));
@@ -167,13 +184,6 @@ export function getCredentialCommand(getProfile: GetProfile): Command {
   );
 }
 
-/**
- * claw-vault exec <vaultId> <entryId> -- <command> [args...]
- *
- * Fetches the credential with method=exec and runs the command with the secret injected as
- * environment variables (CLAW_SECRET / CLAW_USERNAME / CLAW_PASSWORD / CLAW_<FIELD>). The plaintext
- * never reaches the agent's stdout — only the subprocess's output (with the secret masked) does.
- */
 export function execCommand(getProfile: GetProfile): Command {
   const cmd = new Command('exec')
     .description('Run a command with the credential injected as env vars — the secret never enters the agent context')
@@ -187,9 +197,9 @@ export function execCommand(getProfile: GetProfile): Command {
       if (command.length === 0) {
         fail('No command given. Usage: claw-vault exec <vaultId> <entryId> -- <command> [args...]');
       }
-      const { config, keypair } = await profileContext(getProfile);
+      const { config, keypair, signing } = await profileContext(getProfile);
 
-      const resolved = await resolveSecret(config, keypair, vaultId, entryId, 'exec', opts.reason, parseWaitCli(opts));
+      const resolved = await resolveSecret(config, keypair, vaultId, entryId, 'exec', opts.reason, parseWaitCli(opts), signing);
       if (!resolved.ok) {
         console.error(`Error: ${resolved.message}`);
         process.exit(exitCodeForAccess(resolved.access));
@@ -200,18 +210,11 @@ export function execCommand(getProfile: GetProfile): Command {
   );
 }
 
-/** Outcome of [resolveSecret] — either the parsed plaintext or a non-granted state to exit on. */
 export type ResolvedSecret =
   | { ok: true; secret: ParsedSecret; urlDomain: string | null; label: string }
   | { ok: false; access: Exclude<CredentialAccess['access'], 'granted'>; message: string };
 
-/**
- * Shared fetch+decrypt for exec/inject: fetches the grant for `method` (waiting for approval per the
- * CLI/backend policy), and on success returns the parsed plaintext plus the entry's trusted bound
- * domain (for inject's origin gate). On any non-granted state it returns `{ ok: false }` with a
- * ready message + the access kind so the caller can pick the right exit code. The plaintext is held
- * only in memory.
- */
+// Shared fetch+decrypt for exec/inject; plaintext is held only in memory.
 async function resolveSecret(
   config: ReturnType<typeof loadConfig>,
   keypair: Keypair,
@@ -220,10 +223,11 @@ async function resolveSecret(
   method: CredentialMethod,
   reason?: string,
   wait: WaitCliOptions = {},
+  signing?: SigningContext,
 ): Promise<ResolvedSecret> {
   let result;
   try {
-    result = await getCredentialWaiting(config, keypair, vaultId, entryId, { reason, method, wait });
+    result = await getCredentialWaiting(config, keypair, vaultId, entryId, { reason, method, wait }, signing);
   } catch (err) {
     fail(describe(err));
   }

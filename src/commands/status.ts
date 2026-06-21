@@ -1,7 +1,8 @@
 import { Command } from 'commander';
 import { existsSync } from 'fs';
-import { loadConfig } from '../config/config.js';
+import { loadConfig, saveConfig } from '../config/config.js';
 import { loadKeypair, publicKeyBase64 } from '../crypto/keypair.js';
+import { ensureSigningKeypair, signingPublicKeyBase64 } from '../crypto/signing.js';
 import { detectKeyTier, hasPrivateKey, tierLabel, tierUpgradeHint } from '../crypto/secure-storage.js';
 import { registerAgent } from '../http/agent-api.js';
 import { ProfilePaths } from '../config/paths.js';
@@ -28,14 +29,28 @@ export function statusCommand(getProfile: GetProfile): Command {
 
       const config  = loadConfig(paths);
       const keypair = await loadKeypair(name, paths);
+      // Backfill / register the signing key for agents enrolled before signing existed (CVT-157).
+      const signingKeypair = await ensureSigningKeypair(name, paths);
+      const signingPubKey = signingPublicKeyBase64(signingKeypair);
+      const signingTier = await detectKeyTier(name, paths, 'signing');
 
-      console.log(`Host:     ${config.host}`);
-      console.log(`Key:      ${publicKeyBase64(keypair)}`);
-      const hint = tierUpgradeHint(tier, name);
+      console.log(`Host:         ${config.host}`);
+      console.log(`Key:          ${publicKeyBase64(keypair)}`);
+      console.log(`Signing key:  ${signingPubKey}`);
+      console.log(`Signing tier: ${tierLabel(signingTier)}`);
+      // Hint to upgrade when either key still lives outside the OS keychain.
+      const hint = tierUpgradeHint(tier, name) ?? tierUpgradeHint(signingTier, name);
       if (hint) console.log(hint);
       console.log('');
 
-      const result = await registerAgent(config, keypair);
+      const result = await registerAgent(config, keypair, undefined, signingPubKey);
+
+      // Persist agentId + signing pubkey so later commands can sign their requests.
+      if (result.status === 'pending' || result.status === 'active' || result.status === 'deactivated') {
+        if (config.agentId !== result.agentId || config.signingPublicKey !== signingPubKey) {
+          saveConfig({ ...config, agentId: result.agentId, signingPublicKey: signingPubKey }, paths);
+        }
+      }
 
       switch (result.status) {
         case 'pending':
