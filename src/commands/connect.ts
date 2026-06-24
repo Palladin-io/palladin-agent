@@ -12,13 +12,13 @@ type GetProfile = () => { name: string; paths: ProfilePaths };
 export function connectCommand(getProfile: GetProfile): Command {
   return new Command('connect')
     .description('Connect agent to a Palladin server and register it')
-    .argument('<api-key>', 'API key (must start with cv_)')
+    .argument('<api-key>', 'API key (must start with pl_)')
     .option('--host <host>', 'Palladin server URL', 'https://api.palladin.io')
     .option('--id <name>', 'Agent display name to register with')
     .option('--type <type>', 'agent type/category, free-form e.g. ci, browser, backend')
     .action(async (apiKey: string, opts: { host: string; id?: string; type?: string }) => {
-      if (!apiKey.startsWith('cv_')) {
-        console.error('Error: invalid API key — must start with cv_');
+      if (!apiKey.startsWith('pl_')) {
+        console.error('Error: invalid API key — must start with pl_');
         process.exit(1);
       }
 

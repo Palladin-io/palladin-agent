@@ -216,7 +216,7 @@ describe('loadRegistry / saveRegistry round-trip', () => {
     const { loadRegistry } = await import('../../src/config/registry.js')
 
     // Create legacy files
-    writeFileSync(join(tmpDir, 'config.json'), JSON.stringify({ host: 'http://localhost', apiKey: 'cv_test' }))
+    writeFileSync(join(tmpDir, 'config.json'), JSON.stringify({ host: 'http://localhost', apiKey: 'pl_test' }))
     writeFileSync(join(tmpDir, 'agent.key'), 'base64key==')
     writeFileSync(join(tmpDir, 'agent.pub'), 'base64pub==')
 

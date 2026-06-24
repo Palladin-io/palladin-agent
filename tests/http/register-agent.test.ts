@@ -3,7 +3,7 @@ import { registerAgent } from '../../src/http/agent-api.js';
 import type { AgentConfig } from '../../src/config/config.js';
 import type { Keypair } from '../../src/crypto/keypair.js';
 
-const config: AgentConfig = { apiKey: 'cv_test', host: 'http://localhost:5000' };
+const config: AgentConfig = { apiKey: 'pl_test', host: 'http://localhost:5000' };
 const boxKeypair: Keypair = { publicKey: new Uint8Array(32).fill(1), privateKey: new Uint8Array(32).fill(2) };
 
 function activeResponse(): Response {

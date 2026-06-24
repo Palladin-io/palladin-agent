@@ -6,7 +6,7 @@ CLI + MCP server for Palladin. Manages agent identity (X25519 keypair), authenti
 
 - Node.js ≥ 20
 - Running Palladin backend (`dotnet run` or staging URL)
-- An API key generated in the Palladin panel (`cv_...`)
+- An API key generated in the Palladin panel (`pl_...`)
 
 ## Setup
 
@@ -34,7 +34,7 @@ Creates `~/.palladin/agent.key` (private, chmod 600) and `agent.pub`.
 ### 3. Connect to server
 
 ```bash
-palladin connect cv_YOUR_API_KEY --host http://localhost:5000
+palladin connect pl_YOUR_API_KEY --host http://localhost:5000
 ```
 
 Registers the agent with the server. The agent appears as **Pending** in the panel immediately.
@@ -136,7 +136,7 @@ Restart Claude Desktop. The agent must be **Active** before tools work.
 |------|----------|
 | `~/.palladin/agent.key` | X25519 private key (base64, chmod 600) |
 | `~/.palladin/agent.pub` | X25519 public key (base64) |
-| `~/.palladin/config.json` | `{ "apiKey": "cv_...", "host": "https://..." }` |
+| `~/.palladin/config.json` | `{ "apiKey": "pl_...", "host": "https://..." }` |
 
 Override the default directory with `PALLADIN_HOME=/custom/path`.
 
