@@ -1,4 +1,4 @@
-# PR Review Criteria — Claw Vault Agent CLI
+# PR Review Criteria — Palladin Agent CLI
 
 ---
 
@@ -28,10 +28,10 @@ This is the most important category. The CLI handles X25519 private keys. Every 
 
 ## 3. Multi-Profile Consistency
 
-- **All commands use `getProfile()`** — no command should construct `ProfilePaths` directly or hardcode `~/.claw-vault/`. Every file operation must go through the resolved profile.
+- **All commands use `getProfile()`** — no command should construct `ProfilePaths` directly or hardcode `~/.palladin/`. Every file operation must go through the resolved profile.
 - **Registry operations through helpers** — `registryAddAgent`, `registryDeleteAgent`, `registrySetDefault`, `registryRenameAgent` must be used — no direct mutation of registry objects and `saveRegistry`.
 - **`loadRegistry()` called once per command action** — not on every file operation.
-- **Auto-migration** — `loadRegistry()` handles legacy `~/.claw-vault/config.json` migration. New code must not bypass it.
+- **Auto-migration** — `loadRegistry()` handles legacy `~/.palladin/config.json` migration. New code must not bypass it.
 
 ---
 
@@ -39,7 +39,7 @@ This is the most important category. The CLI handles X25519 private keys. Every 
 
 - **Security tier shown where needed** — `init`, `connect`, `status`, `agents create` must all call `tierLabel(tier)` and display the result. New commands that store or load keys must also show the tier.
 - **Upgrade hint for non-keychain tiers** — `tierUpgradeHint(tier, name)` must be shown after any `tierLabel` output when tier ≠ `'keychain'`.
-- **Error messages are actionable** — error strings must tell the user what to run next (e.g. `"Run: claw-vault init"`). Bare `"Error"` without context is a Warning.
+- **Error messages are actionable** — error strings must tell the user what to run next (e.g. `"Run: palladin init"`). Bare `"Error"` without context is a Warning.
 - **Consistent exit codes** — `process.exit(1)` on unrecoverable errors; no `process.exit(0)` on errors; no missing `process.exit` in error branches.
 - **`--id` flag respected everywhere** — commands that read/write profile data must route through `getProfile()`, which reads `program.opts().id`.
 

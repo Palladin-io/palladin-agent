@@ -190,7 +190,7 @@ describe('loadRegistry / saveRegistry round-trip', () => {
   })
 
   it('saves and loads a registry', async () => {
-    vi.stubEnv('CLAW_VAULT_HOME', tmpDir)
+    vi.stubEnv('PALLADIN_HOME', tmpDir)
     const { saveRegistry, loadRegistry } = await import('../../src/config/registry.js')
 
     const reg: Registry = {
@@ -203,7 +203,7 @@ describe('loadRegistry / saveRegistry round-trip', () => {
   })
 
   it('returns empty registry when no file exists', async () => {
-    vi.stubEnv('CLAW_VAULT_HOME', tmpDir)
+    vi.stubEnv('PALLADIN_HOME', tmpDir)
     const { loadRegistry } = await import('../../src/config/registry.js')
 
     const reg = loadRegistry()
@@ -212,7 +212,7 @@ describe('loadRegistry / saveRegistry round-trip', () => {
   })
 
   it('auto-migrates legacy layout to agents/default/', async () => {
-    vi.stubEnv('CLAW_VAULT_HOME', tmpDir)
+    vi.stubEnv('PALLADIN_HOME', tmpDir)
     const { loadRegistry } = await import('../../src/config/registry.js')
 
     // Create legacy files

@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-The Agents module keeps a local `users` table (entity `ClawVault.Module.Agents.Domain.User`), populated cross-module via the `OnUserUpserted` trigger. The `agents` table has FK constraints `fk_agents_enrolled_by` and `fk_agents_deactivated_by` pointing at it.
+The Agents module keeps a local `users` table (entity `Palladin.Module.Agents.Domain.User`), populated cross-module via the `OnUserUpserted` trigger. The `agents` table has FK constraints `fk_agents_enrolled_by` and `fk_agents_deactivated_by` pointing at it.
 
 **Why:** modules communicate only through integration events; each module owns the slice of user data it needs. The Identity-module `User` returned by `SeedUserAsync` is NOT the same row as the Agents-module `User`.
 

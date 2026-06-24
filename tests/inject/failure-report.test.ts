@@ -64,7 +64,7 @@ describe('writeFailureReport', () => {
   afterEach(() => {
     for (const d of dirs) rmSync(d, { recursive: true, force: true });
     dirs.length = 0;
-    delete process.env['CLAW_VAULT_NO_DIAGNOSTICS'];
+    delete process.env['PALLADIN_NO_DIAGNOSTICS'];
   });
 
   function tempRoot() {
@@ -96,9 +96,9 @@ describe('writeFailureReport', () => {
     expect(JSON.parse(lines[0]!).reason).toContain('no login form');
   });
 
-  it('respects the CLAW_VAULT_NO_DIAGNOSTICS opt-out', () => {
+  it('respects the PALLADIN_NO_DIAGNOSTICS opt-out', () => {
     const root = tempRoot();
-    process.env['CLAW_VAULT_NO_DIAGNOSTICS'] = '1';
+    process.env['PALLADIN_NO_DIAGNOSTICS'] = '1';
     const report = buildFailureReport({
       reason: 'x', steps: [], vaultId: 'v', entryId: 'e', entryDomain: null,
       pageUrl: 'https://x.com', html: '<div></div>',
