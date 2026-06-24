@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { parseHTML } from 'linkedom';
-import { clawVaultRoot } from '../config/paths.js';
+import { palladinRoot } from '../config/paths.js';
 
 /**
  * Privacy-safe diagnostics for `inject` failures (CVT-151 follow-up). When the heuristic cannot
@@ -112,19 +112,19 @@ export function buildFailureReport(input: {
 }
 
 /** Directory where inject failure reports are appended (one JSONL file per day). */
-export function failureReportDir(root: string = clawVaultRoot): string {
+export function failureReportDir(root: string = palladinRoot): string {
   return join(root, 'inject-failures');
 }
 
 /**
- * Append a failure report as one JSON line to `~/.claw-vault/inject-failures/YYYY-MM-DD.jsonl`.
+ * Append a failure report as one JSON line to `~/.palladin/inject-failures/YYYY-MM-DD.jsonl`.
  * Best-effort: a write error never propagates (diagnostics must not break the command). Returns the
  * file path on success, or null when writing failed or capture is disabled.
  *
- * Opt-out: set `CLAW_VAULT_NO_DIAGNOSTICS=1` to disable failure capture entirely.
+ * Opt-out: set `PALLADIN_NO_DIAGNOSTICS=1` to disable failure capture entirely.
  */
 export function writeFailureReport(report: InjectFailureReport, root?: string): string | null {
-  if (process.env['CLAW_VAULT_NO_DIAGNOSTICS'] === '1') {
+  if (process.env['PALLADIN_NO_DIAGNOSTICS'] === '1') {
     return null;
   }
   try {

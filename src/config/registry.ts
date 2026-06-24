@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from 'fs';
-import { clawVaultRoot, registryPath, legacyPaths, profilePaths } from './paths.js';
+import { palladinRoot, registryPath, legacyPaths, profilePaths } from './paths.js';
 
 export interface AgentEntry {
   name: string;
@@ -23,7 +23,7 @@ export function loadRegistry(): Registry {
 }
 
 export function saveRegistry(registry: Registry): void {
-  mkdirSync(clawVaultRoot, { recursive: true });
+  mkdirSync(palladinRoot, { recursive: true });
   writeFileSync(registryPath, JSON.stringify(registry, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
@@ -53,7 +53,7 @@ export function registryDeleteAgent(registry: Registry, name: string): Registry 
     throw new Error(`Agent "${name}" not found.`);
   }
   if (registry.default === name) {
-    throw new Error(`Cannot delete the default agent. Run: claw-vault agents set-default <other>`);
+    throw new Error(`Cannot delete the default agent. Run: palladin agents set-default <other>`);
   }
   return { ...registry, agents: registry.agents.filter(a => a.name !== name) };
 }

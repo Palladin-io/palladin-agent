@@ -16,7 +16,7 @@ export interface AgentConfig {
 
 export function loadConfig(paths: ProfilePaths): AgentConfig {
   if (!existsSync(paths.config)) {
-    throw new Error('Not connected. Run: claw-vault connect <api-key> --host <host>');
+    throw new Error('Not connected. Run: palladin connect <api-key> --host <host>');
   }
   return JSON.parse(readFileSync(paths.config, 'utf8')) as AgentConfig;
 }

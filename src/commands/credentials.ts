@@ -45,7 +45,7 @@ async function profileContext(getProfile: GetProfile) {
   return resolveAgentContext(name, paths);
 }
 
-/** claw-vault search <query> — discovery (entry metadata, no secrets). */
+/** palladin search <query> — discovery (entry metadata, no secrets). */
 export function searchCommand(getProfile: GetProfile): Command {
   return new Command('search')
     .description("Search entries by name/url/description across the agent's organization")
@@ -195,7 +195,7 @@ export function execCommand(getProfile: GetProfile): Command {
   return cmd.action(
     async (vaultId: string, entryId: string, command: string[], opts: { reason?: string } & RawWaitOpts) => {
       if (command.length === 0) {
-        fail('No command given. Usage: claw-vault exec <vaultId> <entryId> -- <command> [args...]');
+        fail('No command given. Usage: palladin exec <vaultId> <entryId> -- <command> [args...]');
       }
       const { config, keypair, signing } = await profileContext(getProfile);
 

@@ -11,9 +11,9 @@ type GetProfile = () => { name: string; paths: ProfilePaths };
 
 export function connectCommand(getProfile: GetProfile): Command {
   return new Command('connect')
-    .description('Connect agent to a Claw Vault server and register it')
+    .description('Connect agent to a Palladin server and register it')
     .argument('<api-key>', 'API key (must start with cv_)')
-    .option('--host <host>', 'Claw Vault server URL', 'https://api.clawvault.io')
+    .option('--host <host>', 'Palladin server URL', 'https://api.palladin.io')
     .option('--id <name>', 'Agent display name to register with')
     .option('--type <type>', 'agent type/category, free-form e.g. ci, browser, backend')
     .action(async (apiKey: string, opts: { host: string; id?: string; type?: string }) => {
@@ -64,7 +64,7 @@ export function connectCommand(getProfile: GetProfile): Command {
           console.log('✓ Agent registered — awaiting approval');
           console.log(`  Agent ID: ${result.agentId}`);
           console.log('');
-          console.log('Approve this agent in the Claw Vault panel to activate it.');
+          console.log('Approve this agent in the Palladin panel to activate it.');
           break;
 
         case 'active':
@@ -76,7 +76,7 @@ export function connectCommand(getProfile: GetProfile): Command {
         case 'deactivated':
           console.warn('⚠ Agent is deactivated');
           console.warn(`  Agent ID: ${result.agentId}`);
-          console.warn('  Re-activate this agent in the Claw Vault panel.');
+          console.warn('  Re-activate this agent in the Palladin panel.');
           process.exit(1);
           break;
 
@@ -87,7 +87,7 @@ export function connectCommand(getProfile: GetProfile): Command {
 
         case 'unreachable':
           console.warn(`⚠ Config saved but could not reach server: ${result.error}`);
-          console.warn('  Run `claw-vault status` once the server is reachable.');
+          console.warn('  Run `palladin status` once the server is reachable.');
           break;
       }
     });

@@ -15,8 +15,8 @@ import { mcpServeCommand } from '../mcp/server.js';
 const program = new Command();
 
 program
-  .name('claw-vault')
-  .description('Claw Vault Agents — CLI + MCP server')
+  .name('palladin')
+  .description('Palladin Agents — CLI + MCP server')
   .version('0.1.0')
   .option('--id <name>', 'agent profile name (default: registry default)');
 

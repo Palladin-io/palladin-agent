@@ -87,7 +87,7 @@ export function makeHeartbeat(
     const elapsed = Math.round(info.elapsedMs / 1000);
     const total = Math.round(info.deadlineMs / 1000);
     write(
-      `[claw-vault] awaiting approval · grant=${info.grantId ?? '—'} · ${elapsed}s/${total}s · approve in the app\n`,
+      `[palladin] awaiting approval · grant=${info.grantId ?? '—'} · ${elapsed}s/${total}s · approve in the app\n`,
     );
   };
 }

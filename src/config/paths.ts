@@ -1,9 +1,9 @@
 import { homedir } from 'os';
 import { join } from 'path';
 
-export const clawVaultRoot = process.env['CLAW_VAULT_HOME'] ?? join(homedir(), '.claw-vault');
-export const agentsDir = join(clawVaultRoot, 'agents');
-export const registryPath = join(clawVaultRoot, 'registry.json');
+export const palladinRoot = process.env['PALLADIN_HOME'] ?? join(homedir(), '.palladin');
+export const agentsDir = join(palladinRoot, 'agents');
+export const registryPath = join(palladinRoot, 'registry.json');
 
 const NAME_RE = /^[a-z0-9_-]+$/i;
 
@@ -21,9 +21,9 @@ export function validateProfileName(name: string): void {
 }
 
 export const legacyPaths = {
-  config:     join(clawVaultRoot, 'config.json'),
-  privateKey: join(clawVaultRoot, 'agent.key'),
-  publicKey:  join(clawVaultRoot, 'agent.pub'),
+  config:     join(palladinRoot, 'config.json'),
+  privateKey: join(palladinRoot, 'agent.key'),
+  publicKey:  join(palladinRoot, 'agent.pub'),
 };
 
 export interface ProfilePaths {

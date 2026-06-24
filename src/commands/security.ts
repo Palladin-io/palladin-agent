@@ -21,7 +21,7 @@ export function securityCommand(getProfile: GetProfile): Command {
         }
 
         if (!existsSync(paths.privateKey)) {
-          console.log('No file-based key found. Run: claw-vault init');
+          console.log('No file-based key found. Run: palladin init');
           return;
         }
 

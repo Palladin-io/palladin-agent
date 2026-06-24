@@ -32,7 +32,7 @@ export function accessMessage(access: Exclude<CredentialAccess['access'], 'grant
 function methodNotAllowedMessage(method: CredentialMethod): string {
   const alternatives = (['exec', 'inject', 'get'] as CredentialMethod[])
     .filter((m) => m !== method)
-    .map((m) => `claw-vault ${m}`)
+    .map((m) => `palladin ${m}`)
     .join(' or ');
   return `This grant does not permit "${method}". The owner restricted how this credential may be used — try ${alternatives}, or ask them to allow "${method}".`;
 }
@@ -43,4 +43,4 @@ function methodNotAllowedMessage(method: CredentialMethod): string {
  */
 export const GET_EXPOSURE_WARNING =
   'Note: this secret is now in the agent\'s context. On a hosted LLM it may leave your machine. ' +
-  'Prefer `claw-vault exec` (injects into a subprocess) or `claw-vault inject` (fills a login form) to avoid exposing it.';
+  'Prefer `palladin exec` (injects into a subprocess) or `palladin inject` (fills a login form) to avoid exposing it.';

@@ -18,7 +18,7 @@ export function mcpServeCommand(getProfile: GetProfile): Command {
           const { config, keypair, signing } = await resolveAgentContext(name, paths);
 
           const server = new McpServer({
-            name: 'Claw Vault Agents',
+            name: 'Palladin Agents',
             version: '0.1.0',
           });
 

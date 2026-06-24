@@ -41,6 +41,6 @@ export function initCommand(getProfile: GetProfile): Command {
       const hint = tierUpgradeHint(tier, name);
       if (hint) console.log(hint);
       console.log('');
-      console.log(`Next: claw-vault${idFlag} connect <api-key> --host <host>`);
+      console.log(`Next: palladin${idFlag} connect <api-key> --host <host>`);
     });
 }
