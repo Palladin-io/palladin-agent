@@ -18,7 +18,7 @@ describe('uploadInjectFailure', () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => {
     vi.unstubAllGlobals();
-    delete process.env['CLAW_VAULT_NO_DIAGNOSTICS'];
+    delete process.env['PALLADIN_NO_DIAGNOSTICS'];
   });
 
   it('POSTs the redacted report to the agent endpoint', async () => {
@@ -46,7 +46,7 @@ describe('uploadInjectFailure', () => {
   });
 
   it('does not call the network when diagnostics are opted out', async () => {
-    process.env['CLAW_VAULT_NO_DIAGNOSTICS'] = '1';
+    process.env['PALLADIN_NO_DIAGNOSTICS'] = '1';
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
     expect(await uploadInjectFailure(config, keypair, body)).toBe(false);

@@ -10,7 +10,7 @@ describe('reportCredentialStale', () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => {
     vi.unstubAllGlobals();
-    delete process.env['CLAW_VAULT_NO_DIAGNOSTICS'];
+    delete process.env['PALLADIN_NO_DIAGNOSTICS'];
   });
 
   it('POSTs to the per-entry credential-failure endpoint with the agent auth headers', async () => {
@@ -64,7 +64,7 @@ describe('tryReportCredentialStale (best-effort auto-report)', () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => {
     vi.unstubAllGlobals();
-    delete process.env['CLAW_VAULT_NO_DIAGNOSTICS'];
+    delete process.env['PALLADIN_NO_DIAGNOSTICS'];
   });
 
   it('returns true when the backend accepts the report', async () => {
@@ -83,7 +83,7 @@ describe('tryReportCredentialStale (best-effort auto-report)', () => {
   });
 
   it('does not touch the network when diagnostics are opted out', async () => {
-    process.env['CLAW_VAULT_NO_DIAGNOSTICS'] = '1';
+    process.env['PALLADIN_NO_DIAGNOSTICS'] = '1';
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
     expect(await tryReportCredentialStale(config, keypair, { vaultId: 'v1', entryId: 'e1' })).toBe(false);

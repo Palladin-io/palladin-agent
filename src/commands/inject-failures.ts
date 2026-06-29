@@ -4,13 +4,13 @@ import { join } from 'path';
 import { failureReportDir, type InjectFailureReport } from '../inject/failure-report.js';
 
 /**
- * `claw-vault inject-failures` — review the redacted inject failure reports collected locally
+ * `palladin inject-failures` — review the redacted inject failure reports collected locally
  * (CVT-151 follow-up). This is the fast feedback loop for patching unsupported sites: it groups
  * misses by domain so you can see which forms the heuristic could not drive, inspect their (value-
  * free) structure, and turn them into fixtures or selector overrides.
  *
  * Reports are value-free by construction (see failure-report.ts) — no secrets, no field values,
- * origin only. Stored under ~/.claw-vault/inject-failures/*.jsonl.
+ * origin only. Stored under ~/.palladin/inject-failures/*.jsonl.
  */
 export function injectFailuresCommand(): Command {
   return new Command('inject-failures')

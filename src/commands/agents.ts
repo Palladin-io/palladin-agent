@@ -21,7 +21,7 @@ export function agentsCommand(): Command {
       .action(() => {
         const registry = loadRegistry();
         if (registry.agents.length === 0) {
-          console.log('No agents. Run: claw-vault agents create <name>');
+          console.log('No agents. Run: palladin agents create <name>');
           return;
         }
         for (const agent of registry.agents) {
@@ -62,7 +62,7 @@ export function agentsCommand(): Command {
         const hint = tierUpgradeHint(tier, name);
         if (hint) console.log(hint);
         console.log('');
-        console.log(`Next: claw-vault --id ${name} connect <api-key> --host <host>`);
+        console.log(`Next: palladin --id ${name} connect <api-key> --host <host>`);
       }),
   );
 

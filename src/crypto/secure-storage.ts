@@ -4,7 +4,7 @@ import { ProfilePaths } from '../config/paths.js';
 
 export type StorageTier = 'keychain' | 'env' | 'file';
 
-const SERVICE = 'claw-vault';
+const SERVICE = 'palladin';
 
 // 'box' = X25519 (unwrap DEKs); 'signing' = Ed25519 (sign requests). Separate slots so neither key is usable as the other.
 export type KeyKind = 'box' | 'signing';
@@ -15,7 +15,7 @@ function account(profile: string, kind: KeyKind): string {
 }
 
 function envVarName(profile: string, kind: KeyKind): string {
-  const base = kind === 'box' ? 'CLAW_VAULT_PRIVATE_KEY' : 'CLAW_VAULT_SIGNING_KEY';
+  const base = kind === 'box' ? 'PALLADIN_PRIVATE_KEY' : 'PALLADIN_SIGNING_KEY';
   const suffix = profile === 'default' ? '' : `_${profile.replace(/-/g, '_').toUpperCase()}`;
   return `${base}${suffix}`;
 }
@@ -99,8 +99,8 @@ export async function loadKey(
 
   throw new Error(
     kind === 'box'
-      ? 'No keypair found. Run: claw-vault init'
-      : 'No signing key found. Run: claw-vault connect to (re)enroll the agent.',
+      ? 'No keypair found. Run: palladin init'
+      : 'No signing key found. Run: palladin connect to (re)enroll the agent.',
   );
 }
 
@@ -175,5 +175,5 @@ export function tierLabel(tier: StorageTier): string {
 export function tierUpgradeHint(tier: StorageTier, profile: string): string | null {
   if (tier === 'keychain') return null;
   const idFlag = profile !== 'default' ? ` --id ${profile}` : '';
-  return `  Tip: claw-vault${idFlag} security upgrade  →  move keys to OS keychain`;
+  return `  Tip: palladin${idFlag} security upgrade  →  move keys to OS keychain`;
 }

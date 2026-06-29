@@ -7,7 +7,7 @@ allowed-tools: Read Write Edit Grep Glob Bash(gh pr *) Bash(gh api *) Bash(gh ap
 effort: high
 ---
 
-# Fix PR — Claw Vault Agent CLI
+# Fix PR — Palladin Agent CLI
 
 ## Kontekst PR
 
@@ -45,7 +45,7 @@ Przeczytaj wszystkie nierozwiązane komentarze. Dla każdego:
 
 Edytuj pliki używając `Edit`. Przestrzegaj konwencji (CLAUDE.md):
 - Klucz prywatny: keychain primary (`storePrivateKey`) → env var → plik `0o600`
-- Wszystkie komendy przez `getProfile()` — nigdy hardcoded `~/.claw-vault/`
+- Wszystkie komendy przez `getProfile()` — nigdy hardcoded `~/.palladin/`
 - Operacje na registry przez helpery (`registryAddAgent` etc.) — nigdy bezpośrednia mutacja
 - `@napi-rs/keyring` przez `try/catch` w dynamic import — graceful fallback, nigdy throw
 - Nigdy nie loguj klucza prywatnego ani API key w `console.*`

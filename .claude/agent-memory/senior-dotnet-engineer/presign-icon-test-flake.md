@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-`ClawVault.Tests.Integrations.Features.Vault.PresignIconTests.When_CdnNotConfigured_PresignsVaultIcon_Then_Returns503` fails even in complete isolation on a clean `main` checkout — expects 503 but gets 200.
+`Palladin.Tests.Integrations.Features.Vault.PresignIconTests.When_CdnNotConfigured_PresignsVaultIcon_Then_Returns503` fails even in complete isolation on a clean `main` checkout — expects 503 but gets 200.
 
 **Why:** the test depends on CDN-not-configured state that is not properly isolated in the shared `ApiFactory` fixture (likely CDN config bleeds in from another test or the fixture default).
 

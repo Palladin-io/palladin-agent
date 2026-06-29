@@ -20,8 +20,8 @@ export function statusCommand(getProfile: GetProfile): Command {
       const tier       = await detectKeyTier(name, paths);
 
       console.log(`Profile:  ${name}`);
-      console.log('Keypair:  ' + (hasKeypair ? `✓ ${tierLabel(tier)}` : '✗ not found (run: claw-vault init)'));
-      console.log('Config:   ' + (hasConfig  ? `✓ ${paths.config}` : '✗ not found (run: claw-vault connect)'));
+      console.log('Keypair:  ' + (hasKeypair ? `✓ ${tierLabel(tier)}` : '✗ not found (run: palladin init)'));
+      console.log('Config:   ' + (hasConfig  ? `✓ ${paths.config}` : '✗ not found (run: palladin connect)'));
 
       if (!hasKeypair || !hasConfig) {
         process.exit(1);
@@ -56,7 +56,7 @@ export function statusCommand(getProfile: GetProfile): Command {
         case 'pending':
           console.log('Agent:    ⏳ pending approval');
           console.log(`          ID: ${result.agentId}`);
-          console.log('          Approve in the Claw Vault panel to activate.');
+          console.log('          Approve in the Palladin panel to activate.');
           break;
 
         case 'active':

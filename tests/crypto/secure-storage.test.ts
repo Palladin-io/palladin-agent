@@ -114,7 +114,7 @@ describe('loadPrivateKey', () => {
 
   it('falls back to env var with tier "env" when keychain returns null', async () => {
     mockGetPassword.mockReturnValue(null)
-    vi.stubEnv('CLAW_VAULT_PRIVATE_KEY', FAKE_KEY)
+    vi.stubEnv('PALLADIN_PRIVATE_KEY', FAKE_KEY)
     const testPaths = { root: tmpDir, privateKey: join(tmpDir, 'agent.key'), publicKey: join(tmpDir, 'agent.pub'), config: join(tmpDir, 'config.json') }
 
     const { value, tier } = await loadPrivateKey('default', testPaths)
@@ -125,7 +125,7 @@ describe('loadPrivateKey', () => {
 
   it('uses profile-specific env var for non-default profiles', async () => {
     mockGetPassword.mockReturnValue(null)
-    vi.stubEnv('CLAW_VAULT_PRIVATE_KEY_CURSOR', FAKE_KEY)
+    vi.stubEnv('PALLADIN_PRIVATE_KEY_CURSOR', FAKE_KEY)
     const testPaths = { root: tmpDir, privateKey: join(tmpDir, 'agent.key'), publicKey: join(tmpDir, 'agent.pub'), config: join(tmpDir, 'config.json') }
 
     const { value, tier } = await loadPrivateKey('cursor', testPaths)
@@ -175,7 +175,7 @@ describe('detectKeyTier', () => {
 
   it('returns "env" when keychain null but env var set', async () => {
     mockGetPassword.mockReturnValue(null)
-    vi.stubEnv('CLAW_VAULT_PRIVATE_KEY', FAKE_KEY)
+    vi.stubEnv('PALLADIN_PRIVATE_KEY', FAKE_KEY)
     const testPaths = { root: tmpDir, privateKey: join(tmpDir, 'agent.key'), publicKey: join(tmpDir, 'agent.pub'), config: join(tmpDir, 'config.json') }
     expect(await detectKeyTier('default', testPaths)).toBe('env')
   })
@@ -209,7 +209,7 @@ describe('hasPrivateKey', () => {
 
   it('returns true when key is in env var', async () => {
     mockGetPassword.mockReturnValue(null)
-    vi.stubEnv('CLAW_VAULT_PRIVATE_KEY', FAKE_KEY)
+    vi.stubEnv('PALLADIN_PRIVATE_KEY', FAKE_KEY)
     const testPaths = { root: tmpDir, privateKey: join(tmpDir, 'agent.key'), publicKey: join(tmpDir, 'agent.pub'), config: join(tmpDir, 'config.json') }
     expect(await hasPrivateKey('default', testPaths)).toBe(true)
   })

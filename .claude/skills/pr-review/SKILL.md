@@ -1,13 +1,13 @@
 ---
 name: pr-review
-description: Reviews a pull request in the Claw Vault Agent CLI for TypeScript correctness, security (key storage, no plaintext secrets), CLI UX, and Node.js best practices. Posts findings as a structured GitHub PR comment.
+description: Reviews a pull request in the Palladin Agent CLI for TypeScript correctness, security (key storage, no plaintext secrets), CLI UX, and Node.js best practices. Posts findings as a structured GitHub PR comment.
 argument-hint: <pr-number>
 disable-model-invocation: true
 allowed-tools: Read Grep Glob Bash(gh pr view *) Bash(gh pr diff *) Bash(gh pr comment *) Bash(gh api *) Bash(gh api graphql *) Bash(git log *)
 effort: high
 ---
 
-# PR Review — Claw Vault Agent CLI
+# PR Review — Palladin Agent CLI
 
 ## Pull Request Context
 
@@ -86,7 +86,7 @@ gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$
 
 ```json
 {
-  "body": "## 🔍 PR Review — Claw Vault Agent CLI\n\n### Summary\n2–3 sentence verdict.\n\n### ✅ Highlights\n- good pattern noted",
+  "body": "## 🔍 PR Review — Palladin Agent CLI\n\n### Summary\n2–3 sentence verdict.\n\n### ✅ Highlights\n- good pattern noted",
   "event": "REQUEST_CHANGES",
   "comments": [
     {

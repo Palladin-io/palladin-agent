@@ -127,7 +127,7 @@ export async function uploadInjectFailure(
   body: InjectFailureUpload,
   signing?: SigningContext,
 ): Promise<boolean> {
-  if (process.env['CLAW_VAULT_NO_DIAGNOSTICS'] === '1') {
+  if (process.env['PALLADIN_NO_DIAGNOSTICS'] === '1') {
     return false;
   }
   try {
@@ -184,7 +184,7 @@ export async function tryReportCredentialStale(
   input: ReportCredentialStaleInput,
   signing?: SigningContext,
 ): Promise<boolean> {
-  if (process.env['CLAW_VAULT_NO_DIAGNOSTICS'] === '1') {
+  if (process.env['PALLADIN_NO_DIAGNOSTICS'] === '1') {
     return false;
   }
   try {

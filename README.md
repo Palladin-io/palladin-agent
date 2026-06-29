@@ -1,12 +1,12 @@
-# @claw-vault/agent
+# @palladin/agent
 
-CLI + MCP server for Claw Vault. Manages agent identity (X25519 keypair), authenticates with the backend, and exposes vault tools to AI assistants.
+CLI + MCP server for Palladin. Manages agent identity (X25519 keypair), authenticates with the backend, and exposes vault tools to AI assistants.
 
 ## Prerequisites
 
 - Node.js ≥ 20
-- Running Claw Vault backend (`dotnet run` or staging URL)
-- An API key generated in the Claw Vault panel (`cv_...`)
+- Running Palladin backend (`dotnet run` or staging URL)
+- An API key generated in the Palladin panel (`pl_...`)
 
 ## Setup
 
@@ -17,7 +17,7 @@ npm install
 npm run build
 ```
 
-Link globally to get the `claw-vault` command:
+Link globally to get the `palladin` command:
 
 ```bash
 npm link
@@ -26,34 +26,34 @@ npm link
 ### 2. Generate keypair
 
 ```bash
-claw-vault init
+palladin init
 ```
 
-Creates `~/.claw-vault/agent.key` (private, chmod 600) and `agent.pub`.
+Creates `~/.palladin/agent.key` (private, chmod 600) and `agent.pub`.
 
 ### 3. Connect to server
 
 ```bash
-claw-vault connect cv_YOUR_API_KEY --host http://localhost:5000
+palladin connect pl_YOUR_API_KEY --host http://localhost:5000
 ```
 
 Registers the agent with the server. The agent appears as **Pending** in the panel immediately.
 
 ### 4. Approve in panel
 
-Open the Claw Vault web panel → Agents → approve the agent. Status changes to **Active**.
+Open the Palladin web panel → Agents → approve the agent. Status changes to **Active**.
 
 ### 5. Verify
 
 ```bash
-claw-vault status
+palladin status
 ```
 
 Expected output when active:
 
 ```
-Keypair:  ✓ ~/.claw-vault/agent.key
-Config:   ✓ ~/.claw-vault/config.json
+Keypair:  ✓ ~/.palladin/agent.key
+Config:   ✓ ~/.palladin/config.json
 Host:     http://localhost:5000
 Key:      <base64 public key>
 
@@ -65,12 +65,12 @@ Agent:    ✓ active
 
 | Command | Description |
 |---------|-------------|
-| `claw-vault init` | Generate X25519 keypair. Use `--force` to overwrite. |
-| `claw-vault connect <api-key> --host <host>` | Save config and register agent with server. |
-| `claw-vault status` | Show keypair, config, and live agent status from server. |
-| `claw-vault list` | List accessible vaults. |
-| `claw-vault get <vault>/<entry>` | Fetch a credential. |
-| `claw-vault mcp serve` | Start MCP server (for AI assistant integration). |
+| `palladin init` | Generate X25519 keypair. Use `--force` to overwrite. |
+| `palladin connect <api-key> --host <host>` | Save config and register agent with server. |
+| `palladin status` | Show keypair, config, and live agent status from server. |
+| `palladin list` | List accessible vaults. |
+| `palladin get <vault>/<entry>` | Fetch a credential. |
+| `palladin mcp serve` | Start MCP server (for AI assistant integration). |
 
 ## MCP server
 
@@ -87,8 +87,8 @@ Edit the config file for your platform:
 ```json
 {
   "mcpServers": {
-    "claw-vault": {
-      "command": "claw-vault",
+    "palladin": {
+      "command": "palladin",
       "args": ["mcp", "serve"]
     }
   }
@@ -102,8 +102,8 @@ Restart Claude Desktop. The agent must be **Active** before tools work.
 ```json
 {
   "mcpServers": {
-    "claw-vault": {
-      "command": "claw-vault",
+    "palladin": {
+      "command": "palladin",
       "args": ["mcp", "serve"]
     }
   }
@@ -115,9 +115,9 @@ Restart Claude Desktop. The agent must be **Active** before tools work.
 ```json
 {
   "mcpServers": {
-    "claw-vault": {
+    "palladin": {
       "command": "node",
-      "args": ["/absolute/path/to/agent/dist/bin/claw-vault.js", "mcp", "serve"]
+      "args": ["/absolute/path/to/agent/dist/bin/palladin.js", "mcp", "serve"]
     }
   }
 }
@@ -134,16 +134,16 @@ Restart Claude Desktop. The agent must be **Active** before tools work.
 
 | File | Contents |
 |------|----------|
-| `~/.claw-vault/agent.key` | X25519 private key (base64, chmod 600) |
-| `~/.claw-vault/agent.pub` | X25519 public key (base64) |
-| `~/.claw-vault/config.json` | `{ "apiKey": "cv_...", "host": "https://..." }` |
+| `~/.palladin/agent.key` | X25519 private key (base64, chmod 600) |
+| `~/.palladin/agent.pub` | X25519 public key (base64) |
+| `~/.palladin/config.json` | `{ "apiKey": "pl_...", "host": "https://..." }` |
 
-Override the default directory with `CLAW_VAULT_HOME=/custom/path`.
+Override the default directory with `PALLADIN_HOME=/custom/path`.
 
 ## Windows notes
 
 - File permissions: `icacls` is used to restrict `agent.key` to the current user only. If `icacls` fails, a warning is printed — protect the file manually.
-- PowerShell / cmd both work for running `claw-vault` commands after `npm link`.
+- PowerShell / cmd both work for running `palladin` commands after `npm link`.
 - Line endings: no issues — all files are written as UTF-8 text.
 
 ## Development
