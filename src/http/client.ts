@@ -8,24 +8,13 @@ export interface SigningContext {
   keypair: SigningKeypair;
 }
 
-/**
- * Loopback hosts where plaintext http is acceptable for local development.
- *
- * `*.localhost` is trusted as a deliberate dev-only trade-off: RFC 6761 reserves it for loopback,
- * but resolution ultimately goes through the system resolver, so a hostile `/etc/hosts` could point
- * `foo.localhost` elsewhere. That only matters to an attacker already on the machine (who has lost
- * the game anyway); we keep the subdomain form because local dev commonly uses it.
- */
+/** Loopback hosts where plaintext http is acceptable for local dev. `*.localhost` is trusted despite relying on the system resolver — only exploitable by an attacker already on the machine. */
 export function isLocalHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
   return h === 'localhost' || h.endsWith('.localhost') || h === '127.0.0.1' || h === '::1' || h === '[::1]';
 }
 
-/**
- * Reject any host that would send the API key in cleartext (CVT-219). `https://` is always allowed;
- * `http://` is allowed only for loopback hosts (local dev). Any other scheme, or `http://` to a
- * remote host, throws — the API key is a bearer secret and must never travel unencrypted.
- */
+/** Reject any host that would send the API key in cleartext: https always, http only for loopback. */
 export function assertSecureHost(host: string): void {
   let url: URL;
   try {
@@ -51,9 +40,7 @@ export async function apiFetch(
   init?: RequestInit,
   signing?: SigningContext,
 ): Promise<Response> {
-  // Defence in depth: a hand-edited config could point at an http:// remote — never leak the key.
-  assertSecureHost(config.host);
-
+  assertSecureHost(config.host); // defence in depth: a hand-edited config could point http:// remote
   const headers = new Headers(init?.headers);
   headers.set('X-Api-Key',        config.apiKey);
   headers.set('X-Agent-Key',      publicKeyBase64(keypair));

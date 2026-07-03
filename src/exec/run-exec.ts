@@ -6,20 +6,11 @@ import { ParsedSecret } from '../crypto/secret.js';
 import { palladinRoot } from '../config/paths.js';
 
 /**
- * Run `command` with the credential injected into the subprocess environment (CVT-150), the `op run`
- * pattern. The secret reaches the child process but never the agent's own stdout.
+ * Run `command` with the credential injected into the subprocess environment (the `op run` pattern).
  *
- * TRUST CONTRACT (CVT-200): the child's stdout/stderr are treated as UNTRUSTED for an AI model. We
- * do NOT return them to the MCP caller. A prompt-injected agent can trivially make the command
- * re-encode the secret (base64/hex/reverse/split) to defeat any output filter, so masking can never
- * be a security guarantee. The only safe contract is to withhold child output from the model and
- * show it to the human operator instead:
- *   - CLI mode: streamed to the operator's own terminal.
- *   - MCP mode: streamed to the server's stderr (never stdout — that is the stdio protocol channel)
- *     and appended to a local, best-effort masked log. The model gets only the exit code + a note.
- *
- * The verbatim mask below is retained only as best-effort hygiene for the human-facing mirror/log;
- * it is explicitly NOT relied upon to protect the model.
+ * Child stdout/stderr are untrusted for a model: a prompt-injected agent can make the command
+ * re-encode the secret to defeat any mask, so output is withheld from the MCP caller and shown to
+ * the human instead. MCP mode streams it to stderr, never stdout (the stdio protocol channel).
  *
  * Env vars exported to the child:
  *   CLAW_SECRET            the primary secret (password for CREDENTIAL, value for KEY)
@@ -42,21 +33,16 @@ export interface ExecCaptureResult {
 
 export interface RunExecOptions {
   /**
-   * Where to mirror the child's (best-effort masked) output so a human can see it. The output is
-   * never returned to an AI model regardless of this setting.
-   *  - 'terminal': stdout → process.stdout, stderr → process.stderr (interactive CLI).
-   *  - a WritableStream: both streams mirrored there. The MCP server passes process.stderr — the
-   *    stdio JSON-RPC protocol lives on stdout, so child output must never touch it.
-   *  - undefined: capture only, no mirror.
+   * Where to mirror the child's masked output for a human; never returned to a model.
+   * 'terminal' → process.stdout/stderr; a WritableStream → both there (MCP passes process.stderr,
+   * since stdio JSON-RPC owns stdout); undefined → capture only.
    */
   mirror?: 'terminal' | NodeJS.WritableStream;
 }
 
 /**
- * Like {@link runExec} but captures the (best-effort masked) output and returns it. Callers that
- * serve an AI model MUST NOT forward the captured stdout/stderr to the model — use
- * {@link runExecForTool}, which withholds it. This function exists so the local log/mirror can be
- * built from the captured text.
+ * Like {@link runExec} but captures the masked output and returns it. Callers serving a model MUST
+ * NOT forward the captured stdout/stderr to it — use {@link runExecForTool}, which withholds it.
  */
 export async function runExecCapture(
   command: string[],
@@ -78,9 +64,7 @@ export async function runExecCapture(
     env[`CLAW_${key.toUpperCase()}`] = value;
   }
 
-  // Best-effort hygiene only (NOT a guarantee — see the trust contract above). Mask the longest
-  // value first so a value that contains another (e.g. password contains username) is fully
-  // redacted. No minimum-length floor: even a short secret value is masked in the human mirror/log.
+  // Mask longest value first so a value containing another (password contains username) is redacted.
   const secretValues = Array.from(
     new Set([secret.password, secret.username, ...Object.values(secret.fields)].filter((v): v is string => !!v)),
   ).sort((a, b) => b.length - a.length);
@@ -132,28 +116,21 @@ export async function runExecCapture(
   });
 }
 
-/** Result returned to an AI model by the MCP exec tool — deliberately carries NO command output. */
+/** Result returned to a model by the MCP exec tool — carries NO command output. */
 export interface ExecToolResult {
   exitCode: number;
-  /** Always the literal string `withheld` — the model never receives child stdout/stderr. */
   output: 'withheld';
   note: string;
-  /** Path to the local, best-effort masked log tail (for the human operator), when written. */
   localLog?: string;
 }
 
 export interface RunExecForToolOptions {
-  /** Where to mirror output for the human. Defaults to process.stderr (safe under stdio MCP). */
   mirror?: NodeJS.WritableStream;
   /** Root dir for the local log (tests override this). Defaults to the Palladin home. */
   logRoot?: string;
 }
 
-/**
- * Run a command for the MCP `exec_with_credential` tool and return a model-safe result. The child's
- * stdout/stderr are streamed to the operator (default: this process's stderr) and appended to a
- * local masked log — they are NEVER placed in the returned object, which the model can read.
- */
+/** Run a command for the MCP `exec_with_credential` tool and return a model-safe result. */
 export async function runExecForTool(
   command: string[],
   secret: ParsedSecret,
@@ -182,9 +159,8 @@ export function execLogDir(root: string = palladinRoot): string {
 const EXEC_LOG_TAIL_CHARS = 4000;
 
 /**
- * Append a best-effort, secret-masked tail of an exec result to
- * `~/.palladin/exec-logs/YYYY-MM-DD.log` (mode 0600, dir 0700). For the human operator only, never
- * the model. Best-effort: a write error never propagates. Opt out with `PALLADIN_NO_DIAGNOSTICS=1`.
+ * Append a masked tail of an exec result to `~/.palladin/exec-logs/YYYY-MM-DD.log` for the operator.
+ * Best-effort: write errors never propagate. Opt out with `PALLADIN_NO_DIAGNOSTICS=1`.
  */
 export function writeExecLog(result: ExecCaptureResult, root?: string): string | null {
   if (process.env['PALLADIN_NO_DIAGNOSTICS'] === '1') {
@@ -210,8 +186,7 @@ export function writeExecLog(result: ExecCaptureResult, root?: string): string |
  * A stream transform that replaces any occurrence of a secret value with `***`, robust to a secret
  * split across chunk boundaries. Each chunk: redact complete occurrences, then hold back only the
  * trailing characters that form a *prefix* of some secret (so the rest of that secret can still
- * arrive next chunk). Everything else is emitted immediately. Best-effort hygiene for the human
- * mirror/log only — NOT a security boundary (see the trust contract on runExec).
+ * arrive next chunk). Everything else is emitted immediately.
  */
 function makeMask(secrets: string[]): Transform {
   if (secrets.length === 0) {

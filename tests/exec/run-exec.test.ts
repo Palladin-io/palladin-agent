@@ -87,13 +87,11 @@ describe('runExecForTool — model-safe result (CVT-200)', () => {
       { mirror: mirror.stream, logRoot },
     );
 
-    // Exit code is passed through; there is no stdout/stderr field at all.
     expect(result.exitCode).toBe(0);
     expect(result.output).toBe('withheld');
     expect(result).not.toHaveProperty('stdout');
     expect(result).not.toHaveProperty('stderr');
 
-    // Neither the raw secret nor the surrounding echoed output leaks into the model-visible object.
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain('superSecretPassword123');
     expect(serialized).not.toContain('BEGIN');

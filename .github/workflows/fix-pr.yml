@@ -1,8 +1,5 @@
-# SECURITY (CVT-217): this workflow lets Claude Code push commits to a PR branch. It is
-# workflow_dispatch-only (never runs automatically on PR events) and must stay that way — a
-# maintainer must manually trigger it and review every resulting commit before merge. The Bash
-# allowlist below is deliberately narrowed to the specific subcommands the fixer needs; do NOT widen
-# it back to Bash(git:*)/Bash(gh:*)/Bash(npm:*), which would grant arbitrary repo/network actions.
+# SECURITY: this workflow pushes commits to a PR branch — keep it workflow_dispatch-only.
+# Keep the Bash allowlist narrowed to specific subcommands; do NOT widen back to Bash(git:*)/gh:*/npm:*.
 name: "Claude Code: Fix PR"
 
 on:
