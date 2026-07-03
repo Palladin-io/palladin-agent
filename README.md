@@ -130,6 +130,13 @@ Restart Claude Desktop. The agent must be **Active** before tools work.
 | `list_vaults` | List all vaults accessible to this agent |
 | `list_entries` | List entries in a vault (requires `vaultId`) |
 
+## Security notes
+
+- **HTTPS only.** `connect --host` (and every request) rejects `http://` to a remote host — the API key is a bearer secret and must never travel in cleartext. `http://` is allowed only for loopback hosts (`localhost`, `127.0.0.1`, `::1`) for local development; use `https://` everywhere else.
+- **`exec_with_credential` withholds command output.** The secret is injected into the child's environment, but the command's stdout/stderr are **not** returned to the model — a prompt-injected agent could make the command re-encode the secret (base64/hex/reverse) to defeat any output filter. The model receives only the exit code and a note; the human operator sees the output on the terminal (CLI) or the server's stderr (MCP), and a best-effort masked tail is written to `~/.palladin/exec-logs/` (opt out with `PALLADIN_NO_DIAGNOSTICS=1`). Judge success from the exit code.
+- **`inject` field-readback is an inherent limitation.** Because the agent controls its own browser, after the CLI types the password it can read the field's value back with its own JavaScript. This cannot be removed without taking browser control away from the agent, and it is not a regression: the origin/domain binding remains a solid control (the secret only ever reaches the real bound domain, never a phishing page), and `inject` protects against accidental leakage into a hosted-LLM context — not against a malicious agent that already holds the secret it is logging in with.
+- **Config/key files are private.** The Palladin home and its subdirectories are created with mode `0700`; key/config files with mode `0600`.
+
 ## Config files
 
 | File | Contents |

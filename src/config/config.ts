@@ -22,6 +22,6 @@ export function loadConfig(paths: ProfilePaths): AgentConfig {
 }
 
 export function saveConfig(config: AgentConfig, paths: ProfilePaths): void {
-  mkdirSync(paths.root, { recursive: true });
+  mkdirSync(paths.root, { recursive: true, mode: 0o700 });
   writeFileSync(paths.config, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
 }

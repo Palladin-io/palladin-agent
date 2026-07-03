@@ -75,7 +75,7 @@ export async function storeKey(
     return 'keychain';
   }
 
-  mkdirSync(paths.root, { recursive: true });
+  mkdirSync(paths.root, { recursive: true, mode: 0o700 });
   writeFileSync(files.privateKey, base64Key, { encoding: 'utf8', mode: 0o600 });
   return 'file';
 }

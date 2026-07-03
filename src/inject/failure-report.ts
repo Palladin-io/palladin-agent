@@ -129,7 +129,7 @@ export function writeFailureReport(report: InjectFailureReport, root?: string): 
   }
   try {
     const dir = failureReportDir(root);
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     const day = report.timestamp.slice(0, 10);
     const file = join(dir, `${day}.jsonl`);
     appendFileSync(file, `${JSON.stringify(report)}\n`, { encoding: 'utf8', mode: 0o600 });

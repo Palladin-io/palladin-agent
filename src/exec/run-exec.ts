@@ -1,12 +1,16 @@
 import { spawn } from 'child_process';
 import { Transform } from 'stream';
+import { appendFileSync, mkdirSync } from 'fs';
+import { join } from 'path';
 import { ParsedSecret } from '../crypto/secret.js';
+import { palladinRoot } from '../config/paths.js';
 
 /**
- * Run `command` with the credential injected into the subprocess environment (CVT-150), the `op run`
- * pattern. The secret reaches the child process but never the agent's own stdout: the child's
- * stdout/stderr are streamed through with any literal occurrence of a secret value masked, so a
- * command that accidentally echoes `$CLAW_PASSWORD` cannot leak it back into the agent's context.
+ * Run `command` with the credential injected into the subprocess environment (the `op run` pattern).
+ *
+ * Child stdout/stderr are untrusted for a model: a prompt-injected agent can make the command
+ * re-encode the secret to defeat any mask, so output is withheld from the MCP caller and shown to
+ * the human instead. MCP mode streams it to stderr, never stdout (the stdio protocol channel).
  *
  * Env vars exported to the child:
  *   CLAW_SECRET            the primary secret (password for CREDENTIAL, value for KEY)
@@ -17,7 +21,7 @@ import { ParsedSecret } from '../crypto/secret.js';
  * @returns the child's exit code (or 1 if it was killed by a signal).
  */
 export async function runExec(command: string[], secret: ParsedSecret): Promise<number> {
-  const result = await runExecCapture(command, secret, { stream: true });
+  const result = await runExecCapture(command, secret, { mirror: 'terminal' });
   return result.code;
 }
 
@@ -27,15 +31,23 @@ export interface ExecCaptureResult {
   stderr: string;
 }
 
+export interface RunExecOptions {
+  /**
+   * Where to mirror the child's masked output for a human; never returned to a model.
+   * 'terminal' → process.stdout/stderr; a WritableStream → both there (MCP passes process.stderr,
+   * since stdio JSON-RPC owns stdout); undefined → capture only.
+   */
+  mirror?: 'terminal' | NodeJS.WritableStream;
+}
+
 /**
- * Like {@link runExec} but always captures the (masked) output and returns it. Used by the MCP
- * `exec` tool, which must return the result as text to the model rather than to a terminal. When
- * `stream` is set the masked output is also written to the parent's stdout/stderr (CLI mode).
+ * Like {@link runExec} but captures the masked output and returns it. Callers serving a model MUST
+ * NOT forward the captured stdout/stderr to it — use {@link runExecForTool}, which withholds it.
  */
 export async function runExecCapture(
   command: string[],
   secret: ParsedSecret,
-  options?: { stream?: boolean },
+  options?: RunExecOptions,
 ): Promise<ExecCaptureResult> {
   const [cmd, ...args] = command;
   if (!cmd) {
@@ -52,11 +64,13 @@ export async function runExecCapture(
     env[`CLAW_${key.toUpperCase()}`] = value;
   }
 
-  // Values to mask in the child's output. Mask the longest first so a value that contains another
-  // (e.g. password contains username) is fully redacted.
+  // Mask longest value first so a value containing another (password contains username) is redacted.
   const secretValues = Array.from(
-    new Set([secret.password, secret.username, ...Object.values(secret.fields)].filter((v): v is string => !!v && v.length >= 4)),
+    new Set([secret.password, secret.username, ...Object.values(secret.fields)].filter((v): v is string => !!v)),
   ).sort((a, b) => b.length - a.length);
+
+  const mirrorOut = options?.mirror === 'terminal' ? process.stdout : options?.mirror;
+  const mirrorErr = options?.mirror === 'terminal' ? process.stderr : options?.mirror;
 
   return new Promise<ExecCaptureResult>((resolve) => {
     const child = spawn(cmd, args, { env, stdio: ['inherit', 'pipe', 'pipe'] as const });
@@ -68,11 +82,11 @@ export async function runExecCapture(
     const err = child.stderr.pipe(makeMask(secretValues));
     out.on('data', (d: Buffer | string) => {
       stdout += d.toString();
-      if (options?.stream) process.stdout.write(d);
+      mirrorOut?.write(d);
     });
     err.on('data', (d: Buffer | string) => {
       stderr += d.toString();
-      if (options?.stream) process.stderr.write(d);
+      mirrorErr?.write(d);
     });
 
     // Resolve only once the child has exited AND both masked streams have fully flushed (their
@@ -90,7 +104,7 @@ export async function runExecCapture(
     child.on('error', (e) => {
       const line = `Error: failed to run "${cmd}": ${e.message}\n`;
       stderr += line;
-      if (options?.stream) process.stderr.write(line);
+      mirrorErr?.write(line);
       resolve({ code: 127, stdout, stderr });
     });
     child.on('close', (code, signal) => {
@@ -100,6 +114,72 @@ export async function runExecCapture(
     out.on('end', settle);
     err.on('end', settle);
   });
+}
+
+/** Result returned to a model by the MCP exec tool — carries NO command output. */
+export interface ExecToolResult {
+  exitCode: number;
+  output: 'withheld';
+  note: string;
+  localLog?: string;
+}
+
+export interface RunExecForToolOptions {
+  mirror?: NodeJS.WritableStream;
+  /** Root dir for the local log (tests override this). Defaults to the Palladin home. */
+  logRoot?: string;
+}
+
+/** Run a command for the MCP `exec_with_credential` tool and return a model-safe result. */
+export async function runExecForTool(
+  command: string[],
+  secret: ParsedSecret,
+  options?: RunExecForToolOptions,
+): Promise<ExecToolResult> {
+  const mirror = options?.mirror ?? process.stderr;
+  const result = await runExecCapture(command, secret, { mirror });
+  const localLog = writeExecLog(result, options?.logRoot);
+  return {
+    exitCode: result.code,
+    output: 'withheld',
+    note:
+      "Command stdout/stderr were withheld from you and streamed to the operator's terminal instead. " +
+      'Output is treated as untrusted (a command can be coerced into re-encoding the secret to slip it ' +
+      'past any filter), so it is never returned here — judge success from the exit code. ' +
+      (localLog ? `A best-effort masked tail was written to ${localLog}.` : 'A local log could not be written.'),
+    ...(localLog ? { localLog } : {}),
+  };
+}
+
+/** Directory where local exec logs are appended. */
+export function execLogDir(root: string = palladinRoot): string {
+  return join(root, 'exec-logs');
+}
+
+const EXEC_LOG_TAIL_CHARS = 4000;
+
+/**
+ * Append a masked tail of an exec result to `~/.palladin/exec-logs/YYYY-MM-DD.log` for the operator.
+ * Best-effort: write errors never propagate. Opt out with `PALLADIN_NO_DIAGNOSTICS=1`.
+ */
+export function writeExecLog(result: ExecCaptureResult, root?: string): string | null {
+  if (process.env['PALLADIN_NO_DIAGNOSTICS'] === '1') {
+    return null;
+  }
+  try {
+    const dir = execLogDir(root);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const ts = new Date().toISOString();
+    const file = join(dir, `${ts.slice(0, 10)}.log`);
+    const tail = (s: string) => (s.length > EXEC_LOG_TAIL_CHARS ? `…${s.slice(s.length - EXEC_LOG_TAIL_CHARS)}` : s);
+    const block =
+      `--- ${ts} exit=${result.code} (output masked best-effort; withheld from model) ---\n` +
+      `[stdout]\n${tail(result.stdout)}\n[stderr]\n${tail(result.stderr)}\n`;
+    appendFileSync(file, block, { encoding: 'utf8', mode: 0o600 });
+    return file;
+  } catch {
+    return null;
+  }
 }
 
 /**

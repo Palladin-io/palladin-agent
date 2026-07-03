@@ -1,6 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { runExecCapture } from '../../src/exec/run-exec.js';
+import { mkdtempSync, readFileSync, existsSync, readdirSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { Writable } from 'stream';
+import { runExecCapture, runExecForTool } from '../../src/exec/run-exec.js';
 import { ParsedSecret } from '../../src/crypto/secret.js';
+
+function collectStream(): { stream: Writable; text: () => string } {
+  let buf = '';
+  const stream = new Writable({
+    write(chunk, _enc, cb) { buf += chunk.toString(); cb(); },
+  });
+  return { stream, text: () => buf };
+}
 
 function credential(username: string, password: string, extra: Record<string, string> = {}): ParsedSecret {
   return {
@@ -61,5 +73,78 @@ describe('runExecCapture — env injection + masking', () => {
   it('returns 127 when the command does not exist', async () => {
     const result = await runExecCapture(['this-command-does-not-exist-xyz'], credential('a', 'bbbb'));
     expect(result.code).toBe(127);
+  });
+});
+
+describe('runExecForTool — model-safe result (CVT-200)', () => {
+  it('does NOT return the child stdout/stderr to the model, only exit code + note', async () => {
+    const logRoot = mkdtempSync(join(tmpdir(), 'palladin-exec-'));
+    const mirror = collectStream();
+    const secret = credential('alice', 'superSecretPassword123');
+    const result = await runExecForTool(
+      ['node', '-e', 'process.stdout.write("BEGIN " + process.env.CLAW_PASSWORD + " END")'],
+      secret,
+      { mirror: mirror.stream, logRoot },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toBe('withheld');
+    expect(result).not.toHaveProperty('stdout');
+    expect(result).not.toHaveProperty('stderr');
+
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain('superSecretPassword123');
+    expect(serialized).not.toContain('BEGIN');
+    expect(serialized).not.toContain('END');
+  });
+
+  it('mirrors (masked) output to the operator stream so a human still sees it', async () => {
+    const logRoot = mkdtempSync(join(tmpdir(), 'palladin-exec-'));
+    const mirror = collectStream();
+    const secret = credential('alice', 'superSecretPassword123');
+    await runExecForTool(
+      ['node', '-e', 'process.stdout.write("BEGIN " + process.env.CLAW_PASSWORD + " END")'],
+      secret,
+      { mirror: mirror.stream, logRoot },
+    );
+    const seen = mirror.text();
+    expect(seen).toContain('BEGIN');
+    expect(seen).toContain('END');
+    expect(seen).not.toContain('superSecretPassword123');
+    expect(seen).toContain('***');
+  });
+
+  it('writes a masked local log for the operator (never the raw secret)', async () => {
+    const logRoot = mkdtempSync(join(tmpdir(), 'palladin-exec-'));
+    const mirror = collectStream();
+    const secret = credential('alice', 'superSecretPassword123');
+    const result = await runExecForTool(
+      ['node', '-e', 'process.stdout.write(process.env.CLAW_PASSWORD)'],
+      secret,
+      { mirror: mirror.stream, logRoot },
+    );
+    expect(result.localLog).toBeDefined();
+    expect(existsSync(result.localLog!)).toBe(true);
+    const contents = readFileSync(result.localLog!, 'utf8');
+    expect(contents).not.toContain('superSecretPassword123');
+    expect(contents).toContain('***');
+  });
+
+  it('honours PALLADIN_NO_DIAGNOSTICS=1 (no local log written)', async () => {
+    const logRoot = mkdtempSync(join(tmpdir(), 'palladin-exec-'));
+    const mirror = collectStream();
+    const prev = process.env['PALLADIN_NO_DIAGNOSTICS'];
+    process.env['PALLADIN_NO_DIAGNOSTICS'] = '1';
+    try {
+      const result = await runExecForTool(['node', '-e', 'process.stdout.write("x")'], credential('a', 'bbbb'), {
+        mirror: mirror.stream,
+        logRoot,
+      });
+      expect(result.localLog).toBeUndefined();
+      expect(readdirSync(logRoot).length).toBe(0);
+    } finally {
+      if (prev === undefined) delete process.env['PALLADIN_NO_DIAGNOSTICS'];
+      else process.env['PALLADIN_NO_DIAGNOSTICS'] = prev;
+    }
   });
 });
