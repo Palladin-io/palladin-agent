@@ -8,7 +8,14 @@ export interface SigningContext {
   keypair: SigningKeypair;
 }
 
-/** Loopback hosts where plaintext http is acceptable for local development. */
+/**
+ * Loopback hosts where plaintext http is acceptable for local development.
+ *
+ * `*.localhost` is trusted as a deliberate dev-only trade-off: RFC 6761 reserves it for loopback,
+ * but resolution ultimately goes through the system resolver, so a hostile `/etc/hosts` could point
+ * `foo.localhost` elsewhere. That only matters to an attacker already on the machine (who has lost
+ * the game anyway); we keep the subdomain form because local dev commonly uses it.
+ */
 export function isLocalHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
   return h === 'localhost' || h.endsWith('.localhost') || h === '127.0.0.1' || h === '::1' || h === '[::1]';

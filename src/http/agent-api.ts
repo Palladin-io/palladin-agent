@@ -21,7 +21,13 @@ export async function registerAgent(
   type?: string,
 ): Promise<AgentRegistrationResult> {
   // Enforce transport safety at the point the API key is sent, not only in the caller.
-  assertSecureHost(config.host);
+  // Return a clean result instead of throwing so callers (e.g. `status`) that don't pre-check
+  // the host don't surface an unhandled rejection.
+  try {
+    assertSecureHost(config.host);
+  } catch (err) {
+    return { status: 'unreachable', error: (err as Error).message };
+  }
 
   const headers = new Headers({
     'X-Api-Key':        config.apiKey,
