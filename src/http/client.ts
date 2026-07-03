@@ -8,6 +8,35 @@ export interface SigningContext {
   keypair: SigningKeypair;
 }
 
+/** Loopback hosts where plaintext http is acceptable for local development. */
+export function isLocalHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return h === 'localhost' || h.endsWith('.localhost') || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+}
+
+/**
+ * Reject any host that would send the API key in cleartext (CVT-219). `https://` is always allowed;
+ * `http://` is allowed only for loopback hosts (local dev). Any other scheme, or `http://` to a
+ * remote host, throws — the API key is a bearer secret and must never travel unencrypted.
+ */
+export function assertSecureHost(host: string): void {
+  let url: URL;
+  try {
+    url = new URL(host);
+  } catch {
+    throw new Error(`Invalid --host URL: "${host}"`);
+  }
+  if (url.protocol === 'https:') return;
+  if (url.protocol === 'http:' && isLocalHost(url.hostname)) return;
+  if (url.protocol === 'http:') {
+    throw new Error(
+      `Refusing to connect over http:// to "${url.hostname}" — the API key would be sent in cleartext. ` +
+        'Use https:// (http:// is allowed only for localhost).',
+    );
+  }
+  throw new Error(`Unsupported --host scheme "${url.protocol}" — use https:// (or http:// for localhost).`);
+}
+
 export async function apiFetch(
   path: string,
   config: AgentConfig,
@@ -15,6 +44,9 @@ export async function apiFetch(
   init?: RequestInit,
   signing?: SigningContext,
 ): Promise<Response> {
+  // Defence in depth: a hand-edited config could point at an http:// remote — never leak the key.
+  assertSecureHost(config.host);
+
   const headers = new Headers(init?.headers);
   headers.set('X-Api-Key',        config.apiKey);
   headers.set('X-Agent-Key',      publicKeyBase64(keypair));

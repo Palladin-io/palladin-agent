@@ -23,7 +23,7 @@ export function loadRegistry(): Registry {
 }
 
 export function saveRegistry(registry: Registry): void {
-  mkdirSync(palladinRoot, { recursive: true });
+  mkdirSync(palladinRoot, { recursive: true, mode: 0o700 });
   writeFileSync(registryPath, JSON.stringify(registry, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
@@ -80,7 +80,7 @@ export function registryRenameAgent(registry: Registry, oldName: string, newName
 
 function migrateLegacy(): Registry {
   const paths = profilePaths('default');
-  mkdirSync(paths.root, { recursive: true });
+  mkdirSync(paths.root, { recursive: true, mode: 0o700 });
   if (existsSync(legacyPaths.config))     renameSync(legacyPaths.config,     paths.config);
   if (existsSync(legacyPaths.privateKey)) renameSync(legacyPaths.privateKey, paths.privateKey);
   if (existsSync(legacyPaths.publicKey))  renameSync(legacyPaths.publicKey,  paths.publicKey);

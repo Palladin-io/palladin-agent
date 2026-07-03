@@ -16,7 +16,7 @@ import {
 import { decryptCredential } from '../crypto/decrypt.js';
 import { parseSecret } from '../crypto/secret.js';
 import { accessMessage, GET_EXPOSURE_WARNING } from '../credential/access.js';
-import { runExecCapture } from '../exec/run-exec.js';
+import { runExecForTool } from '../exec/run-exec.js';
 import { injectCredential, InjectablePage } from '../inject/inject-runner.js';
 import { buildFailureReport, writeFailureReport } from '../inject/failure-report.js';
 
@@ -97,7 +97,8 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
     {
       description:
         'Run a shell command with the credential injected as environment variables (CLAW_SECRET, CLAW_USERNAME, CLAW_PASSWORD, CLAW_<FIELD>). ' +
-        'The secret is NOT returned to you — only the command output (with the secret masked) and exit code. ' +
+        'The secret is NOT returned to you. Neither is the command output: stdout/stderr are streamed to the operator and withheld from you, ' +
+        'because a command can be coerced into re-encoding the secret (base64/hex/reverse) to slip it past any filter — so you receive only the exit code and a note. Judge success from the exit code. ' +
         'Use this instead of get_credential whenever the secret is only needed to authenticate a command (curl, psql, git, …).',
       inputSchema: z.object({
         vaultId: z.string().describe('Vault ID'),
@@ -111,8 +112,8 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
       if ('error' in resolved) {
         return fail(resolved.error);
       }
-      const result = await runExecCapture(command, resolved.secret);
-      return ok(JSON.stringify({ exitCode: result.code, stdout: result.stdout, stderr: result.stderr }, null, 2));
+      const result = await runExecForTool(command, resolved.secret);
+      return ok(JSON.stringify(result, null, 2));
     }
   );
 

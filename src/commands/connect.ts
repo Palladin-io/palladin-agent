@@ -4,6 +4,7 @@ import { ensureKeypair, publicKeyBase64 } from '../crypto/keypair.js';
 import { ensureSigningKeypair, signingPublicKeyBase64 } from '../crypto/signing.js';
 import { detectKeyTier, tierLabel, tierUpgradeHint } from '../crypto/secure-storage.js';
 import { registerAgent } from '../http/agent-api.js';
+import { assertSecureHost } from '../http/client.js';
 import { loadRegistry, saveRegistry, registrySetAgentType } from '../config/registry.js';
 import { ProfilePaths } from '../config/paths.js';
 
@@ -19,6 +20,13 @@ export function connectCommand(getProfile: GetProfile): Command {
     .action(async (apiKey: string, opts: { host: string; id?: string; type?: string }) => {
       if (!apiKey.startsWith('pl_')) {
         console.error('Error: invalid API key — must start with pl_');
+        process.exit(1);
+      }
+
+      try {
+        assertSecureHost(opts.host);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
         process.exit(1);
       }
 

@@ -1,3 +1,8 @@
+# SECURITY (CVT-217): this workflow lets Claude Code push commits to a PR branch. It is
+# workflow_dispatch-only (never runs automatically on PR events) and must stay that way — a
+# maintainer must manually trigger it and review every resulting commit before merge. The Bash
+# allowlist below is deliberately narrowed to the specific subcommands the fixer needs; do NOT widen
+# it back to Bash(git:*)/Bash(gh:*)/Bash(npm:*), which would grant arbitrary repo/network actions.
 name: "Claude Code: Fix PR"
 
 on:
@@ -99,5 +104,5 @@ jobs:
             --model "$CLAUDE_MODEL" \
             --max-turns 50 \
             --dangerously-skip-permissions \
-            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(gh:*),Bash(jq:*),Bash(git:*),Bash(npm:*)" \
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(jq:*),Bash(gh pr:*),Bash(gh api:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),Bash(git restore:*),Bash(git switch:*),Bash(git fetch:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git config:*),Bash(npm ci),Bash(npm run build:*),Bash(npm test:*),Bash(npm run lint:*)" \
             < /tmp/fix_prompt.md
