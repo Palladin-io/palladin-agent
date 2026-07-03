@@ -1,7 +1,7 @@
 import os from 'os';
 import { AgentConfig } from '../config/config.js';
 import { Keypair, publicKeyBase64 } from '../crypto/keypair.js';
-import { apiFetch, SigningContext } from './client.js';
+import { apiFetch, assertSecureHost, SigningContext } from './client.js';
 import { EncryptedCredential } from '../crypto/decrypt.js';
 
 export type { SigningContext } from './client.js';
@@ -20,6 +20,9 @@ export async function registerAgent(
   signingPublicKeyBase64?: string,
   type?: string,
 ): Promise<AgentRegistrationResult> {
+  // Enforce transport safety at the point the API key is sent, not only in the caller.
+  assertSecureHost(config.host);
+
   const headers = new Headers({
     'X-Api-Key':        config.apiKey,
     'X-Agent-Key':      publicKeyBase64(keypair),

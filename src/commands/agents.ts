@@ -51,7 +51,7 @@ export function agentsCommand(): Command {
         if (isFirst) updated = { ...updated, default: name };
 
         const paths = profilePaths(name);
-        mkdirSync(paths.root, { recursive: true });
+        mkdirSync(paths.root, { recursive: true, mode: 0o700 });
         const keypair = await generateKeypair();
         const tier = await saveKeypair(keypair, name, paths);
         saveRegistry(updated);
