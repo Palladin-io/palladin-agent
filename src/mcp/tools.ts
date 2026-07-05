@@ -19,7 +19,7 @@ import { accessMessage, GET_EXPOSURE_WARNING } from '../credential/access.js';
 import { resolveField, injectionValue, redactTotpSecrets, FieldSelectionError } from '../credential/fields.js';
 import { runExecForTool } from '../exec/run-exec.js';
 import { runScriptForTool, assertAllowedInterpreter, ScriptError } from '../exec/run-script.js';
-import { prepareScriptEnv } from '../exec/script-refs.js';
+import { prepareScriptEnv, applyDefaultVaultId } from '../exec/script-refs.js';
 import { injectCredential, InjectablePage } from '../inject/inject-runner.js';
 import { buildFailureReport, writeFailureReport } from '../inject/failure-report.js';
 
@@ -132,7 +132,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
         if (command && command.length > 0) {
           return fail('this entry is a script — omit `command`; it runs its own interpreter.');
         }
-        return execScriptForTool(config, keypair, resolved.secret.script, reason, signing);
+        return execScriptForTool(config, keypair, vaultId, resolved.secret.script, reason, signing);
       }
 
       if (!command || command.length === 0) {
@@ -293,6 +293,7 @@ async function resolveForTool(
 async function execScriptForTool(
   config: AgentConfig,
   keypair: Keypair,
+  scriptVaultId: string,
   script: ScriptPayload,
   reason: string | undefined,
   signing: SigningContext | undefined,
@@ -304,7 +305,8 @@ async function execScriptForTool(
     throw err;
   }
 
-  const prepared = await prepareScriptEnv(script.refs, async (ref) => {
+  const refs = applyDefaultVaultId(script.refs, scriptVaultId);
+  const prepared = await prepareScriptEnv(refs, async (ref) => {
     const resolved = await resolveForTool(config, keypair, ref.vaultId!, ref.entryId, 'exec', reason, signing);
     return 'error' in resolved ? { ok: false, message: resolved.error } : { ok: true, secret: resolved.secret };
   });

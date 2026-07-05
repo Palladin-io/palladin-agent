@@ -95,7 +95,7 @@ palladin inject <vaultId> <entryId> --cdp … --fill-only --password-selector '#
 
 A full `get` (no `--field`) redacts every TOTP secret in the output, substituting the current code.
 
-**Script entries.** A Script entry stores a small script plus a whitelisted interpreter (`bash`, `sh`, `node`, `python`) and a list of references to other entries. Running it delivers each referenced entry through **this agent's own grants**, injects their values as the declared env vars, then executes the script:
+**Script entries.** A Script entry stores a small script plus a whitelisted interpreter (`bash`, `sh`, `node`, `python` — run as `python3`) and a list of references to other entries. A reference without its own `vaultId` is assumed to live in the script's vault. Running it delivers each referenced entry through **this agent's own grants**, injects their values as the declared env vars, then executes the script:
 
 ```bash
 palladin exec <vaultId> <script-entry-id>          # no command — the script IS the command

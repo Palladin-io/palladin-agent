@@ -14,6 +14,14 @@ export type PreparedScriptEnv =
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
+ * Fill in a missing ref `vaultId` with the Script entry's own vault. Web/mobile omit `vaultId` when a
+ * reference lives in the same vault as the script, so this is the common case, not an error.
+ */
+export function applyDefaultVaultId(refs: ScriptRef[], fallbackVaultId: string): ScriptRef[] {
+  return refs.map((ref) => (ref.vaultId ? ref : { ...ref, vaultId: fallbackVaultId }));
+}
+
+/**
  * Deliver every declared script reference through the agent's own grants and build the environment
  * for the subprocess. Runs to completion BEFORE any script executes: a single missing grant, missing
  * vaultId, or bad env name aborts the whole run with a clear message and nothing is executed.

@@ -34,6 +34,11 @@ export function assertAllowedInterpreter(interpreter: string): Interpreter {
   return normalised as Interpreter;
 }
 
+/** Map a whitelisted interpreter to the executable to spawn (`python` → `python3` on modern systems). */
+export function interpreterBinary(interpreter: Interpreter): string {
+  return interpreter === 'python' ? 'python3' : interpreter;
+}
+
 export interface RunScriptInput {
   /** The referenced-entry values, exported to the child under their declared env-var names. */
   env: NodeJS.ProcessEnv;
@@ -56,7 +61,7 @@ export async function runScript(script: string, interpreter: string, input: RunS
   const file = join(dir, 'script');
   try {
     writeFileSync(file, script, { encoding: 'utf8', mode: 0o600 });
-    return await runMasked([bin, file], input);
+    return await runMasked([interpreterBinary(bin), file], input);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -20,7 +20,7 @@ import { accessMessage, GET_EXPOSURE_WARNING } from '../credential/access.js';
 import { resolveField, injectionValue, redactTotpSecrets, FieldSelector, FieldSelectionError } from '../credential/fields.js';
 import { runExec } from '../exec/run-exec.js';
 import { runScript, assertAllowedInterpreter, ScriptError } from '../exec/run-script.js';
-import { prepareScriptEnv } from '../exec/script-refs.js';
+import { prepareScriptEnv, applyDefaultVaultId } from '../exec/script-refs.js';
 import {
   awaitGrant,
   makeHeartbeat,
@@ -235,7 +235,7 @@ export function execCommand(getProfile: GetProfile): Command {
         if (command.length > 0) {
           fail('this entry is a script — do not pass a command; run `palladin exec <vaultId> <entryId>` to execute the stored script.');
         }
-        const code = await execScriptEntry(config, keypair, signing, resolved.secret.script, { reason: opts.reason, wait });
+        const code = await execScriptEntry(config, keypair, signing, vaultId, resolved.secret.script, { reason: opts.reason, wait });
         process.exit(code);
       }
 
@@ -293,6 +293,7 @@ async function execScriptEntry(
   config: ReturnType<typeof loadConfig>,
   keypair: Keypair,
   signing: SigningContext | undefined,
+  scriptVaultId: string,
   script: ScriptPayload,
   opts: { reason?: string; wait: WaitCliOptions },
 ): Promise<number> {
@@ -303,7 +304,9 @@ async function execScriptEntry(
     throw err;
   }
 
-  const prepared = await prepareScriptEnv(script.refs, async (ref) => {
+  // A ref without its own vaultId lives in the Script entry's vault (web/mobile omit it then).
+  const refs = applyDefaultVaultId(script.refs, scriptVaultId);
+  const prepared = await prepareScriptEnv(refs, async (ref) => {
     const r = await resolveSecret(config, keypair, ref.vaultId!, ref.entryId, 'exec', opts.reason, opts.wait, signing);
     return r.ok ? { ok: true, secret: r.secret } : { ok: false, message: r.message };
   });

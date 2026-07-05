@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { existsSync } from 'fs';
 import { Writable } from 'stream';
-import { runScript, assertAllowedInterpreter, ScriptError, ALLOWED_INTERPRETERS } from '../../src/exec/run-script.js';
+import { runScript, assertAllowedInterpreter, interpreterBinary, ScriptError, ALLOWED_INTERPRETERS } from '../../src/exec/run-script.js';
 
 function collectStream(): { stream: Writable; text: () => string } {
   let buf = '';
@@ -22,6 +22,15 @@ describe('assertAllowedInterpreter', () => {
     expect(() => assertAllowedInterpreter('ruby')).toThrow(ScriptError);
     expect(() => assertAllowedInterpreter('rm -rf /')).toThrow(ScriptError);
     expect(() => assertAllowedInterpreter('')).toThrow(ScriptError);
+  });
+});
+
+describe('interpreterBinary', () => {
+  it('runs python as python3, everything else as-is', () => {
+    expect(interpreterBinary('python')).toBe('python3');
+    expect(interpreterBinary('node')).toBe('node');
+    expect(interpreterBinary('bash')).toBe('bash');
+    expect(interpreterBinary('sh')).toBe('sh');
   });
 });
 
