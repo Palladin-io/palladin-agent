@@ -65,6 +65,29 @@ describe('parseSecret — v2 custom fields', () => {
     expect(s.fields.RECOVERY_EMAIL).toBe('a@b.com');
   });
 
+  it('parses a multiline field and exposes it for env injection like text', () => {
+    const s = parseSecret(
+      JSON.stringify({ v: 2, value: 'x', fields: [{ id: 'm1', label: 'SSH key', type: 'multiline', value: 'line1\nline2' }] }),
+    );
+    expect(s.customFields[0]).toMatchObject({ type: 'multiline', value: 'line1\nline2' });
+    expect(s.fields.SSH_KEY).toBe('line1\nline2');
+  });
+
+  it('carries the agentVisible flag when set, omits it otherwise', () => {
+    const s = parseSecret(
+      JSON.stringify({
+        v: 2,
+        value: 'x',
+        fields: [
+          { id: 'a', label: 'Public note', type: 'text', value: 'hi', agentVisible: true },
+          { id: 'b', label: 'Private', type: 'text', value: 'secret' },
+        ],
+      }),
+    );
+    expect(s.customFields[0]!.agentVisible).toBe(true);
+    expect(s.customFields[1]!.agentVisible).toBeUndefined();
+  });
+
   it('never puts a totp shared secret into the env-injection map', () => {
     const s = parseSecret(
       JSON.stringify({ v: 2, value: 'x', fields: [{ id: 'f3', label: 'Authy', type: 'totp', value: JSON.stringify({ secret: 'JBSWY3DP' }) }] }),

@@ -83,12 +83,20 @@ export async function registerAgent(
 // Org-wide entry search. Metadata only — never ciphertext. Starting point of the
 // flow: search_entries → request_access → get_grant_status → retrieve_credential.
 
+/** A field the user explicitly marked visible to agents — exposed as plain metadata (no secret). */
+export interface AgentVisibleField {
+  label: string;
+  value: string;
+}
+
 export interface EntrySearchItem {
   entryId: string;
   vaultId: string;
   label: string;
   urlDomain: string | null;
   description: string | null;
+  /** User-designated agent-visible fields (like label/description — never a secret). */
+  agentFields?: AgentVisibleField[];
 }
 
 export interface EntrySearchResult {

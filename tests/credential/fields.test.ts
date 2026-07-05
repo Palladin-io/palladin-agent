@@ -46,6 +46,11 @@ describe('resolveField — custom fields', () => {
     expect(resolveField(credentialV2(), { fieldId: 'f2' })).toMatchObject({ kind: 'value', type: 'concealed', value: '4242' });
   });
 
+  it('resolves a multiline field, preserving newlines', () => {
+    const s = parseSecret(JSON.stringify({ v: 2, value: 'x', fields: [{ id: 'm', label: 'SSH key', type: 'multiline', value: 'a\nb' }] }));
+    expect(resolveField(s, { field: 'SSH key' })).toMatchObject({ kind: 'value', type: 'multiline', value: 'a\nb' });
+  });
+
   it('returns a TOTP code (not the secret) for a totp field', () => {
     const resolved = resolveField(credentialV2(), { field: 'Authenticator' });
     expect(resolved.kind).toBe('totp');

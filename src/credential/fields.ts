@@ -12,7 +12,7 @@ export interface FieldSelector {
  * the shared secret); `value` carries the field's plaintext for non-totp fields.
  */
 export type ResolvedField =
-  | { kind: 'value'; label: string; type: 'well-known' | 'text' | 'concealed'; value: string }
+  | { kind: 'value'; label: string; type: 'well-known' | 'text' | 'concealed' | 'multiline'; value: string }
   | { kind: 'totp'; label: string; code: string; expiresIn: number };
 
 /** Thrown when a selector matches no field, or matches an ambiguous set (duplicate labels). */

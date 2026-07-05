@@ -68,7 +68,7 @@ Agent:    ✓ active
 | `palladin init` | Generate X25519 keypair. Use `--force` to overwrite. |
 | `palladin connect <api-key> --host <host>` | Save config and register agent with server. |
 | `palladin status` | Show keypair, config, and live agent status from server. |
-| `palladin search <query>` | Discover entries by name/url/description (metadata only, no secrets). |
+| `palladin search <query>` | Discover entries by name/url/description (metadata only, no secrets). Lists any fields the owner marked agent-visible. |
 | `palladin get <vaultId> <entryId>` | Fetch a credential as plaintext. `--field <label>` / `--field-id <uuid>` returns one field. |
 | `palladin exec <vaultId> <entryId> -- <cmd>` | Run a command with the secret in its environment. Omit the command for a **Script** entry to run the stored script. |
 | `palladin inject <vaultId> <entryId> --cdp <endpoint>` | Fill a login form in your browser over CDP (the secret never enters your context). |
@@ -76,7 +76,7 @@ Agent:    ✓ active
 
 ### Named fields, TOTP & scripts
 
-**Named fields.** v2 entries carry custom fields alongside the well-known ones. Address any field by label (case-insensitive) or by id:
+**Named fields.** v2 entries carry custom fields (`text`, `concealed`, `multiline`, `totp`) alongside the well-known ones. Address any field by label (case-insensitive) or by id:
 
 ```bash
 palladin get <vaultId> <entryId> --field "Recovery email"

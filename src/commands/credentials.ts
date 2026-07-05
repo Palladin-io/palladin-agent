@@ -79,6 +79,9 @@ export function searchCommand(getProfile: GetProfile): Command {
         console.log(`  vaultId:     ${item.vaultId}`);
         if (item.urlDomain)   console.log(`  url:         ${item.urlDomain}`);
         if (item.description) console.log(`  description: ${item.description}`);
+        for (const field of item.agentFields ?? []) {
+          console.log(`  ${field.label}: ${field.value}`);
+        }
         console.log('');
       }
       if (result.nextCursor) {

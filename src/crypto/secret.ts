@@ -1,20 +1,22 @@
 import { TotpParams } from '../credential/totp.js';
 
 /** A v2 custom field's type. Unknown types are ignored at parse time (forward-compat, spec §1). */
-export type CustomFieldType = 'text' | 'concealed' | 'totp';
+export type CustomFieldType = 'text' | 'concealed' | 'multiline' | 'totp';
 
-const KNOWN_FIELD_TYPES: readonly CustomFieldType[] = ['text', 'concealed', 'totp'];
+const KNOWN_FIELD_TYPES: readonly CustomFieldType[] = ['text', 'concealed', 'multiline', 'totp'];
 
 /**
  * An additive v2 custom field carried in the blob's `fields[]` array. `value` holds the raw string
- * for text/concealed fields, or a JSON-encoded {@link TotpParams} descriptor for `totp` fields —
- * the TOTP secret, never a computed code.
+ * for text/concealed/multiline fields, or a JSON-encoded {@link TotpParams} descriptor for `totp`
+ * fields — the TOTP secret, never a computed code.
  */
 export interface CustomField {
   id: string;
   label: string;
   type: CustomFieldType;
   value: string;
+  /** User marked this field as visible to agents (metadata hint; not enforced by the CLI). */
+  agentVisible?: boolean;
 }
 
 /** A declared env-var → referenced-entry mapping in a Script entry (spec §5). */
@@ -155,7 +157,11 @@ function parseCustomFields(value: unknown): CustomField[] {
     if (typeof type !== 'string' || !KNOWN_FIELD_TYPES.includes(type as CustomFieldType)) {
       continue;
     }
-    fields.push({ id, label, type: type as CustomFieldType, value: fieldValue });
+    const field: CustomField = { id, label, type: type as CustomFieldType, value: fieldValue };
+    if (record.agentVisible === true) {
+      field.agentVisible = true;
+    }
+    fields.push(field);
   }
   return fields;
 }
