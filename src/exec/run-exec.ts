@@ -20,8 +20,8 @@ import { palladinRoot } from '../config/paths.js';
  *
  * @returns the child's exit code (or 1 if it was killed by a signal).
  */
-export async function runExec(command: string[], secret: ParsedSecret): Promise<number> {
-  const result = await runExecCapture(command, secret, { mirror: 'terminal' });
+export async function runExec(command: string[], secret: ParsedSecret, options?: RunExecOptions): Promise<number> {
+  const result = await runExecCapture(command, secret, { ...options, mirror: 'terminal' });
   return result.code;
 }
 
@@ -31,13 +31,27 @@ export interface ExecCaptureResult {
   stderr: string;
 }
 
+/** Where to mirror a child's masked output for a human; never returned to a model. */
+export type ExecMirror = 'terminal' | NodeJS.WritableStream;
+
 export interface RunExecOptions {
   /**
-   * Where to mirror the child's masked output for a human; never returned to a model.
    * 'terminal' → process.stdout/stderr; a WritableStream → both there (MCP passes process.stderr,
    * since stdio JSON-RPC owns stdout); undefined → capture only.
    */
-  mirror?: 'terminal' | NodeJS.WritableStream;
+  mirror?: ExecMirror;
+  /** Extra env vars merged over the `CLAW_*` set (e.g. `--env NAME=field` mappings). */
+  extraEnv?: Record<string, string>;
+  /** Extra values to redact from the mirrored output (the `extraEnv` values). */
+  extraSecretValues?: string[];
+}
+
+/** Env vars + extra values to redact for a masked run. */
+export interface MaskedRunInput {
+  env: NodeJS.ProcessEnv;
+  /** Values redacted (`***`) in the mirrored output. */
+  secretValues: string[];
+  mirror?: ExecMirror;
 }
 
 /**
@@ -49,31 +63,33 @@ export async function runExecCapture(
   secret: ParsedSecret,
   options?: RunExecOptions,
 ): Promise<ExecCaptureResult> {
+  return runMasked(command, {
+    env: { ...buildCredentialEnv(secret), ...options?.extraEnv },
+    secretValues: [...credentialSecretValues(secret), ...(options?.extraSecretValues ?? [])],
+    mirror: options?.mirror,
+  });
+}
+
+/**
+ * Spawn `command` with a fully-prepared environment, masking every value in `secretValues` from the
+ * mirrored (human-facing) output. This is the shared core behind credential `exec` and Script `exec`.
+ */
+export function runMasked(command: string[], input: MaskedRunInput): Promise<ExecCaptureResult> {
   const [cmd, ...args] = command;
   if (!cmd) {
     return Promise.resolve({ code: 127, stdout: '', stderr: 'Error: no command given\n' });
   }
 
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  env.CLAW_SECRET = secret.password;
-  if (secret.username !== null) {
-    env.CLAW_USERNAME = secret.username;
-    env.CLAW_PASSWORD = secret.password;
-  }
-  for (const [key, value] of Object.entries(secret.fields)) {
-    env[`CLAW_${key.toUpperCase()}`] = value;
-  }
-
   // Mask longest value first so a value containing another (password contains username) is redacted.
-  const secretValues = Array.from(
-    new Set([secret.password, secret.username, ...Object.values(secret.fields)].filter((v): v is string => !!v)),
-  ).sort((a, b) => b.length - a.length);
+  const secretValues = Array.from(new Set(input.secretValues.filter((v): v is string => !!v))).sort(
+    (a, b) => b.length - a.length,
+  );
 
-  const mirrorOut = options?.mirror === 'terminal' ? process.stdout : options?.mirror;
-  const mirrorErr = options?.mirror === 'terminal' ? process.stderr : options?.mirror;
+  const mirrorOut = input.mirror === 'terminal' ? process.stdout : input.mirror;
+  const mirrorErr = input.mirror === 'terminal' ? process.stderr : input.mirror;
 
   return new Promise<ExecCaptureResult>((resolve) => {
-    const child = spawn(cmd, args, { env, stdio: ['inherit', 'pipe', 'pipe'] as const });
+    const child = spawn(cmd, args, { env: input.env, stdio: ['inherit', 'pipe', 'pipe'] as const });
     let stdout = '';
     let stderr = '';
     let exitCode = 0;
@@ -116,6 +132,25 @@ export async function runExecCapture(
   });
 }
 
+/** Build the `CLAW_*` environment for a credential exec. */
+function buildCredentialEnv(secret: ParsedSecret): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  env.CLAW_SECRET = secret.password;
+  if (secret.username !== null) {
+    env.CLAW_USERNAME = secret.username;
+    env.CLAW_PASSWORD = secret.password;
+  }
+  for (const [key, value] of Object.entries(secret.fields)) {
+    env[`CLAW_${key.toUpperCase()}`] = value;
+  }
+  return env;
+}
+
+/** Every plaintext value of a credential, for output masking. */
+function credentialSecretValues(secret: ParsedSecret): string[] {
+  return [secret.password, secret.username, ...Object.values(secret.fields)].filter((v): v is string => !!v);
+}
+
 /** Result returned to a model by the MCP exec tool — carries NO command output. */
 export interface ExecToolResult {
   exitCode: number;
@@ -138,7 +173,15 @@ export async function runExecForTool(
 ): Promise<ExecToolResult> {
   const mirror = options?.mirror ?? process.stderr;
   const result = await runExecCapture(command, secret, { mirror });
-  const localLog = writeExecLog(result, options?.logRoot);
+  return toWithheldResult(result, options?.logRoot);
+}
+
+/**
+ * Turn a captured result into the model-safe shape the MCP tools return: exit code + a note, output
+ * withheld, with a best-effort masked tail written to a local operator log. Shared by exec + script.
+ */
+export function toWithheldResult(result: ExecCaptureResult, logRoot?: string): ExecToolResult {
+  const localLog = writeExecLog(result, logRoot);
   return {
     exitCode: result.code,
     output: 'withheld',

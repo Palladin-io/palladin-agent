@@ -24,6 +24,8 @@ export function accessMessage(access: Exclude<CredentialAccess['access'], 'grant
       return 'This agent is deactivated.';
     case 'method-not-allowed':
       return methodNotAllowedMessage(method);
+    case 'script-exec-only':
+      return 'Script entries can only be executed — run `palladin exec <vaultId> <entryId>` (no command) to execute the stored script.';
     default:
       return `No access: ${access satisfies never}`;
   }

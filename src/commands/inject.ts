@@ -7,6 +7,8 @@ import { buildFailureReport, writeFailureReport } from '../inject/failure-report
 import { uploadInjectFailure, tryReportCredentialStale } from '../http/agent-api.js';
 import { resolveAgentContext } from '../http/agent-context.js';
 import { resolveSecret } from './credentials.js';
+import { resolveField, injectionValue, FieldSelectionError } from '../credential/fields.js';
+import { ParsedSecret } from '../crypto/secret.js';
 import { addWaitOptions, parseWaitCli, RawWaitOpts } from '../credential/wait-options.js';
 import { exitCodeForAccess } from '../credential/exit-codes.js';
 
@@ -30,6 +32,8 @@ export function injectCommand(getProfile: GetProfile): Command {
     .option('--no-submit', 'fill the form but do not submit')
     .option('--page-url <url>', 'pick the open page whose URL starts with this prefix (default: first page)')
     .option('--fill-only', 'secure-fill primitive: type the secret into the given --password/--username-selector ONLY (no auto-detection, no submit unless --submit-selector). The agent drives navigation/clicks itself.')
+    .option('--field <label>', 'type this field instead of the password (e.g. a TOTP field\'s current code into a 2FA input via --fill-only)')
+    .option('--field-id <uuid>', 'type this custom field (by id) instead of the password')
     .option('--verbose', 'log a value-free trace of detection + actions to stderr (debugging)');
   addWaitOptions(cmd);
   return cmd.action(async (vaultId: string, entryId: string, opts: {
@@ -41,6 +45,8 @@ export function injectCommand(getProfile: GetProfile): Command {
       submit?: boolean;
       pageUrl?: string;
       fillOnly?: boolean;
+      field?: string;
+      fieldId?: string;
       verbose?: boolean;
     } & RawWaitOpts) => {
       const { name, paths } = getProfile();
@@ -51,7 +57,10 @@ export function injectCommand(getProfile: GetProfile): Command {
         console.error(`Error: ${resolved.message}`);
         process.exit(exitCodeForAccess(resolved.access));
       }
-      const { secret, urlDomain, label } = resolved;
+      const { urlDomain, label } = resolved;
+      // `--field` types the chosen field's value (a TOTP field's current code) into the password
+      // input instead of the primary secret — useful for a 2FA step.
+      const secret = selectInjectedField(resolved.secret, { field: opts.field, fieldId: opts.fieldId });
 
       if (!urlDomain) {
         fail(`entry "${label}" has no bound URL — inject is only allowed for entries with a known site (anti-phishing).`);
@@ -167,6 +176,24 @@ export function injectCommand(getProfile: GetProfile): Command {
         await browser.close();
       }
     });
+}
+
+/**
+ * When `--field`/`--field-id` is given, return a secret whose primary value (the one typed into the
+ * password field) is that field's value — a TOTP field yields its current code, never the shared
+ * secret. Without a selector the secret is returned unchanged.
+ */
+function selectInjectedField(secret: ParsedSecret, selector: { field?: string; fieldId?: string }): ParsedSecret {
+  if (selector.field === undefined && selector.fieldId === undefined) {
+    return secret;
+  }
+  try {
+    const value = injectionValue(resolveField(secret, selector));
+    return { ...secret, password: value };
+  } catch (err) {
+    if (err instanceof FieldSelectionError) fail(err.message);
+    throw err;
+  }
 }
 
 // Every selector resolves to the first VISIBLE match — robust against SPA hidden duplicate forms.

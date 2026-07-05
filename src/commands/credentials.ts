@@ -15,9 +15,12 @@ import {
 } from '../http/agent-api.js';
 import { resolveAgentContext } from '../http/agent-context.js';
 import { decryptCredential } from '../crypto/decrypt.js';
-import { ParsedSecret, parseSecret } from '../crypto/secret.js';
+import { ParsedSecret, parseSecret, ScriptPayload } from '../crypto/secret.js';
 import { accessMessage, GET_EXPOSURE_WARNING } from '../credential/access.js';
+import { resolveField, injectionValue, redactTotpSecrets, FieldSelector, FieldSelectionError } from '../credential/fields.js';
 import { runExec } from '../exec/run-exec.js';
+import { runScript, assertAllowedInterpreter, ScriptError } from '../exec/run-script.js';
+import { prepareScriptEnv } from '../exec/script-refs.js';
 import {
   awaitGrant,
   makeHeartbeat,
@@ -149,10 +152,12 @@ export function getCredentialCommand(getProfile: GetProfile): Command {
     .argument('<vaultId>', 'vault ID')
     .argument('<entryId>', 'entry ID')
     .option('--reason <reason>', 'justification shown to the approving user (required on first request)')
+    .option('--field <label>', 'return a single field by label (well-known: username, password, url, value, notes; a TOTP field returns its current code only)')
+    .option('--field-id <uuid>', 'return a single custom field by id (disambiguates duplicate labels)')
     .option('--quiet', 'suppress the LLM-exposure warning');
   addWaitOptions(cmd);
   return cmd.action(
-    async (vaultId: string, entryId: string, opts: { reason?: string; quiet?: boolean } & RawWaitOpts) => {
+    async (vaultId: string, entryId: string, opts: { reason?: string; field?: string; fieldId?: string; quiet?: boolean } & RawWaitOpts) => {
       const { config, keypair, signing } = await profileContext(getProfile);
 
       let result;
@@ -167,9 +172,8 @@ export function getCredentialCommand(getProfile: GetProfile): Command {
       }
 
       if (result.access === 'granted') {
-        const secret = await decryptCredential(result, keypair);
-        // Intentional plaintext output: this is the requested result for the user.
-        console.log(JSON.stringify({ entryId: result.entryId, label: result.label, secret }, null, 2));
+        const plaintext = await decryptCredential(result, keypair);
+        outputCredential(result.entryId, result.label, plaintext, { field: opts.field, fieldId: opts.fieldId });
         if (!opts.quiet) {
           console.error(GET_EXPOSURE_WARNING);
         }
@@ -184,30 +188,135 @@ export function getCredentialCommand(getProfile: GetProfile): Command {
   );
 }
 
+/** Print the whole (TOTP-redacted) blob, or a single addressed field. Intentional plaintext output. */
+function outputCredential(entryId: string, label: string, plaintext: string, selector: FieldSelector): void {
+  if (selector.field === undefined && selector.fieldId === undefined) {
+    const secret = redactTotpSecrets(plaintext);
+    console.log(JSON.stringify({ entryId, label, secret }, null, 2));
+    return;
+  }
+
+  let resolved;
+  try {
+    resolved = resolveField(parseSecret(plaintext), selector);
+  } catch (err) {
+    if (err instanceof FieldSelectionError) fail(err.message);
+    throw err;
+  }
+
+  if (resolved.kind === 'totp') {
+    console.log(JSON.stringify({ entryId, label, field: resolved.label, code: resolved.code, expiresIn: resolved.expiresIn }, null, 2));
+  } else {
+    console.log(JSON.stringify({ entryId, label, field: resolved.label, value: resolved.value }, null, 2));
+  }
+}
+
 export function execCommand(getProfile: GetProfile): Command {
   const cmd = new Command('exec')
-    .description('Run a command with the credential injected as env vars — the secret never enters the agent context')
+    .description('Run a command with the credential injected as env vars — the secret never enters the agent context. For a Script entry, omit the command to run the stored script.')
     .argument('<vaultId>', 'vault ID')
     .argument('<entryId>', 'entry ID')
-    .argument('<command...>', 'command and args to run (use -- to separate, e.g. exec V E -- curl -u $CLAW_USERNAME:$CLAW_PASSWORD ...)')
-    .option('--reason <reason>', 'justification shown to the approving user (required on first request)');
+    .argument('[command...]', 'command and args to run (use -- to separate, e.g. exec V E -- curl -u $CLAW_USERNAME:$CLAW_PASSWORD ...); omit for a Script entry')
+    .option('--reason <reason>', 'justification shown to the approving user (required on first request)')
+    .option('--env <mapping>', 'map an env var to a field: NAME=field (repeatable; a TOTP field maps its current code)', collectEnv, []);
   addWaitOptions(cmd);
   return cmd.action(
-    async (vaultId: string, entryId: string, command: string[], opts: { reason?: string } & RawWaitOpts) => {
-      if (command.length === 0) {
-        fail('No command given. Usage: palladin exec <vaultId> <entryId> -- <command> [args...]');
-      }
+    async (vaultId: string, entryId: string, command: string[], opts: { reason?: string; env: string[] } & RawWaitOpts) => {
       const { config, keypair, signing } = await profileContext(getProfile);
+      const wait = parseWaitCli(opts);
 
-      const resolved = await resolveSecret(config, keypair, vaultId, entryId, 'exec', opts.reason, parseWaitCli(opts), signing);
+      const resolved = await resolveSecret(config, keypair, vaultId, entryId, 'exec', opts.reason, wait, signing);
       if (!resolved.ok) {
         console.error(`Error: ${resolved.message}`);
         process.exit(exitCodeForAccess(resolved.access));
       }
-      const code = await runExec(command, resolved.secret);
+
+      if (resolved.secret.script) {
+        if (command.length > 0) {
+          fail('this entry is a script — do not pass a command; run `palladin exec <vaultId> <entryId>` to execute the stored script.');
+        }
+        const code = await execScriptEntry(config, keypair, signing, resolved.secret.script, { reason: opts.reason, wait });
+        process.exit(code);
+      }
+
+      if (command.length === 0) {
+        fail('No command given. Usage: palladin exec <vaultId> <entryId> -- <command> [args...]');
+      }
+      const extra = resolveEnvMappings(resolved.secret, opts.env);
+      const code = await runExec(command, resolved.secret, { extraEnv: extra.env, extraSecretValues: extra.secretValues });
       process.exit(code);
     },
   );
+}
+
+function collectEnv(value: string, previous: string[]): string[] {
+  return previous.concat([value]);
+}
+
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Resolve `--env NAME=field` mappings against the delivered secret (TOTP fields map their code). */
+function resolveEnvMappings(secret: ParsedSecret, mappings: string[]): { env: Record<string, string>; secretValues: string[] } {
+  const env: Record<string, string> = {};
+  const secretValues: string[] = [];
+  for (const mapping of mappings) {
+    const eq = mapping.indexOf('=');
+    if (eq <= 0) {
+      fail(`invalid --env "${mapping}" — expected NAME=field.`);
+    }
+    const name = mapping.slice(0, eq).trim();
+    const fieldRef = mapping.slice(eq + 1).trim();
+    if (!ENV_NAME_RE.test(name)) {
+      fail(`invalid env var name "${name}" in --env.`);
+    }
+    let value: string;
+    try {
+      value = injectionValue(resolveField(secret, { field: fieldRef }));
+    } catch (err) {
+      if (err instanceof FieldSelectionError) fail(`--env ${name}: ${err.message}`);
+      throw err;
+    }
+    env[name] = value;
+    if (value) {
+      secretValues.push(value);
+    }
+  }
+  return { env, secretValues };
+}
+
+/**
+ * Execute a Script entry: validate the interpreter, deliver every referenced entry through this
+ * agent's own grants, then run the script with the references injected as env vars. All references
+ * are resolved BEFORE anything runs — a single missing grant aborts with nothing executed.
+ */
+async function execScriptEntry(
+  config: ReturnType<typeof loadConfig>,
+  keypair: Keypair,
+  signing: SigningContext | undefined,
+  script: ScriptPayload,
+  opts: { reason?: string; wait: WaitCliOptions },
+): Promise<number> {
+  try {
+    assertAllowedInterpreter(script.interpreter);
+  } catch (err) {
+    if (err instanceof ScriptError) fail(err.message);
+    throw err;
+  }
+
+  const prepared = await prepareScriptEnv(script.refs, async (ref) => {
+    const r = await resolveSecret(config, keypair, ref.vaultId!, ref.entryId, 'exec', opts.reason, opts.wait, signing);
+    return r.ok ? { ok: true, secret: r.secret } : { ok: false, message: r.message };
+  });
+  if (!prepared.ok) {
+    fail(prepared.message);
+  }
+
+  const result = await runScript(script.script, script.interpreter, {
+    env: { ...process.env, ...prepared.env },
+    secretValues: prepared.secretValues,
+    mirror: 'terminal',
+  });
+  return result.code;
 }
 
 export type ResolvedSecret =

@@ -239,6 +239,8 @@ export type CredentialAccess =
   | { access: 'consumed' }
   /** The grant does not whitelist the method the agent asked for (CVT-149). */
   | { access: 'method-not-allowed' }
+  /** Script entries execute — get/inject are refused regardless of the grant's methods (CVT-242). */
+  | { access: 'script-exec-only' }
   /** FULL grant covers the entry but no wrapped material exists yet. */
   | { access: 'unavailable' }
   /** Agent is deactivated. */
