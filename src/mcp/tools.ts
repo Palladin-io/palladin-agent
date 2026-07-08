@@ -14,9 +14,12 @@ import {
   SigningContext,
 } from '../http/agent-api.js';
 import { decryptCredential } from '../crypto/decrypt.js';
-import { parseSecret } from '../crypto/secret.js';
+import { parseSecret, ScriptPayload } from '../crypto/secret.js';
 import { accessMessage, GET_EXPOSURE_WARNING } from '../credential/access.js';
+import { resolveField, injectionValue, redactTotpSecrets, FieldSelectionError } from '../credential/fields.js';
 import { runExecForTool } from '../exec/run-exec.js';
+import { runScriptForTool, assertAllowedInterpreter, ScriptError } from '../exec/run-script.js';
+import { prepareScriptEnv, applyDefaultVaultId } from '../exec/script-refs.js';
 import { injectCredential, InjectablePage } from '../inject/inject-runner.js';
 import { buildFailureReport, writeFailureReport } from '../inject/failure-report.js';
 
@@ -71,15 +74,25 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
         vaultId: z.string().describe('Vault ID'),
         entryId: z.string().describe('Entry ID'),
         reason: z.string().optional().describe('Justification shown to the approving user (required when first requesting access)'),
+        field: z.string().optional().describe('Return a single field by label (well-known: username, password, url, value, notes). A TOTP field returns only its current code, never the shared secret.'),
       }),
     },
-    async ({ vaultId, entryId, reason }) => {
+    async ({ vaultId, entryId, reason, field }) => {
       try {
         const result = await getCredential(config, keypair, vaultId, entryId, { reason: reason?.trim(), method: 'get' }, signing);
         if (result.access === 'granted') {
-          const secret = await decryptCredential(result, keypair);
+          const plaintext = await decryptCredential(result, keypair);
+          const trimmedField = field?.trim();
+          if (trimmedField) {
+            const resolved = resolveField(parseSecret(plaintext), { field: trimmedField });
+            const body =
+              resolved.kind === 'totp'
+                ? { access: 'granted', entryId: result.entryId, label: result.label, field: resolved.label, code: resolved.code, expiresIn: resolved.expiresIn }
+                : { access: 'granted', entryId: result.entryId, label: result.label, field: resolved.label, value: resolved.value };
+            return ok(JSON.stringify(body, null, 2));
+          }
           return ok(JSON.stringify(
-            { access: 'granted', entryId: result.entryId, label: result.label, secret, warning: GET_EXPOSURE_WARNING },
+            { access: 'granted', entryId: result.entryId, label: result.label, secret: redactTotpSecrets(plaintext), warning: GET_EXPOSURE_WARNING },
             null,
             2,
           ));
@@ -87,6 +100,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
         const grantId = result.access === 'pending' ? result.grantId : undefined;
         return ok(JSON.stringify({ access: result.access, message: accessMessage(result.access, 'get', grantId) }, null, 2));
       } catch (err) {
+        if (err instanceof FieldSelectionError) return fail(err.message);
         return fail(errorMessage(err));
       }
     }
@@ -99,11 +113,12 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
         'Run a shell command with the credential injected as environment variables (CLAW_SECRET, CLAW_USERNAME, CLAW_PASSWORD, CLAW_<FIELD>). ' +
         'The secret is NOT returned to you. Neither is the command output: stdout/stderr are streamed to the operator and withheld from you, ' +
         'because a command can be coerced into re-encoding the secret (base64/hex/reverse) to slip it past any filter — so you receive only the exit code and a note. Judge success from the exit code. ' +
-        'Use this instead of get_credential whenever the secret is only needed to authenticate a command (curl, psql, git, …).',
+        'Use this instead of get_credential whenever the secret is only needed to authenticate a command (curl, psql, git, …). ' +
+        'For a Script entry, omit `command`: the stored script runs under its own interpreter with its referenced entries injected as env vars.',
       inputSchema: z.object({
         vaultId: z.string().describe('Vault ID'),
         entryId: z.string().describe('Entry ID'),
-        command: z.array(z.string()).min(1).describe('Command and args, e.g. ["curl","-u","$CLAW_USERNAME:$CLAW_PASSWORD","https://api…"]'),
+        command: z.array(z.string()).optional().describe('Command and args, e.g. ["curl","-u","$CLAW_USERNAME:$CLAW_PASSWORD","https://api…"]. Omit for a Script entry.'),
         reason: z.string().optional().describe('Justification shown to the approving user (required when first requesting access)'),
       }),
     },
@@ -111,6 +126,17 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
       const resolved = await resolveForTool(config, keypair, vaultId, entryId, 'exec', reason, signing);
       if ('error' in resolved) {
         return fail(resolved.error);
+      }
+
+      if (resolved.secret.script) {
+        if (command && command.length > 0) {
+          return fail('this entry is a script — omit `command`; it runs its own interpreter.');
+        }
+        return execScriptForTool(config, keypair, vaultId, resolved.secret.script, reason, signing);
+      }
+
+      if (!command || command.length === 0) {
+        return fail('no command given — provide `command`, or target a Script entry to run its stored script.');
       }
       const result = await runExecForTool(command, resolved.secret);
       return ok(JSON.stringify(result, null, 2));
@@ -257,4 +283,40 @@ async function resolveForTool(
   } catch (err) {
     return { error: errorMessage(err) };
   }
+}
+
+/**
+ * Run a Script entry for the MCP exec tool: validate the interpreter, deliver every referenced entry
+ * through the agent's own grants, then execute with references in the environment. Output is withheld
+ * from the model exactly like a plain exec (CVT-200) — only exit code + note come back.
+ */
+async function execScriptForTool(
+  config: AgentConfig,
+  keypair: Keypair,
+  scriptVaultId: string,
+  script: ScriptPayload,
+  reason: string | undefined,
+  signing: SigningContext | undefined,
+): Promise<ToolResult> {
+  try {
+    assertAllowedInterpreter(script.interpreter);
+  } catch (err) {
+    if (err instanceof ScriptError) return fail(err.message);
+    throw err;
+  }
+
+  const refs = applyDefaultVaultId(script.refs, scriptVaultId);
+  const prepared = await prepareScriptEnv(refs, async (ref) => {
+    const resolved = await resolveForTool(config, keypair, ref.vaultId!, ref.entryId, 'exec', reason, signing);
+    return 'error' in resolved ? { ok: false, message: resolved.error } : { ok: true, secret: resolved.secret };
+  });
+  if (!prepared.ok) {
+    return fail(prepared.message);
+  }
+
+  const result = await runScriptForTool(script.script, script.interpreter, {
+    env: { ...process.env, ...prepared.env },
+    secretValues: prepared.secretValues,
+  });
+  return ok(JSON.stringify(result, null, 2));
 }

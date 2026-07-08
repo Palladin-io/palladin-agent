@@ -68,9 +68,40 @@ Agent:    ✓ active
 | `palladin init` | Generate X25519 keypair. Use `--force` to overwrite. |
 | `palladin connect <api-key> --host <host>` | Save config and register agent with server. |
 | `palladin status` | Show keypair, config, and live agent status from server. |
-| `palladin list` | List accessible vaults. |
-| `palladin get <vault>/<entry>` | Fetch a credential. |
+| `palladin search <query>` | Discover entries by name/url/description (metadata only, no secrets). Lists any fields the owner marked agent-visible. |
+| `palladin get <vaultId> <entryId>` | Fetch a credential as plaintext. `--field <label>` / `--field-id <uuid>` returns one field. |
+| `palladin exec <vaultId> <entryId> -- <cmd>` | Run a command with the secret in its environment. Omit the command for a **Script** entry to run the stored script. |
+| `palladin inject <vaultId> <entryId> --cdp <endpoint>` | Fill a login form in your browser over CDP (the secret never enters your context). |
 | `palladin mcp serve` | Start MCP server (for AI assistant integration). |
+
+### Named fields, TOTP & scripts
+
+**Named fields.** v2 entries carry custom fields (`text`, `concealed`, `multiline`, `totp`) alongside the well-known ones. Address any field by label (case-insensitive) or by id:
+
+```bash
+palladin get <vaultId> <entryId> --field "Recovery email"
+palladin get <vaultId> <entryId> --field-id 6f1c…            # disambiguates duplicate labels
+```
+
+Well-known aliases: `username`, `password`, `url`, `value`, `notes`. For `exec`, map a field to an env var with `--env NAME=field` (repeatable).
+
+**TOTP.** A `totp` field returns only its **current 6-digit code** and the seconds until it rolls over — the shared secret is computed against locally (RFC 6238) and never leaves the machine, never reaches your context:
+
+```bash
+palladin get <vaultId> <entryId> --field "Authenticator"     # → { "code": "123456", "expiresIn": 17 }
+palladin exec <vaultId> <entryId> --env OTP="Authenticator" -- some-tool     # OTP=<code> in the env
+palladin inject <vaultId> <entryId> --cdp … --fill-only --password-selector '#otp' --field "Authenticator"
+```
+
+A full `get` (no `--field`) redacts every TOTP secret in the output, substituting the current code.
+
+**Script entries.** A Script entry stores a small script plus a whitelisted interpreter (`bash`, `sh`, `node`, `python` — run as `python3`) and a list of references to other entries. A reference without its own `vaultId` is assumed to live in the script's vault. Running it delivers each referenced entry through **this agent's own grants**, injects their values as the declared env vars, then executes the script:
+
+```bash
+palladin exec <vaultId> <script-entry-id>          # no command — the script IS the command
+```
+
+Script delivery is **exec-only** (the backend refuses `get`/`inject` on a Script entry, so the script body is never handed to an agent to read). Every reference is resolved *before* anything runs — a single missing grant aborts the whole run with nothing executed, and points you at `palladin get <vaultId> <entryId> --reason …` to request it. As with any `exec`, the script's stdout/stderr are streamed to the operator and **withheld from the model** (CVT-200) — judge success from the exit code.
 
 ## MCP server
 
@@ -127,8 +158,11 @@ Restart Claude Desktop. The agent must be **Active** before tools work.
 
 | Tool | Description |
 |------|-------------|
-| `list_vaults` | List all vaults accessible to this agent |
-| `list_entries` | List entries in a vault (requires `vaultId`) |
+| `search_entries` | Discover entries by name/url/description (metadata only, no secrets) |
+| `get_credential` | Get a credential as plaintext. `field` returns one field (a TOTP field returns only its current code) |
+| `exec_with_credential` | Run a command with the secret in its environment; output withheld from the model. Omit `command` to run a **Script** entry |
+| `inject_credential` | Fill a login form in a browser over CDP; the secret is never returned |
+| `report_credential_stale` | Report that a stored credential did not work, so owners can rotate it |
 
 ## Security notes
 
