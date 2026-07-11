@@ -41,3 +41,7 @@ Run lint, build, and relevant tests before finishing code changes.
 - PR titles, descriptions, review comments, and commit messages are written in Polish.
 - Use `.agents/skills/pr-review/SKILL.md` for PR reviews.
 - Use `.agents/skills/fix-pr/SKILL.md` for implementing review feedback.
+
+## Maintaining instruction files
+
+`AGENTS.md` and `CLAUDE.md` are intentionally maintained as complete, byte-for-byte identical copies by product-owner decision. Every instruction change must update both files in the same commit and verify them with `cmp`.

@@ -11,6 +11,17 @@ effort: high
 
 `PR_NUMBER` below is a symbolic placeholder. Parse the PR number from the explicit user request and replace the placeholder in every command before executing it. Never guess a PR number.
 
+Before reviewing, materialize the context files referenced later in this workflow:
+
+```bash
+REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+gh pr view $PR_NUMBER --json number,title,body,author,additions,deletions,changedFiles,baseRefName,headRefName,reviews > /tmp/pr_reviews.json
+gh api "repos/$REPO/pulls/$PR_NUMBER/comments" > /tmp/pr_inline_comments.json
+gh pr diff $PR_NUMBER > /tmp/pr_diff.patch
+```
+
+Fail the review setup if any command above fails; never continue with missing or stale context files.
+
 ## Pull Request Context
 
 **Metadata:**
