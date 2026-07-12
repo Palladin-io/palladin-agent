@@ -7,7 +7,7 @@ if [[ $(uname -s) != Linux ]]; then
 fi
 
 root=$(mktemp -d)
-trap 'sudo -n userdel palladin-spike-owner >/dev/null 2>&1 || true; sudo -n userdel palladin-spike-attacker >/dev/null 2>&1 || true; rm -rf "$root"' EXIT
+trap 'sudo -n rm -rf "$root" >/dev/null 2>&1 || rm -rf "$root"; sudo -n userdel palladin-spike-owner >/dev/null 2>&1 || true; sudo -n userdel palladin-spike-attacker >/dev/null 2>&1 || true' EXIT
 
 same_uid_file="$root/same-uid.identity"
 umask 077

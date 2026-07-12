@@ -38,3 +38,4 @@ try {
 } finally {
     Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
 }
+exit 0
