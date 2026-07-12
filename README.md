@@ -2,6 +2,11 @@
 
 CLI + MCP server for Palladin. Manages agent identity (X25519 keypair), authenticates with the backend, and exposes vault tools to AI assistants.
 
+> [!WARNING]
+> Palladin Agent is pre-production software. Its local secret-isolation model is being hardened before the first public npm release. Do not use this version with production credentials or secrets.
+
+The source repository is public for review and development. The `@palladin/agent` package has not been published to npm yet.
+
 ## Prerequisites
 
 - Node.js ≥ 20

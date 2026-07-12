@@ -44,14 +44,19 @@ describe('runScript', () => {
     expect(result.stdout).toBe('tok-123');
   });
 
-  it('writes the script to a private (0600) temp file and deletes it afterwards', async () => {
+  it('writes the script with private POSIX permissions and deletes it afterwards', async () => {
     const result = await runScript(
       'const fs=require("fs");const p=process.argv[1];process.stdout.write(JSON.stringify({p,mode:fs.statSync(p).mode & 0o777}))',
       'node',
       { env: { ...process.env }, secretValues: [] },
     );
     const { p, mode } = JSON.parse(result.stdout) as { p: string; mode: number };
-    expect(mode).toBe(0o600);
+    // Windows does not implement POSIX mode bits and reports 0666 even when
+    // writeFileSync receives mode 0600. Its access boundary comes from the
+    // current user's temp-directory ACL instead.
+    if (process.platform !== 'win32') {
+      expect(mode).toBe(0o600);
+    }
     expect(existsSync(p)).toBe(false); // removed in the finally
   });
 
