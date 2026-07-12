@@ -207,7 +207,9 @@ mod tests {
         assert_eq!(environment.get("SSL_CERT_FILE"), Some(&false));
         assert_eq!(environment.get("SAFE_VALUE"), Some(&true));
         if cfg!(windows) {
-            assert_eq!(environment.get("node_options"), Some(&false));
+            assert!(!environment.iter().any(|(name, has_value)| {
+                *has_value && is_dangerous_name_with_case(name, true)
+            }));
         }
     }
 }
