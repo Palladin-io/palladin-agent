@@ -1,0 +1,19 @@
+[package]
+name = "palladin-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "palladin"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+palladin-core = { path = "../palladin-core" }
+palladin-platform = { path = "../palladin-platform" }
+
+[dev-dependencies]
+tempfile.workspace = true

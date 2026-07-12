@@ -1,0 +1,92 @@
+name: Rust Runtime
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/rust-runtime.yml"
+      - "runtime/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-runtime-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apple:
+    name: Build ${{ matrix.target }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: runtime
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
+      - run: ./target/${{ matrix.target }}/release/palladin --version
+
+  windows:
+    name: Build ${{ matrix.target }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: runtime
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
+      - run: ./target/${{ matrix.target }}/release/palladin.exe --version
+
+  linux:
+    name: Build ${{ matrix.gnu_target }} and ${{ matrix.musl_target }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            gnu_target: x86_64-unknown-linux-gnu
+            musl_target: x86_64-unknown-linux-musl
+            quality: true
+          - runner: ubuntu-24.04-arm
+            gnu_target: aarch64-unknown-linux-gnu
+            musl_target: aarch64-unknown-linux-musl
+            quality: false
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: runtime
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - run: rustup target add ${{ matrix.gnu_target }} ${{ matrix.musl_target }}
+      - if: matrix.quality
+        run: cargo fmt --all -- --check
+      - if: matrix.quality
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - if: matrix.quality
+        run: cargo test --workspace --locked
+      - run: cargo build --release --locked --target ${{ matrix.gnu_target }} -p palladin-cli
+      - run: cargo build --release --locked --target ${{ matrix.musl_target }} -p palladin-cli
+      - run: ./target/${{ matrix.gnu_target }}/release/palladin --version
+      - run: ./target/${{ matrix.musl_target }}/release/palladin --version
