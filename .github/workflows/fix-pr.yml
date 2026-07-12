@@ -24,7 +24,7 @@ jobs:
   fix:
     # Claude fixes are intentionally restricted to the repository owner so
     # collaborators cannot consume the configured OAuth quota.
-    if: github.actor == 'don-flamingo'
+    if: github.actor == 'patryk-roguszewski'
     name: Claude Code Fix
     runs-on: ubuntu-latest
     timeout-minutes: 30
