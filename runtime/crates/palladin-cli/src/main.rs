@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use palladin_core::environment::EnvironmentReport;
+use palladin_core::environment::{EnvironmentReport, EnvironmentRequirement, enforce_environment};
 use palladin_core::panic::install_redacted_panic_hook;
 
 const EXIT_UNSAFE_ENVIRONMENT: u8 = 78;
@@ -21,18 +21,31 @@ enum Commands {
     Doctor,
 }
 
-fn main() -> ExitCode {
-    install_redacted_panic_hook();
-    let cli = Cli::parse();
-
-    match cli.command {
-        Commands::Doctor => doctor(),
+impl Commands {
+    const fn environment_requirement(&self) -> EnvironmentRequirement {
+        match self {
+            Self::Doctor => EnvironmentRequirement::DiagnosticOnly,
+        }
     }
 }
 
-fn doctor() -> ExitCode {
-    let platform = palladin_platform::current();
+fn main() -> ExitCode {
+    install_redacted_panic_hook();
     let environment = EnvironmentReport::inspect_current();
+    let cli = Cli::parse();
+
+    if enforce_environment(cli.command.environment_requirement(), &environment).is_err() {
+        print_unsafe_environment(&environment);
+        return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
+    }
+
+    match cli.command {
+        Commands::Doctor => doctor(&environment),
+    }
+}
+
+fn doctor(environment: &EnvironmentReport) -> ExitCode {
+    let platform = palladin_platform::current();
 
     println!("Palladin Runtime Doctor");
     println!("version: {}", env!("CARGO_PKG_VERSION"));
@@ -50,10 +63,14 @@ fn doctor() -> ExitCode {
         ExitCode::SUCCESS
     } else {
         println!("environment: unsafe");
-        println!(
-            "dangerous-variable-names: {}",
-            environment.dangerous_names().join(",")
-        );
+        print_unsafe_environment(environment);
         ExitCode::from(EXIT_UNSAFE_ENVIRONMENT)
     }
+}
+
+fn print_unsafe_environment(environment: &EnvironmentReport) {
+    println!(
+        "dangerous-variable-names: {}",
+        environment.dangerous_names().join(",")
+    );
 }

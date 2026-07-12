@@ -12,9 +12,9 @@ The Rust workspace is the secret-owning runtime boundary. The public Node packag
 
 - Secret values use `secrecy` and `zeroize`; their debug representation is redacted.
 - Panic output is fixed text and never includes a payload, argument, path, or secret.
-- Loader and Node injection variables plus legacy secret environment variables (`PALLADIN_API_KEY` and private-key variables) fail closed before future secret-owning commands run. `doctor` reports variable names only, never values.
+- The launcher must remove loader injection variables before `exec`; direct invocation with `LD_*`/`DYLD_*` is already outside the runtime's control because the OS loader acts before `main` and may execute code or print its own diagnostics. If `main` is reached, the runtime guard prevents future identity-owning handlers from proceeding when loader/Node injection variables, TLS trust-store overrides, or legacy secret environment variables are present. Palladin-authored `doctor` output reports variable names only, never values.
 - Public registry/config schemas contain no API key or private-key fields, reject unknown fields, and are written through a same-directory temporary file followed by flush, `fsync`, and atomic persistence.
-- The runtime never discovers plugins, libraries, config, or scripts from the caller's current directory.
+- On Unix, the public data root comes from the current OS account record (`getpwuid_r` through a safe wrapper), not `$HOME`; on Windows it comes from the Profile known folder. The runtime never discovers plugins, libraries, config, or scripts from the caller's current directory.
 
 ## Target policy
 

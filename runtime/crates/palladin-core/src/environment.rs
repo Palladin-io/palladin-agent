@@ -3,22 +3,31 @@ use std::ffi::{OsStr, OsString};
 use std::process::Command;
 
 const EXACT_DANGEROUS_NAMES: &[&str] = &[
-    "LD_AUDIT",
-    "LD_DEBUG",
-    "LD_LIBRARY_PATH",
-    "LD_PRELOAD",
+    "CURL_CA_BUNDLE",
     "NODE_EXTRA_CA_CERTS",
     "NODE_OPTIONS",
     "NODE_PATH",
     "PALLADIN_API_KEY",
     "PALLADIN_PRIVATE_KEY",
     "PALLADIN_SIGNING_PRIVATE_KEY",
+    "REQUESTS_CA_BUNDLE",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EnvironmentReport {
     dangerous_names: Vec<String>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnvironmentRequirement {
+    DiagnosticOnly,
+    Clean,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnsafeEnvironment;
 
 impl EnvironmentReport {
     #[must_use]
@@ -32,12 +41,20 @@ impl EnvironmentReport {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        Self::inspect_names_with_case(names, cfg!(windows))
+    }
+
+    fn inspect_names_with_case<I, S>(names: I, case_insensitive: bool) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
         let dangerous_names = names
             .into_iter()
             .filter_map(|name| {
                 name.as_ref()
                     .to_str()
-                    .filter(|name| is_dangerous_name(name))
+                    .filter(|name| is_dangerous_name_with_case(name, case_insensitive))
                     .map(str::to_owned)
             })
             .collect::<BTreeSet<_>>()
@@ -58,9 +75,32 @@ impl EnvironmentReport {
     }
 }
 
+pub fn enforce_environment(
+    requirement: EnvironmentRequirement,
+    report: &EnvironmentReport,
+) -> Result<(), UnsafeEnvironment> {
+    if requirement == EnvironmentRequirement::Clean && !report.is_safe() {
+        Err(UnsafeEnvironment)
+    } else {
+        Ok(())
+    }
+}
+
 #[must_use]
 pub fn is_dangerous_name(name: &str) -> bool {
-    name.starts_with("DYLD_") || EXACT_DANGEROUS_NAMES.binary_search(&name).is_ok()
+    is_dangerous_name_with_case(name, cfg!(windows))
+}
+
+fn is_dangerous_name_with_case(name: &str, case_insensitive: bool) -> bool {
+    let normalized = if case_insensitive {
+        name.to_ascii_uppercase()
+    } else {
+        name.to_owned()
+    };
+
+    normalized.starts_with("DYLD_")
+        || normalized.starts_with("LD_")
+        || EXACT_DANGEROUS_NAMES.contains(&normalized.as_str())
 }
 
 pub fn sanitize_child(command: &mut Command) {
@@ -68,12 +108,13 @@ pub fn sanitize_child(command: &mut Command) {
         command.env_remove(name);
     }
 
-    let dyld_names = std::env::vars_os()
+    let dangerous_names = std::env::vars_os()
         .map(|(name, _)| name)
-        .filter(|name| name.to_str().is_some_and(|name| name.starts_with("DYLD_")))
+        .chain(command.get_envs().map(|(name, _)| name.to_os_string()))
+        .filter(|name| name.to_str().is_some_and(is_dangerous_name))
         .collect::<Vec<OsString>>();
 
-    for name in dyld_names {
+    for name in dangerous_names {
         command.env_remove(name);
     }
 }
@@ -82,7 +123,10 @@ pub fn sanitize_child(command: &mut Command) {
 mod tests {
     use std::process::Command;
 
-    use super::{EnvironmentReport, is_dangerous_name, sanitize_child};
+    use super::{
+        EnvironmentReport, EnvironmentRequirement, enforce_environment, is_dangerous_name,
+        is_dangerous_name_with_case, sanitize_child,
+    };
 
     #[test]
     fn classifies_loader_and_node_injection_names_without_values() {
@@ -109,9 +153,34 @@ mod tests {
     #[test]
     fn matching_is_exact_except_for_dyld_namespace() {
         assert!(is_dangerous_name("LD_PRELOAD"));
-        assert!(!is_dangerous_name("LD_PRELOAD_BACKUP"));
+        assert!(is_dangerous_name("LD_FUTURE_INJECTION_FLAG"));
         assert!(is_dangerous_name("DYLD_FUTURE_INJECTION_FLAG"));
         assert!(!is_dangerous_name("SAFE_DYLD_VALUE"));
+        assert!(is_dangerous_name("SSL_CERT_FILE"));
+    }
+
+    #[test]
+    fn windows_policy_is_ascii_case_insensitive() {
+        assert!(is_dangerous_name_with_case("node_options", true));
+        assert!(is_dangerous_name_with_case("palladin_api_key", true));
+        assert!(is_dangerous_name_with_case("ld_preload", true));
+        assert!(!is_dangerous_name_with_case("node_options", false));
+
+        let report = EnvironmentReport::inspect_names_with_case(
+            ["node_options", "palladin_api_key", "SAFE_VALUE"],
+            true,
+        );
+        assert_eq!(
+            report.dangerous_names(),
+            ["node_options", "palladin_api_key"]
+        );
+    }
+
+    #[test]
+    fn clean_guard_blocks_identity_commands_but_allows_diagnostics() {
+        let report = EnvironmentReport::inspect_names(["NODE_OPTIONS"]);
+        assert!(enforce_environment(EnvironmentRequirement::Clean, &report).is_err());
+        assert!(enforce_environment(EnvironmentRequirement::DiagnosticOnly, &report).is_ok());
     }
 
     #[test]
@@ -120,7 +189,11 @@ mod tests {
         command.env("LD_PRELOAD", "synthetic-not-a-library");
         command.env("NODE_OPTIONS", "--synthetic");
         command.env("PALLADIN_API_KEY", "synthetic-not-a-secret");
+        command.env("SSL_CERT_FILE", "synthetic-ca-path");
         command.env("SAFE_VALUE", "preserved");
+        if cfg!(windows) {
+            command.env("node_options", "--synthetic-lowercase");
+        }
 
         sanitize_child(&mut command);
         let environment = command
@@ -131,6 +204,10 @@ mod tests {
         assert_eq!(environment.get("LD_PRELOAD"), Some(&false));
         assert_eq!(environment.get("NODE_OPTIONS"), Some(&false));
         assert_eq!(environment.get("PALLADIN_API_KEY"), Some(&false));
+        assert_eq!(environment.get("SSL_CERT_FILE"), Some(&false));
         assert_eq!(environment.get("SAFE_VALUE"), Some(&true));
+        if cfg!(windows) {
+            assert_eq!(environment.get("node_options"), Some(&false));
+        }
     }
 }

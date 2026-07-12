@@ -16,6 +16,7 @@ repository = "https://github.com/Palladin-io/palladin-agent"
 [workspace.dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
 directories = "6.0.0"
+nix = { version = "0.31.3", default-features = false, features = ["user"] }
 secrecy = "0.10.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

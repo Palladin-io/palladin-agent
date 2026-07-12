@@ -33,6 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - run: rustup target add ${{ matrix.target }}
+      - run: cargo test --workspace --locked --target ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
       - run: ./target/${{ matrix.target }}/release/palladin --version
 
@@ -54,6 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - run: rustup target add ${{ matrix.target }}
+      - run: cargo test --workspace --locked --target ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
       - run: ./target/${{ matrix.target }}/release/palladin.exe --version
 

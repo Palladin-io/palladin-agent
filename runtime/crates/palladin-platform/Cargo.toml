@@ -6,6 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[dependencies]
+[target.'cfg(windows)'.dependencies]
 directories.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
+[dependencies]
 thiserror.workspace = true

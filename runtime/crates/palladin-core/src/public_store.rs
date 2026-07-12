@@ -14,7 +14,7 @@ pub const PUBLIC_SCHEMA_VERSION: u32 = 1;
 pub struct PublicAgentEntry {
     pub name: String,
     pub created_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
 }
 
@@ -83,7 +83,8 @@ impl PublicProfileConfig {
         }
 
         let host = Url::parse(&self.host).map_err(|_| PublicStoreError::InvalidPublicData)?;
-        if !matches!(host.scheme(), "http" | "https")
+        let is_local_http = host.scheme() == "http" && host.host_str().is_some_and(is_local_host);
+        if !(host.scheme() == "https" || is_local_http)
             || !host.username().is_empty()
             || host.password().is_some()
             || host.query().is_some()
@@ -167,6 +168,14 @@ fn is_profile_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn is_local_host(hostname: &str) -> bool {
+    let hostname = hostname.to_ascii_lowercase();
+    hostname == "localhost"
+        || hostname.ends_with(".localhost")
+        || hostname == "127.0.0.1"
+        || matches!(hostname.as_str(), "::1" | "[::1]")
 }
 
 #[cfg(unix)]
@@ -267,6 +276,47 @@ mod tests {
         let error = save_profile_config(&path, &config).expect_err("credential URL must fail");
         assert!(error.to_string().contains("invalid public data"));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn allows_cleartext_only_for_local_development() {
+        for host in [
+            "http://localhost:5000",
+            "http://api.dev.localhost",
+            "http://127.0.0.1:5000",
+            "http://[::1]:5000",
+        ] {
+            let directory = tempfile::tempdir().expect("tempdir");
+            let config = PublicProfileConfig {
+                schema_version: PUBLIC_SCHEMA_VERSION,
+                host: host.to_owned(),
+                agent_id: None,
+                encryption_public_key: None,
+                signing_public_key: None,
+            };
+            save_profile_config(&directory.path().join("config.json"), &config)
+                .expect("local HTTP must be accepted");
+        }
+    }
+
+    #[test]
+    fn rejects_cleartext_remote_hosts() {
+        for host in [
+            "http://api.palladin.io",
+            "http://192.168.1.10:5000",
+            "http://notlocalhost.io",
+        ] {
+            let directory = tempfile::tempdir().expect("tempdir");
+            let config = PublicProfileConfig {
+                schema_version: PUBLIC_SCHEMA_VERSION,
+                host: host.to_owned(),
+                agent_id: None,
+                encryption_public_key: None,
+                signing_public_key: None,
+            };
+            save_profile_config(&directory.path().join("config.json"), &config)
+                .expect_err("remote HTTP must be rejected");
+        }
     }
 
     #[test]
