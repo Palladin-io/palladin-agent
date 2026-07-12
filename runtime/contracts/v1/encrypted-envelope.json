@@ -1,0 +1,18 @@
+{
+  "contract": "encrypted-credential-envelope-v1",
+  "syntheticOnly": true,
+  "algorithms": {"dekWrap": "crypto_box_seal", "payload": "crypto_secretbox_easy", "encoding": "base64-original"},
+  "keyFixture": {
+    "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "publicKeyBase64": "RwHQhIhFH1RaQJ+1iuPlhYHKQKw/fxFGmM1x3qxzygE=",
+    "privateKeyBase64": "PZTupJxYCu+BaTV2K+BJVZ1tFEDe3hLmoSXxhB//jm8="
+  },
+  "plaintextUtf8": "{\"v\":2,\"username\":\"fixture-user\",\"password\":\"fixture-password-not-production\",\"url\":\"https://example.test/login\"}",
+  "dekBase64": "//79/Pv6+fj39vX08/Lx8O/u7ezr6uno5+bl5OPi4eA=",
+  "envelope": {
+    "nonce": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3",
+    "reEncryptedBlob": "lViYgzfixZyUefpyyKBJ4CtYbOYiOiclkMs9qUgFjBvAEF25dYSP6VAAVF2rsMcsBKw45TsJ73f+indnvi0600AUU2htWS7T+QEigr/EgFKvkffYsL6E5/kK1STvf/rkxfTS3g0JpbbX2qZSTEFcfC1Fs+PB9Ax1iTJluvhL1Vmb",
+    "agentWrappedDek": "fpIuBtYIdvvZq5WxD9PxsifJtNQaCsprs3cnLEVWjFbBtAZaQGmAQyyIMZ7ROMgLX4RoWH+MDl+oD5NW+lgz+OwAr/ez5dazluc8SzcsQuQ="
+  },
+  "checks": ["unwrap-DEK", "decrypt-byte-for-byte", "tamper-fails-closed"]
+}

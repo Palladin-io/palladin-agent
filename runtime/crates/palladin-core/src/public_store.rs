@@ -5,7 +5,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tempfile::NamedTempFile;
 use thiserror::Error;
-use url::Url;
+
+use crate::host::ApiHost;
 
 pub const PUBLIC_SCHEMA_VERSION: u32 = 1;
 
@@ -82,17 +83,7 @@ impl PublicProfileConfig {
             return Err(PublicStoreError::InvalidPublicData);
         }
 
-        let host = Url::parse(&self.host).map_err(|_| PublicStoreError::InvalidPublicData)?;
-        let is_local_http = host.scheme() == "http" && host.host_str().is_some_and(is_local_host);
-        if !(host.scheme() == "https" || is_local_http)
-            || !host.username().is_empty()
-            || host.password().is_some()
-            || host.query().is_some()
-            || host.fragment().is_some()
-            || host.host_str().is_none()
-        {
-            return Err(PublicStoreError::InvalidPublicData);
-        }
+        ApiHost::parse(&self.host).map_err(|_| PublicStoreError::InvalidPublicData)?;
 
         Ok(())
     }
@@ -168,14 +159,6 @@ fn is_profile_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-}
-
-fn is_local_host(hostname: &str) -> bool {
-    let hostname = hostname.to_ascii_lowercase();
-    hostname == "localhost"
-        || hostname.ends_with(".localhost")
-        || hostname == "127.0.0.1"
-        || matches!(hostname.as_str(), "::1" | "[::1]")
 }
 
 #[cfg(unix)]
