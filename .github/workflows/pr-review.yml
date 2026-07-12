@@ -1,8 +1,6 @@
 name: "Claude Code: PR Review"
 
 on:
-  pull_request:
-    types: [opened, synchronize]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -20,20 +18,14 @@ env:
   CLAUDE_MODEL: claude-opus-4-7
 
 concurrency:
-  group: claude-review-pr-${{ github.event.pull_request.number || github.event.inputs.pr_number || github.run_id }}
+  group: claude-review-pr-${{ github.event.inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
   review:
-    # Manual dispatch always runs. Auto PR review is skipped for draft or WIP-titled
-    # PRs (work-in-progress) so the reviewer fires only once the PR is ready.
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       github.actor != 'github-actions[bot]' &&
-       github.event.pull_request.head.repo.full_name == github.repository &&
-       github.event.pull_request.draft == false &&
-       !startsWith(github.event.pull_request.title, 'WIP'))
+    # Claude review is intentionally manual and restricted to the repository
+    # owner so public contributors cannot consume the configured OAuth quota.
+    if: github.actor == 'don-flamingo'
     name: Claude Code Review
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -50,18 +42,10 @@ jobs:
       - name: Resolve PR number
         id: pr
         env:
-          EVENT_NAME: ${{ github.event_name }}
           INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number }}
-          PR_NUMBER_FROM_EVENT: ${{ github.event.pull_request.number }}
-        run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "number=$INPUT_PR_NUMBER" >> "$GITHUB_OUTPUT"
-          else
-            echo "number=$PR_NUMBER_FROM_EVENT" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "number=$INPUT_PR_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Checkout PR branch
-        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.pr.outputs.number }}
