@@ -39,7 +39,7 @@
     "@noble/curves": "^2.2.0",
     "commander": "^13.1.0",
     "libsodium-wrappers": "^0.8.4",
-    "linkedom": "^0.18.12",
+    "linkedom": "^0.18.13",
     "tldts": "^6.1.86"
   },
   "devDependencies": {
