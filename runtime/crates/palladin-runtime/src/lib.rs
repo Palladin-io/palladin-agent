@@ -1494,6 +1494,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     fn fixture_api(host: &str) -> (ApiClient, X25519Identity) {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../contracts/v1/encrypted-envelope.json"

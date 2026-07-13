@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
+#[cfg(not(windows))]
 use std::fs::OpenOptions;
+#[cfg(not(windows))]
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -548,11 +550,13 @@ fn configure_output(process: &mut Command, output: OperatorOutput) {
     }
 }
 
+#[cfg(not(windows))]
 struct TempScript {
     directory: Option<TempDir>,
     path: PathBuf,
 }
 
+#[cfg(not(windows))]
 impl TempScript {
     fn new(script: &SecretString) -> Result<Self, ExecError> {
         let directory = tempfile::Builder::new()
@@ -600,6 +604,7 @@ impl TempScript {
     }
 }
 
+#[cfg(not(windows))]
 impl Drop for TempScript {
     fn drop(&mut self) {
         if !self.path.as_os_str().is_empty() {
@@ -756,6 +761,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn private_script_is_removed_by_raii() {
         let path = {
@@ -860,6 +866,7 @@ mod tests {
         assert!(!directory.path().join("attacker").exists());
     }
 
+    #[cfg(not(windows))]
     #[test]
     #[ignore = "subprocess helper"]
     fn scoped_environment_child() {
@@ -875,6 +882,7 @@ mod tests {
         assert!(correct);
     }
 
+    #[cfg(not(windows))]
     #[test]
     #[ignore = "subprocess helper"]
     fn literal_argument_child() {
@@ -924,6 +932,7 @@ mod tests {
         assert!(!directory.path().join("survived").exists());
     }
 
+    #[cfg(not(windows))]
     #[test]
     #[ignore = "subprocess helper"]
     fn process_tree_child() {
@@ -943,6 +952,7 @@ mod tests {
         let _ = grandchild.wait();
     }
 
+    #[cfg(not(windows))]
     #[test]
     #[ignore = "subprocess helper"]
     fn process_tree_grandchild() {
