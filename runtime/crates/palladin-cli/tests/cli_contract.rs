@@ -204,6 +204,15 @@ fn contradictory_wait_flags_preserve_legacy_last_option_wins_behavior() {
 }
 
 #[test]
+fn global_profile_selector_parses_after_the_command() {
+    let parsed =
+        Cli::try_parse_from(["palladin", "get", "vault", "entry", "--id", "local-profile"])
+            .expect("global profile selector after command");
+    assert_eq!(parsed.id.as_deref(), Some("local-profile"));
+    assert!(matches!(parsed.command, Commands::Get(_)));
+}
+
+#[test]
 fn frozen_process_outputs_keep_stdout_stderr_and_exit_codes_distinct() {
     for case in contract().process_cases {
         let output = Command::new(env!("CARGO_BIN_EXE_palladin"))

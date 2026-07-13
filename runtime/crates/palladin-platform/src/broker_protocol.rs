@@ -42,21 +42,6 @@ pub enum SecureOperation {
 }
 
 impl SecureOperation {
-    fn cli_name(self) -> &'static str {
-        match self {
-            Self::Init => "init",
-            Self::Doctor => "doctor",
-            Self::Connect => "connect",
-            Self::Status => "status",
-            Self::Search => "search",
-            Self::Get => "get",
-            Self::ReportStale => "report-stale",
-            Self::Agents => "agents",
-            Self::Security => "security",
-            Self::Purge => "purge",
-        }
-    }
-
     #[must_use]
     pub fn from_cli_name(name: &str) -> Option<Self> {
         match name {
@@ -82,33 +67,44 @@ pub fn operation_and_profile(
     arguments: &[String],
 ) -> Result<(SecureOperation, String), ProtocolError> {
     let mut index = 0;
-    let mut profile = "default".to_owned();
+    let mut profile = None;
+    let mut operation = None;
     while let Some(argument) = arguments.get(index) {
         if let Some(value) = argument.strip_prefix("--id=") {
-            if value.is_empty() || value.len() > MAX_AGENT_ID_BYTES {
+            if profile.is_some() || value.is_empty() || value.len() > MAX_AGENT_ID_BYTES {
                 return Err(ProtocolError::InvalidRequest);
             }
-            profile = value.to_owned();
+            profile = Some(value.to_owned());
             index = index.checked_add(1).ok_or(ProtocolError::InvalidRequest)?;
             continue;
         }
         if argument == "--id" {
+            if profile.is_some() {
+                return Err(ProtocolError::InvalidRequest);
+            }
             let value = arguments
                 .get(index + 1)
                 .filter(|value| !value.is_empty() && value.len() <= MAX_AGENT_ID_BYTES)
                 .ok_or(ProtocolError::InvalidRequest)?;
-            profile = value.clone();
+            profile = Some(value.clone());
             index = index.checked_add(2).ok_or(ProtocolError::InvalidRequest)?;
             continue;
         }
-        if argument.starts_with('-') {
-            return Err(ProtocolError::InvalidRequest);
+        if operation.is_none() {
+            if argument.starts_with('-') {
+                return Err(ProtocolError::InvalidRequest);
+            }
+            operation = Some(
+                SecureOperation::from_cli_name(argument)
+                    .ok_or(ProtocolError::OperationForbidden)?,
+            );
         }
-        let operation =
-            SecureOperation::from_cli_name(argument).ok_or(ProtocolError::OperationForbidden)?;
-        return Ok((operation, profile));
+        index = index.checked_add(1).ok_or(ProtocolError::InvalidRequest)?;
     }
-    Err(ProtocolError::InvalidRequest)
+    Ok((
+        operation.ok_or(ProtocolError::InvalidRequest)?,
+        profile.unwrap_or_else(|| "default".to_owned()),
+    ))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -459,36 +455,11 @@ pub fn validate_request(request: &ExecuteRequest) -> Result<(), ProtocolError> {
         // redirect organization authentication to an arbitrary endpoint.
         return Err(ProtocolError::OperationForbidden);
     }
-    let command = command_name(&request.arguments).ok_or(ProtocolError::InvalidRequest)?;
-    if matches!(command, "exec" | "inject" | "mcp") {
-        return Err(ProtocolError::OperationForbidden);
-    }
-    if command != request.operation.cli_name() {
+    let (operation, profile) = operation_and_profile(&request.arguments)?;
+    if operation != request.operation || profile != request.consent.agent_id {
         return Err(ProtocolError::InvalidRequest);
     }
     Ok(())
-}
-
-fn command_name(arguments: &[String]) -> Option<&str> {
-    let mut index = 0;
-    while let Some(argument) = arguments.get(index) {
-        if argument.starts_with("--id=") {
-            if argument.len() == "--id=".len() {
-                return None;
-            }
-            index = index.checked_add(1)?;
-            continue;
-        }
-        if argument == "--id" {
-            index = index.checked_add(2)?;
-            continue;
-        }
-        if argument.starts_with('-') {
-            return None;
-        }
-        return Some(argument);
-    }
-    None
 }
 
 pub fn request_hash(
@@ -615,7 +586,7 @@ mod tests {
                 nonce: [nonce; 32],
                 issued_at_unix_ms: 1_000,
                 expires_at_unix_ms: 31_000,
-                agent_id: "agent-public-id".to_owned(),
+                agent_id: "default".to_owned(),
                 operation,
                 request_hash,
                 signature: vec![1],
@@ -766,14 +737,37 @@ mod tests {
     }
 
     #[test]
-    fn inline_profile_selector_is_parsed_without_becoming_authorization() {
+    fn inline_profile_selector_is_bound_to_consent_metadata() {
         let mut request = signed_request("get", SecureOperation::Get, 1);
         request.arguments = vec!["--id=local-profile".to_owned(), "get".to_owned()];
+        request.consent.agent_id = "local-profile".to_owned();
         assert!(validate_request(&request).is_ok());
         assert_eq!(
             operation_and_profile(&request.arguments).expect("operation"),
             (SecureOperation::Get, "local-profile".to_owned())
         );
+    }
+
+    #[test]
+    fn suffix_profile_selector_is_bound_to_consent_metadata() {
+        let mut request = signed_request("get", SecureOperation::Get, 1);
+        request.arguments = vec![
+            "get".to_owned(),
+            "vault".to_owned(),
+            "entry".to_owned(),
+            "--id".to_owned(),
+            "local-profile".to_owned(),
+        ];
+        assert_eq!(
+            operation_and_profile(&request.arguments).expect("operation"),
+            (SecureOperation::Get, "local-profile".to_owned())
+        );
+        assert!(matches!(
+            validate_request(&request),
+            Err(ProtocolError::InvalidRequest)
+        ));
+        request.consent.agent_id = "local-profile".to_owned();
+        assert!(validate_request(&request).is_ok());
     }
 
     #[test]
