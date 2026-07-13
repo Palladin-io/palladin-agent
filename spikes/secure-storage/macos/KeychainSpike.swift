@@ -2,7 +2,8 @@ import Foundation
 import LocalAuthentication
 import Security
 
-private let service = "io.palladin.runtime.spike.synthetic"
+private let runID = ProcessInfo.processInfo.environment["PALLADIN_SPIKE_RUN_ID"] ?? "manual"
+private let service = "io.palladin.runtime.spike.synthetic.\(runID)"
 private let account = "agent-identity"
 private let syntheticIdentity = Data("synthetic-agent-identity-not-production".utf8)
 private let useDataProtectionKeychain = ProcessInfo.processInfo.environment["PALLADIN_SPIKE_DATA_PROTECTION"] != "false"

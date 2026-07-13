@@ -12,6 +12,14 @@ Native negative tests for CVT-301. Every payload is synthetic and the scripts pr
 
 The macOS test uses `Security.framework` and `kSecUseDataProtectionKeychain`. The Windows test uses native DPAPI. The Linux test exercises the kernel UID/file-permission boundary. These are native host tests, not storage mocks.
 
+The default macOS run never launches a differently signed process against the user's Login Keychain. That ACL check can cause macOS to display a confirmation dialog naming the negative-test executable even when the query requests non-interactive behavior. It is therefore opt-in and must run only in a disposable macOS test account or an unattended CI runner:
+
+```bash
+PALLADIN_SPIKE_ALLOW_KEYCHAIN_UI_TEST=true ./spikes/secure-storage/macos/run.sh
+```
+
+Normal development and automated local test commands must leave this variable unset. Each run also uses a unique synthetic service name so it never queries a stale item from an earlier execution.
+
 ## Platform mechanism decision
 
 The negative tests answer whether the simplest native store creates a process boundary. The comparison below records why the implementation tasks may or may not add another OS component.
