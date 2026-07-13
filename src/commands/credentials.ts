@@ -85,14 +85,14 @@ export function searchCommand(getProfile: GetProfile): Command {
         console.log('');
       }
       if (result.nextCursor) {
-        console.log('(more results available — refine your query)');
+        console.log('(more results available - refine your query)');
       }
     });
 }
 
 export function reportStaleCommand(getProfile: GetProfile): Command {
   return new Command('report-stale')
-    .description('Report a credential as not working — notifies the vault owners so they can rotate it (sends no secret)')
+    .description('Report a credential as not working - notifies the vault owners so they can rotate it (sends no secret)')
     .argument('<vaultId>', 'vault ID')
     .argument('<entryId>', 'entry ID')
     .option('--note <text>', 'short note for the owner (never include the secret or any typed value)')
@@ -114,7 +114,7 @@ export function reportStaleCommand(getProfile: GetProfile): Command {
       } catch (err) {
         fail(describe(err));
       }
-      console.log('Reported credential as not working — the vault owners have been notified to rotate it.');
+      console.log('Reported credential as not working - the vault owners have been notified to rotate it.');
     });
 }
 
@@ -126,10 +126,11 @@ async function getCredentialWaiting(
   opts: { reason?: string; method: CredentialMethod; wait: WaitCliOptions },
   signing?: SigningContext,
 ): Promise<CredentialAccess> {
-  const call = () =>
+  const call = (signal?: AbortSignal) =>
     getCredential(config, keypair, vaultId, entryId, {
       reason: opts.reason?.trim(),
       method: opts.method,
+      signal,
     }, signing);
 
   let result = await call();
@@ -141,17 +142,26 @@ async function getCredentialWaiting(
   });
   if (policy.waitMs <= 0) return result; // --wait 0 / --no-wait: behave like a single shot
 
-  return awaitGrant(result, policy, {
-    poll: call,
-    sleep: realSleep,
-    heartbeat: makeHeartbeat(policy.progress),
-  });
+  const cancellation = new AbortController();
+  const cancel = () => cancellation.abort(new Error('credential wait was cancelled'));
+  const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGBREAK'];
+  signals.forEach((signal) => process.once(signal, cancel));
+  try {
+    return await awaitGrant(result, policy, {
+      poll: call,
+      sleep: realSleep,
+      heartbeat: makeHeartbeat(policy.progress),
+      signal: cancellation.signal,
+    });
+  } finally {
+    signals.forEach((signal) => process.removeListener(signal, cancel));
+  }
 }
 
 export function getCredentialCommand(getProfile: GetProfile): Command {
   const cmd = new Command('get')
     .alias('retrieve')
-    .description('Get a credential as plaintext — requests a grant on first use, waits for approval, returns the secret')
+    .description('Get a credential as plaintext - requests a grant on first use, waits for approval, returns the secret')
     .argument('<vaultId>', 'vault ID')
     .argument('<entryId>', 'entry ID')
     .option('--reason <reason>', 'justification shown to the approving user (required on first request)')
@@ -216,7 +226,7 @@ function outputCredential(entryId: string, label: string, plaintext: string, sel
 
 export function execCommand(getProfile: GetProfile): Command {
   const cmd = new Command('exec')
-    .description('Run a command with the credential injected as env vars — the secret never enters the agent context. For a Script entry, omit the command to run the stored script.')
+    .description('Run a command with the credential injected as env vars - the secret never enters the agent context. For a Script entry, omit the command to run the stored script.')
     .argument('<vaultId>', 'vault ID')
     .argument('<entryId>', 'entry ID')
     .argument('[command...]', 'command and args to run (use -- to separate, e.g. exec V E -- curl -u $CLAW_USERNAME:$CLAW_PASSWORD ...); omit for a Script entry')
@@ -236,7 +246,7 @@ export function execCommand(getProfile: GetProfile): Command {
 
       if (resolved.secret.script) {
         if (command.length > 0) {
-          fail('this entry is a script — do not pass a command; run `palladin exec <vaultId> <entryId>` to execute the stored script.');
+          fail('this entry is a script - do not pass a command; run `palladin exec <vaultId> <entryId>` to execute the stored script.');
         }
         const code = await execScriptEntry(config, keypair, signing, vaultId, resolved.secret.script, { reason: opts.reason, wait });
         process.exit(code);
@@ -265,7 +275,7 @@ function resolveEnvMappings(secret: ParsedSecret, mappings: string[]): { env: Re
   for (const mapping of mappings) {
     const eq = mapping.indexOf('=');
     if (eq <= 0) {
-      fail(`invalid --env "${mapping}" — expected NAME=field.`);
+      fail(`invalid --env "${mapping}" - expected NAME=field.`);
     }
     const name = mapping.slice(0, eq).trim();
     const fieldRef = mapping.slice(eq + 1).trim();

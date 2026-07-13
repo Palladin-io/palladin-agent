@@ -6,6 +6,7 @@ import { CredentialAccess } from '../http/agent-api.js';
 export const DEFAULT_WAIT_MS = 180_000; // total budget: 3 minutes
 export const DEFAULT_POLL_MS = 30_000; // re-check the backend every 30s (POST is idempotent)
 export const DEFAULT_HEARTBEAT_MS = 10_000; // liveness line every 10s, decoupled from the poll
+export const DEFAULT_POLL_TIMEOUT_MS = 10_000; // one request may never block heartbeat indefinitely
 export const MIN_POLL_MS = 5_000; // local safety floor so nothing can hammer the backend
 
 export type ProgressMode = 'plain' | 'json' | 'none';
@@ -15,6 +16,7 @@ export interface WaitPolicy {
   waitMs: number;
   pollMs: number;
   heartbeatMs: number;
+  pollTimeoutMs: number;
   progress: ProgressMode;
 }
 
@@ -41,7 +43,8 @@ export function resolveWaitPolicy(cli: WaitCliOptions = {}, hints: WaitHints = {
   const waitMs = Math.max(0, cli.waitMs ?? hints.maxWaitMs ?? DEFAULT_WAIT_MS);
   const pollMs = Math.max(MIN_POLL_MS, cli.pollMs ?? hints.pollIntervalMs ?? DEFAULT_POLL_MS);
   const heartbeatMs = Math.max(1_000, Math.min(DEFAULT_HEARTBEAT_MS, pollMs));
-  return { waitMs, pollMs, heartbeatMs, progress: cli.progress ?? 'plain' };
+  const pollTimeoutMs = Math.min(DEFAULT_POLL_TIMEOUT_MS, heartbeatMs);
+  return { waitMs, pollMs, heartbeatMs, pollTimeoutMs, progress: cli.progress ?? 'plain' };
 }
 
 export interface HeartbeatInfo {
@@ -52,11 +55,13 @@ export interface HeartbeatInfo {
 
 export interface AwaitGrantDeps {
   /** Re-query the credential endpoint. Idempotent for an in-flight pending (server reuses it). */
-  poll: () => Promise<CredentialAccess>;
+  poll: (signal?: AbortSignal) => Promise<CredentialAccess>;
   /** Sleep for `ms` (injected so tests can drive a fake clock). */
   sleep: (ms: number) => Promise<void>;
   /** Emit a liveness heartbeat — stderr text / NDJSON / no-op. Never touches stdout. */
   heartbeat: (info: HeartbeatInfo) => void;
+  /** Optional process-level cancellation (SIGINT/SIGTERM is bridged by the native runtime). */
+  signal?: AbortSignal;
 }
 
 /** Real wall-clock sleep. */
@@ -87,7 +92,7 @@ export function makeHeartbeat(
     const elapsed = Math.round(info.elapsedMs / 1000);
     const total = Math.round(info.deadlineMs / 1000);
     write(
-      `[palladin] awaiting approval · grant=${info.grantId ?? '—'} · ${elapsed}s/${total}s · approve in the app\n`,
+      `[palladin] awaiting approval - grant=${info.grantId ?? 'unknown'} - ${elapsed}s/${total}s - approve in the app\n`,
     );
   };
 }
@@ -110,24 +115,95 @@ export async function awaitGrant(
   let last: CredentialAccess = initial;
   let grantId: string | undefined = initial.grantId;
   let waited = 0;
-  let sincePoll = 0;
+  let nextPoll = policy.pollMs;
+  let nextHeartbeat = policy.heartbeatMs;
+  const wallStarted = Date.now();
 
   while (waited < policy.waitMs) {
-    const step = Math.min(policy.heartbeatMs, policy.waitMs - waited);
-    await deps.sleep(step);
-    waited += step;
-    sincePoll += step;
-    deps.heartbeat({ grantId, elapsedMs: waited, deadlineMs: policy.waitMs });
+    throwIfAborted(deps.signal);
+    const nextEvent = Math.min(nextPoll, nextHeartbeat, policy.waitMs);
+    const step = nextEvent - waited;
+    await raceWithAbort(deps.sleep(step), deps.signal);
+    waited = nextEvent;
 
-    if (sincePoll >= policy.pollMs) {
-      sincePoll = 0;
-      const result = await deps.poll();
+    if (waited >= nextHeartbeat) {
+      deps.heartbeat({ grantId, elapsedMs: waited, deadlineMs: policy.waitMs });
+      nextHeartbeat += policy.heartbeatMs;
+    }
+
+    if (waited >= nextPoll) {
+      const wallRemaining = policy.waitMs - (Date.now() - wallStarted);
+      if (wallRemaining <= 0) return last;
+      const timeoutMs = Math.max(1, Math.min(policy.pollTimeoutMs, policy.waitMs - waited, wallRemaining));
+      let result: CredentialAccess;
+      try {
+        result = await pollWithTimeout(deps, timeoutMs);
+      } catch (error) {
+        if (!(error instanceof PollTimeoutError)) throw error;
+        deps.heartbeat({ grantId, elapsedMs: waited, deadlineMs: policy.waitMs });
+        nextPoll += policy.pollMs;
+        continue;
+      }
       last = result;
       // Anything other than a fresh pending is a final answer — stop waiting immediately.
       if (result.access !== 'pending') return result;
       grantId = result.grantId ?? grantId;
+      nextPoll += policy.pollMs;
     }
   }
 
   return last; // budget exhausted — still pending
+}
+
+class PollTimeoutError extends Error {
+  constructor() {
+    super('credential poll timed out');
+    this.name = 'PollTimeoutError';
+  }
+}
+
+async function pollWithTimeout(deps: AwaitGrantDeps, timeoutMs: number): Promise<CredentialAccess> {
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort(deps.signal?.reason);
+  deps.signal?.addEventListener('abort', forwardAbort, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new PollTimeoutError();
+      reject(error);
+      controller.abort(error);
+    }, timeoutMs);
+  });
+  try {
+    return await raceWithAbort(Promise.race([deps.poll(controller.signal), timedOut]), deps.signal);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    deps.signal?.removeEventListener('abort', forwardAbort);
+    if (!controller.signal.aborted) controller.abort();
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('credential wait was cancelled');
+  }
+}
+
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise;
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error('credential wait was cancelled'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
 }

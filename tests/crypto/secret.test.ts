@@ -39,6 +39,13 @@ describe('parseSecret', () => {
     expect(s.customFields).toEqual([]);
     expect(s.script).toBeNull();
   });
+
+  it('keeps a legacy top-level TOTP URI out of the generic injection map', () => {
+    const uri = 'otpauth://totp/GitHub?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+    const s = parseSecret(JSON.stringify({ username: 'a', password: 'b', totp: uri }));
+    expect(s.legacyTotp).toBe(uri);
+    expect(s.fields.totp).toBeUndefined();
+  });
 });
 
 describe('parseSecret — v2 custom fields', () => {
@@ -139,16 +146,29 @@ describe('parseSecret — Script entries', () => {
     expect(s.fields.interpreter).toBeUndefined();
   });
 
-  it('accepts `placeholder` as a legacy alias for a ref env name and skips refs without entryId', () => {
-    const s = parseSecret(
-      JSON.stringify({
-        v: 2,
-        script: 'echo hi',
-        interpreter: 'sh',
-        refs: [{ placeholder: 'TOKEN', entryId: 'e1' }, { env: 'BAD' }],
-      }),
-    );
+  it('accepts `placeholder` as a legacy alias for a ref env name', () => {
+    const s = parseSecret(JSON.stringify({
+      v: 2,
+      script: 'echo hi',
+      interpreter: 'sh',
+      refs: [{ placeholder: 'TOKEN', entryId: 'e1' }],
+    }));
     expect(s.script!.refs).toEqual([{ env: 'TOKEN', vaultId: null, entryId: 'e1', field: null }]);
+  });
+
+  it('fails closed when any Script credential reference is malformed', () => {
+    expect(() => parseSecret(JSON.stringify({
+      v: 2,
+      script: 'echo hi',
+      interpreter: 'sh',
+      refs: [{ placeholder: 'TOKEN', entryId: 'e1' }, { env: 'BAD' }],
+    }))).toThrow(/malformed credential reference/);
+    expect(() => parseSecret(JSON.stringify({
+      v: 2,
+      script: 'echo hi',
+      interpreter: 'sh',
+      refs: null,
+    }))).toThrow(/malformed credential references/);
   });
 
   it('is not a script when interpreter is absent', () => {

@@ -98,6 +98,18 @@ describe('getCredential', () => {
     expect(JSON.parse(init.body as string)).toEqual({})
   })
 
+  it('forwards a poll cancellation signal to fetch without serializing it', async () => {
+    const fetchSpy = mockFetch(202, { access: 'pending', grantId: 'g1' })
+    vi.stubGlobal('fetch', fetchSpy)
+    const controller = new AbortController()
+
+    await getCredential(config, keypair, 'v1', 'e1', { reason: 'fixture', signal: controller.signal })
+
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit
+    expect(init.signal).toBe(controller.signal)
+    expect(JSON.parse(init.body as string)).toEqual({ reason: 'fixture' })
+  })
+
   it('returns the granted envelope on 200', async () => {
     const body = { access: 'granted', entryId: 'e1', label: 'Facebook', reEncryptedBlob: 'a', nonce: 'b', agentWrappedDek: 'c' }
     vi.stubGlobal('fetch', mockFetch(200, body))

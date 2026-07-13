@@ -89,6 +89,25 @@ describe('resolveField — errors', () => {
     expect(() => resolveField(credentialV2(), { field: 'nope' })).toThrowError(FieldSelectionError);
     expect(() => resolveField(credentialV2(), { fieldId: 'zzz' })).toThrowError(/no custom field/);
   });
+
+  it('fails closed when a custom field id is duplicated', () => {
+    const s = parseSecret(JSON.stringify({
+      value: 'x',
+      fields: [
+        { id: 'same', label: 'One', type: 'text', value: '1' },
+        { id: 'same', label: 'Two', type: 'text', value: '2' },
+      ],
+    }));
+    expect(() => resolveField(s, { fieldId: 'same' })).toThrow(/duplicated/);
+  });
+
+  it('uses Unicode case folding consistently for custom labels', () => {
+    const s = parseSecret(JSON.stringify({
+      value: 'x',
+      fields: [{ id: 'unicode', label: 'ŻÓŁĆ', type: 'text', value: 'ok' }],
+    }));
+    expect(resolveField(s, { field: 'żółć' })).toMatchObject({ value: 'ok' });
+  });
 });
 
 describe('redactTotpSecrets', () => {
@@ -112,5 +131,35 @@ describe('redactTotpSecrets', () => {
 
   it('passes non-JSON plaintext through untouched', () => {
     expect(redactTotpSecrets('raw-token')).toBe('raw-token');
+  });
+
+  it('resolves and redacts a legacy top-level otpauth URI', () => {
+    const uri = `otpauth://totp/GitHub?secret=${TOTP_SECRET}`;
+    const plaintext = JSON.stringify({ username: 'a', password: 'b', totp: uri });
+    const parsed = parseSecret(plaintext);
+    const resolved = resolveField(parsed, { field: 'totp' });
+    expect(resolved.kind).toBe('totp');
+    expect(redactTotpSecrets(plaintext)).not.toContain(TOTP_SECRET);
+  });
+
+  it('withholds malformed TOTP values instead of returning the seed-like input', () => {
+    const plaintext = JSON.stringify({
+      value: 'x',
+      fields: [{ id: 'bad', label: 'OTP', type: 'totp', value: { secret: 'must-not-leak', period: 0 } }],
+    });
+    const redacted = redactTotpSecrets(plaintext);
+    expect(redacted).not.toContain('must-not-leak');
+    expect(redacted).toContain('withheld');
+  });
+
+  it('withholds a malformed object-valued legacy TOTP seed', () => {
+    const plaintext = JSON.stringify({
+      username: 'a',
+      password: 'b',
+      totp: { secret: 'legacy-must-not-leak', period: 0 },
+    });
+    const redacted = redactTotpSecrets(plaintext);
+    expect(redacted).not.toContain('legacy-must-not-leak');
+    expect(redacted).toContain('withheld');
   });
 });

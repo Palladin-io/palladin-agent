@@ -3,6 +3,7 @@ members = [
     "crates/palladin-api",
     "crates/palladin-cli",
     "crates/palladin-core",
+    "crates/palladin-credential",
     "crates/palladin-crypto",
     "crates/palladin-platform",
 ]
@@ -25,6 +26,7 @@ ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 fs2 = "0.4.3"
 getrandom = "0.4.3"
 hostname = "0.4.1"
+hmac = "0.12.1"
 keyring = "4.1.4"
 nix = { version = "0.31.3", default-features = false, features = ["user"] }
 percent-encoding = "2.3.2"
@@ -34,12 +36,14 @@ salsa20 = "0.10.2"
 secrecy = "0.10.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha1 = "0.10.6"
 sha2 = "0.10.9"
 subtle = "2.6.1"
 tempfile = "3.27.0"
 thiserror = "2.0.18"
 time = { version = "0.3.44", features = ["formatting"] }
-tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = "0.7.18"
 url = "2.5.8"
 x25519-dalek = { version = "2.0.1", features = ["static_secrets", "zeroize"] }
 zeroize = { version = "1.9.0", features = ["derive"] }

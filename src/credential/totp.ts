@@ -21,6 +21,66 @@ export interface TotpCode {
   expiresIn: number;
 }
 
+/** Parse a v2 JSON descriptor, a legacy otpauth URI, or a raw base32 setup key. */
+export function parseTotpValue(value: string): TotpParams | null {
+  const trimmed = value.trim();
+  try {
+    const raw = JSON.parse(trimmed) as unknown;
+    if (typeof raw === 'object' && raw !== null) {
+      const record = raw as Record<string, unknown>;
+      if (typeof record.secret === 'string') {
+        return normalizedParams(record.secret, record);
+      }
+    }
+  } catch {
+    // Legacy values are not JSON.
+  }
+
+  if (trimmed.slice(0, 'otpauth://'.length).toLowerCase() === 'otpauth://') {
+    try {
+      const uri = new URL(trimmed);
+      if (uri.protocol !== 'otpauth:' || uri.hostname !== 'totp' || uri.pathname.length <= 1) return null;
+      const secret = uri.searchParams.get('secret');
+      if (!secret) return null;
+      const digitsRaw = uri.searchParams.get('digits');
+      const periodRaw = uri.searchParams.get('period');
+      const digits = numeric(digitsRaw);
+      const period = numeric(periodRaw);
+      if ((digitsRaw !== null && digits === undefined) || (periodRaw !== null && period === undefined)) {
+        return null;
+      }
+      return normalizedParams(secret, {
+        algorithm: uri.searchParams.get('algorithm'),
+        digits,
+        period,
+      });
+    } catch {
+      return null;
+    }
+  }
+  return trimmed ? { secret: trimmed } : null;
+}
+
+function normalizedParams(secret: string, record: Record<string, unknown>): TotpParams {
+  const params: TotpParams = { secret };
+  const algorithm = typeof record.algorithm === 'string' ? record.algorithm.toUpperCase() : null;
+  if (algorithm === 'SHA1' || algorithm === 'SHA256' || algorithm === 'SHA512') {
+    params.algorithm = algorithm;
+  }
+  if (typeof record.digits === 'number' && Number.isSafeInteger(record.digits) && record.digits >= 0) {
+    params.digits = record.digits;
+  }
+  if (typeof record.period === 'number' && Number.isSafeInteger(record.period) && record.period >= 0) {
+    params.period = record.period;
+  }
+  return params;
+}
+
+function numeric(value: string | null): number | undefined {
+  if (value === null || !/^\d+$/.test(value)) return undefined;
+  return Number(value);
+}
+
 const DEFAULT_ALGORITHM = 'SHA1';
 const DEFAULT_DIGITS = 6;
 const DEFAULT_PERIOD = 30;
@@ -38,7 +98,7 @@ export function generateTotp(params: TotpParams, atMs: number = Date.now()): Tot
   const period = params.period ?? DEFAULT_PERIOD;
 
   if (digits < 1 || digits > 10) {
-    throw new TotpError(`unsupported TOTP digits: ${digits} (expected 1–10)`);
+    throw new TotpError(`unsupported TOTP digits: ${digits} (expected 1-10)`);
   }
   if (period < 1) {
     throw new TotpError(`unsupported TOTP period: ${period}`);
