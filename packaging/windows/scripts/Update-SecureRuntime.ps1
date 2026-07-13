@@ -22,21 +22,11 @@ $installed = Get-AppxPackage -AllUsers -Name 'Palladin.Runtime.Broker' | Sort-Ob
 if ($null -eq $installed) { throw 'Palladin Runtime is not installed; use the signed bootstrapper' }
 $currentVersion = [version]$installed.Version
 Assert-PalladinVersionPolicy -CurrentVersion $currentVersion -CandidateVersion $CandidateVersion -SecurityFloor $SecurityFloor
-$stage = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) "Palladin\UpdateCache\$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Path $stage -Force | Out-Null
-$stageAcl = [Security.AccessControl.DirectorySecurity]::new()
-$stageAcl.SetAccessRuleProtection($true, $false)
-foreach ($sidValue in 'S-1-5-18', 'S-1-5-32-544') {
-  $rule = [Security.AccessControl.FileSystemAccessRule]::new(
-    [Security.Principal.SecurityIdentifier]$sidValue,
-    [Security.AccessControl.FileSystemRights]::FullControl,
-    [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
-    [Security.AccessControl.PropagationFlags]::None,
-    [Security.AccessControl.AccessControlType]::Allow
-  )
-  $stageAcl.AddAccessRule($rule) | Out-Null
-}
-Set-Acl -LiteralPath $stage -AclObject $stageAcl
+$serviceSid = ([Security.Principal.NTAccount]'NT SERVICE\PalladinRuntime').Translate([Security.Principal.SecurityIdentifier])
+# Fail before package registration if any owner, ACE, inheritance flag, link,
+# junction, or canonical ProgramData segment changed since installation.
+Assert-PalladinProtectedDataRoot -ServiceSid $serviceSid
+$stage = New-PalladinProtectedUpdateStage
 $stagedBroker = Join-Path $stage 'Palladin.Runtime.Broker.msix'
 $stagedCompanion = Join-Path $stage 'Palladin.Runtime.Companion.msix'
 try {
@@ -56,13 +46,16 @@ try {
   if ($LASTEXITCODE -ne 0 -or ($before -join "`n") -cne ($after -join "`n")) { throw 'PalladinRuntime service SID changed during update' }
   $sidType = & sc.exe qsidtype PalladinRuntime
   if ($LASTEXITCODE -ne 0 -or ($sidType -join "`n") -notmatch 'SERVICE_SID_TYPE:\s+RESTRICTED') { throw 'PalladinRuntime service SID is not restricted after update' }
-  $dataRoot = Join-Path $env:ProgramData 'Palladin\Runtime\v1'
-  $acl = Get-Acl -LiteralPath $dataRoot
-  if (-not $acl.AreAccessRulesProtected -or ($acl.Access | Where-Object AccessControlType -ne 'Allow').Count -ne 0) { throw 'broker data directory ACL is not protected after update' }
-  $serviceSid = ([Security.Principal.NTAccount]'NT SERVICE\PalladinRuntime').Translate([Security.Principal.SecurityIdentifier]).Value
-  $expectedSids = @('S-1-5-18', 'S-1-5-32-544', $serviceSid) | Sort-Object -Unique
-  $actualSids = $acl.Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } | Sort-Object -Unique
-  if (($actualSids -join ',') -cne ($expectedSids -join ',')) { throw 'broker data directory ACL changed during update' }
+  $service = Get-CimInstance Win32_Service -Filter "Name='PalladinRuntime'"
+  if ($null -eq $service -or $service.StartName -notin @('NT AUTHORITY\LocalService', 'NT AUTHORITY\LOCAL SERVICE')) {
+    throw 'PalladinRuntime is not registered under LocalService after update'
+  }
+  Assert-PalladinProtectedDataRoot -ServiceSid $serviceSid
+  $controller = Get-Service -Name PalladinRuntime -ErrorAction Stop
+  if ($controller.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Running) {
+    Start-Service -Name PalladinRuntime -ErrorAction Stop
+    (Get-Service -Name PalladinRuntime).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
+  }
 } finally {
   Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 }

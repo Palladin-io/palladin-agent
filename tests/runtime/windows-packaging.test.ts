@@ -8,6 +8,7 @@ describe('Windows hardened packaging contract', () => {
     const manifest = read('packaging/windows/manifests/Palladin.Broker.appxmanifest.in');
     expect(manifest).toContain('Name="Palladin.Runtime.Broker"');
     expect(manifest).toContain('Name="PalladinRuntime"');
+    expect(manifest).toContain('StartupType="auto"');
     expect(manifest).toContain('StartAccount="localService"');
     expect(manifest).toContain('Name="packagedServices"');
     expect(manifest).toContain('Executable="bin\\palladin-service.exe"');
@@ -48,6 +49,74 @@ describe('Windows hardened packaging contract', () => {
     expect(source).toContain('EnsureNotReparse');
     expect(source).toContain('"/inheritance:r"');
     expect(source).toContain('"*S-1-5-18:(OI)(CI)F"');
+  });
+
+  it('creates canonical ProgramData top-down with no-follow handles and exact native ACLs', () => {
+    const install = read('packaging/windows/scripts/Install-SecureRuntime.ps1');
+    const update = read('packaging/windows/scripts/Update-SecureRuntime.ps1');
+    const release = read('packaging/windows/scripts/Palladin.Release.psm1');
+    expect(install).not.toContain('$env:ProgramData');
+    expect(update).not.toContain('$env:ProgramData');
+    expect(release).toContain('62AB5D82-FDC1-4DC3-A9DD-070D1D495D97');
+    expect(release).toContain('SHGetKnownFolderPath');
+    expect(release).toContain('CharSet = CharSet.Unicode, ExactSpelling = true');
+    expect(release).toContain('FileFlagOpenReparsePoint');
+    expect(release).toContain('CreateDirectoryW');
+    expect(release).toContain('SetSecurityInfo');
+    expect(release).toContain('GetSecurityInfo');
+    expect(release).toContain('O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)');
+    expect(release).toContain('String.Equals(actual, expected, StringComparison.Ordinal)');
+    expect(release).not.toContain('?? throw');
+    expect(release).not.toContain('Set-Acl -LiteralPath $Path');
+    expect(update).not.toContain('Set-Acl');
+    expect(update).toContain('New-PalladinProtectedUpdateStage');
+    const exported = release.split('\n').find((line) => line.startsWith('Export-ModuleMember -Function')) ?? '';
+    for (const helper of [
+      'Get-PalladinCanonicalProgramDataRoot',
+      'Initialize-PalladinBootstrapDataRoot',
+      'Initialize-PalladinProtectedDataRoot',
+      'Assert-PalladinProtectedDataRoot',
+      'New-PalladinProtectedUpdateStage',
+    ]) {
+      expect(exported).toContain(helper);
+    }
+  });
+
+  it('provisions deny-by-default ProgramData before auto service registration and verifies update before activation', () => {
+    const install = read('packaging/windows/scripts/Install-SecureRuntime.ps1');
+    const update = read('packaging/windows/scripts/Update-SecureRuntime.ps1');
+    expect(install.indexOf('Initialize-PalladinBootstrapDataRoot')).toBeLessThan(
+      install.indexOf('Add-AppxPackage -Path $BrokerPackage'),
+    );
+    expect(install.indexOf('$existingService = Get-Service')).toBeLessThan(
+      install.indexOf('Initialize-PalladinBootstrapDataRoot'),
+    );
+    expect(install.indexOf('Assert-PalladinProtectedDataRoot -ServiceSid $existingServiceSid')).toBeLessThan(
+      install.indexOf('Add-AppxPackage -Path $BrokerPackage'),
+    );
+    expect(install).toContain("if ($null -eq $existingService) {");
+    expect(install).toContain('PalladinRuntime service SID changed during repair');
+    expect(install.indexOf('Initialize-PalladinProtectedDataRoot')).toBeGreaterThan(
+      install.indexOf('sidtype PalladinRuntime restricted'),
+    );
+    expect(install).toContain('Start-Service -Name PalladinRuntime');
+    expect(update.indexOf('Assert-PalladinProtectedDataRoot')).toBeLessThan(
+      update.indexOf('Add-AppxPackage -Path $stagedBroker'),
+    );
+    expect(update.match(/Assert-PalladinProtectedDataRoot/g)).toHaveLength(2);
+    expect(update.indexOf('Assert-PalladinProtectedDataRoot', update.indexOf('Add-AppxPackage'))).toBeLessThan(
+      update.indexOf('Start-Service -Name PalladinRuntime'),
+    );
+  });
+
+  it('bounds broker connections and reports rejection causes to the user', () => {
+    const service = read('runtime/crates/palladin-windows-broker/src/bin/service.rs');
+    const companion = read('runtime/crates/palladin-windows-broker/src/companion.rs');
+    expect(service).toContain('Semaphore::new(MAX_ACTIVE_CONNECTIONS)');
+    expect(service).toContain('timeout(INITIAL_FRAME_TIMEOUT');
+    expect(service).toContain('timeout(CONSENT_FRAME_TIMEOUT');
+    expect(companion).toContain('return Err(rejection_error(*code))');
+    expect(companion).toContain('Windows Hello consent expired; retry the command');
   });
 
   it('packages worker with broker and produces x64 plus arm64 bundles', () => {

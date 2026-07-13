@@ -16,15 +16,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub const MAX_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_ARGUMENTS: usize = 256;
 const MAX_ARGUMENT_BYTES: usize = 32 * 1024;
 const MAX_AGENT_ID_BYTES: usize = 256;
 const MAX_CONSENT_PUBLIC_KEY_BYTES: usize = 8 * 1024;
-const CONSENT_DOMAIN: &[u8] = b"palladin.windows.secure-consent.v1\0";
+const CONSENT_DOMAIN: &[u8] = b"palladin.windows.secure-consent.v2\0";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -36,6 +37,7 @@ pub enum SecureOperation {
     Search,
     Get,
     ReportStale,
+    McpServe,
     Agents,
     Security,
     Purge,
@@ -52,6 +54,8 @@ impl SecureOperation {
             "search" => Some(Self::Search),
             "get" => Some(Self::Get),
             "report-stale" => Some(Self::ReportStale),
+            "retrieve" => Some(Self::Get),
+            "mcp" => Some(Self::McpServe),
             "agents" => Some(Self::Agents),
             "security" => Some(Self::Security),
             "purge" => Some(Self::Purge),
@@ -69,7 +73,25 @@ pub fn operation_and_profile(
     let mut index = 0;
     let mut profile = None;
     let mut operation = None;
+    let mut options_ended = false;
     while let Some(argument) = arguments.get(index) {
+        if argument == "--" {
+            options_ended = true;
+            index = index.checked_add(1).ok_or(ProtocolError::InvalidRequest)?;
+            continue;
+        }
+        if options_ended {
+            index = index.checked_add(1).ok_or(ProtocolError::InvalidRequest)?;
+            continue;
+        }
+        if argument == "--host"
+            || argument.starts_with("--host=")
+            || argument == "--api-key"
+            || argument.starts_with("--api-key=")
+            || argument.starts_with("--api-key-stdin=")
+        {
+            return Err(ProtocolError::OperationForbidden);
+        }
         if let Some(value) = argument.strip_prefix("--id=") {
             if profile.is_some() || value.is_empty() || value.len() > MAX_AGENT_ID_BYTES {
                 return Err(ProtocolError::InvalidRequest);
@@ -94,10 +116,14 @@ pub fn operation_and_profile(
             if argument.starts_with('-') {
                 return Err(ProtocolError::InvalidRequest);
             }
-            operation = Some(
-                SecureOperation::from_cli_name(argument)
-                    .ok_or(ProtocolError::OperationForbidden)?,
-            );
+            let parsed = SecureOperation::from_cli_name(argument)
+                .ok_or(ProtocolError::OperationForbidden)?;
+            if parsed == SecureOperation::McpServe
+                && arguments.get(index + 1).map(String::as_str) != Some("serve")
+            {
+                return Err(ProtocolError::InvalidRequest);
+            }
+            operation = Some(parsed);
         }
         index = index.checked_add(1).ok_or(ProtocolError::InvalidRequest)?;
     }
@@ -150,6 +176,31 @@ pub struct ExecuteRequest {
     pub consent: ConsentChallenge,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputChunk {
+    pub request_id: [u8; 16],
+    pub sequence: u64,
+    pub bytes: Vec<u8>,
+}
+
+impl Drop for InputChunk {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
+}
+
+impl std::fmt::Debug for InputChunk {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InputChunk")
+            .field("request_id", &self.request_id)
+            .field("sequence", &self.sequence)
+            .field("bytes", &"[redacted]")
+            .finish()
+    }
+}
+
 impl Drop for ExecuteRequest {
     fn drop(&mut self) {
         self.standard_input.zeroize();
@@ -185,6 +236,11 @@ pub enum ClientFrame {
         public_key_spki_der: Vec<u8>,
     },
     Execute(ExecuteRequest),
+    Input(InputChunk),
+    InputClosed {
+        request_id: [u8; 16],
+        sequence: u64,
+    },
     Cancel {
         request_id: [u8; 16],
     },
@@ -197,7 +253,7 @@ pub enum OutputStream {
     StandardError,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum BrokerFrame {
     Challenge {
@@ -214,6 +270,7 @@ pub enum BrokerFrame {
     },
     Output {
         request_id: [u8; 16],
+        sequence: u64,
         stream: OutputStream,
         bytes: Vec<u8>,
     },
@@ -225,6 +282,59 @@ pub enum BrokerFrame {
         request_id: Option<[u8; 16]>,
         code: RejectionCode,
     },
+}
+
+impl std::fmt::Debug for BrokerFrame {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Challenge {
+                request_id,
+                issued_at_unix_ms,
+                expires_at_unix_ms,
+                agent_id,
+                operation,
+                ..
+            } => formatter
+                .debug_struct("Challenge")
+                .field("request_id", request_id)
+                .field("nonce", &"[redacted]")
+                .field("issued_at_unix_ms", issued_at_unix_ms)
+                .field("expires_at_unix_ms", expires_at_unix_ms)
+                .field("agent_id", agent_id)
+                .field("operation", operation)
+                .field("request_hash", &"[redacted]")
+                .finish(),
+            Self::Accepted { request_id } => formatter
+                .debug_struct("Accepted")
+                .field("request_id", request_id)
+                .finish(),
+            Self::Output {
+                request_id,
+                sequence,
+                stream,
+                ..
+            } => formatter
+                .debug_struct("Output")
+                .field("request_id", request_id)
+                .field("sequence", sequence)
+                .field("stream", stream)
+                .field("bytes", &"[redacted]")
+                .finish(),
+            Self::Exited {
+                request_id,
+                exit_code,
+            } => formatter
+                .debug_struct("Exited")
+                .field("request_id", request_id)
+                .field("exit_code", exit_code)
+                .finish(),
+            Self::Rejected { request_id, code } => formatter
+                .debug_struct("Rejected")
+                .field("request_id", request_id)
+                .field("code", code)
+                .finish(),
+        }
+    }
 }
 
 impl Drop for BrokerFrame {
@@ -242,6 +352,7 @@ pub enum RejectionCode {
     ConsentInvalid,
     ConsentExpired,
     ReplayDetected,
+    SessionExpired,
     OperationForbidden,
     InvalidRequest,
     WorkerUnavailable,
@@ -446,18 +557,21 @@ pub fn validate_request(request: &ExecuteRequest) -> Result<(), ProtocolError> {
     }) {
         return Err(ProtocolError::InvalidRequest);
     }
-    if request
-        .arguments
-        .iter()
-        .any(|argument| argument == "--host" || argument.starts_with("--host="))
-    {
-        // Secure host policy is broker-owned; the untrusted companion cannot
-        // redirect organization authentication to an arbitrary endpoint.
-        return Err(ProtocolError::OperationForbidden);
-    }
     let (operation, profile) = operation_and_profile(&request.arguments)?;
     if operation != request.operation || profile != request.consent.agent_id {
         return Err(ProtocolError::InvalidRequest);
+    }
+    let uses_api_key_stdin = request
+        .arguments
+        .iter()
+        .any(|argument| argument == "--api-key-stdin");
+    if uses_api_key_stdin && operation != SecureOperation::Connect {
+        return Err(ProtocolError::OperationForbidden);
+    }
+    if !request.standard_input.is_empty()
+        && (operation != SecureOperation::Connect || !uses_api_key_stdin)
+    {
+        return Err(ProtocolError::OperationForbidden);
     }
     Ok(())
 }
@@ -467,9 +581,11 @@ pub fn request_hash(
     arguments: &[String],
     standard_input: &[u8],
 ) -> Result<[u8; 32], ProtocolError> {
-    let canonical = serde_json::to_vec(&(PROTOCOL_VERSION, operation, arguments, standard_input))
-        .map_err(|_| ProtocolError::InvalidRequest)?;
-    Ok(Sha256::digest(canonical).into())
+    let canonical = Zeroizing::new(
+        serde_json::to_vec(&(PROTOCOL_VERSION, operation, arguments, standard_input))
+            .map_err(|_| ProtocolError::InvalidRequest)?,
+    );
+    Ok(Sha256::digest(&*canonical).into())
 }
 
 pub fn consent_payload(consent: &ConsentChallenge) -> Result<Vec<u8>, ProtocolError> {
@@ -575,7 +691,7 @@ mod tests {
 
     fn signed_request(command: &str, operation: SecureOperation, nonce: u8) -> ExecuteRequest {
         let arguments = vec![command.to_owned()];
-        let standard_input = b"synthetic-input".to_vec();
+        let standard_input = Vec::new();
         let request_hash = request_hash(operation, &arguments, &standard_input).expect("hash");
         ExecuteRequest {
             request_id: [9; 16],
@@ -595,14 +711,29 @@ mod tests {
     }
 
     #[test]
-    fn secure_v1_rejects_execution_oracles_before_worker_spawn() {
-        for command in ["exec", "inject", "mcp"] {
+    fn secure_v2_rejects_execution_oracles_before_worker_spawn() {
+        for command in ["exec", "inject"] {
             let request = signed_request(command, SecureOperation::Get, 1);
             assert!(matches!(
                 validate_request(&request),
                 Err(ProtocolError::OperationForbidden)
             ));
         }
+    }
+
+    #[test]
+    fn secure_v2_accepts_only_the_exact_mcp_serve_operation() {
+        let mut request = signed_request("mcp", SecureOperation::McpServe, 1);
+        request.arguments.push("serve".to_owned());
+        assert!(validate_request(&request).is_ok());
+        assert_eq!(
+            operation_and_profile(&request.arguments).expect("mcp serve"),
+            (SecureOperation::McpServe, "default".to_owned())
+        );
+        assert!(matches!(
+            operation_and_profile(&["mcp".to_owned()]),
+            Err(ProtocolError::InvalidRequest)
+        ));
     }
 
     #[test]
@@ -622,6 +753,44 @@ mod tests {
             .push("--host=https://attacker.invalid".to_owned());
         assert!(matches!(
             validate_request(&request),
+            Err(ProtocolError::OperationForbidden)
+        ));
+    }
+
+    #[test]
+    fn api_key_value_is_never_accepted_in_argv() {
+        for forbidden in ["--api-key", "--api-key=pl_secret_fixture"] {
+            let mut request = signed_request("connect", SecureOperation::Connect, 1);
+            request.arguments.push(forbidden.to_owned());
+            assert!(matches!(
+                validate_request(&request),
+                Err(ProtocolError::OperationForbidden)
+            ));
+            assert!(matches!(
+                operation_and_profile(&request.arguments),
+                Err(ProtocolError::OperationForbidden)
+            ));
+        }
+    }
+
+    #[test]
+    fn protected_stdin_is_limited_to_connect_onboarding() {
+        let mut connect = signed_request("connect", SecureOperation::Connect, 1);
+        connect.arguments.push("--api-key-stdin".to_owned());
+        connect.standard_input = b"pl_organization_fixture".to_vec();
+        assert!(validate_request(&connect).is_ok());
+
+        let mut missing_flag = signed_request("connect", SecureOperation::Connect, 1);
+        missing_flag.standard_input = b"pl_organization_fixture".to_vec();
+        assert!(matches!(
+            validate_request(&missing_flag),
+            Err(ProtocolError::OperationForbidden)
+        ));
+
+        let mut get = signed_request("get", SecureOperation::Get, 1);
+        get.arguments.push("--api-key-stdin".to_owned());
+        assert!(matches!(
+            validate_request(&get),
             Err(ProtocolError::OperationForbidden)
         ));
     }
@@ -772,12 +941,36 @@ mod tests {
 
     #[test]
     fn companion_parser_rejects_execution_oracles() {
-        for command in ["exec", "inject", "mcp"] {
+        for command in ["exec", "inject"] {
             assert!(matches!(
                 operation_and_profile(&[command.to_owned()]),
                 Err(ProtocolError::OperationForbidden)
             ));
         }
+    }
+
+    #[test]
+    fn parser_accepts_retrieve_alias_and_stops_option_scanning_at_separator() {
+        assert_eq!(
+            operation_and_profile(&[
+                "retrieve".to_owned(),
+                "vault".to_owned(),
+                "entry".to_owned(),
+            ])
+            .expect("retrieve"),
+            (SecureOperation::Get, "default".to_owned())
+        );
+        assert_eq!(
+            operation_and_profile(&[
+                "get".to_owned(),
+                "vault".to_owned(),
+                "entry".to_owned(),
+                "--".to_owned(),
+                "--host=https://not-a-top-level-option.invalid".to_owned(),
+            ])
+            .expect("separator"),
+            (SecureOperation::Get, "default".to_owned())
+        );
     }
 
     #[tokio::test]
@@ -795,6 +988,23 @@ mod tests {
         assert!(!wire.contains("read-secret"));
     }
 
+    #[test]
+    fn streaming_frames_redact_payloads_from_debug_output() {
+        let input = InputChunk {
+            request_id: [1; 16],
+            sequence: 0,
+            bytes: b"pl_stream_input_canary".to_vec(),
+        };
+        let output = BrokerFrame::Output {
+            request_id: [1; 16],
+            sequence: 0,
+            stream: OutputStream::StandardOutput,
+            bytes: b"pl_stream_output_canary".to_vec(),
+        };
+        assert!(!format!("{input:?}").contains("canary"));
+        assert!(!format!("{output:?}").contains("canary"));
+    }
+
     #[tokio::test]
     async fn oversized_frame_is_rejected_before_allocation() {
         let mut frame = Vec::from(((MAX_FRAME_BYTES + 1) as u32).to_be_bytes());
@@ -805,7 +1015,7 @@ mod tests {
 
     #[tokio::test]
     async fn unsupported_protocol_version_is_rejected() {
-        let body = br#"{"protocol_version":2,"payload":{"type":"cancel","request_id":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}}"#;
+        let body = br#"{"protocol_version":3,"payload":{"type":"cancel","request_id":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}}"#;
         let mut frame = Vec::from((body.len() as u32).to_be_bytes());
         frame.extend_from_slice(body);
         let result = read_frame::<_, ClientFrame>(&mut frame.as_slice()).await;

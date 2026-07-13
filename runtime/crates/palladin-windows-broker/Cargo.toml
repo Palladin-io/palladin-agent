@@ -10,6 +10,7 @@ repository.workspace = true
 getrandom.workspace = true
 palladin-platform = { path = "../palladin-platform" }
 secrecy.workspace = true
+rpassword.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 zeroize.workspace = true

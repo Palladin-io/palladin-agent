@@ -50,6 +50,7 @@ const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
     ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 const GET_EXPOSURE_WARNING: &str = "Note: this secret is now in the Agent's context. On a hosted LLM it may leave your machine. Prefer palladin exec when the credential only needs to authenticate a child process. Browser injection is disabled until an authenticated browser boundary is installed.";
 const INJECT_UNAVAILABLE: &str = "Browser injection is disabled because an unauthenticated CDP endpoint can spoof the page origin and receive plaintext. Palladin will enable inject only through a reviewed authenticated browser boundary. No browser endpoint was contacted and no credential was requested or decrypted.";
+const WINDOWS_HARDENED_EXEC_UNAVAILABLE: &str = "Credential execution is unavailable in the hardened Windows runtime until the reviewed process-isolation boundary is installed. No credential was requested or decrypted.";
 const CONTRACT_JSON: &str = include_str!("../../../contracts/v1/mcp-tools.json");
 
 type ApplicationFuture<'a> = Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
@@ -86,6 +87,22 @@ pub trait McpApplication: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct NativeApplication {
     session: Arc<RuntimeSession>,
+    exec_policy: NativeExecPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeExecPolicy {
+    Enabled,
+    WindowsHardenedUnavailable,
+}
+
+impl NativeExecPolicy {
+    const fn unavailable_message(self) -> Option<&'static str> {
+        match self {
+            Self::Enabled => None,
+            Self::WindowsHardenedUnavailable => Some(WINDOWS_HARDENED_EXEC_UNAVAILABLE),
+        }
+    }
 }
 
 impl NativeApplication {
@@ -93,6 +110,15 @@ impl NativeApplication {
     pub fn new(session: RuntimeSession) -> Self {
         Self {
             session: Arc::new(session),
+            exec_policy: NativeExecPolicy::Enabled,
+        }
+    }
+
+    #[must_use]
+    pub fn with_exec_policy(session: RuntimeSession, exec_policy: NativeExecPolicy) -> Self {
+        Self {
+            session: Arc::new(session),
+            exec_policy,
         }
     }
 }
@@ -232,6 +258,9 @@ impl McpApplication for NativeApplication {
         input: ExecInput,
         cancellation: CancellationToken,
     ) -> ApplicationFuture<'a> {
+        if let Some(message) = self.exec_policy.unavailable_message() {
+            return Box::pin(async move { ToolOutcome::error(message) });
+        }
         Box::pin(async move {
             let wait = match input.wait_options() {
                 Ok(wait) => wait,
@@ -933,6 +962,13 @@ pub fn native_server(
     session: RuntimeSession,
 ) -> Result<PalladinMcpServer<NativeApplication>, ContractError> {
     PalladinMcpServer::new(NativeApplication::new(session))
+}
+
+pub fn native_server_with_exec_policy(
+    session: RuntimeSession,
+    exec_policy: NativeExecPolicy,
+) -> Result<PalladinMcpServer<NativeApplication>, ContractError> {
+    PalladinMcpServer::new(NativeApplication::with_exec_policy(session, exec_policy))
 }
 
 pub struct BoundedLineReader<R> {

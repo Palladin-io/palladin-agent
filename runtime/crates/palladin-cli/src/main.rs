@@ -51,6 +51,7 @@ async fn main() -> ExitCode {
         Ok(root) => root,
         Err(error) => return fail(&error),
     };
+    let windows_hardened = hardened_worker_root.is_some();
     let secret_store = match runtime_secret_store(hardened_worker_root.as_deref()) {
         Ok(store) => store,
         Err(error) => return fail(&error.to_string()),
@@ -77,12 +78,9 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     if hardened_worker_root.is_some()
-        && matches!(
-            &cli.command,
-            Commands::Exec(_) | Commands::Inject(_) | Commands::Mcp { .. }
-        )
+        && matches!(&cli.command, Commands::Exec(_) | Commands::Inject(_))
     {
-        return fail("this operation is forbidden by the Windows Secure v1 worker policy");
+        return fail("this operation is forbidden by the Windows Secure v2 worker policy");
     }
 
     if matches!(&cli.command, Commands::Inject(_)) {
@@ -120,7 +118,9 @@ async fn main() -> ExitCode {
         Commands::Exec(args) => exec(&service, cli.id.as_deref(), args).await,
         Commands::Inject(_) => unreachable!("inject exits before identity initialization"),
         Commands::ReportStale(args) => report_stale(&service, cli.id.as_deref(), args).await,
-        Commands::Mcp { command } => mcp(&service, cli.id.as_deref(), command).await,
+        Commands::Mcp { command } => {
+            mcp(&service, cli.id.as_deref(), command, windows_hardened).await
+        }
         Commands::Agents { command } => agents(&service, command, runtime_storage_tier),
         Commands::Security { command } => {
             security(&service, cli.id.as_deref(), command, runtime_storage_tier)
@@ -236,6 +236,7 @@ async fn mcp(
     service: &RuntimeService<RuntimeSecretStore>,
     profile: Option<&str>,
     command: McpCommand,
+    windows_hardened: bool,
 ) -> ExitCode {
     match command {
         McpCommand::Serve => {
@@ -247,7 +248,14 @@ async fn mcp(
                 Ok(session) => session,
                 Err(error) => return fail(&error.to_string()),
             };
-            let server = match palladin_mcp::native_server(session) {
+            let server = match if windows_hardened {
+                palladin_mcp::native_server_with_exec_policy(
+                    session,
+                    palladin_mcp::NativeExecPolicy::WindowsHardenedUnavailable,
+                )
+            } else {
+                palladin_mcp::native_server(session)
+            } {
                 Ok(server) => server,
                 Err(error) => return fail(&error.to_string()),
             };

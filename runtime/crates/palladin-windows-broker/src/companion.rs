@@ -1,13 +1,15 @@
-use std::io::{IsTerminal, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read};
 use std::time::Duration;
 
 use palladin_platform::broker_protocol::{
-    BrokerFrame, ClientFrame, ConsentChallenge, ExecuteRequest, MAX_FRAME_BYTES, OutputStream,
-    ProtocolError, SecureOperation, consent_payload, operation_and_profile, read_frame,
-    request_hash, write_frame,
+    BrokerFrame, ClientFrame, ConsentChallenge, ExecuteRequest, InputChunk, MAX_STREAM_CHUNK_BYTES,
+    OutputStream, ProtocolError, SecureOperation, consent_payload, operation_and_profile,
+    read_frame, request_hash, write_frame,
 };
 use thiserror::Error;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+use tokio::sync::mpsc;
 use windows::Security::Credentials::{
     KeyCredential, KeyCredentialCreationOption, KeyCredentialManager, KeyCredentialStatus,
 };
@@ -15,13 +17,15 @@ use windows::Security::Cryptography::Core::CryptographicPublicKeyBlobType;
 use windows::Security::Cryptography::CryptographicBuffer;
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
 use windows::core::{Array, HSTRING};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{PIPE_NAME, WindowsBrokerError, authenticate_connected_server};
 
 const HELLO_KEY_NAME: &str = "Palladin Runtime Consent v1";
 const PIPE_CONNECT_ATTEMPTS: usize = 60;
 const PIPE_CONNECT_DELAY: Duration = Duration::from_millis(50);
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const CHALLENGE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(70);
 
 #[derive(Debug, Error)]
 pub enum CompanionError {
@@ -39,6 +43,28 @@ pub enum CompanionError {
     InvalidResponse,
     #[error("Palladin Windows companion transport failed")]
     Transport,
+    #[error("Palladin Runtime authentication is required; restart the command")]
+    AuthenticationRequired,
+    #[error("Windows Hello consent was rejected; retry the command")]
+    ConsentInvalid,
+    #[error("Windows Hello consent expired; retry the command")]
+    ConsentExpired,
+    #[error("Windows Hello consent was already used; retry the command")]
+    ReplayDetected,
+    #[error("Palladin secure session reached its 30-minute limit; restart the command")]
+    SessionExpired,
+    #[error("this command is forbidden by the secure Windows runtime")]
+    OperationForbidden,
+    #[error("Palladin Runtime rejected an invalid request; update or repair the installation")]
+    InvalidRequest,
+    #[error("Palladin Windows worker is unavailable; repair the installation")]
+    WorkerUnavailable,
+    #[error("could not read the organization API key from the masked prompt")]
+    ApiKeyPrompt,
+    #[error("--api-key-stdin requires redirected standard input")]
+    ApiKeyStdinRequiresRedirect,
+    #[error("redirected API key input requires connect --api-key-stdin")]
+    RedirectedApiKeyRequiresFlag,
 }
 
 impl From<ProtocolError> for CompanionError {
@@ -55,10 +81,10 @@ impl From<WindowsBrokerError> for CompanionError {
 
 pub fn run_companion() -> Result<i32, CompanionError> {
     let _apartment = WinRtApartment::initialize()?;
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let (operation, agent_id) =
         operation_and_profile(&arguments).map_err(|_| CompanionError::UnsupportedCommand)?;
-    let standard_input = read_bounded_standard_input()?;
+    let standard_input = prepare_standard_input(operation, &mut arguments)?;
     let request_hash = request_hash(operation, &arguments, &standard_input)
         .map_err(|_| CompanionError::UnsupportedCommand)?;
     let mut request_id = [0_u8; 16];
@@ -82,13 +108,13 @@ async fn execute(
     operation: SecureOperation,
     agent_id: String,
     arguments: Vec<String>,
-    standard_input: Vec<u8>,
+    mut standard_input: Zeroizing<Vec<u8>>,
     expected_request_hash: [u8; 32],
 ) -> Result<i32, CompanionError> {
     let mut pipe = connect_to_authenticated_service().await?;
     let credential = windows_hello_credential()?;
     let public_key_spki_der = hello_public_key(&credential)?;
-    write_frame(
+    write_client_frame(
         &mut pipe,
         &ClientFrame::RequestChallenge {
             request_id,
@@ -100,7 +126,10 @@ async fn execute(
     )
     .await?;
 
-    let challenge: BrokerFrame = read_frame(&mut pipe).await?;
+    let challenge: BrokerFrame =
+        tokio::time::timeout(CHALLENGE_RESPONSE_TIMEOUT, read_frame(&mut pipe))
+            .await
+            .map_err(|_| CompanionError::Transport)??;
     let (nonce, issued_at_unix_ms, expires_at_unix_ms) = match &challenge {
         BrokerFrame::Challenge {
             request_id: challenge_request_id,
@@ -116,6 +145,12 @@ async fn execute(
             && *challenge_request_hash == expected_request_hash =>
         {
             (*nonce, *issued_at_unix_ms, *expires_at_unix_ms)
+        }
+        BrokerFrame::Rejected {
+            request_id: response_id,
+            code,
+        } if response_matches_request(*response_id, request_id) => {
+            return Err(rejection_error(*code));
         }
         _ => return Err(CompanionError::InvalidResponse),
     };
@@ -136,39 +171,226 @@ async fn execute(
         request_id,
         operation,
         arguments,
-        standard_input,
+        standard_input: std::mem::take(&mut *standard_input),
         consent,
     };
-    write_frame(&mut pipe, &ClientFrame::Execute(request)).await?;
+    write_client_frame(&mut pipe, &ClientFrame::Execute(request)).await?;
+
+    if operation == SecureOperation::McpServe {
+        return execute_duplex(pipe, request_id).await;
+    }
+
+    execute_one_shot(pipe, request_id).await
+}
+
+async fn execute_one_shot(
+    pipe: NamedPipeClient,
+    request_id: [u8; 16],
+) -> Result<i32, CompanionError> {
+    let (reader, mut writer) = tokio::io::split(pipe);
+    let (mut frames, _reader_task) = broker_frame_reader(reader);
+    let mut accepted = false;
+    let mut next_output_sequence = 0_u64;
+    let mut cancel_sent = false;
 
     loop {
-        let frame = read_frame::<_, BrokerFrame>(&mut pipe).await?;
-        match &frame {
-            BrokerFrame::Accepted {
-                request_id: response_id,
-            } if *response_id == request_id => {}
-            BrokerFrame::Output {
-                request_id: response_id,
-                stream,
-                bytes,
-            } if *response_id == request_id => match stream {
-                OutputStream::StandardOutput => std::io::stdout()
-                    .write_all(bytes)
-                    .map_err(|_| CompanionError::Transport)?,
-                OutputStream::StandardError => std::io::stderr()
-                    .write_all(bytes)
-                    .map_err(|_| CompanionError::Transport)?,
-            },
-            BrokerFrame::Exited {
-                request_id: response_id,
-                exit_code,
-            } if *response_id == request_id => return Ok(*exit_code),
-            BrokerFrame::Rejected {
-                request_id: Some(response_id),
-                ..
-            } if *response_id == request_id => return Ok(1),
-            _ => return Err(CompanionError::InvalidResponse),
+        tokio::select! {
+            frame = frames.recv() => {
+                let frame = frame.ok_or(CompanionError::Transport)??;
+                match &frame {
+                    BrokerFrame::Accepted { request_id: response_id }
+                        if *response_id == request_id && !accepted => accepted = true,
+                    BrokerFrame::Output {
+                        request_id: response_id,
+                        sequence,
+                        stream,
+                        bytes,
+                    } if *response_id == request_id
+                        && accepted
+                        && *sequence == next_output_sequence => {
+                            next_output_sequence = next_output_sequence
+                                .checked_add(1)
+                                .ok_or(CompanionError::InvalidResponse)?;
+                            relay_output(*stream, bytes).await?;
+                        }
+                    BrokerFrame::Exited { request_id: response_id, exit_code }
+                        if *response_id == request_id && accepted => return Ok(*exit_code),
+                    BrokerFrame::Rejected { request_id: response_id, code }
+                        if response_matches_request(*response_id, request_id) => {
+                            return Err(rejection_error(*code));
+                        }
+                    _ => return Err(CompanionError::InvalidResponse),
+                }
+            }
+            result = tokio::signal::ctrl_c(), if !cancel_sent => {
+                result.map_err(|_| CompanionError::Transport)?;
+                write_client_frame(&mut writer, &ClientFrame::Cancel { request_id }).await?;
+                cancel_sent = true;
+            }
         }
+    }
+}
+
+async fn execute_duplex(
+    pipe: NamedPipeClient,
+    request_id: [u8; 16],
+) -> Result<i32, CompanionError> {
+    let (reader, mut writer) = tokio::io::split(pipe);
+    let (mut frames, _reader_task) = broker_frame_reader(reader);
+    let mut accepted = false;
+    let mut input_closed = false;
+    let mut cancel_sent = false;
+    let mut input_sequence = 0_u64;
+    let mut next_output_sequence = 0_u64;
+    let mut input = tokio::io::stdin();
+    let mut buffer = Zeroizing::new([0_u8; MAX_STREAM_CHUNK_BYTES]);
+
+    loop {
+        tokio::select! {
+            frame = frames.recv() => {
+                let frame = frame.ok_or(CompanionError::Transport)??;
+                match &frame {
+                    BrokerFrame::Accepted { request_id: response_id }
+                        if *response_id == request_id && !accepted => accepted = true,
+                    BrokerFrame::Output {
+                        request_id: response_id,
+                        sequence,
+                        stream,
+                        bytes,
+                    } if *response_id == request_id
+                        && accepted
+                        && *sequence == next_output_sequence => {
+                            next_output_sequence = next_output_sequence
+                                .checked_add(1)
+                                .ok_or(CompanionError::InvalidResponse)?;
+                            relay_output(*stream, bytes).await?;
+                        }
+                    BrokerFrame::Exited { request_id: response_id, exit_code }
+                        if *response_id == request_id && accepted => return Ok(*exit_code),
+                    BrokerFrame::Rejected { request_id: response_id, code }
+                        if response_matches_request(*response_id, request_id) => {
+                            return Err(rejection_error(*code));
+                        }
+                    _ => return Err(CompanionError::InvalidResponse),
+                }
+            }
+            read = input.read(&mut buffer[..]), if accepted && !input_closed && !cancel_sent => {
+                let read = read.map_err(|_| CompanionError::Transport)?;
+                if read == 0 {
+                    write_client_frame(
+                        &mut writer,
+                        &ClientFrame::InputClosed { request_id, sequence: input_sequence },
+                    ).await?;
+                    input_closed = true;
+                } else {
+                    let bytes = buffer[..read].to_vec();
+                    buffer[..read].zeroize();
+                    write_client_frame(
+                        &mut writer,
+                        &ClientFrame::Input(InputChunk {
+                            request_id,
+                            sequence: input_sequence,
+                            bytes,
+                        }),
+                    ).await?;
+                    input_sequence = input_sequence
+                        .checked_add(1)
+                        .ok_or(CompanionError::Transport)?;
+                }
+            }
+            result = tokio::signal::ctrl_c(), if !cancel_sent => {
+                result.map_err(|_| CompanionError::Transport)?;
+                write_client_frame(&mut writer, &ClientFrame::Cancel { request_id }).await?;
+                cancel_sent = true;
+            }
+        }
+    }
+}
+
+fn broker_frame_reader<R>(
+    mut reader: R,
+) -> (
+    mpsc::Receiver<Result<BrokerFrame, ProtocolError>>,
+    AbortTask<()>,
+)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel(16);
+    let task = tokio::spawn(async move {
+        loop {
+            let frame = read_frame::<_, BrokerFrame>(&mut reader).await;
+            let terminal = frame.is_err();
+            if sender.send(frame).await.is_err() || terminal {
+                return;
+            }
+        }
+    });
+    (receiver, AbortTask(task))
+}
+
+struct AbortTask<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortTask<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn relay_output(stream: OutputStream, bytes: &[u8]) -> Result<(), CompanionError> {
+    tokio::time::timeout(CLIENT_WRITE_TIMEOUT, async {
+        match stream {
+            OutputStream::StandardOutput => {
+                let mut output = tokio::io::stdout();
+                output
+                    .write_all(bytes)
+                    .await
+                    .map_err(|_| CompanionError::Transport)?;
+                output.flush().await.map_err(|_| CompanionError::Transport)
+            }
+            OutputStream::StandardError => {
+                let mut output = tokio::io::stderr();
+                output
+                    .write_all(bytes)
+                    .await
+                    .map_err(|_| CompanionError::Transport)?;
+                output.flush().await.map_err(|_| CompanionError::Transport)
+            }
+        }
+    })
+    .await
+    .map_err(|_| CompanionError::Transport)?
+}
+
+async fn write_client_frame<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    frame: &ClientFrame,
+) -> Result<(), ProtocolError> {
+    tokio::time::timeout(CLIENT_WRITE_TIMEOUT, write_frame(writer, frame))
+        .await
+        .map_err(|_| {
+            ProtocolError::Transport(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "companion IPC write timed out",
+            ))
+        })?
+}
+
+fn response_matches_request(response_id: Option<[u8; 16]>, request_id: [u8; 16]) -> bool {
+    response_id.is_none_or(|response_id| response_id == request_id)
+}
+
+fn rejection_error(code: palladin_platform::broker_protocol::RejectionCode) -> CompanionError {
+    use palladin_platform::broker_protocol::RejectionCode;
+    match code {
+        RejectionCode::AuthenticationRequired => CompanionError::AuthenticationRequired,
+        RejectionCode::ConsentInvalid => CompanionError::ConsentInvalid,
+        RejectionCode::ConsentExpired => CompanionError::ConsentExpired,
+        RejectionCode::ReplayDetected => CompanionError::ReplayDetected,
+        RejectionCode::SessionExpired => CompanionError::SessionExpired,
+        RejectionCode::OperationForbidden => CompanionError::OperationForbidden,
+        RejectionCode::InvalidRequest => CompanionError::InvalidRequest,
+        RejectionCode::WorkerUnavailable => CompanionError::WorkerUnavailable,
     }
 }
 
@@ -188,20 +410,84 @@ async fn connect_to_authenticated_service() -> Result<NamedPipeClient, Companion
     Err(CompanionError::ServiceUnavailable)
 }
 
-fn read_bounded_standard_input() -> Result<Vec<u8>, CompanionError> {
-    if std::io::stdin().is_terminal() {
-        return Ok(Vec::new());
+fn prepare_standard_input(
+    operation: SecureOperation,
+    arguments: &mut Vec<String>,
+) -> Result<Zeroizing<Vec<u8>>, CompanionError> {
+    let uses_api_key_stdin = arguments
+        .iter()
+        .any(|argument| argument == "--api-key-stdin");
+    if uses_api_key_stdin && operation != SecureOperation::Connect {
+        return Err(CompanionError::OperationForbidden);
     }
-    let mut input = Vec::new();
+    match standard_input_plan(
+        operation,
+        uses_api_key_stdin,
+        std::io::stdin().is_terminal(),
+    ) {
+        StandardInputPlan::Prompt => {
+            let mut secret = Zeroizing::new(
+                rpassword::prompt_password("Organization API key: ")
+                    .map_err(|_| CompanionError::ApiKeyPrompt)?,
+            );
+            if !secret.starts_with("pl_") || secret.len() > 4096 {
+                return Err(CompanionError::ApiKeyPrompt);
+            }
+            arguments.push("--api-key-stdin".to_owned());
+            let bytes = Zeroizing::new(secret.as_bytes().to_vec());
+            secret.zeroize();
+            Ok(bytes)
+        }
+        StandardInputPlan::ReadRedirected => read_bounded_standard_input(),
+        StandardInputPlan::Duplex => Ok(Zeroizing::new(Vec::new())),
+        StandardInputPlan::Empty => Ok(Zeroizing::new(Vec::new())),
+        StandardInputPlan::RejectFlagRequiresRedirect => {
+            Err(CompanionError::ApiKeyStdinRequiresRedirect)
+        }
+        StandardInputPlan::RejectRedirectRequiresFlag => {
+            Err(CompanionError::RedirectedApiKeyRequiresFlag)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StandardInputPlan {
+    Prompt,
+    ReadRedirected,
+    Duplex,
+    Empty,
+    RejectFlagRequiresRedirect,
+    RejectRedirectRequiresFlag,
+}
+
+fn standard_input_plan(
+    operation: SecureOperation,
+    uses_api_key_stdin: bool,
+    terminal: bool,
+) -> StandardInputPlan {
+    match (operation, uses_api_key_stdin, terminal) {
+        (SecureOperation::McpServe, false, _) => StandardInputPlan::Duplex,
+        (SecureOperation::McpServe, true, _) => StandardInputPlan::Empty,
+        (SecureOperation::Connect, false, true) => StandardInputPlan::Prompt,
+        (SecureOperation::Connect, true, false) => StandardInputPlan::ReadRedirected,
+        (SecureOperation::Connect, true, true) => StandardInputPlan::RejectFlagRequiresRedirect,
+        (SecureOperation::Connect, false, false) => StandardInputPlan::RejectRedirectRequiresFlag,
+        (_, _, true) => StandardInputPlan::Empty,
+        (_, _, false) => StandardInputPlan::Empty,
+    }
+}
+
+fn read_bounded_standard_input() -> Result<Zeroizing<Vec<u8>>, CompanionError> {
+    let mut input = Zeroizing::new(String::new());
     std::io::stdin()
-        .take((MAX_FRAME_BYTES + 1) as u64)
-        .read_to_end(&mut input)
+        .lock()
+        .take(4097)
+        .read_line(&mut input)
         .map_err(|_| CompanionError::Transport)?;
-    if input.len() > MAX_FRAME_BYTES {
-        input.zeroize();
+    if input.len() > 4096 {
         return Err(CompanionError::InputTooLarge);
     }
-    Ok(input)
+    Ok(Zeroizing::new(input.as_bytes().to_vec()))
 }
 
 fn windows_hello_credential() -> Result<KeyCredential, CompanionError> {
@@ -301,5 +587,116 @@ impl WinRtApartment {
 impl Drop for WinRtApartment {
     fn drop(&mut self) {
         unsafe { RoUninitialize() };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use palladin_platform::broker_protocol::{RejectionCode, SecureOperation};
+
+    use super::{
+        StandardInputPlan, rejection_error, response_matches_request, standard_input_plan,
+    };
+
+    #[test]
+    fn rejection_codes_are_actionable() {
+        assert!(
+            rejection_error(RejectionCode::ConsentExpired)
+                .to_string()
+                .contains("retry")
+        );
+        assert!(
+            rejection_error(RejectionCode::WorkerUnavailable)
+                .to_string()
+                .contains("repair")
+        );
+        assert!(
+            rejection_error(RejectionCode::OperationForbidden)
+                .to_string()
+                .contains("forbidden")
+        );
+        assert!(
+            rejection_error(RejectionCode::SessionExpired)
+                .to_string()
+                .contains("30-minute")
+        );
+    }
+
+    #[test]
+    fn pre_request_rejection_without_id_is_mapped_to_the_active_request() {
+        assert!(response_matches_request(None, [7; 16]));
+        assert!(response_matches_request(Some([7; 16]), [7; 16]));
+        assert!(!response_matches_request(Some([8; 16]), [7; 16]));
+    }
+
+    #[test]
+    fn terminal_connect_uses_masked_prompt_and_never_argv_value() {
+        assert_eq!(
+            standard_input_plan(SecureOperation::Connect, false, true),
+            StandardInputPlan::Prompt
+        );
+        assert_eq!(
+            standard_input_plan(SecureOperation::Connect, true, true),
+            StandardInputPlan::RejectFlagRequiresRedirect
+        );
+    }
+
+    #[test]
+    fn redirected_connect_requires_explicit_stdin_flag() {
+        assert_eq!(
+            standard_input_plan(SecureOperation::Connect, true, false),
+            StandardInputPlan::ReadRedirected
+        );
+        assert_eq!(
+            standard_input_plan(SecureOperation::Connect, false, false),
+            StandardInputPlan::RejectRedirectRequiresFlag
+        );
+    }
+
+    #[test]
+    fn only_connect_or_mcp_serve_ever_read_standard_input() {
+        assert_eq!(
+            standard_input_plan(SecureOperation::Status, false, false),
+            StandardInputPlan::Empty
+        );
+        assert_eq!(
+            standard_input_plan(SecureOperation::McpServe, false, false),
+            StandardInputPlan::Duplex
+        );
+        assert_eq!(
+            standard_input_plan(SecureOperation::McpServe, false, true),
+            StandardInputPlan::Duplex
+        );
+    }
+
+    #[tokio::test]
+    async fn fragmented_broker_frame_has_one_non_cancelled_reader_owner() {
+        use palladin_platform::broker_protocol::{BrokerFrame, write_frame};
+        use tokio::io::AsyncWriteExt as _;
+
+        let (reader, mut writer) = tokio::io::duplex(256);
+        let (mut frames, _reader_task) = super::broker_frame_reader(reader);
+        let mut encoded = Vec::new();
+        write_frame(
+            &mut encoded,
+            &BrokerFrame::Accepted {
+                request_id: [4; 16],
+            },
+        )
+        .await
+        .expect("encode");
+        for byte in encoded {
+            writer.write_all(&[byte]).await.expect("fragment");
+            tokio::task::yield_now().await;
+        }
+        let frame = frames
+            .recv()
+            .await
+            .expect("reader")
+            .expect("complete frame");
+        assert!(matches!(
+            frame,
+            BrokerFrame::Accepted { request_id } if request_id == [4; 16]
+        ));
     }
 }
