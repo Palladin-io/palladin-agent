@@ -1005,13 +1005,14 @@ mod tests {
             br#"{"username":"fixture-user","password":"fixture-password","region":"eu"}"#,
         )
         .expect("credential");
+        // Windows PowerShell 5.1 cannot initialize reliably under an AppContainer
+        // token, so cmd.exe is the native boundary probe for these assertions.
         let command = vec![
-            "powershell.exe".to_owned(),
-            "-NoLogo".to_owned(),
-            "-NoProfile".to_owned(),
-            "-NonInteractive".to_owned(),
-            "-Command".to_owned(),
-            "$ok = $env:CLAW_SECRET -ceq 'fixture-password' -and $env:CLAW_USERNAME -ceq 'fixture-user' -and $env:CLAW_REGION -ceq 'eu' -and $null -eq $env:PALLADIN_API_KEY -and [Console]::In.Read() -eq -1; if ($ok) { exit 0 } else { exit 91 }".to_owned(),
+            "cmd.exe".to_owned(),
+            "/D".to_owned(),
+            "/S".to_owned(),
+            "/C".to_owned(),
+            "setlocal EnableExtensions DisableDelayedExpansion & set /p PALLADIN_INPUT= & if not errorlevel 1 exit /b 90 & if not x%CLAW_SECRET%==xfixture-password exit /b 91 & if not x%CLAW_USERNAME%==xfixture-user exit /b 92 & if not x%CLAW_REGION%==xeu exit /b 93 & if defined PALLADIN_API_KEY exit /b 94 & exit /b 0".to_owned(),
         ];
         let result = run_command(
             &command,
@@ -1029,12 +1030,11 @@ mod tests {
     #[tokio::test]
     async fn windows_executor_propagates_the_exact_child_exit_code() {
         let command = vec![
-            "powershell.exe".to_owned(),
-            "-NoLogo".to_owned(),
-            "-NoProfile".to_owned(),
-            "-NonInteractive".to_owned(),
-            "-Command".to_owned(),
-            "exit 23".to_owned(),
+            "cmd.exe".to_owned(),
+            "/D".to_owned(),
+            "/S".to_owned(),
+            "/C".to_owned(),
+            "exit /b 23".to_owned(),
         ];
         let result = run_command(
             &command,
@@ -1052,12 +1052,11 @@ mod tests {
     #[tokio::test]
     async fn windows_cancellation_terminates_executor_with_a_descendant_promptly() {
         let command = vec![
-            "powershell.exe".to_owned(),
-            "-NoLogo".to_owned(),
-            "-NoProfile".to_owned(),
-            "-NonInteractive".to_owned(),
-            "-Command".to_owned(),
-            "$child = [Diagnostics.Process]::Start('powershell.exe', '-NoLogo -NoProfile -NonInteractive -Command Start-Sleep -Seconds 30'); Start-Sleep -Seconds 30".to_owned(),
+            "cmd.exe".to_owned(),
+            "/D".to_owned(),
+            "/S".to_owned(),
+            "/C".to_owned(),
+            "start /B ping.exe -n 30 127.0.0.1 & ping.exe -n 30 127.0.0.1".to_owned(),
         ];
         let cancellation = CancellationToken::new();
         let signal = cancellation.clone();
