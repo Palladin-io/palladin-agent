@@ -23,7 +23,7 @@ jobs:
     # Requiring main prevents dispatching a branch-modified workflow with the secret.
     if: >
       github.ref == 'refs/heads/main' &&
-      github.actor == 'don-flamingo'
+      github.actor == 'patryk-roguszewski'
     name: Authorize Codex
     runs-on: ubuntu-latest
     timeout-minutes: 5
