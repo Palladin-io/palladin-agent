@@ -19,7 +19,8 @@ use palladin_credential::fields::{
 use palladin_credential::secret::parse_secret;
 use palladin_credential::wait::{ProgressMode, WaitOptions, heartbeat_line, parse_duration};
 use palladin_runtime::{
-    CredentialDelivery, CredentialDeliveryRequest, RuntimeError, RuntimeSession,
+    CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
+    OperatorOutput, RuntimeError, RuntimeSession,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -233,6 +234,62 @@ impl McpApplication for NativeApplication {
                     })
                 }
                 Err(error) => runtime_failure(&error),
+            }
+        })
+    }
+
+    fn exec<'a>(
+        &'a self,
+        input: ExecInput,
+        cancellation: CancellationToken,
+    ) -> ApplicationFuture<'a> {
+        Box::pin(async move {
+            let wait = match input.wait_options() {
+                Ok(wait) => wait,
+                Err(message) => return ToolOutcome::error(message),
+            };
+            let progress = wait.progress.unwrap_or(ProgressMode::Plain);
+            let execution = self
+                .session
+                .execute_with_credential(
+                    CredentialExecRequest {
+                        delivery: CredentialDeliveryRequest {
+                            vault_id: input.vault_id.trim(),
+                            entry_id: input.entry_id.trim(),
+                            reason: input.reason.as_deref(),
+                            wait,
+                        },
+                        command: input.command.as_deref(),
+                        env_mappings: &[],
+                        output: OperatorOutput::Discard,
+                    },
+                    &cancellation,
+                    move |heartbeat| {
+                        if let Some(line) = heartbeat_line(progress, &heartbeat) {
+                            eprint!("{line}");
+                        }
+                    },
+                )
+                .await;
+            match execution {
+                Ok(CredentialExecOutcome::Completed(result)) => pretty_result(&ExecToolResult {
+                    exit_code: result.exit_code,
+                    output: "withheld",
+                    note: if result.cancelled {
+                        "The command was cancelled and its process group was terminated. Command output was discarded and was not logged."
+                    } else {
+                        "Command stdout and stderr were discarded and withheld from the model. Output was not persisted because transformed secrets cannot be safely masked. Judge success from the exit code."
+                    },
+                }),
+                Ok(CredentialExecOutcome::NotGranted(access)) => {
+                    let message = access_message(&access, CredentialMethod::Exec)
+                        .unwrap_or_else(|| "Credential access is unavailable.".to_owned());
+                    pretty_result(&AccessResult {
+                        access: access_name(&access),
+                        message: &message,
+                    })
+                }
+                Err(error) => exec_failure(&error),
             }
         })
     }
@@ -1429,6 +1486,42 @@ fn runtime_failure(error: &RuntimeError) -> ToolOutcome {
     ToolOutcome::error(message)
 }
 
+fn exec_failure(error: &RuntimeError) -> ToolOutcome {
+    let message = match error {
+        RuntimeError::WaitCancelled => "Credential execution was cancelled.",
+        RuntimeError::MissingExecCommand => "No command was provided for this non-Script entry.",
+        RuntimeError::CommandProvidedForScript => {
+            "This is a Script entry - omit command to run its stored script."
+        }
+        RuntimeError::EnvironmentMappingForScript => {
+            "Script entries define their own credential references."
+        }
+        RuntimeError::InvalidCredentialPayload => "The credential payload is invalid.",
+        RuntimeError::InvalidEnvironmentMapping
+        | RuntimeError::InvalidEnvironmentField
+        | RuntimeError::Environment(_) => "The credential execution environment is invalid.",
+        RuntimeError::ScriptReferenceNotGranted => {
+            "A Script entry reference was not granted. Nothing was executed."
+        }
+        RuntimeError::Exec(palladin_runtime::ExecError::UnsupportedInterpreter) => {
+            "The Script entry uses an unsupported interpreter."
+        }
+        RuntimeError::Exec(palladin_runtime::ExecError::InterpreterUnavailable) => {
+            "The Script entry interpreter is not installed in a trusted PATH directory. Nothing was executed."
+        }
+        RuntimeError::Exec(palladin_runtime::ExecError::ImplicitShellForbidden) => {
+            "Windows command scripts require an explicit shell executable."
+        }
+        RuntimeError::Exec(palladin_runtime::ExecError::MissingCommand)
+        | RuntimeError::Exec(palladin_runtime::ExecError::InvalidArgument) => {
+            "The command is invalid."
+        }
+        RuntimeError::Exec(_) => "The command could not be executed safely.",
+        _ => return runtime_failure(error),
+    };
+    ToolOutcome::error(message)
+}
+
 fn access_name(access: &CredentialAccess) -> &'static str {
     match access {
         CredentialAccess::Granted { .. } => "granted",
@@ -1480,6 +1573,14 @@ struct TotpResult<'a> {
     field: &'a str,
     code: &'a str,
     expires_in: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExecToolResult<'a> {
+    exit_code: i32,
+    output: &'static str,
+    note: &'a str,
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]

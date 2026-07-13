@@ -13,6 +13,7 @@ palladin-api = { path = "../palladin-api" }
 palladin-core = { path = "../palladin-core" }
 palladin-credential = { path = "../palladin-credential" }
 palladin-crypto = { path = "../palladin-crypto" }
+palladin-exec = { path = "../palladin-exec" }
 palladin-platform = { path = "../palladin-platform" }
 secrecy.workspace = true
 subtle.workspace = true
@@ -21,3 +22,6 @@ time.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

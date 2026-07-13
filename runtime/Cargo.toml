@@ -5,6 +5,7 @@ members = [
     "crates/palladin-core",
     "crates/palladin-credential",
     "crates/palladin-crypto",
+    "crates/palladin-exec",
     "crates/palladin-mcp",
     "crates/palladin-platform",
     "crates/palladin-runtime",
@@ -22,6 +23,7 @@ repository = "https://github.com/Palladin-io/palladin-agent"
 base64 = "0.22.1"
 blake2 = "0.10.6"
 clap = { version = "4.6.1", features = ["derive"] }
+command-group = { version = "5.0.1", features = ["with-tokio"] }
 crypto_secretbox = "0.1.1"
 directories = "6.0.0"
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
@@ -45,7 +47,7 @@ subtle = "2.6.1"
 tempfile = "3.27.0"
 thiserror = "2.0.18"
 time = { version = "0.3.44", features = ["formatting"] }
-tokio = { version = "1.52.3", features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.52.3", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = "0.7.18"
 tracing = { version = "0.1.44", features = ["max_level_off", "release_max_level_off"] }
 url = "2.5.8"

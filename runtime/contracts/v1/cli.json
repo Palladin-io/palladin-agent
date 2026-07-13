@@ -27,6 +27,7 @@
     { "argv": ["get", "vault-fixture", "entry-fixture", "--field", "password", "--field-id", "field-fixture", "--wait", "30s", "--no-wait"], "name": "get", "secretOutput": true },
     { "argv": ["get", "vault-fixture", "entry-fixture", "--no-wait", "--wait", "30s"], "name": "get", "secretOutput": true },
     { "argv": ["retrieve", "vault-fixture", "entry-fixture", "--no-wait"], "name": "get", "secretOutput": true },
+    { "argv": ["exec", "vault-fixture", "entry-fixture", "--no-wait", "--", "fixture-program", "$CLAW_SECRET"], "name": "exec", "secretOutput": false },
     { "argv": ["report-stale", "vault-fixture", "entry-fixture", "--code", "login_rejected"], "name": "report-stale", "secretOutput": false },
     { "argv": ["mcp", "serve"], "name": "mcp", "secretOutput": false },
     { "argv": ["agents", "list"], "name": "agents", "secretOutput": false },

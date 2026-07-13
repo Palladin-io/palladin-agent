@@ -27,3 +27,11 @@ The standalone npm runtime reports this as the Convenience tier. Login Keychain,
 ## Removal
 
 `palladin purge --confirm` explicitly schedules recoverable removal of native profiles and their known secret slots. The public cleanup journal contains only opaque slot identifiers, and the operation only reports success after that journal and the public profile root are gone. It is never invoked by an npm lifecycle hook. Legacy TypeScript profiles require the separate pre-production migration workflow and are not silently purged.
+
+## Credential execution
+
+Native `exec` starts programs without an implicit shell, rebuilds the child environment from a positive allowlist, supplies null stdin, contains the process tree, and never passes the organization API key or Agent identity keys to the child. MCP discards command output and returns only the exit status. CLI may stream output directly to the operator's terminal.
+
+Script entries resolve an allowlisted interpreter and all credential references before starting. Temporary script files use a private directory and explicit cleanup on every handled completion, error, and cancellation path.
+
+These controls are defense in depth inside the Convenience tier. The precise residual risks and the separate cross-platform broker requirements for a future Hardened tier are recorded in [ADR 0002](docs/adr/0002-exec-process-boundary.md).

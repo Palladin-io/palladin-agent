@@ -29,6 +29,8 @@ pub enum Commands {
     /// Intentionally retrieve a credential granted to this Agent.
     #[command(visible_alias = "retrieve")]
     Get(GetArgs),
+    /// Run a command with a credential in a sanitized child environment.
+    Exec(ExecArgs),
     /// Report that a credential is stale without sending its value.
     ReportStale(ReportStaleArgs),
     /// Serve Palladin tools over the Model Context Protocol.
@@ -113,6 +115,33 @@ pub struct GetArgs {
     /// Approval heartbeat format written to stderr.
     #[arg(long, value_enum)]
     pub progress: Option<ProgressArg>,
+}
+
+#[derive(Debug, Args)]
+pub struct ExecArgs {
+    pub vault_id: String,
+    pub entry_id: String,
+    /// Explain why this Agent needs access.
+    #[arg(long)]
+    pub reason: Option<String>,
+    /// Map NAME to a credential field selected by label.
+    #[arg(long = "env", value_name = "NAME=FIELD")]
+    pub env_mappings: Vec<String>,
+    /// Maximum approval wait, for example 30s or 2m.
+    #[arg(long, overrides_with = "no_wait")]
+    pub wait: Option<String>,
+    /// Return immediately when approval is pending.
+    #[arg(long, overrides_with = "wait")]
+    pub no_wait: bool,
+    /// Approval polling interval, for example 10s.
+    #[arg(long)]
+    pub poll_interval: Option<String>,
+    /// Approval heartbeat format written to stderr.
+    #[arg(long, value_enum)]
+    pub progress: Option<ProgressArg>,
+    /// Executable and arguments after `--`; omit for a Script entry.
+    #[arg(last = true, allow_hyphen_values = true)]
+    pub command: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

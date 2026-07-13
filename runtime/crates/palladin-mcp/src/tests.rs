@@ -9,10 +9,10 @@ use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ApplicationFuture, BoundedLineReader, ExecInput, GetInput, InjectInput, MAX_BATCH_ITEMS,
-    MAX_FRAME_BYTES, McpApplication, PalladinMcpServer, ProtocolBridgeState, ReportStaleInput,
-    SearchInput, ToolOutcome, collect_batch_response, load_tools, parse_input,
-    prepare_incoming_message, serve_io, validate_get, validate_search, wait_options,
+    ApplicationFuture, BoundedLineReader, ExecInput, ExecToolResult, GetInput, InjectInput,
+    MAX_BATCH_ITEMS, MAX_FRAME_BYTES, McpApplication, PalladinMcpServer, ProtocolBridgeState,
+    ReportStaleInput, SearchInput, ToolOutcome, collect_batch_response, load_tools, parse_input,
+    prepare_incoming_message, pretty_result, serve_io, validate_get, validate_search, wait_options,
 };
 
 #[derive(Clone, Default)]
@@ -178,6 +178,27 @@ fn legacy_tool_result_shape_omits_false_and_marks_errors_true() {
     let error = serde_json::to_value(ToolOutcome::error("failed").into_mcp()).expect("error");
     assert_eq!(error["content"][0], json!({"type":"text","text":"failed"}));
     assert_eq!(error["isError"], true);
+}
+
+#[test]
+fn exec_result_contains_only_status_and_a_fixed_withheld_marker() {
+    let outcome = pretty_result(&ExecToolResult {
+        exit_code: 23,
+        output: "withheld",
+        note: "synthetic safe note",
+    });
+    assert!(!outcome.is_error);
+    let result: Value = serde_json::from_str(&outcome.text).expect("exec result JSON");
+    assert_eq!(
+        result,
+        json!({
+            "exitCode": 23,
+            "output": "withheld",
+            "note": "synthetic safe note"
+        })
+    );
+    assert!(result.get("stdout").is_none());
+    assert!(result.get("stderr").is_none());
 }
 
 #[tokio::test]

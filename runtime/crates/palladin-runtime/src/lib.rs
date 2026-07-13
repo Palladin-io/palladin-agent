@@ -20,6 +20,10 @@ use palladin_credential::wait::{
     HeartbeatInfo, WaitError, WaitHints, WaitOptions, await_grant, resolve_wait_policy,
 };
 use palladin_crypto::{DecryptedCredential, Ed25519Identity, X25519Identity, decrypt_credential};
+use palladin_exec::{
+    EnvironmentError, SecretEnvironment, resolve_interpreter, run_command, run_script,
+    validate_command, validate_reference_name,
+};
 use palladin_platform::secure_store::{
     SecretSlot, SecretStore, StoreError, delete_identity, delete_organization_credential,
 };
@@ -29,6 +33,11 @@ use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
+
+use palladin_credential::fields::{FieldSelector, resolve_field};
+use palladin_credential::secret::{ScriptPayload, parse_secret};
+
+pub use palladin_exec::{ExecError, ExecResult, OperatorOutput};
 
 pub struct RuntimeService<S> {
     repository: ProfileRepository,
@@ -715,11 +724,19 @@ pub struct RuntimeSession {
     encryption: X25519Identity,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct CredentialDeliveryRequest<'a> {
     pub vault_id: &'a str,
     pub entry_id: &'a str,
     pub reason: Option<&'a str>,
     pub wait: WaitOptions,
+}
+
+pub struct CredentialExecRequest<'a> {
+    pub delivery: CredentialDeliveryRequest<'a>,
+    pub command: Option<&'a [String]>,
+    pub env_mappings: &'a [String],
+    pub output: OperatorOutput,
 }
 
 impl RuntimeSession {
@@ -798,6 +815,123 @@ impl RuntimeSession {
             .await
     }
 
+    pub async fn execute_with_credential<H>(
+        &self,
+        request: CredentialExecRequest<'_>,
+        cancellation: &CancellationToken,
+        mut heartbeat: H,
+    ) -> Result<CredentialExecOutcome, RuntimeError>
+    where
+        H: FnMut(HeartbeatInfo),
+    {
+        if let Some(command) = request.command.filter(|command| !command.is_empty()) {
+            validate_command(command)?;
+        }
+        let delivery = self
+            .deliver_for_exec(request.delivery, cancellation, &mut heartbeat)
+            .await?;
+        let CredentialDelivery::Granted(credential) = delivery else {
+            let CredentialDelivery::NotGranted(access) = delivery else {
+                unreachable!("credential delivery variants are exhaustive")
+            };
+            return Ok(CredentialExecOutcome::NotGranted(access));
+        };
+        let mut parsed = parse_secret(credential.expose_for_authorized_operation())
+            .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
+        drop(credential);
+
+        let result = if let Some(script) = parsed.script.take() {
+            if request.command.is_some_and(|command| !command.is_empty()) {
+                return Err(RuntimeError::CommandProvidedForScript);
+            }
+            if !request.env_mappings.is_empty() {
+                return Err(RuntimeError::EnvironmentMappingForScript);
+            }
+            let interpreter = resolve_interpreter(&script.interpreter)?;
+            drop(parsed);
+            let environment = self
+                .prepare_script_environment(
+                    &request.delivery,
+                    &script,
+                    cancellation,
+                    &mut heartbeat,
+                )
+                .await?;
+            run_script(
+                &script.script,
+                &interpreter,
+                environment,
+                request.output,
+                cancellation,
+            )
+            .await?
+        } else {
+            let command = request
+                .command
+                .filter(|command| !command.is_empty())
+                .ok_or(RuntimeError::MissingExecCommand)?;
+            let mut environment = SecretEnvironment::for_credential(&parsed);
+            prepare_explicit_environment(&parsed, request.env_mappings, &mut environment)?;
+            drop(parsed);
+            run_command(command, environment, request.output, cancellation).await?
+        };
+        Ok(CredentialExecOutcome::Completed(result))
+    }
+
+    async fn prepare_script_environment<H>(
+        &self,
+        main: &CredentialDeliveryRequest<'_>,
+        script: &ScriptPayload,
+        cancellation: &CancellationToken,
+        heartbeat: &mut H,
+    ) -> Result<SecretEnvironment, RuntimeError>
+    where
+        H: FnMut(HeartbeatInfo),
+    {
+        preflight_script_references(script)?;
+        let mut environment = SecretEnvironment::new();
+        for reference in &script.refs {
+            let vault_id = reference.vault_id.as_deref().unwrap_or(main.vault_id);
+            let delivery = self
+                .deliver_for_exec(
+                    CredentialDeliveryRequest {
+                        vault_id,
+                        entry_id: &reference.entry_id,
+                        reason: main.reason,
+                        wait: main.wait,
+                    },
+                    cancellation,
+                    &mut *heartbeat,
+                )
+                .await?;
+            let CredentialDelivery::Granted(credential) = delivery else {
+                let CredentialDelivery::NotGranted(_access) = delivery else {
+                    unreachable!("credential delivery variants are exhaustive")
+                };
+                return Err(RuntimeError::ScriptReferenceNotGranted);
+            };
+            let parsed = parse_secret(credential.expose_for_authorized_operation())
+                .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
+            drop(credential);
+            let value = if let Some(field) = &reference.field {
+                resolve_field(
+                    &parsed,
+                    &FieldSelector {
+                        field: Some(field.clone()),
+                        field_id: None,
+                    },
+                )
+                .map_err(|_| RuntimeError::InvalidEnvironmentField)?
+                .expose_for_authorized_operation()
+                .to_owned()
+            } else {
+                parsed.password.expose_secret().to_owned()
+            };
+            environment.insert_reference(&reference.env, value.into())?;
+        }
+        Ok(environment)
+    }
+
     async fn deliver_credential<H>(
         &self,
         request: CredentialDeliveryRequest<'_>,
@@ -873,6 +1007,12 @@ pub enum CredentialDelivery {
     NotGranted(CredentialAccess),
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum CredentialExecOutcome {
+    Completed(ExecResult),
+    NotGranted(CredentialAccess),
+}
+
 impl std::fmt::Debug for CredentialDelivery {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -945,6 +1085,84 @@ pub enum RuntimeError {
     Clock,
     #[error("credential wait was cancelled")]
     WaitCancelled,
+    #[error("credential execution failed: {0}")]
+    Exec(#[from] ExecError),
+    #[error("credential execution environment is invalid: {0}")]
+    Environment(#[from] EnvironmentError),
+    #[error("the credential payload is invalid")]
+    InvalidCredentialPayload,
+    #[error("no command was provided for a non-Script entry")]
+    MissingExecCommand,
+    #[error("a command cannot be provided for a Script entry")]
+    CommandProvidedForScript,
+    #[error("explicit environment mappings cannot be provided for a Script entry")]
+    EnvironmentMappingForScript,
+    #[error("an environment mapping is invalid")]
+    InvalidEnvironmentMapping,
+    #[error("an environment mapping selects an unavailable field")]
+    InvalidEnvironmentField,
+    #[error("a Script entry reference was not granted")]
+    ScriptReferenceNotGranted,
+}
+
+fn prepare_explicit_environment(
+    secret: &palladin_credential::secret::ParsedSecret,
+    mappings: &[String],
+    environment: &mut SecretEnvironment,
+) -> Result<(), RuntimeError> {
+    let mut parsed = Vec::with_capacity(mappings.len());
+    for mapping in mappings {
+        let Some((name, field)) = mapping.split_once('=') else {
+            return Err(RuntimeError::InvalidEnvironmentMapping);
+        };
+        let name = name.trim();
+        let field = field.trim();
+        if field.is_empty() {
+            return Err(RuntimeError::InvalidEnvironmentMapping);
+        }
+        validate_reference_name(name)?;
+        if parsed
+            .iter()
+            .any(|(existing, _): &(String, String)| existing.eq_ignore_ascii_case(name))
+        {
+            return Err(EnvironmentError::DuplicateName.into());
+        }
+        parsed.push((name.to_owned(), field.to_owned()));
+    }
+    for (name, field) in parsed {
+        let value = resolve_field(
+            secret,
+            &FieldSelector {
+                field: Some(field),
+                field_id: None,
+            },
+        )
+        .map_err(|_| RuntimeError::InvalidEnvironmentField)?
+        .expose_for_authorized_operation()
+        .to_owned();
+        environment.insert_reference(&name, value.into())?;
+    }
+    Ok(())
+}
+
+fn preflight_script_references(script: &ScriptPayload) -> Result<(), RuntimeError> {
+    let mut names = BTreeSet::new();
+    for reference in &script.refs {
+        validate_reference_name(&reference.env)?;
+        let normalized = reference.env.to_ascii_uppercase();
+        if !names.insert(normalized) {
+            return Err(EnvironmentError::DuplicateName.into());
+        }
+        if reference.entry_id.trim().is_empty()
+            || reference
+                .vault_id
+                .as_ref()
+                .is_some_and(|vault_id| vault_id.trim().is_empty())
+        {
+            return Err(RuntimeError::InvalidEnvironmentMapping);
+        }
+    }
+    Ok(())
 }
 
 fn generate_opaque_id() -> Result<String, RuntimeError> {
@@ -967,8 +1185,10 @@ fn now_rfc3339() -> Result<String, RuntimeError> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
     use std::sync::{Arc, Mutex};
 
+    use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -1056,6 +1276,145 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn native_exec_delivers_with_exec_and_runs_without_shell_or_protocol_stdin() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/v1/encrypted-envelope.json"
+        ))
+        .expect("envelope fixture");
+        let mut body = json!({
+            "access": "granted",
+            "entryId": "entry-fixture",
+            "label": "Fixture credential",
+            "urlDomain": "example.test",
+        });
+        body.as_object_mut().expect("body").extend(
+            fixture
+                .get("envelope")
+                .and_then(serde_json::Value::as_object)
+                .expect("envelope")
+                .clone(),
+        );
+        let body = body.to_string();
+        let (host, requests) = credential_server_owned(vec![body]).await;
+        let private_key = STANDARD
+            .decode(
+                fixture
+                    .pointer("/keyFixture/privateKeyBase64")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("private key"),
+            )
+            .expect("private key base64");
+        let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let session = runtime_session(host, api, encryption);
+        let command = vec![
+            std::env::current_exe()
+                .expect("test executable")
+                .to_string_lossy()
+                .into_owned(),
+            "--ignored".to_owned(),
+            "--exact".to_owned(),
+            "tests::native_exec_child".to_owned(),
+            "--nocapture".to_owned(),
+        ];
+        let outcome = session
+            .execute_with_credential(
+                CredentialExecRequest {
+                    delivery: request(),
+                    command: Some(&command),
+                    env_mappings: &[],
+                    output: OperatorOutput::Discard,
+                },
+                &CancellationToken::new(),
+                |_| {},
+            )
+            .await
+            .expect("exec");
+        assert_eq!(
+            outcome,
+            CredentialExecOutcome::Completed(ExecResult {
+                exit_code: 0,
+                cancelled: false,
+            })
+        );
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains(r#""method":"Exec""#));
+        assert!(requests[0].contains("x-api-key: pl_shared_organization_fixture\r\n"));
+    }
+
+    #[tokio::test]
+    async fn script_resolves_every_reference_before_spawning_the_allowlisted_interpreter() {
+        let main = r#"{"access":"granted","entryId":"script-entry","label":"Fixture Script","urlDomain":null,"nonce":"p4zno4W6mNfd0WESkmk6Kg2IzO9VsLxw","reEncryptedBlob":"sd652QzdkDm9esJ/oNXFj2J5fC1yiVt40hc3KdkrX9oosfMa1mNPQq9uJs0aY+MJlcID+MJpSALUZssy1+4pg3nYTsg0Tg/58BaKvfs34FT3vDZZvBexrh4l+erGCHrxX1ZMuPcz3E1Y5dcXH9hTb9d0imuq0udEc3ggfR5NcTkj9qLTrWUGyUKta0MWzJ10t8GmsJD899XLNnLu/IpmDcLoiUaPICtNrKMQUco=","agentWrappedDek":"7zIytOfJ4bPy68f1zA6o9hCieaMWSV/KbhQlaMQbtXiNP+okqawLXloq78+y7TU+OaldelM2pCAx/bBrw7WKIVq+MRhs/AXtAxHXeIzqgB8="}"#.to_owned();
+        let reference = r#"{"access":"granted","entryId":"entry-ref","label":"Fixture Reference","urlDomain":null,"nonce":"ESDpZ93lTBOWJ52IGTpCvMNF76YvF0V7","reEncryptedBlob":"OOLe+QqjuYw/m+64+bzeSsU5T3/G91MQDV5/H+sizDmk4XfZ/77ghOhd2e9P3gKRVO33YZFycDLtzw==","agentWrappedDek":"I3SAjwhivFjXmwGAb2AQgmVsafe1vptGc/HhvGzb2gVn2n+7VykBumldS5PEq3zwH/IL76EUo9vstSOxY+e4BtmpsbcOm1r08la/FFTxyjg="}"#.to_owned();
+        let (host, requests) = credential_server_owned(vec![main, reference]).await;
+        let (api, encryption) = fixture_api(&host);
+        let session = runtime_session(host, api, encryption);
+        let outcome = session
+            .execute_with_credential(
+                CredentialExecRequest {
+                    delivery: CredentialDeliveryRequest {
+                        vault_id: "script-vault",
+                        entry_id: "script-entry",
+                        reason: Some("fixture reason"),
+                        wait: WaitOptions {
+                            wait_ms: Some(0),
+                            poll_ms: None,
+                            progress: None,
+                        },
+                    },
+                    command: None,
+                    env_mappings: &[],
+                    output: OperatorOutput::Discard,
+                },
+                &CancellationToken::new(),
+                |_| {},
+            )
+            .await
+            .expect("script exec");
+        assert_eq!(
+            outcome,
+            CredentialExecOutcome::Completed(ExecResult {
+                exit_code: 0,
+                cancelled: false,
+            })
+        );
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("/vaults/script-vault/entries/script-entry/credential"));
+        assert!(requests[1].contains("/vaults/script-vault/entries/entry-ref/credential"));
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.contains(r#""method":"Exec""#))
+        );
+    }
+
+    #[test]
+    #[ignore = "subprocess helper"]
+    fn native_exec_child() {
+        let mut byte = [0_u8; 1];
+        let stdin_is_eof = std::io::stdin().read(&mut byte).expect("stdin") == 0;
+        assert!(stdin_is_eof);
+        assert_eq!(
+            std::env::var("CLAW_SECRET").as_deref(),
+            Ok("fixture-password-not-production")
+        );
+        assert_eq!(
+            std::env::var("CLAW_USERNAME").as_deref(),
+            Ok("fixture-user")
+        );
+        assert!(std::env::var_os("PALLADIN_API_KEY").is_none());
+    }
+
     fn request() -> CredentialDeliveryRequest<'static> {
         CredentialDeliveryRequest {
             vault_id: "vault-fixture",
@@ -1070,6 +1429,10 @@ mod tests {
     }
 
     async fn credential_server(bodies: Vec<&'static str>) -> (String, Arc<Mutex<Vec<String>>>) {
+        credential_server_owned(bodies.into_iter().map(str::to_owned).collect()).await
+    }
+
+    async fn credential_server_owned(bodies: Vec<String>) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("address");
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -1087,6 +1450,53 @@ mod tests {
             }
         });
         (format!("http://{address}"), requests)
+    }
+
+    fn runtime_session(host: String, api: ApiClient, encryption: X25519Identity) -> RuntimeSession {
+        RuntimeSession {
+            profile: PublicAgentEntry {
+                name: "fixture".to_owned(),
+                identity_id: "11111111111111111111111111111111".to_owned(),
+                created_at: "2026-01-01T00:00:00Z".to_owned(),
+                agent_type: None,
+            },
+            config: PublicProfileConfig {
+                schema_version: PUBLIC_SCHEMA_VERSION,
+                host,
+                organization_credential_id: "22222222222222222222222222222222".to_owned(),
+                retired_organization_credential_ids: Vec::new(),
+                agent_id: None,
+                encryption_public_key: None,
+                signing_public_key: None,
+            },
+            api,
+            encryption,
+        }
+    }
+
+    fn fixture_api(host: &str) -> (ApiClient, X25519Identity) {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/v1/encrypted-envelope.json"
+        ))
+        .expect("envelope fixture");
+        let private_key = STANDARD
+            .decode(
+                fixture
+                    .pointer("/keyFixture/privateKeyBase64")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("private key"),
+            )
+            .expect("private key base64");
+        let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let api = ApiClient::new(
+            ApiHost::parse(host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        (api, encryption)
     }
 
     async fn read_request(stream: &mut tokio::net::TcpStream) -> String {

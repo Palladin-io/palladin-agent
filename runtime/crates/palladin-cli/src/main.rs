@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use clap::Parser;
 use palladin_api::{CredentialMethod, ReportCredentialStaleInput, StaleReasonCode};
 use palladin_cli::args::{
-    AgentsCommand, Cli, Commands, ConnectArgs, GetArgs, McpCommand, ProgressArg, ReportStaleArgs,
-    SearchArgs, SecurityCommand, StaleCodeArg,
+    AgentsCommand, Cli, Commands, ConnectArgs, ExecArgs, GetArgs, McpCommand, ProgressArg,
+    ReportStaleArgs, SearchArgs, SecurityCommand, StaleCodeArg,
 };
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
@@ -15,7 +15,8 @@ use palladin_cli::output::{
     render_search_human, render_security_upgrade, render_status,
 };
 use palladin_cli::{
-    CredentialDelivery, CredentialDeliveryRequest, RuntimeError, RuntimeService, safe_terminal_text,
+    CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
+    OperatorOutput, RuntimeError, RuntimeService, safe_terminal_text,
 };
 use palladin_core::environment::{EnvironmentReport, EnvironmentRequirement, enforce_environment};
 use palladin_core::host::ApiHost;
@@ -78,6 +79,7 @@ async fn main() -> ExitCode {
         Commands::Status => status(&service, cli.id.as_deref()).await,
         Commands::Search(args) => search(&service, cli.id.as_deref(), args).await,
         Commands::Get(args) => get(&service, cli.id.as_deref(), args).await,
+        Commands::Exec(args) => exec(&service, cli.id.as_deref(), args).await,
         Commands::ReportStale(args) => report_stale(&service, cli.id.as_deref(), args).await,
         Commands::Mcp { command } => mcp(&service, cli.id.as_deref(), command).await,
         Commands::Agents { command } => agents(&service, command),
@@ -94,6 +96,7 @@ const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
         | Commands::Status
         | Commands::Search(_)
         | Commands::Get(_)
+        | Commands::Exec(_)
         | Commands::ReportStale(_)
         | Commands::Mcp { .. }
         | Commands::Agents { .. }
@@ -428,6 +431,85 @@ async fn get(
         secret: output.expose_secret(),
     });
     emit_get_warning(args.quiet, result)
+}
+
+async fn exec(
+    service: &RuntimeService<OsSecretStore>,
+    profile: Option<&str>,
+    args: ExecArgs,
+) -> ExitCode {
+    let wait_ms = if args.no_wait {
+        Some(0)
+    } else {
+        match args.wait.as_deref().map(parse_duration).transpose() {
+            Ok(value) => value,
+            Err(error) => return fail(&error.to_string()),
+        }
+    };
+    let poll_ms = match args
+        .poll_interval
+        .as_deref()
+        .map(parse_duration)
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let session = match service.open_session(profile, &hostname) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let progress = args.progress.map(|value| match value {
+        ProgressArg::Plain => ProgressMode::Plain,
+        ProgressArg::Json => ProgressMode::Json,
+        ProgressArg::None => ProgressMode::None,
+    });
+    let cancellation = signal_cancellation_token();
+    let outcome = session
+        .execute_with_credential(
+            CredentialExecRequest {
+                delivery: CredentialDeliveryRequest {
+                    vault_id: &args.vault_id,
+                    entry_id: &args.entry_id,
+                    reason: args.reason.as_deref(),
+                    wait: WaitOptions {
+                        wait_ms,
+                        poll_ms,
+                        progress,
+                    },
+                },
+                command: Some(&args.command),
+                env_mappings: &args.env_mappings,
+                output: OperatorOutput::Terminal,
+            },
+            &cancellation,
+            |heartbeat| {
+                if let Some(line) = heartbeat_line(progress.unwrap_or_default(), &heartbeat) {
+                    eprint!("{line}");
+                }
+            },
+        )
+        .await;
+    match outcome {
+        Ok(CredentialExecOutcome::Completed(result)) => {
+            if result.cancelled {
+                ExitCode::from(130)
+            } else {
+                ExitCode::from(u8::try_from(result.exit_code).unwrap_or(EXIT_FAILURE))
+            }
+        }
+        Ok(CredentialExecOutcome::NotGranted(access)) => {
+            if let Some(message) = access_message(&access, CredentialMethod::Exec) {
+                eprintln!("Error: {}", safe_terminal_text(&message));
+            }
+            ExitCode::from(exit_code_for_access(&access))
+        }
+        Err(error) => fail(&error.to_string()),
+    }
 }
 
 async fn report_stale(
