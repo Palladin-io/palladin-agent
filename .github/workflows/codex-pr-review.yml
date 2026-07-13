@@ -1,0 +1,362 @@
+name: "Codex: PR Review"
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Numer PR do przeglądu"
+        required: true
+      user_context:
+        description: "Dodatkowe instrukcje dla reviewera"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-subscription-review
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    # The public repository keeps subscription-backed reviews manual and owner-only.
+    # Requiring main prevents dispatching a branch-modified workflow with the secret.
+    if: >
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'don-flamingo'
+    name: Authorize Codex
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require repository write access
+        env:
+          ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          PERMISSION=$(gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission')
+          case "$PERMISSION" in
+            admin|maintain|write) ;;
+            *)
+              echo "::error::Codex subscription review requires a trusted actor with repository write access."
+              exit 1
+              ;;
+          esac
+
+  analyze:
+    name: Codex Analysis
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      pr_number: ${{ steps.pr.outputs.number }}
+      head_sha: ${{ steps.pr_data.outputs.head_sha }}
+      review: ${{ steps.run_codex.outputs.review }}
+    steps:
+      - name: Resolve PR
+        id: pr
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          PR_NUMBER_FROM_EVENT: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            PR_NUMBER="$INPUT_PR_NUMBER"
+          else
+            PR_NUMBER="$PR_NUMBER_FROM_EVENT"
+          fi
+
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout trusted reviewer sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch PR data without checking out PR code
+        id: pr_data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
+          USER_CONTEXT: ${{ github.event.inputs.user_context }}
+        run: |
+          gh pr view "$PR" --json number,title,body,author,additions,deletions,changedFiles,headRefName,headRefOid,baseRefName > /tmp/pr_meta.json
+          echo "head_sha=$(jq -r .headRefOid /tmp/pr_meta.json)" >> "$GITHUB_OUTPUT"
+          gh pr diff "$PR" > /tmp/pr_diff.patch 2>/dev/null \
+            || gh api -H 'Accept: application/vnd.github.diff' "repos/${REPO}/pulls/${PR}" > /tmp/pr_diff.patch
+          gh api --paginate "repos/${REPO}/pulls/${PR}/files" --jq '.[].filename' > /tmp/pr_files.txt
+          gh pr view "$PR" --json reviews > /tmp/pr_reviews.json
+          gh api --paginate "repos/${REPO}/pulls/${PR}/comments" > /tmp/pr_inline_comments.json
+          printf '%s\n' "$USER_CONTEXT" > /tmp/pr_user_context.md
+
+      - name: Build isolated review prompt
+        run: |
+          mkdir -p "$RUNNER_TEMP/codex-review"
+          {
+            cat .github/codex/pr-review.md
+            echo ''
+            echo '## AGENTS.md'
+            cat AGENTS.md
+            echo ''
+            echo '## Review criteria'
+            cat .agents/skills/pr-review/criteria.md
+            echo ''
+            echo '## PR metadata'
+            cat /tmp/pr_meta.json
+            echo ''
+            echo '## Changed files'
+            cat /tmp/pr_files.txt
+            echo ''
+            echo '## Previous reviews'
+            cat /tmp/pr_reviews.json
+            echo ''
+            echo '## Previous inline comments'
+            cat /tmp/pr_inline_comments.json
+            echo ''
+            echo '## Maintainer context'
+            cat /tmp/pr_user_context.md
+            echo ''
+            echo '## Pull request diff'
+            cat /tmp/pr_diff.patch
+          } > "$RUNNER_TEMP/codex-review/prompt.md"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex@0.144.1
+
+      - name: Verify unprivileged Codex user
+        run: |
+          if sudo -u nobody sudo -n true 2>/dev/null; then
+            echo "::error::Expected the Codex runtime user to have no sudo privileges."
+            exit 1
+          fi
+
+      - name: Run Codex review with ChatGPT subscription
+        id: run_codex
+        env:
+          CODEX_AUTH_JSON_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
+          CODEX_MODEL: ${{ vars.CODEX_REVIEW_MODEL }}
+          REVIEW_PROMPT: ${{ runner.temp }}/codex-review/prompt.md
+          REVIEW_SCHEMA: ${{ github.workspace }}/.github/codex/review-output.schema.json
+        run: |
+          if [ -z "$CODEX_AUTH_JSON_B64" ]; then
+            echo "::error::The CODEX_AUTH_JSON_B64 organization secret is unavailable."
+            exit 1
+          fi
+
+          SOURCE_PROMPT="$REVIEW_PROMPT"
+          SOURCE_SCHEMA="$REVIEW_SCHEMA"
+          RUNTIME_ROOT="/tmp/palladin-codex-${GITHUB_RUN_ID}"
+          AUTH_HOME="$RUNTIME_ROOT/auth"
+          EMPTY_WORKSPACE="$RUNTIME_ROOT/workspace"
+          REVIEW_PROMPT="$RUNTIME_ROOT/prompt.md"
+          REVIEW_SCHEMA="$RUNTIME_ROOT/review-output.schema.json"
+          REVIEW_OUTPUT="$RUNTIME_ROOT/result.json"
+          trap 'sudo rm -rf "$RUNTIME_ROOT"' EXIT
+          mkdir -m 700 -p "$AUTH_HOME" "$EMPTY_WORKSPACE/home"
+          cp "$SOURCE_PROMPT" "$REVIEW_PROMPT"
+          cp "$SOURCE_SCHEMA" "$REVIEW_SCHEMA"
+          printf '%s' "$CODEX_AUTH_JSON_B64" | base64 --decode > "$AUTH_HOME/auth.json"
+          chmod 600 "$AUTH_HOME/auth.json"
+          jq -e '
+            .auth_mode == "chatgpt" and
+            ((.tokens.refresh_token // "") | type == "string" and length > 0)
+          ' "$AUTH_HOME/auth.json" > /dev/null
+          touch "$REVIEW_OUTPUT"
+          sudo chown -R nobody:nogroup "$AUTH_HOME" "$EMPTY_WORKSPACE"
+          sudo chown nobody:nogroup "$REVIEW_OUTPUT"
+
+          ARGS=(
+            exec
+            --ephemeral
+            --ignore-user-config
+            --ignore-rules
+            --skip-git-repo-check
+            --sandbox read-only
+            --disable shell_tool
+            --disable apps
+            --disable browser_use
+            --disable computer_use
+            --disable multi_agent
+            --cd "$EMPTY_WORKSPACE"
+            --output-schema "$REVIEW_SCHEMA"
+            --output-last-message "$REVIEW_OUTPUT"
+          )
+          if [ -n "$CODEX_MODEL" ]; then
+            ARGS+=(--model "$CODEX_MODEL")
+          fi
+
+          CODEX_EXIT=0
+          sudo -u nobody env -i \
+              HOME="$EMPTY_WORKSPACE/home" \
+              CODEX_HOME="$AUTH_HOME" \
+              PATH="$PATH" \
+              codex "${ARGS[@]}" - < "$REVIEW_PROMPT" \
+              > "$RUNTIME_ROOT/codex-events.log" \
+              2> "$RUNTIME_ROOT/codex-error.log" \
+            || CODEX_EXIT=$?
+
+          if [ "$CODEX_EXIT" -ne 0 ]; then
+            if grep -Fq "You've hit your usage limit." "$RUNTIME_ROOT/codex-error.log"; then
+              echo "::error::Codex subscription usage limit reached. Retry after the account limit resets."
+            elif grep -Eq '401 Unauthorized|authentication|not logged in' "$RUNTIME_ROOT/codex-error.log"; then
+              echo "::error::Codex ChatGPT authentication failed. Reseed CODEX_AUTH_JSON_B64."
+            else
+              echo "::error::Codex review failed. Raw CLI output was suppressed because it may contain untrusted PR content."
+            fi
+            exit "$CODEX_EXIT"
+          fi
+
+          jq -e . "$REVIEW_OUTPUT" > /dev/null
+          {
+            echo 'review<<CODEX_REVIEW_EOF'
+            cat "$REVIEW_OUTPUT"
+            echo ''
+            echo 'CODEX_REVIEW_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+  publish:
+    if: >
+      always() &&
+      needs.analyze.result == 'success' &&
+      needs.analyze.outputs.review != ''
+    name: Codex Review
+    needs: analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Publish Codex review
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          CODEX_REVIEW: ${{ needs.analyze.outputs.review }}
+          HEAD_SHA: ${{ needs.analyze.outputs.head_sha }}
+          PR_NUMBER: ${{ needs.analyze.outputs.pr_number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const marker = '<!-- palladin-codex-review -->';
+            const review = JSON.parse(process.env.CODEX_REVIEW);
+            const headSha = process.env.HEAD_SHA;
+            const pullNumber = Number(process.env.PR_NUMBER);
+            const allowedVerdicts = new Set(['APPROVED', 'CHANGES_REQUESTED']);
+            const validComments = Array.isArray(review.comments) && review.comments.every(comment =>
+              typeof comment.path === 'string' &&
+              comment.path.length > 0 &&
+              Number.isInteger(comment.line) &&
+              comment.line > 0 &&
+              typeof comment.body === 'string' &&
+              comment.body.length > 0
+            );
+
+            if (
+              !Number.isInteger(pullNumber) ||
+              !/^[0-9a-f]{40}$/.test(headSha) ||
+              !allowedVerdicts.has(review.verdict) ||
+              typeof review.summary !== 'string' ||
+              review.summary.length === 0 ||
+              !validComments
+            ) {
+              core.setFailed('Codex returned an invalid review contract.');
+              return;
+            }
+
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullNumber,
+            });
+            if (pull.head.sha !== headSha) {
+              core.setFailed('The pull request changed after Codex analysis. Run the review again.');
+              return;
+            }
+
+            const existingComments = await github.paginate(github.rest.pulls.listReviewComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullNumber,
+              per_page: 100,
+            });
+            const fallbackFindings = [];
+
+            for (const comment of review.comments.slice(0, 50)) {
+              const body = `🤖 **Codex** — ${comment.body.slice(0, 5000)}`;
+              const duplicate = existingComments.some(existing =>
+                existing.path === comment.path &&
+                existing.line === comment.line &&
+                existing.body === body
+              );
+
+              if (duplicate) {
+                continue;
+              }
+
+              try {
+                await github.rest.pulls.createReviewComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pullNumber,
+                  commit_id: headSha,
+                  path: comment.path,
+                  line: comment.line,
+                  side: 'RIGHT',
+                  body,
+                });
+              } catch (error) {
+                fallbackFindings.push(`- \`${comment.path}:${comment.line}\` — ${comment.body}`);
+                core.warning(`Could not publish an inline Codex finding for ${comment.path}:${comment.line}.`);
+              }
+            }
+
+            const fallbackSection = fallbackFindings.length === 0
+              ? ''
+              : `\n\n### Findings outside the current diff\n${fallbackFindings.join('\n')}`;
+            const body = [
+              marker,
+              `## 🤖 Codex Review — ${review.verdict}`,
+              '',
+              review.summary.slice(0, 30000),
+              fallbackSection,
+              '',
+              '_Codex publishes an advisory summary so it does not overwrite the formal Claude Code verdict._',
+            ].join('\n');
+
+            const summaryComments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullNumber,
+              per_page: 100,
+            });
+            const existingSummary = summaryComments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' &&
+              comment.body?.startsWith(marker)
+            );
+
+            if (existingSummary) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingSummary.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pullNumber,
+                body,
+              });
+            }
