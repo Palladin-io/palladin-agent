@@ -12,10 +12,14 @@
     "url": "https://github.com/Palladin-io/palladin-agent/issues"
   },
   "files": [
-    "dist/",
+    "dist/bin/",
+    "dist/runtime/",
     "README.md",
     "LICENSE",
     "SECURITY.md"
+  ],
+  "workspaces": [
+    "packages/*"
   ],
   "publishConfig": {
     "access": "public",
@@ -31,20 +35,18 @@
     "start": "node dist/bin/palladin.js",
     "lint": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "prepare": "tsc"
+    "test:watch": "vitest"
   },
-  "dependencies": {
+  "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
+    "@napi-rs/keyring": "^1.3.0",
     "@noble/curves": "^2.2.0",
+    "@types/libsodium-wrappers": "^0.7.14",
+    "@types/node": "^22.0.0",
     "commander": "^13.1.0",
     "libsodium-wrappers": "^0.8.4",
     "linkedom": "^0.18.12",
-    "tldts": "^6.1.86"
-  },
-  "devDependencies": {
-    "@types/libsodium-wrappers": "^0.7.14",
-    "@types/node": "^22.0.0",
+    "tldts": "^6.1.86",
     "typescript": "^5.8.0",
     "vitest": "^4.1.10"
   },
@@ -52,6 +54,6 @@
     "node": ">=20"
   },
   "optionalDependencies": {
-    "@napi-rs/keyring": "^1.3.0"
+    "@palladin/runtime-darwin-universal": "0.1.0"
   }
 }

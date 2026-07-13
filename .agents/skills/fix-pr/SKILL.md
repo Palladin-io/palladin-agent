@@ -3,7 +3,7 @@ name: fix-pr
 description: Implementuje poprawki na podstawie komentarzy review — czyta nierozwiązane uwagi, modyfikuje kod, buduje, commituje, odpowiada na komentarze i resolvuje wątki.
 argument-hint: <pr-number>
 disable-model-invocation: true
-allowed-tools: Read Write Edit Grep Glob Bash(gh pr *) Bash(gh api *) Bash(gh api graphql *) Bash(git *) Bash(npm *)
+allowed-tools: Read Write Edit Grep Glob Bash(gh pr *) Bash(gh api *) Bash(gh api graphql *) Bash(git *) Bash(npm *) Bash(cargo *) Bash(bash *) Bash(shellcheck *) Bash(actionlint *)
 effort: high
 ---
 
@@ -46,10 +46,11 @@ Przeczytaj wszystkie nierozwiązane komentarze. Dla każdego:
 ### Krok 3 — wprowadź poprawki
 
 Edytuj pliki używając `Edit`. Przestrzegaj konwencji (AGENTS.md):
-- Klucz prywatny: keychain primary (`storePrivateKey`) → env var → plik `0o600`
-- Wszystkie komendy przez `getProfile()` — nigdy hardcoded `~/.palladin/`
-- Operacje na registry przez helpery (`registryAddAgent` etc.) — nigdy bezpośrednia mutacja
-- `@napi-rs/keyring` przez `try/catch` w dynamic import — graceful fallback, nigdy throw
+- Publiczny entry point TypeScript tylko uruchamia dokładny pakiet natywny — bez `PATH`, pobierania, shella i fallbacku do legacy TypeScript
+- Brak plaintext fallbacku: błąd systemowego magazynu kończy operację; sekret nie trafia do pliku, env ani argv
+- API key należy do organizacji i może być współdzielony przez wielu Agentów; `agentId` oraz X25519/Ed25519 pozostają per Agent
+- Registry przechowuje wyłącznie jawne referencje; usunięcie jednego Agenta nie usuwa współdzielonego credentialu używanego przez innych
+- macOS Hardened wymaga dokładnego podpisu, provisioning profile, entitlements i Data Protection Keychain; brak autoryzacji oznacza Unavailable
 - Nigdy nie loguj klucza prywatnego ani API key w `console.*`
 
 ### Krok 4 — zbuduj i sprawdź typy
@@ -58,6 +59,7 @@ Edytuj pliki używając `Edit`. Przestrzegaj konwencji (AGENTS.md):
 npm ci
 npm run lint
 npm run build
+cd runtime && cargo fmt --check && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked
 ```
 
 Jeśli lint lub build nie przechodzą — napraw przed przejściem dalej.

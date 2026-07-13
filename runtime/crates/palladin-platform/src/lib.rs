@@ -6,6 +6,9 @@ use thiserror::Error;
 
 pub mod secure_store;
 
+#[cfg(all(target_os = "macos", feature = "macos-hardened"))]
+mod macos_hardened_store;
+
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 compile_error!("Palladin runtime supports only macOS, Windows, and Linux");
 
@@ -26,12 +29,27 @@ pub enum PlatformError {
 }
 
 #[must_use]
-pub const fn current() -> PlatformInfo {
+pub fn current() -> PlatformInfo {
     PlatformInfo {
         operating_system: std::env::consts::OS,
         architecture: std::env::consts::ARCH,
-        standalone_tier: "Convenience",
+        standalone_tier: standalone_tier(),
         hardened_candidate: hardened_candidate(),
+    }
+}
+
+fn standalone_tier() -> &'static str {
+    #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
+    {
+        if crate::macos_hardened_store::runtime_is_hardened() {
+            "Hardened"
+        } else {
+            "Unavailable"
+        }
+    }
+    #[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]
+    {
+        "Convenience"
     }
 }
 
@@ -80,6 +98,9 @@ mod tests {
         let info = current();
         assert!(!info.operating_system.is_empty());
         assert!(!info.architecture.is_empty());
+        #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
+        assert!(matches!(info.standalone_tier, "Hardened" | "Unavailable"));
+        #[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]
         assert_eq!(info.standalone_tier, "Convenience");
         assert!(!info.hardened_candidate.is_empty());
     }

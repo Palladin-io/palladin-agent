@@ -1,0 +1,72 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { describe, expect, it } from 'vitest';
+
+interface PackageManifest {
+  name: string;
+  version: string;
+  files?: string[];
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  os?: string[];
+  cpu?: string[];
+  publishConfig?: { access?: string; provenance?: boolean };
+}
+
+function manifest(path: string): PackageManifest {
+  return JSON.parse(readFileSync(resolve(path), 'utf8')) as PackageManifest;
+}
+
+describe('public npm package boundary', () => {
+  it('publishes only the native dispatcher and an exact platform dependency', () => {
+    const root = manifest('package.json');
+    expect(root.files).toContain('dist/bin/');
+    expect(root.files).toContain('dist/runtime/');
+    expect(root.files).not.toContain('dist/');
+    expect(root.dependencies).toBeUndefined();
+    expect(root.optionalDependencies).toEqual({
+      '@palladin/runtime-darwin-universal': root.version,
+    });
+    for (const lifecycle of ['preinstall', 'install', 'postinstall', 'prepare']) {
+      expect(root.scripts?.[lifecycle]).toBeUndefined();
+    }
+  });
+
+  it('excludes every legacy TypeScript implementation from the launcher tarball', () => {
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const output = execFileSync(npm, ['pack', '--dry-run', '--json'], {
+      encoding: 'utf8',
+      env: { ...process.env, npm_config_loglevel: 'silent' },
+    });
+    const packs = JSON.parse(output) as Array<{ files: Array<{ path: string }> }>;
+    const paths = packs[0]?.files.map((file) => file.path).sort();
+    expect(paths).toEqual([
+      'LICENSE',
+      'README.md',
+      'SECURITY.md',
+      'dist/bin/palladin.d.ts',
+      'dist/bin/palladin.d.ts.map',
+      'dist/bin/palladin.js',
+      'dist/bin/palladin.js.map',
+      'dist/runtime/native-dispatch.d.ts',
+      'dist/runtime/native-dispatch.d.ts.map',
+      'dist/runtime/native-dispatch.js',
+      'dist/runtime/native-dispatch.js.map',
+      'package.json',
+    ]);
+  });
+
+  it('keeps the universal macOS package public and lifecycle-script free', () => {
+    const runtime = manifest('packages/runtime-darwin-universal/package.json');
+    expect(runtime.name).toBe('@palladin/runtime-darwin-universal');
+    expect(runtime.os).toEqual(['darwin']);
+    expect(runtime.cpu).toEqual(['arm64', 'x64']);
+    expect(runtime.files).toContain('PalladinRuntime.app/');
+    expect(runtime.scripts).toBeUndefined();
+    expect(runtime.dependencies).toBeUndefined();
+    expect(runtime.optionalDependencies).toBeUndefined();
+    expect(runtime.publishConfig).toEqual({ access: 'public', provenance: true });
+  });
+});

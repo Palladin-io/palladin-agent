@@ -30,7 +30,7 @@ use palladin_credential::secret::parse_secret;
 use palladin_credential::wait::{
     ProgressMode, WaitOptions, heartbeat_line, parse_duration, signal_cancellation_token,
 };
-use palladin_platform::secure_store::{OsSecretStore, convenience_tier_description};
+use palladin_platform::secure_store::{NativeSecretStore, storage_tier_description};
 use secrecy::ExposeSecret;
 use serde::Serialize;
 use zeroize::Zeroizing;
@@ -76,7 +76,7 @@ async fn main() -> ExitCode {
         Ok(repository) => repository,
         Err(error) => return fail(&error.to_string()),
     };
-    let service = RuntimeService::new(repository, OsSecretStore);
+    let service = RuntimeService::new(repository, NativeSecretStore::default());
 
     match cli.command {
         Commands::Init { force } => init(&service, cli.id.as_deref(), force),
@@ -114,7 +114,7 @@ const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
 }
 
 async fn mcp(
-    service: &RuntimeService<OsSecretStore>,
+    service: &RuntimeService<NativeSecretStore>,
     profile: Option<&str>,
     command: McpCommand,
 ) -> ExitCode {
@@ -141,7 +141,7 @@ async fn mcp(
 }
 
 fn init(
-    service: &RuntimeService<OsSecretStore>,
+    service: &RuntimeService<NativeSecretStore>,
     profile_name: Option<&str>,
     force: bool,
 ) -> ExitCode {
@@ -166,7 +166,7 @@ fn init(
         };
         return emit_output(render_init(
             &profile.name,
-            convenience_tier_description(),
+            storage_tier_description(),
             true,
             profile.name == registry.default,
         ));
@@ -176,7 +176,7 @@ fn init(
             let is_default = profile.name == registry.default || registry.agents.is_empty();
             emit_output(render_init(
                 &profile.name,
-                convenience_tier_description(),
+                storage_tier_description(),
                 false,
                 is_default,
             ))
@@ -185,7 +185,10 @@ fn init(
     }
 }
 
-fn doctor(environment: &EnvironmentReport, service: &RuntimeService<OsSecretStore>) -> ExitCode {
+fn doctor(
+    environment: &EnvironmentReport,
+    service: &RuntimeService<NativeSecretStore>,
+) -> ExitCode {
     let platform = palladin_platform::current();
     println!("Palladin Runtime Doctor");
     println!("version: {}", env!("CARGO_PKG_VERSION"));
@@ -194,7 +197,7 @@ fn doctor(environment: &EnvironmentReport, service: &RuntimeService<OsSecretStor
         platform.operating_system, platform.architecture
     );
     println!("standalone-security-tier: {}", platform.standalone_tier);
-    println!("storage-boundary: {}", convenience_tier_description());
+    println!("storage-boundary: {}", storage_tier_description());
     println!("hardened-candidate: {}", platform.hardened_candidate);
     println!("identity-opened: no");
     println!("project-runtime-dependencies: disabled");
@@ -227,7 +230,7 @@ fn doctor(environment: &EnvironmentReport, service: &RuntimeService<OsSecretStor
 }
 
 async fn connect(
-    service: &RuntimeService<OsSecretStore>,
+    service: &RuntimeService<NativeSecretStore>,
     profile: Option<&str>,
     args: ConnectArgs,
 ) -> ExitCode {
@@ -261,11 +264,11 @@ async fn connect(
     emit_output(render_connect(
         &outcome.registration,
         outcome.config_saved,
-        convenience_tier_description(),
+        storage_tier_description(),
     ))
 }
 
-async fn status(service: &RuntimeService<OsSecretStore>, profile: Option<&str>) -> ExitCode {
+async fn status(service: &RuntimeService<NativeSecretStore>, profile: Option<&str>) -> ExitCode {
     let hostname = match hostname::get() {
         Ok(hostname) => hostname.to_string_lossy().into_owned(),
         Err(_) => return fail("the operating-system hostname is unavailable"),
@@ -278,12 +281,12 @@ async fn status(service: &RuntimeService<OsSecretStore>, profile: Option<&str>) 
         &outcome.profile.name,
         &outcome.config.host,
         &outcome.registration,
-        convenience_tier_description(),
+        storage_tier_description(),
     ))
 }
 
 async fn search(
-    service: &RuntimeService<OsSecretStore>,
+    service: &RuntimeService<NativeSecretStore>,
     profile: Option<&str>,
     args: SearchArgs,
 ) -> ExitCode {
@@ -320,7 +323,7 @@ async fn search(
 }
 
 async fn get(
-    service: &RuntimeService<OsSecretStore>,
+    service: &RuntimeService<NativeSecretStore>,
     profile: Option<&str>,
     args: GetArgs,
 ) -> ExitCode {
@@ -442,7 +445,7 @@ async fn get(
 }
 
 async fn exec(
-    service: &RuntimeService<OsSecretStore>,
+    service: &RuntimeService<NativeSecretStore>,
     profile: Option<&str>,
     args: ExecArgs,
 ) -> ExitCode {
@@ -521,7 +524,7 @@ async fn exec(
 }
 
 async fn report_stale(
-    service: &RuntimeService<OsSecretStore>,
+    service: &RuntimeService<NativeSecretStore>,
     profile: Option<&str>,
     args: ReportStaleArgs,
 ) -> ExitCode {
@@ -554,7 +557,7 @@ async fn report_stale(
     }
 }
 
-fn agents(service: &RuntimeService<OsSecretStore>, command: AgentsCommand) -> ExitCode {
+fn agents(service: &RuntimeService<NativeSecretStore>, command: AgentsCommand) -> ExitCode {
     match agents_result(service, command) {
         Ok(output) => emit_output(output),
         Err(error) => fail(&error.to_string()),
@@ -562,7 +565,7 @@ fn agents(service: &RuntimeService<OsSecretStore>, command: AgentsCommand) -> Ex
 }
 
 fn security(
-    service: &RuntimeService<OsSecretStore>,
+    service: &RuntimeService<NativeSecretStore>,
     profile: Option<&str>,
     command: SecurityCommand,
 ) -> ExitCode {
@@ -570,7 +573,7 @@ fn security(
         SecurityCommand::Upgrade => match service.verify_identity(profile) {
             Ok(profile) => emit_output(render_security_upgrade(
                 &profile.name,
-                convenience_tier_description(),
+                storage_tier_description(),
             )),
             Err(error) => fail(&error.to_string()),
         },
@@ -578,7 +581,7 @@ fn security(
 }
 
 fn agents_result(
-    service: &RuntimeService<OsSecretStore>,
+    service: &RuntimeService<NativeSecretStore>,
     command: AgentsCommand,
 ) -> Result<RenderedOutput, RuntimeError> {
     match command {
@@ -588,10 +591,7 @@ fn agents_result(
         }
         AgentsCommand::Create { name, r#type } => {
             let created = service.create_profile(&name, r#type)?;
-            Ok(render_profile_created(
-                &created,
-                convenience_tier_description(),
-            ))
+            Ok(render_profile_created(&created, storage_tier_description()))
         }
         AgentsCommand::Delete { name } => {
             service.delete_profile(&name)?;
@@ -611,7 +611,7 @@ fn agents_result(
     }
 }
 
-fn purge(service: &RuntimeService<OsSecretStore>, confirm: bool) -> ExitCode {
+fn purge(service: &RuntimeService<NativeSecretStore>, confirm: bool) -> ExitCode {
     if !confirm {
         return fail("purge requires --confirm and is never run automatically");
     }

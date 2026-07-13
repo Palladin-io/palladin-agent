@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/rust-runtime.yml"
+      - ".github/workflows/macos-signed-runtime.yml"
+      - "packaging/macos/**"
       - "runtime/**"
 
 permissions:
@@ -36,9 +38,42 @@ jobs:
         with:
           node-version: 22
       - run: rustup target add ${{ matrix.target }}
+      - name: Validate macOS packaging inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n ../packaging/macos/scripts/*.sh
+          plutil -lint ../packaging/macos/Info.plist.in
+          plutil -lint ../packaging/macos/PalladinRuntime.entitlements.in
+          node --check ../packaging/macos/tests/node-keyring-probe.mjs
+          xcrun swiftc -warnings-as-errors -typecheck ../packaging/macos/tests/untrusted-dpk-probe.swift
+      - name: Verify native runner architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'x86_64' }}
+          test "$(uname -m)" = "$expected"
+          translated=$(sysctl -in sysctl.proc_translated 2>/dev/null || echo 0)
+          test "$translated" = 0
       - run: cargo test --workspace --locked --target ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
       - run: ./target/${{ matrix.target }}/release/palladin --version
+      - name: Hardened build fails closed without Developer ID provisioning
+        shell: bash
+        env:
+          PALLADIN_KEYCHAIN_ACCESS_GROUP: A1B2C3D4E5.io.palladin.runtime
+        run: |
+          set -euo pipefail
+          cargo test --locked --target "${{ matrix.target }}" -p palladin-platform --features macos-hardened
+          cargo build --release --locked --target "${{ matrix.target }}" -p palladin-cli --features macos-hardened
+          binary="./target/${{ matrix.target }}/release/palladin"
+          file "$binary" | grep -F "${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'x86_64' }}"
+          doctor=$($binary doctor)
+          grep -F 'standalone-security-tier: Unavailable' <<<"$doctor"
+          if grep -Fq 'standalone-security-tier: Hardened' <<<"$doctor"; then
+            echo 'unsigned CI build must not claim Hardened' >&2
+            exit 1
+          fi
 
   windows:
     name: Build ${{ matrix.target }}

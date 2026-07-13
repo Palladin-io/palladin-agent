@@ -39,6 +39,8 @@ rpassword = "7.5.4"
 rmcp = { version = "2.2.0", default-features = false, features = ["server", "transport-async-rw"] }
 salsa20 = "0.10.2"
 secrecy = "0.10.3"
+security-framework = { version = "3.7.0", features = ["OSX_10_15"] }
+security-framework-sys = "2.17.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha1 = "0.10.6"

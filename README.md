@@ -1,124 +1,86 @@
 # @palladin/agent
 
-CLI + MCP server for Palladin. Manages agent identity (X25519 keypair), authenticates with the backend, and exposes vault tools to AI assistants.
+Public npm launcher and native CLI/MCP runtime for Palladin Agent.
 
 > [!WARNING]
-> Palladin Agent is pre-production software. Its local secret-isolation model is being hardened before the first public npm release. Do not use this version with production credentials or secrets.
+> Palladin Agent is pre-production software and has not been published to npm. Do not use development builds with production credentials.
 
-The source repository is public for review and development. The `@palladin/agent` package has not been published to npm yet.
+## Security boundary
 
-## Prerequisites
+The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed universal executable inside `@palladin/runtime-darwin-universal/PalladinRuntime.app`. There is no TypeScript, `PATH`, download, or plaintext fallback.
 
-- Node.js ≥ 20
-- Running Palladin backend (`dotnet run` or staging URL)
-- An API key generated in the Palladin panel (`pl_...`)
+The native runtime keeps these concepts separate:
 
-## Setup
+- an API key belongs to the organization and may be shared by multiple Agents;
+- every Agent has its own `agentId`, X25519 private key, and Ed25519 private key;
+- public profile files contain only the API host, opaque secret references, Agent ID, and public keys.
 
-### 1. Build
+The macOS Hardened build uses a provisioned Data Protection Keychain access group. Items are non-synchronizable and `WhenUnlockedThisDeviceOnly`; access to the shared organization credential requires user presence. Homebrew Node, an unsigned clone, and a differently signed fork do not have the entitlement. An unsigned development binary fails closed and does not fall back to Login Keychain, a file, or an environment variable.
+
+Windows and Linux platform packages are not included in this pre-production macOS change. Their native packages are delivered by separate epic tasks. A source build using Login Keychain, Windows Credential Manager, or Linux Secret Service reports `Convenience`, never `Hardened`.
+
+## Installation
+
+Once the release packages are available:
 
 ```bash
-npm install
-npm run build
+npm install --global @palladin/agent
+palladin doctor
 ```
 
-Link globally to get the `palladin` command:
+No package uses `preinstall`, `install`, `postinstall`, or `prepare`. npm installs the matching prebuilt platform package; it does not download or compile a binary during installation.
+
+For source development, run the Rust CLI directly:
 
 ```bash
-npm link
+cd runtime
+cargo run -p palladin-cli -- doctor
 ```
 
-### 2. Generate keypair
+The npm dispatcher is not a fallback development runtime. It intentionally fails if its signed platform package is absent.
+
+## Connect an Agent
+
+Create a local Agent identity:
 
 ```bash
 palladin init
 ```
 
-Creates `~/.palladin/agent.key` (private, chmod 600) and `agent.pub`.
-
-### 3. Connect to server
+Connect it using the organization API key from a masked prompt:
 
 ```bash
-palladin connect pl_YOUR_API_KEY --host http://localhost:5000
+palladin connect --host http://localhost:5000
 ```
 
-Registers the agent with the server. The agent appears as **Pending** in the panel immediately.
-
-### 4. Approve in panel
-
-Open the Palladin web panel → Agents → approve the agent. Status changes to **Active**.
-
-### 5. Verify
+Automation must pass the key through protected standard input:
 
 ```bash
-palladin status
+secret-provider | palladin --id build connect --api-key-stdin --host https://api.palladin.io
 ```
 
-Expected output when active:
-
-```
-Keypair:  ✓ ~/.palladin/agent.key
-Config:   ✓ ~/.palladin/config.json
-Host:     http://localhost:5000
-Key:      <base64 public key>
-
-Agent:    ✓ active
-          ID:   <agent-id>
-```
+API keys in argv or environment variables are rejected. Connecting a second profile with the same organization API key reuses one organization credential while preserving distinct Agent keypairs.
 
 ## Commands
 
 | Command | Description |
-|---------|-------------|
-| `palladin init` | Generate X25519 keypair. Use `--force` to overwrite. |
-| `palladin connect <api-key> --host <host>` | Save config and register agent with server. |
-| `palladin status` | Show keypair, config, and live agent status from server. |
-| `palladin search <query>` | Discover entries by name/url/description (metadata only, no secrets). Lists any fields the owner marked agent-visible. |
-| `palladin get <vaultId> <entryId>` | Fetch a credential as plaintext. `--field <label>` / `--field-id <uuid>` returns one field. |
-| `palladin exec <vaultId> <entryId> -- <cmd>` | Run a command with the secret in its environment. Omit the command for a **Script** entry to run the stored script. |
-| `palladin inject <vaultId> <entryId> --cdp <endpoint>` | Reserved compatibility surface. Fails before profile access or credential delivery because external CDP cannot attest the browser or page origin. |
-| `palladin mcp serve` | Start MCP server (for AI assistant integration). |
+|---|---|
+| `palladin init` | Create the default local Agent identity. |
+| `palladin connect` | Connect using a masked organization API-key prompt. |
+| `palladin status` | Show the selected Agent registration state. |
+| `palladin doctor` | Report platform, storage boundary, and unsafe environment state without opening identity. |
+| `palladin agents list` | List local Agent profile aliases. |
+| `palladin agents create <name>` | Create another local Agent identity. |
+| `palladin agents rename <old> <new>` | Rename an alias without moving secret slots. |
+| `palladin agents delete <name>` | Delete an identity; retain a shared organization credential while another Agent references it. |
+| `palladin search <query>` | Search metadata visible to the Agent. |
+| `palladin get <vaultId> <entryId>` | Intentionally return a granted credential to the operator. |
+| `palladin exec <vaultId> <entryId> -- <program>` | Run an allowlisted program with delivered values in a sanitized child environment. |
+| `palladin inject ...` | Fail closed until an authenticated browser boundary exists. |
+| `palladin mcp serve` | Serve Palladin tools over MCP stdio. |
+| `palladin purge --confirm` | Explicitly remove native profiles and their known secret slots. |
 
-### Named fields, TOTP & scripts
-
-**Named fields.** v2 entries carry custom fields (`text`, `concealed`, `multiline`, `totp`) alongside the well-known ones. Address any field by label (case-insensitive) or by id:
-
-```bash
-palladin get <vaultId> <entryId> --field "Recovery email"
-palladin get <vaultId> <entryId> --field-id 6f1c…            # disambiguates duplicate labels
-```
-
-Well-known aliases: `username`, `password`, `url`, `value`, `notes`. For `exec`, map a field to an env var with `--env NAME=field` (repeatable).
-
-**TOTP.** A `totp` field returns only its **current 6-digit code** and the seconds until it rolls over — the shared secret is computed against locally (RFC 6238) and never leaves the machine, never reaches your context:
-
-```bash
-palladin get <vaultId> <entryId> --field "Authenticator"     # → { "code": "123456", "expiresIn": 17 }
-palladin exec <vaultId> <entryId> --env OTP="Authenticator" -- some-tool     # OTP=<code> in the env
-# Browser injection is unavailable until an authenticated browser boundary is installed.
-```
-
-A full `get` (no `--field`) redacts every TOTP secret in the output, substituting the current code.
-
-**Script entries.** A Script entry stores a small script plus a whitelisted interpreter (`bash`, `sh`, `node`, `python` — run as `python3`) and a list of references to other entries. A reference without its own `vaultId` is assumed to live in the script's vault. Running it delivers each referenced entry through **this agent's own grants**, injects their values as the declared env vars, then executes the script:
-
-```bash
-palladin exec <vaultId> <script-entry-id>          # no command — the script IS the command
-```
-
-Script delivery is **exec-only** (the backend refuses `get`/`inject` on a Script entry, so the script body is never handed to an agent to read). Every reference is resolved *before* anything runs — a single missing grant aborts the whole run with nothing executed, and points you at `palladin get <vaultId> <entryId> --reason …` to request it. As with any `exec`, the script's stdout/stderr are streamed to the operator and **withheld from the model** (CVT-200) — judge success from the exit code.
-
-## MCP server
-
-### Claude Desktop
-
-Edit the config file for your platform:
-
-| OS | Path |
-|----|------|
-| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
-| Linux | `~/.config/Claude/claude_desktop_config.json` |
+## MCP configuration
 
 ```json
 {
@@ -131,71 +93,39 @@ Edit the config file for your platform:
 }
 ```
 
-Restart Claude Desktop. The agent must be **Active** before tools work.
+The Agent must be active before credential tools work.
 
-### Cursor / other MCP clients
-
-```json
-{
-  "mcpServers": {
-    "palladin": {
-      "command": "palladin",
-      "args": ["mcp", "serve"]
-    }
-  }
-}
-```
-
-### Without npm link (dev mode)
-
-```json
-{
-  "mcpServers": {
-    "palladin": {
-      "command": "node",
-      "args": ["/absolute/path/to/agent/dist/bin/palladin.js", "mcp", "serve"]
-    }
-  }
-}
-```
-
-## Available MCP tools
-
-| Tool | Description |
-|------|-------------|
-| `search_entries` | Discover entries by name/url/description (metadata only, no secrets) |
-| `get_credential` | Get a credential as plaintext. `field` returns one field (a TOTP field returns only its current code) |
-| `exec_with_credential` | Run a command with the secret in its environment; output withheld from the model. Omit `command` to run a **Script** entry |
-| `inject_credential` | Fail closed without profile access or credential delivery; external CDP is never contacted |
-| `report_credential_stale` | Report that a stored credential did not work, so owners can rotate it |
+| Tool | Behavior |
+|---|---|
+| `search_entries` | Search metadata without returning secret values. |
+| `get_credential` | Intentionally return a granted value; TOTP fields return only the current code. |
+| `exec_with_credential` | Execute without returning child stdout/stderr to the model. |
+| `inject_credential` | Fail closed without contacting CDP or requesting a credential. |
+| `report_credential_stale` | Report a stale credential without sending its value. |
 
 ## Security notes
 
-- **HTTPS only.** `connect --host` (and every request) rejects `http://` to a remote host — the API key is a bearer secret and must never travel in cleartext. `http://` is allowed only for loopback hosts (`localhost`, `127.0.0.1`, `::1`) for local development; use `https://` everywhere else.
-- **`exec_with_credential` withholds command output from MCP.** The secret is injected into the child's environment, but stdout/stderr are discarded and the model receives only the exit code. The CLI may stream output directly to the operator's terminal. Judge success from the exit code.
-- **Browser injection fails closed.** A caller-provided CDP endpoint controls both the reported page URL and the operation that receives the typed value, so checking an origin reported by that same endpoint is not authentication. The CLI rejects `inject` before opening an Agent profile. The MCP compatibility tool may run inside an already-open Agent session, but it never contacts the browser, requests a credential, or decrypts one. Chrome, Edge, Brave, Chromium, Firefox, and Safari injection are currently unsupported on macOS, Windows, and Linux.
-- **Config/key files are private.** The Palladin home and its subdirectories are created with mode `0700`; key/config files with mode `0600`.
+- HTTPS is mandatory except for loopback development hosts.
+- Native secret storage has no file or environment fallback.
+- The organization API key and private keys are never child-process environment variables.
+- `exec` uses no implicit shell, rebuilds the child environment from an allowlist, and supplies null stdin.
+- Browser injection is disabled because a caller-controlled CDP endpoint cannot attest the browser or page origin.
+- The npm launcher has no third-party JavaScript runtime dependencies. Its only production dependency is the exact-version platform package.
+- Removing the npm package never deletes identity. Purge is always an explicit native command.
 
-## Config files
+## Public local state
 
-| File | Contents |
-|------|----------|
-| `~/.palladin/agent.key` | X25519 private key (base64, chmod 600) |
-| `~/.palladin/agent.pub` | X25519 public key (base64) |
-| `~/.palladin/config.json` | `{ "apiKey": "pl_...", "host": "https://..." }` |
-
-Override the default directory with `PALLADIN_HOME=/custom/path`.
-
-## Windows notes
-
-- File permissions: `icacls` is used to restrict `agent.key` to the current user only. If `icacls` fails, a warning is printed — protect the file manually.
-- PowerShell / cmd both work for running `palladin` commands after `npm link`.
-- Line endings: no issues — all files are written as UTF-8 text.
+Native public state lives under `~/.palladin` and contains only profile aliases, opaque identity/organization references, host, Agent ID, and public keys. Secret values remain in the selected OS secure store. `PALLADIN_HOME` is rejected by identity-opening commands.
 
 ## Development
 
 ```bash
-npm run build       # compile TypeScript → dist/
-npm run dev         # watch mode
-npm run lint        # type-check only (no emit)
+npm ci --ignore-scripts
+npm run build
+npm test
+
+cd runtime
+cargo test --workspace --locked
 ```
+
+The repository is public under Apache-2.0. Signed release artifacts, provenance, and notarization gates are produced only by the protected release workflow.

@@ -1,6 +1,7 @@
 use secrecy::SecretSlice;
 use thiserror::Error;
 
+#[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]
 const SERVICE: &str = "io.palladin.agent";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -11,11 +12,25 @@ pub enum SecretSlot {
 }
 
 impl SecretSlot {
-    const fn account_suffix(self) -> &'static str {
+    pub(crate) const fn account_suffix(self) -> &'static str {
         match self {
             Self::OrganizationApiKey => "organization-api-key",
             Self::X25519PrivateKey => "x25519-private-key",
             Self::Ed25519SecretKey => "ed25519-secret-key",
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
+    pub(crate) const fn requires_user_presence(self) -> bool {
+        matches!(self, Self::OrganizationApiKey)
+    }
+
+    #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
+    pub(crate) const fn keychain_label(self) -> &'static str {
+        match self {
+            Self::OrganizationApiKey => "Palladin organization credential",
+            Self::X25519PrivateKey => "Palladin Agent encryption identity",
+            Self::Ed25519SecretKey => "Palladin Agent signing identity",
         }
     }
 }
@@ -27,8 +42,10 @@ pub trait SecretStore {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+#[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]
 pub struct OsSecretStore;
 
+#[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]
 impl SecretStore for OsSecretStore {
     fn get(&self, owner_id: &str, slot: SecretSlot) -> Result<Option<SecretSlice<u8>>, StoreError> {
         let entry = entry(owner_id, slot)?;
@@ -84,15 +101,42 @@ pub const fn convenience_tier_description() -> &'static str {
     }
 }
 
+#[must_use]
+pub fn storage_tier_description() -> &'static str {
+    #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
+    {
+        if crate::macos_hardened_store::runtime_is_hardened() {
+            "Hardened - signed macOS Data Protection Keychain bundle; organization credential requires user presence"
+        } else {
+            "Unavailable - hardened macOS code-signing requirement failed; no secure-storage fallback is allowed"
+        }
+    }
+    #[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]
+    {
+        convenience_tier_description()
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "macos-hardened"))]
+pub type NativeSecretStore = crate::macos_hardened_store::MacHardenedSecretStore;
+
+#[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]
+pub type NativeSecretStore = OsSecretStore;
+
+#[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]
 fn entry(owner_id: &str, slot: SecretSlot) -> Result<keyring::Entry, StoreError> {
     if !valid_opaque_id(owner_id) {
         return Err(StoreError::InvalidOwner);
     }
-    let account = format!("{owner_id}:{}", slot.account_suffix());
+    let account = account_name(owner_id, slot);
     keyring::Entry::new(SERVICE, &account).map_err(|_| StoreError::Unavailable)
 }
 
-fn valid_opaque_id(value: &str) -> bool {
+pub(crate) fn account_name(owner_id: &str, slot: SecretSlot) -> String {
+    format!("{owner_id}:{}", slot.account_suffix())
+}
+
+pub(crate) fn valid_opaque_id(value: &str) -> bool {
     value.len() == 32
         && value
             .bytes()
@@ -107,6 +151,8 @@ pub enum StoreError {
     InvalidSecret,
     #[error("secret owner identifier is invalid")]
     InvalidOwner,
+    #[error("hardened secure storage configuration is invalid")]
+    InvalidConfiguration,
 }
 
 #[cfg(test)]
