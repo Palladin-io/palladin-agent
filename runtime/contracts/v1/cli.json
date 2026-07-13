@@ -8,7 +8,7 @@
     "connect-api-key-in-argv-is-rejected-use-prompt-or-stdin",
     "connect-id-after-subcommand-is-rejected-use-name-for-display-or-place-profile-id-before-connect",
     "init-force-in-place-identity-rotation-is-rejected-use-a-new-profile",
-    "security-upgrade-is-a-verification-no-op-because-native-identities-start-in-os-secure-storage",
+    "security-upgrade-performs-an-explicit-downgrade-safe-v2-to-v3-migration-or-verifies-v3",
     "human-readable-long-identifiers-use-prefix-and-suffix",
     "inject-external-cdp-is-rejected-before-profile-open-because-cdp-cannot-attest-browser-origin"
   ],
@@ -102,7 +102,7 @@
     { "name": "status-active", "exitCode": 0, "stdout": "Profile: build\nHost: https://api.example.test\nSecurity: OS secure storage\nAgent: active (agent-build)\nBackend name: Build�forged\n", "stderr": "" },
     { "name": "agents-list", "exitCode": 0, "stdout": "* build\n  second\n", "stderr": "" },
     { "name": "agents-created", "exitCode": 0, "stdout": "Agent profile created: build\nEncryption key: ABCDEFGH…UVWXYZ\nSigning key: 12345678…567890\nSecurity: OS secure storage\nNext: palladin --id build connect\n", "stderr": "" },
-    { "name": "security-upgrade", "exitCode": 0, "stdout": "Profile: build\nSecurity: OS secure storage\nUpgrade: not required - identity is already in secure OS storage.\n", "stderr": "" },
+    { "name": "security-upgrade", "exitCode": 0, "stdout": "Profile: build\nSecurity: OS secure storage\nUpgrade: not required - schema v3 integrity binding is already active.\n", "stderr": "" },
     { "name": "search-human", "exitCode": 0, "stdout": "entry-12…abcdef  Fixture�Entry  vault=vault-12…abcdef\n  domain: example.test\n  description: metadata�spoof\n  Region: eu-central-1\nNext cursor: cursor-1…abcdef\n", "stderr": "" },
     { "name": "report-stale", "exitCode": 0, "stdout": "Reported credential as not working - the vault owners have been notified to rotate it.\n", "stderr": "" }
   ],

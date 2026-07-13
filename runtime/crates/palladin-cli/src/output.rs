@@ -182,11 +182,18 @@ pub fn render_agent_action(action: &str, value: &str) -> RenderedOutput {
 }
 
 #[must_use]
-pub fn render_security_upgrade(profile: &str, security: &str) -> RenderedOutput {
+pub fn render_security_upgrade(profile: &str, security: &str, migrated: bool) -> RenderedOutput {
     let mut output = RenderedOutput::default();
     output.stdout_line(format_args!("Profile: {}", safe_terminal_text(profile)));
     output.stdout_line(format_args!("Security: {security}"));
-    output.stdout_line("Upgrade: not required - identity is already in secure OS storage.");
+    if migrated {
+        output.stdout_line(
+            "Upgrade: completed - local metadata and secure-storage slots now use schema v3.",
+        );
+    } else {
+        output
+            .stdout_line("Upgrade: not required - schema v3 integrity binding is already active.");
+    }
     output
 }
 

@@ -47,7 +47,7 @@ Run lint, build, and relevant tests before finishing code changes.
 ## Pull Requests
 
 - All changes go through pull requests.
-- PR titles, descriptions, review comments, and commit messages are written in Polish.
+- PR titles, descriptions, review comments, and commit messages are written in English.
 - Use `.agents/skills/pr-review/SKILL.md` for PR reviews.
 - Use `.agents/skills/fix-pr/SKILL.md` for implementing review feedback.
 

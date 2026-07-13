@@ -38,9 +38,13 @@ impl BrokerSecretStore {
             return Err(StoreError::InvalidOwner);
         }
         let suffix = match slot {
-            SecretSlot::OrganizationApiKey => "organization-api-key",
-            SecretSlot::X25519PrivateKey => "x25519-private-key",
-            SecretSlot::Ed25519SecretKey => "ed25519-secret-key",
+            SecretSlot::IntegrityTrustStateV1 => "integrity-trust-state-v1",
+            SecretSlot::OrganizationApiKey => "organization-api-key-v3",
+            SecretSlot::X25519PrivateKey => "x25519-private-key-v3",
+            SecretSlot::Ed25519SecretKey => "ed25519-secret-key-v3",
+            SecretSlot::LegacyOrganizationApiKeyV2 => "organization-api-key",
+            SecretSlot::LegacyX25519PrivateKeyV2 => "x25519-private-key",
+            SecretSlot::LegacyEd25519SecretKeyV2 => "ed25519-secret-key",
         };
         Ok(self.root.join(format!("{owner_id}.{suffix}.dpapi")))
     }
@@ -197,6 +201,49 @@ fn valid_owner_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+#[cfg(test)]
+mod slot_path_tests {
+    use std::path::Path;
+
+    use palladin_platform::secure_store::SecretSlot;
+
+    use super::BrokerSecretStore;
+
+    #[test]
+    fn schema_v3_and_legacy_slots_use_distinct_dpapi_files() {
+        let store = BrokerSecretStore::new(Path::new(r"C:\ProgramData\Palladin\profiles\S-1-5-21"))
+            .expect("store");
+        let owner = "11111111111111111111111111111111";
+
+        let current = store
+            .path(owner, SecretSlot::OrganizationApiKey)
+            .expect("current path");
+        let legacy = store
+            .path(owner, SecretSlot::LegacyOrganizationApiKeyV2)
+            .expect("legacy path");
+        let trust = store
+            .path(owner, SecretSlot::IntegrityTrustStateV1)
+            .expect("trust path");
+        let current_name = format!("{owner}.organization-api-key-v3.dpapi");
+        let legacy_name = format!("{owner}.organization-api-key.dpapi");
+        let trust_name = format!("{owner}.integrity-trust-state-v1.dpapi");
+
+        assert_ne!(current, legacy);
+        assert_eq!(
+            current.file_name().and_then(|value| value.to_str()),
+            Some(current_name.as_str())
+        );
+        assert_eq!(
+            legacy.file_name().and_then(|value| value.to_str()),
+            Some(legacy_name.as_str())
+        );
+        assert_eq!(
+            trust.file_name().and_then(|value| value.to_str()),
+            Some(trust_name.as_str())
+        );
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {

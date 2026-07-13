@@ -699,10 +699,12 @@ fn security(
     runtime_storage_tier: &str,
 ) -> ExitCode {
     match command {
-        SecurityCommand::Upgrade => match service.verify_identity(profile) {
-            Ok(profile) => {
-                emit_output(render_security_upgrade(&profile.name, runtime_storage_tier))
-            }
+        SecurityCommand::Upgrade => match service.upgrade_security(profile) {
+            Ok(outcome) => emit_output(render_security_upgrade(
+                &outcome.profile.name,
+                runtime_storage_tier,
+                outcome.migrated,
+            )),
             Err(error) => fail(&error.to_string()),
         },
     }

@@ -6,31 +6,50 @@ const SERVICE: &str = "io.palladin.agent";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum SecretSlot {
+    /// Small, non-secret integrity root for the public profile store.
+    IntegrityTrustStateV1,
     OrganizationApiKey,
     X25519PrivateKey,
     Ed25519SecretKey,
+    /// Read only during the explicit pre-production schema v2 -> v3 migration.
+    LegacyOrganizationApiKeyV2,
+    /// Read only during the explicit pre-production schema v2 -> v3 migration.
+    LegacyX25519PrivateKeyV2,
+    /// Read only during the explicit pre-production schema v2 -> v3 migration.
+    LegacyEd25519SecretKeyV2,
 }
 
 impl SecretSlot {
     pub(crate) const fn account_suffix(self) -> &'static str {
         match self {
-            Self::OrganizationApiKey => "organization-api-key",
-            Self::X25519PrivateKey => "x25519-private-key",
-            Self::Ed25519SecretKey => "ed25519-secret-key",
+            Self::IntegrityTrustStateV1 => "integrity-trust-state-v1",
+            Self::OrganizationApiKey => "organization-api-key-v3",
+            Self::X25519PrivateKey => "x25519-private-key-v3",
+            Self::Ed25519SecretKey => "ed25519-secret-key-v3",
+            Self::LegacyOrganizationApiKeyV2 => "organization-api-key",
+            Self::LegacyX25519PrivateKeyV2 => "x25519-private-key",
+            Self::LegacyEd25519SecretKeyV2 => "ed25519-secret-key",
         }
     }
 
     #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
     pub(crate) const fn requires_user_presence(self) -> bool {
-        matches!(self, Self::OrganizationApiKey)
+        matches!(
+            self,
+            Self::OrganizationApiKey | Self::LegacyOrganizationApiKeyV2
+        )
     }
 
     #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
     pub(crate) const fn keychain_label(self) -> &'static str {
         match self {
+            Self::IntegrityTrustStateV1 => "Palladin profile integrity root",
             Self::OrganizationApiKey => "Palladin organization credential",
             Self::X25519PrivateKey => "Palladin Agent encryption identity",
             Self::Ed25519SecretKey => "Palladin Agent signing identity",
+            Self::LegacyOrganizationApiKeyV2 => "Legacy Palladin organization credential",
+            Self::LegacyX25519PrivateKeyV2 => "Legacy Palladin Agent encryption identity",
+            Self::LegacyEd25519SecretKeyV2 => "Legacy Palladin Agent signing identity",
         }
     }
 }
@@ -78,11 +97,29 @@ pub fn delete_identity<S: SecretStore>(store: &S, identity_id: &str) -> Result<(
     store.delete(identity_id, SecretSlot::Ed25519SecretKey)
 }
 
+pub fn delete_legacy_identity<S: SecretStore>(
+    store: &S,
+    identity_id: &str,
+) -> Result<(), StoreError> {
+    store.delete(identity_id, SecretSlot::LegacyX25519PrivateKeyV2)?;
+    store.delete(identity_id, SecretSlot::LegacyEd25519SecretKeyV2)
+}
+
 pub fn delete_organization_credential<S: SecretStore>(
     store: &S,
     organization_credential_id: &str,
 ) -> Result<(), StoreError> {
     store.delete(organization_credential_id, SecretSlot::OrganizationApiKey)
+}
+
+pub fn delete_legacy_organization_credential<S: SecretStore>(
+    store: &S,
+    organization_credential_id: &str,
+) -> Result<(), StoreError> {
+    store.delete(
+        organization_credential_id,
+        SecretSlot::LegacyOrganizationApiKeyV2,
+    )
 }
 
 #[must_use]
@@ -227,6 +264,38 @@ mod tests {
                 .get(organization, SecretSlot::OrganizationApiKey)
                 .expect("organization")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn schema_v3_slots_are_isolated_from_legacy_v2_and_integrity_metadata() {
+        assert_eq!(
+            SecretSlot::IntegrityTrustStateV1.account_suffix(),
+            "integrity-trust-state-v1"
+        );
+        assert_eq!(
+            SecretSlot::OrganizationApiKey.account_suffix(),
+            "organization-api-key-v3"
+        );
+        assert_eq!(
+            SecretSlot::X25519PrivateKey.account_suffix(),
+            "x25519-private-key-v3"
+        );
+        assert_eq!(
+            SecretSlot::Ed25519SecretKey.account_suffix(),
+            "ed25519-secret-key-v3"
+        );
+        assert_eq!(
+            SecretSlot::LegacyOrganizationApiKeyV2.account_suffix(),
+            "organization-api-key"
+        );
+        assert_eq!(
+            SecretSlot::LegacyX25519PrivateKeyV2.account_suffix(),
+            "x25519-private-key"
+        );
+        assert_eq!(
+            SecretSlot::LegacyEd25519SecretKeyV2.account_suffix(),
+            "ed25519-secret-key"
         );
     }
 }

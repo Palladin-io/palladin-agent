@@ -6,9 +6,15 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+local-development = ["palladin-core/local-development"]
+
 [dependencies]
 base64.workspace = true
 getrandom.workspace = true
+libc.workspace = true
+nix.workspace = true
 palladin-api = { path = "../palladin-api" }
 palladin-core = { path = "../palladin-core" }
 palladin-credential = { path = "../palladin-credential" }
@@ -16,6 +22,9 @@ palladin-crypto = { path = "../palladin-crypto" }
 palladin-exec = { path = "../palladin-exec" }
 palladin-platform = { path = "../palladin-platform" }
 secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 time.workspace = true
@@ -24,4 +33,4 @@ tokio-util.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+tempfile.workspace = true

@@ -8,6 +8,7 @@ repository.workspace = true
 
 [features]
 default = []
+local-development = ["palladin-core/local-development", "palladin-runtime/local-development"]
 macos-hardened = ["palladin-platform/macos-hardened"]
 
 [[bin]]
@@ -38,6 +39,7 @@ tokio-util.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+palladin-core = { path = "../palladin-core", features = ["local-development"] }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]

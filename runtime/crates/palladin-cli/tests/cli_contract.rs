@@ -317,12 +317,14 @@ fn frozen_command_outputs_cover_every_ported_public_surface() {
                 identity_id: "11111111111111111111111111111111".to_owned(),
                 created_at: "2026-01-01T00:00:00Z".to_owned(),
                 agent_type: None,
+                config_digest: None,
             },
             PublicAgentEntry {
                 name: "second".to_owned(),
                 identity_id: "22222222222222222222222222222222".to_owned(),
                 created_at: "2026-01-01T00:00:00Z".to_owned(),
                 agent_type: None,
+                config_digest: None,
             },
         ],
     };
@@ -398,7 +400,7 @@ fn frozen_command_outputs_cover_every_ported_public_surface() {
         ),
         (
             "security-upgrade",
-            render_security_upgrade("build", "OS secure storage"),
+            render_security_upgrade("build", "OS secure storage", false),
         ),
         ("search-human", render_search_human(&search)),
         ("report-stale", render_report_stale()),

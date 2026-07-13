@@ -182,7 +182,7 @@ fn secret_shaped_stdin_is_never_echoed_for_lf_crlf_or_no_final_newline() {
         assert!(!stdout.contains(synthetic));
         assert!(!stderr.contains(synthetic));
         assert!(
-            stderr.contains("API host must use HTTPS"),
+            stderr.contains("API host is not permitted by this build's pinned-origin policy"),
             "unexpected stderr: {stderr}"
         );
     }

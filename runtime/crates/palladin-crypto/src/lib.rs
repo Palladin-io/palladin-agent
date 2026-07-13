@@ -5,7 +5,7 @@ mod identity;
 mod signing;
 
 pub use envelope::{DecryptedCredential, EncryptedCredential, decrypt_credential};
-pub use identity::{Ed25519Identity, X25519Identity};
+pub use identity::{Ed25519Identity, X25519Identity, verify_profile_binding};
 pub use signing::{
     SignatureHeaders, body_sha256_base64, canonical_request, generate_nonce_base64, sign_request,
 };

@@ -7,8 +7,9 @@ The Rust runtime is the client-side security boundary for Agent identities. It d
 - The API key belongs to an organization. Multiple Agent profiles may reference the same organization credential.
 - Every Agent has a separate stable identity ID and separate X25519 and Ed25519 keys.
 - Profile names are aliases. Renaming an alias never renames or copies a secret slot.
-- Public files contain only the host, opaque credential references, Agent ID, and public keys.
+- Public files contain only the host, opaque credential references, Agent ID, public keys, signatures, and integrity commitments.
 - A cross-process transaction lock serializes recovery, keychain mutation, and public commits for all profiles.
+- The secure store holds a small registry trust root. Registry and config digests plus an Agent Ed25519 binding signature are verified before any private identity or organization credential is read.
 
 ## Secret input and storage
 
@@ -30,7 +31,9 @@ The organization API key remains organization-wide in both tiers. User presence 
 
 ## Removal
 
-`palladin purge --confirm` explicitly schedules recoverable removal of native profiles and their known secret slots. The public cleanup journal contains only opaque slot identifiers, and the operation only reports success after that journal and the public profile root are gone. It is never invoked by an npm lifecycle hook. Legacy TypeScript profiles require the separate pre-production migration workflow and are not silently purged.
+`palladin purge --confirm` explicitly schedules recoverable removal of native profiles and their known secret slots. A public integrity journal is inert by itself: its exact digest must be pinned in the secure trust state before it can authorize idempotent cleanup. The operation only reports success after the authenticated transition, trust root, journal, and public profile root are gone. It is never invoked by an npm lifecycle hook.
+
+Pre-production schema v2 state is migrated only by `palladin security upgrade`. The migration derives and verifies public keys from legacy private identities, accepts only the origin policy compiled into the binary, writes signed schema v3 configs, rotates every secret into a versioned v3 slot behind an authenticated recovery plan, commits the transition, and then removes legacy slots. Release builds accept only `https://api.palladin.io`; literal loopback HTTP requires the explicit `local-development` source-build feature. Restoring v2 public files after the upgrade cannot recover the deleted legacy slots.
 
 ## Credential execution
 

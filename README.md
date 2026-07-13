@@ -13,7 +13,9 @@ The native runtime keeps these concepts separate:
 
 - an API key belongs to the organization and may be shared by multiple Agents;
 - every Agent has its own `agentId`, X25519 private key, and Ed25519 private key;
-- public profile files contain only the API host, opaque secret references, Agent ID, and public keys.
+- public profile files contain only the API host, opaque secret references, Agent ID, public keys, and integrity commitments/signatures.
+
+A small trust state in OS secure storage commits the complete public registry. Each profile config is committed by the registry and signed by that Agent's Ed25519 identity. The runtime verifies this chain before reading any Agent private key or organization API key. Public recovery metadata cannot authorize a secret deletion unless its digest is pinned by an in-progress secure-store transition.
 
 The macOS Hardened build uses a provisioned Data Protection Keychain access group. Items are non-synchronizable and `WhenUnlockedThisDeviceOnly`; access to the shared organization credential requires user presence. Homebrew Node, an unsigned clone, and a differently signed fork do not have the entitlement. An unsigned development binary fails closed and does not fall back to Login Keychain, a file, or an environment variable.
 
@@ -49,10 +51,17 @@ Create a local Agent identity:
 palladin init
 ```
 
-Connect it using the organization API key from a masked prompt:
+Release builds are pinned to the production API origin. Connect using the organization API key from a masked prompt:
 
 ```bash
-palladin connect --host http://localhost:5000
+palladin connect --host https://api.palladin.io
+```
+
+Literal HTTP loopback origins are available only in an explicitly compiled source-development build:
+
+```bash
+cd runtime
+cargo run -p palladin-cli --features local-development -- connect --host http://127.0.0.1:5000
 ```
 
 Automation must pass the key through protected standard input:
@@ -80,6 +89,7 @@ API keys in argv or environment variables are rejected. Connecting a second prof
 | `palladin exec <vaultId> <entryId> -- <program>` | Run an allowlisted program with delivered values in a sanitized child environment. |
 | `palladin inject ...` | Fail closed until an authenticated browser boundary exists. |
 | `palladin mcp serve` | Serve Palladin tools over MCP stdio. |
+| `palladin security upgrade` | Explicitly migrate pre-production schema v2 state and secret slots to integrity-bound schema v3. |
 | `palladin purge --confirm` | Explicitly remove native profiles and their known secret slots. |
 
 ## MCP configuration
@@ -107,7 +117,7 @@ The Agent must be active before credential tools work.
 
 ## Security notes
 
-- HTTPS is mandatory except for loopback development hosts.
+- The production origin is pinned to exactly `https://api.palladin.io`; development HTTP accepts only literal `127.0.0.1` or `[::1]` with an explicit port.
 - Native secret storage has no file or environment fallback.
 - The organization API key and private keys are never child-process environment variables.
 - `exec` uses no implicit shell, rebuilds the child environment from an allowlist, and supplies null stdin.
@@ -117,7 +127,7 @@ The Agent must be active before credential tools work.
 
 ## Public local state
 
-Native public state lives under `~/.palladin` and contains only profile aliases, opaque identity/organization references, host, Agent ID, and public keys. Secret values remain in the selected OS secure store. `PALLADIN_HOME` is rejected by identity-opening commands.
+Native public state lives under `~/.palladin` and contains only profile aliases, opaque identity/organization references, host, Agent ID, public keys, signatures, and SHA-256 commitments. Secret values and the small registry trust root remain in the selected OS secure store. `PALLADIN_HOME` is rejected by identity-opening commands.
 
 ## Development
 

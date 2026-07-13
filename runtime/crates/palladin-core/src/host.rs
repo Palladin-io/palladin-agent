@@ -1,5 +1,7 @@
 use thiserror::Error;
-use url::Url;
+use url::{Host, Url};
+
+const PRODUCTION_ORIGIN: &str = "https://api.palladin.io";
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct ApiHost(Url);
@@ -7,14 +9,31 @@ pub struct ApiHost(Url);
 impl ApiHost {
     pub fn parse(value: &str) -> Result<Self, ApiHostError> {
         let url = Url::parse(value).map_err(|_| ApiHostError::Invalid)?;
-        let local_http = url.scheme() == "http" && url.host_str().is_some_and(is_local_host);
-        if !(url.scheme() == "https" || local_http)
-            || !url.username().is_empty()
+        let has_root_path_only = url.path() == "/";
+        let has_url_extras = !url.username().is_empty()
             || url.password().is_some()
             || url.query().is_some()
-            || url.fragment().is_some()
-            || url.host_str().is_none()
-        {
+            || url.fragment().is_some();
+        if has_url_extras || !has_root_path_only {
+            return Err(ApiHostError::Invalid);
+        }
+
+        let production = value == PRODUCTION_ORIGIN
+            && url.scheme() == "https"
+            && url.host_str() == Some("api.palladin.io")
+            && url.port().is_none();
+        let literal_loopback = matches!(
+            url.host(),
+            Some(Host::Ipv4(address)) if address == std::net::Ipv4Addr::LOCALHOST
+        ) || matches!(
+            url.host(),
+            Some(Host::Ipv6(address)) if address == std::net::Ipv6Addr::LOCALHOST
+        );
+        let local_http = cfg!(feature = "local-development")
+            && url.scheme() == "http"
+            && url.port().is_some_and(|port| port != 0)
+            && literal_loopback;
+        if !production && !local_http {
             return Err(ApiHostError::Invalid);
         }
         Ok(Self(url))
@@ -57,18 +76,10 @@ impl std::fmt::Debug for ApiHost {
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum ApiHostError {
-    #[error("API host must use HTTPS, except for literal loopback development hosts")]
+    #[error("API host is not permitted by this build's pinned-origin policy")]
     Invalid,
     #[error("API endpoint path is invalid")]
     InvalidEndpoint,
-}
-
-fn is_local_host(hostname: &str) -> bool {
-    let hostname = hostname.to_ascii_lowercase();
-    hostname == "localhost"
-        || hostname.ends_with(".localhost")
-        || hostname == "127.0.0.1"
-        || matches!(hostname.as_str(), "::1" | "[::1]")
 }
 
 #[cfg(test)]
@@ -76,12 +87,28 @@ mod tests {
     use super::{ApiHost, ApiHostError};
 
     #[test]
-    fn accepts_https_and_loopback_http() {
+    fn accepts_pinned_production() {
         assert!(ApiHost::parse("https://api.palladin.io").is_ok());
-        assert!(ApiHost::parse("http://localhost:5000").is_ok());
-        assert!(ApiHost::parse("http://worker.localhost:5000/base").is_ok());
+    }
+
+    #[cfg(feature = "local-development")]
+    #[test]
+    fn local_development_build_accepts_literal_loopback_http() {
         assert!(ApiHost::parse("http://127.0.0.1:5000").is_ok());
         assert!(ApiHost::parse("http://[::1]:5000").is_ok());
+    }
+
+    #[cfg(not(feature = "local-development"))]
+    #[test]
+    fn production_build_rejects_loopback_http() {
+        assert_eq!(
+            ApiHost::parse("http://127.0.0.1:5000"),
+            Err(ApiHostError::Invalid)
+        );
+        assert_eq!(
+            ApiHost::parse("http://[::1]:5000"),
+            Err(ApiHostError::Invalid)
+        );
     }
 
     #[test]
@@ -98,14 +125,26 @@ mod tests {
             ApiHost::parse("https://api.palladin.io?key=secret"),
             Err(ApiHostError::Invalid)
         );
+        for untrusted in [
+            "https://api.palladin.io/",
+            "https://api.palladin.io:443",
+            "https://api.palladin.io/base",
+            "https://attacker.test",
+            "http://localhost:5000",
+            "http://worker.localhost:5000",
+            "http://127.0.0.1",
+            "http://192.168.1.5:5000",
+        ] {
+            assert_eq!(ApiHost::parse(untrusted), Err(ApiHostError::Invalid));
+        }
     }
 
     #[test]
     fn endpoint_cannot_escape_the_approved_origin() {
-        let host = ApiHost::parse("https://api.palladin.io/base").expect("host");
+        let host = ApiHost::parse("https://api.palladin.io").expect("host");
         assert_eq!(
             host.endpoint("/api/agent/me").expect("endpoint").as_str(),
-            "https://api.palladin.io/base/api/agent/me"
+            "https://api.palladin.io/api/agent/me"
         );
         assert_eq!(
             host.endpoint("//attacker.test/steal"),

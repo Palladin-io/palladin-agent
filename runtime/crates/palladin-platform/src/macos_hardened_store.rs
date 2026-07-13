@@ -155,6 +155,8 @@ mod tests {
     #[test]
     fn organization_credential_gates_use_with_user_presence() {
         assert!(SecretSlot::OrganizationApiKey.requires_user_presence());
+        assert!(SecretSlot::LegacyOrganizationApiKeyV2.requires_user_presence());
+        assert!(!SecretSlot::IntegrityTrustStateV1.requires_user_presence());
         assert!(!SecretSlot::X25519PrivateKey.requires_user_presence());
         assert!(!SecretSlot::Ed25519SecretKey.requires_user_presence());
         assert_eq!(

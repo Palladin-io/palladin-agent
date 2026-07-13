@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+mod integrity;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_api::{
@@ -9,23 +11,28 @@ use palladin_api::{
 };
 use palladin_core::host::ApiHost;
 use palladin_core::profiles::{
-    CleanupJournal, CleanupOperation, ProfileError, ProfileName, ProfileRepository, add_profile,
-    delete_profile, rename_profile, set_default, set_profile_type,
+    ProfileError, ProfileName, ProfileRepository, add_profile, delete_profile, rename_profile,
+    set_default, set_profile_type,
 };
 use palladin_core::public_store::{
     PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicProfileConfig, PublicRegistry,
+    profile_binding_bytes, profile_config_digest, registry_digest,
 };
 use palladin_core::secret::OrganizationApiKey;
 use palladin_credential::wait::{
     HeartbeatInfo, WaitError, WaitHints, WaitOptions, await_grant, resolve_wait_policy,
 };
-use palladin_crypto::{DecryptedCredential, Ed25519Identity, X25519Identity, decrypt_credential};
+use palladin_crypto::{
+    DecryptedCredential, Ed25519Identity, X25519Identity, decrypt_credential,
+    verify_profile_binding,
+};
 use palladin_exec::{
     EnvironmentError, SecretEnvironment, resolve_interpreter, run_command, run_script,
     validate_command, validate_reference_name,
 };
 use palladin_platform::secure_store::{
-    SecretSlot, SecretStore, StoreError, delete_identity, delete_organization_credential,
+    SecretSlot, SecretStore, StoreError, delete_identity, delete_legacy_identity,
+    delete_legacy_organization_credential, delete_organization_credential,
 };
 use secrecy::ExposeSecret;
 use subtle::ConstantTimeEq;
@@ -33,6 +40,12 @@ use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
+
+use integrity::{
+    ConfigWrite, IntegrityJournal, SecretAllocation, SecretCopy, SecretDeletion, TRUST_OWNER_ID,
+    TrustState, decode_trust_state, encode_trust_state, journal_path, load_journal, remove_journal,
+    save_journal,
+};
 
 use palladin_credential::fields::{FieldSelector, resolve_field};
 use palladin_credential::secret::{ScriptPayload, parse_secret};
@@ -42,6 +55,13 @@ pub use palladin_exec::{ExecError, ExecResult, OperatorOutput};
 pub struct RuntimeService<S> {
     repository: ProfileRepository,
     secrets: S,
+}
+
+struct VerifiedState {
+    generation: u64,
+    registry_digest: String,
+    registry: PublicRegistry,
+    configs: BTreeMap<String, PublicProfileConfig>,
 }
 
 impl<S: SecretStore> RuntimeService<S> {
@@ -58,10 +78,25 @@ impl<S: SecretStore> RuntimeService<S> {
         &self.repository
     }
 
+    #[must_use]
+    pub fn integrity_recovery_pending(&self) -> bool {
+        journal_path(self.repository.root()).exists()
+            || self.read_trust_state().is_ok_and(|state| {
+                matches!(
+                    state,
+                    Some(
+                        TrustState::Allocating { .. }
+                            | TrustState::Transition { .. }
+                            | TrustState::PurgeCommitted { .. }
+                    )
+                )
+            })
+    }
+
     pub fn registry(&self) -> Result<PublicRegistry, RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
-        Ok(self.repository.load_registry()?)
+        Ok(self.verified_state_locked()?.registry)
     }
 
     pub fn resolve_profile(
@@ -77,7 +112,7 @@ impl<S: SecretStore> RuntimeService<S> {
         &self,
         explicit_name: Option<&str>,
     ) -> Result<PublicAgentEntry, RuntimeError> {
-        let registry = self.repository.load_registry()?;
+        let registry = self.verified_state_locked()?.registry;
         let name = explicit_name.unwrap_or(&registry.default);
         ProfileName::parse(name)?;
         registry
@@ -103,21 +138,29 @@ impl<S: SecretStore> RuntimeService<S> {
         agent_type: Option<String>,
     ) -> Result<CreatedProfile, RuntimeError> {
         let name = ProfileName::parse(name)?;
-        let registry = self.repository.load_registry()?;
+        let state = self.verified_state_locked()?;
         let identity_id = generate_opaque_id()?;
         let encryption = X25519Identity::generate()?;
         let signing = Ed25519Identity::generate()?;
 
-        self.schedule_cleanup(CleanupOperation::CreateIdentity {
-            identity_id: identity_id.clone(),
-        })?;
+        self.begin_allocation(
+            &state,
+            vec![SecretAllocation::Identity {
+                identity_id: identity_id.clone(),
+            }],
+        )?;
 
         if let Err(error) = self.secrets.set(
             &identity_id,
             SecretSlot::X25519PrivateKey,
             encryption.private_key_for_secure_storage(),
         ) {
-            self.recover_or_cleanup_failed_locked()?;
+            self.rollback_allocation(
+                &state,
+                &[SecretAllocation::Identity {
+                    identity_id: identity_id.clone(),
+                }],
+            )?;
             return Err(error.into());
         }
         let signing_secret = signing.libsodium_secret_for_secure_storage();
@@ -126,22 +169,23 @@ impl<S: SecretStore> RuntimeService<S> {
             SecretSlot::Ed25519SecretKey,
             signing_secret.expose_secret(),
         ) {
-            self.recover_or_cleanup_failed_locked()?;
+            self.rollback_allocation(
+                &state,
+                &[SecretAllocation::Identity {
+                    identity_id: identity_id.clone(),
+                }],
+            )?;
             return Err(error.into());
         }
 
         let updated = add_profile(
-            &registry,
+            &state.registry,
             &name,
             identity_id.clone(),
             now_rfc3339()?,
             agent_type,
         )?;
-        if let Err(error) = self.repository.save_registry(&updated) {
-            self.recover_or_cleanup_failed_locked()?;
-            return Err(error.into());
-        }
-        self.recover_pending_operations_locked()?;
+        self.commit_transition(&state, updated, Vec::new(), Vec::new(), Vec::new(), false)?;
 
         Ok(CreatedProfile {
             name: name.as_str().to_owned(),
@@ -156,9 +200,9 @@ impl<S: SecretStore> RuntimeService<S> {
         self.recover_pending_operations_locked()?;
         let old_name = ProfileName::parse(old_name)?;
         let new_name = ProfileName::parse(new_name)?;
-        let registry = self.repository.load_registry()?;
-        let updated = rename_profile(&registry, &old_name, &new_name)?;
-        self.repository.save_registry(&updated)?;
+        let state = self.verified_state_locked()?;
+        let updated = rename_profile(&state.registry, &old_name, &new_name)?;
+        self.commit_transition(&state, updated, Vec::new(), Vec::new(), Vec::new(), false)?;
         Ok(())
     }
 
@@ -166,9 +210,9 @@ impl<S: SecretStore> RuntimeService<S> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
         let name = ProfileName::parse(name)?;
-        let registry = self.repository.load_registry()?;
-        self.repository
-            .save_registry(&set_default(&registry, &name)?)?;
+        let state = self.verified_state_locked()?;
+        let updated = set_default(&state.registry, &name)?;
+        self.commit_transition(&state, updated, Vec::new(), Vec::new(), Vec::new(), false)?;
         Ok(())
     }
 
@@ -176,29 +220,42 @@ impl<S: SecretStore> RuntimeService<S> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
         let name = ProfileName::parse(name)?;
-        let registry = self.repository.load_registry()?;
-        let (updated, deleted) = delete_profile(&registry, &name)?;
-        let organization_ids = self
-            .repository
-            .config_exists(&deleted.identity_id)
-            .then(|| self.repository.load_config(&deleted.identity_id))
-            .transpose()?
+        let state = self.verified_state_locked()?;
+        let (updated, deleted) = delete_profile(&state.registry, &name)?;
+        let organization_ids = state
+            .configs
+            .get(&deleted.identity_id)
+            .cloned()
             .map(|config| {
                 let mut ids = config.retired_organization_credential_ids;
                 ids.push(config.organization_credential_id);
                 ids
             })
             .unwrap_or_default();
-
-        self.schedule_cleanup(CleanupOperation::DeleteProfile {
+        let remaining_configs = state
+            .configs
+            .iter()
+            .filter(|(identity, _)| *identity != &deleted.identity_id)
+            .map(|(identity, config)| (identity.clone(), config.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut deletions = vec![SecretDeletion::Identity {
             identity_id: deleted.identity_id.clone(),
-            organization_credential_ids: organization_ids,
-        })?;
-        if let Err(error) = self.repository.save_registry(&updated) {
-            self.recover_or_cleanup_failed_locked()?;
-            return Err(error.into());
+        }];
+        for organization_id in organization_ids {
+            if !organization_referenced_in(&remaining_configs, &organization_id) {
+                deletions.push(SecretDeletion::OrganizationCredential {
+                    organization_credential_id: organization_id,
+                });
+            }
         }
-        self.recover_pending_operations_locked()?;
+        self.commit_transition(
+            &state,
+            updated,
+            Vec::new(),
+            vec![deleted.identity_id],
+            deletions,
+            false,
+        )?;
         Ok(())
     }
 
@@ -208,22 +265,34 @@ impl<S: SecretStore> RuntimeService<S> {
         if self.repository.legacy_artifacts_present() {
             return Err(RuntimeError::LegacyMigrationRequired);
         }
-        let registry = self.repository.load_registry()?;
+        let state = self.verified_state_locked()?;
         let mut organizations = BTreeSet::new();
         let mut identities = Vec::new();
-        for agent in &registry.agents {
+        for agent in &state.registry.agents {
             identities.push(agent.identity_id.clone());
-            if self.repository.config_exists(&agent.identity_id) {
-                let config = self.repository.load_config(&agent.identity_id)?;
-                organizations.insert(config.organization_credential_id);
-                organizations.extend(config.retired_organization_credential_ids);
+            if let Some(config) = state.configs.get(&agent.identity_id) {
+                organizations.insert(config.organization_credential_id.clone());
+                organizations.extend(config.retired_organization_credential_ids.iter().cloned());
             }
         }
-        self.schedule_cleanup(CleanupOperation::Purge {
-            identity_ids: identities,
-            organization_credential_ids: organizations.into_iter().collect(),
-        })?;
-        self.recover_pending_operations_locked()?;
+        let mut deletions = identities
+            .iter()
+            .cloned()
+            .map(|identity_id| SecretDeletion::Identity { identity_id })
+            .collect::<Vec<_>>();
+        deletions.extend(organizations.into_iter().map(|organization_credential_id| {
+            SecretDeletion::OrganizationCredential {
+                organization_credential_id,
+            }
+        }));
+        self.commit_transition(
+            &state,
+            PublicRegistry::default(),
+            Vec::new(),
+            identities,
+            deletions,
+            true,
+        )?;
         Ok(())
     }
 
@@ -254,20 +323,18 @@ impl<S: SecretStore> RuntimeService<S> {
             }
             Err(error) => return Err(error),
         };
-        let mut registry = self.repository.load_registry()?;
+        let mut state = self.verified_state_locked()?;
         if let Some(agent_type) = agent_type {
             let name = ProfileName::parse(&agent.name)?;
-            registry = set_profile_type(&registry, &name, Some(agent_type))?;
-            self.repository.save_registry(&registry)?;
+            let updated = set_profile_type(&state.registry, &name, Some(agent_type))?;
+            self.commit_transition(&state, updated, Vec::new(), Vec::new(), Vec::new(), false)?;
+            state = self.verified_state_locked()?;
         }
-        let existing_config = self
-            .repository
-            .config_exists(&agent.identity_id)
-            .then(|| self.repository.load_config(&agent.identity_id))
-            .transpose()?;
-        let (encryption, signing) = self.load_identity(&agent.identity_id)?;
+        let existing_config = state.configs.get(&agent.identity_id).cloned();
+        let (encryption, signing) =
+            self.load_identity_verified(&agent.identity_id, existing_config.as_ref())?;
         let (organization_credential_id, created_organization) =
-            self.find_or_create_organization_credential(&registry, &organization_api_key)?;
+            self.find_or_create_organization_credential(&state, &organization_api_key)?;
         let host_string = host.as_url().as_str().trim_end_matches('/').to_owned();
         let signing_public_key_bytes = *signing.public_key();
         let signing_public_key = STANDARD.encode(signing_public_key_bytes);
@@ -289,7 +356,7 @@ impl<S: SecretStore> RuntimeService<S> {
             Ok(client) => client,
             Err(error) => {
                 self.cleanup_unused_new_organization(
-                    &registry,
+                    &state,
                     &organization_credential_id,
                     created_organization,
                 )?;
@@ -307,7 +374,7 @@ impl<S: SecretStore> RuntimeService<S> {
             Ok(registration) => registration,
             Err(error) => {
                 self.cleanup_unused_new_organization(
-                    &registry,
+                    &state,
                     &organization_credential_id,
                     created_organization,
                 )?;
@@ -321,7 +388,7 @@ impl<S: SecretStore> RuntimeService<S> {
             | AgentRegistrationResult::Deactivated { agent_id } => Some(agent_id.clone()),
             AgentRegistrationResult::InvalidKey => {
                 self.cleanup_unused_new_organization(
-                    &registry,
+                    &state,
                     &organization_credential_id,
                     created_organization,
                 )?;
@@ -335,8 +402,11 @@ impl<S: SecretStore> RuntimeService<S> {
 
         let should_save = agent_id.is_some() || existing_config.is_none();
         if should_save {
-            let config = PublicProfileConfig {
+            let (_, signing) =
+                self.load_identity_verified(&agent.identity_id, existing_config.as_ref())?;
+            let mut config = PublicProfileConfig {
                 schema_version: PUBLIC_SCHEMA_VERSION,
+                identity_id: agent.identity_id.clone(),
                 host: host_string,
                 organization_credential_id: organization_credential_id.clone(),
                 retired_organization_credential_ids: existing_config
@@ -355,21 +425,36 @@ impl<S: SecretStore> RuntimeService<S> {
                 agent_id,
                 encryption_public_key: Some(encryption_public_key),
                 signing_public_key: Some(signing_public_key),
+                binding_signature: STANDARD.encode([0_u8; 64]),
             };
-            if let Err(error) = self.repository.save_config(&agent.identity_id, &config) {
-                self.cleanup_unused_new_organization(
-                    &registry,
-                    &organization_credential_id,
-                    created_organization,
-                )?;
-                return Err(error.into());
-            }
-            self.recover_pending_operations_locked()?;
-            let mut config = config;
-            self.cleanup_retired_organizations(&agent.identity_id, &mut config, &registry)?;
+            let binding =
+                profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+            config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+            let digest =
+                profile_config_digest(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+            let mut registry = state.registry.clone();
+            let entry = registry
+                .agents
+                .iter_mut()
+                .find(|entry| entry.identity_id == agent.identity_id)
+                .ok_or(RuntimeError::IntegrityViolation)?;
+            entry.config_digest = Some(digest);
+            self.commit_transition(
+                &state,
+                registry,
+                vec![ConfigWrite {
+                    identity_id: agent.identity_id.clone(),
+                    config,
+                }],
+                Vec::new(),
+                Vec::new(),
+                false,
+            )?;
+            let refreshed = self.verified_state_locked()?;
+            self.cleanup_retired_organizations(&agent.identity_id, &refreshed)?;
         } else {
             self.cleanup_unused_new_organization(
-                &registry,
+                &state,
                 &organization_credential_id,
                 created_organization,
             )?;
@@ -388,11 +473,17 @@ impl<S: SecretStore> RuntimeService<S> {
     ) -> Result<StatusOutcome, RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
-        let agent = self.resolve_profile_locked(profile_name)?;
-        let mut config = self.repository.load_config(&agent.identity_id)?;
-        let registry = self.repository.load_registry()?;
-        self.cleanup_retired_organizations(&agent.identity_id, &mut config, &registry)?;
-        let (encryption, signing) = self.load_identity(&agent.identity_id)?;
+        let mut state = self.verified_state_locked()?;
+        let agent = resolve_profile_in(&state.registry, profile_name)?;
+        self.cleanup_retired_organizations(&agent.identity_id, &state)?;
+        state = self.verified_state_locked()?;
+        let mut config = state
+            .configs
+            .get(&agent.identity_id)
+            .cloned()
+            .ok_or(RuntimeError::InvalidPublicConfig)?;
+        let (encryption, signing) =
+            self.load_identity_verified(&agent.identity_id, Some(&config))?;
         let signing_public_key = *signing.public_key();
         let organization_api_key =
             self.load_organization_api_key(&config.organization_credential_id)?;
@@ -419,10 +510,33 @@ impl<S: SecretStore> RuntimeService<S> {
         | AgentRegistrationResult::Active { agent_id, .. }
         | AgentRegistrationResult::Deactivated { agent_id } = &registration
         {
+            let (_, signing) = self.load_identity_verified(&agent.identity_id, Some(&config))?;
             config.agent_id = Some(agent_id.clone());
             config.encryption_public_key = Some(STANDARD.encode(encryption.public_key()));
             config.signing_public_key = Some(STANDARD.encode(signing_public_key));
-            self.repository.save_config(&agent.identity_id, &config)?;
+            let binding =
+                profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+            config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+            let digest =
+                profile_config_digest(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+            let mut registry = state.registry.clone();
+            registry
+                .agents
+                .iter_mut()
+                .find(|entry| entry.identity_id == agent.identity_id)
+                .ok_or(RuntimeError::IntegrityViolation)?
+                .config_digest = Some(digest);
+            self.commit_transition(
+                &state,
+                registry,
+                vec![ConfigWrite {
+                    identity_id: agent.identity_id.clone(),
+                    config: config.clone(),
+                }],
+                Vec::new(),
+                Vec::new(),
+                false,
+            )?;
         }
         Ok(StatusOutcome {
             profile: agent,
@@ -438,11 +552,17 @@ impl<S: SecretStore> RuntimeService<S> {
     ) -> Result<RuntimeSession, RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
-        let profile = self.resolve_profile_locked(profile_name)?;
-        let mut config = self.repository.load_config(&profile.identity_id)?;
-        let registry = self.repository.load_registry()?;
-        self.cleanup_retired_organizations(&profile.identity_id, &mut config, &registry)?;
-        let (encryption, signing) = self.load_identity(&profile.identity_id)?;
+        let mut state = self.verified_state_locked()?;
+        let profile = resolve_profile_in(&state.registry, profile_name)?;
+        self.cleanup_retired_organizations(&profile.identity_id, &state)?;
+        state = self.verified_state_locked()?;
+        let config = state
+            .configs
+            .get(&profile.identity_id)
+            .cloned()
+            .ok_or(RuntimeError::InvalidPublicConfig)?;
+        let (encryption, signing) =
+            self.load_identity_verified(&profile.identity_id, Some(&config))?;
         let organization_api_key =
             self.load_organization_api_key(&config.organization_credential_id)?;
         let host = ApiHost::parse(&config.host).map_err(|_| RuntimeError::InvalidPublicConfig)?;
@@ -469,14 +589,175 @@ impl<S: SecretStore> RuntimeService<S> {
     ) -> Result<PublicAgentEntry, RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
-        let profile = self.resolve_profile_locked(profile_name)?;
-        let _identity = self.load_identity(&profile.identity_id)?;
+        let state = self.verified_state_locked()?;
+        let profile = resolve_profile_in(&state.registry, profile_name)?;
+        let _identity = self.load_identity_verified(
+            &profile.identity_id,
+            state.configs.get(&profile.identity_id),
+        )?;
         Ok(profile)
     }
 
-    fn load_identity(
+    pub fn upgrade_security(
+        &self,
+        profile_name: Option<&str>,
+    ) -> Result<SecurityUpgradeOutcome, RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        if self.read_trust_state()?.is_some() {
+            self.recover_pending_operations_locked()?;
+            let state = self.verified_state_locked()?;
+            let profile = resolve_profile_in(&state.registry, profile_name)?;
+            self.load_identity_verified(
+                &profile.identity_id,
+                state.configs.get(&profile.identity_id),
+            )?;
+            return Ok(SecurityUpgradeOutcome {
+                profile,
+                migrated: false,
+            });
+        }
+
+        let legacy = self.repository.load_legacy_registry_v2()?;
+        if self.repository.cleanup_pending() {
+            return Err(RuntimeError::LegacyCleanupPending);
+        }
+        let mut legacy_configs = BTreeMap::new();
+        for entry in &legacy.agents {
+            if self
+                .repository
+                .config_exists_strict(&entry.identity_id)
+                .map_err(|_| RuntimeError::IntegrityViolation)?
+            {
+                let config = self.repository.load_legacy_config_v2(&entry.identity_id)?;
+                ApiHost::parse(&config.host).map_err(|_| RuntimeError::InvalidPublicConfig)?;
+                legacy_configs.insert(entry.identity_id.clone(), config);
+            }
+        }
+        let mut target = PublicRegistry {
+            schema_version: PUBLIC_SCHEMA_VERSION,
+            default: legacy.default,
+            agents: Vec::with_capacity(legacy.agents.len()),
+        };
+        let mut config_writes = Vec::new();
+        let mut copies = Vec::new();
+        let mut deletions = Vec::new();
+        let mut legacy_organizations = BTreeSet::new();
+
+        for legacy_entry in legacy.agents {
+            let identity_id = legacy_entry.identity_id;
+            let encryption_secret = self
+                .secrets
+                .get(&identity_id, SecretSlot::LegacyX25519PrivateKeyV2)?
+                .ok_or(RuntimeError::MissingIdentity)?;
+            let signing_secret = self
+                .secrets
+                .get(&identity_id, SecretSlot::LegacyEd25519SecretKeyV2)?
+                .ok_or(RuntimeError::MissingIdentity)?;
+            let encryption =
+                X25519Identity::from_private_bytes(encryption_secret.expose_secret().to_vec())?;
+            let signing =
+                Ed25519Identity::from_libsodium_secret(signing_secret.expose_secret().to_vec())?;
+            copies.push(SecretCopy::LegacyIdentity {
+                identity_id: identity_id.clone(),
+            });
+
+            let mut entry = PublicAgentEntry {
+                name: legacy_entry.name,
+                identity_id: identity_id.clone(),
+                created_at: legacy_entry.created_at,
+                agent_type: legacy_entry.agent_type,
+                config_digest: None,
+            };
+            if let Some(legacy_config) = legacy_configs.remove(&identity_id) {
+                let encryption_public_key = STANDARD.encode(encryption.public_key());
+                let signing_public_key = STANDARD.encode(signing.public_key());
+                if legacy_config
+                    .encryption_public_key
+                    .as_deref()
+                    .is_some_and(|value| value != encryption_public_key)
+                    || legacy_config
+                        .signing_public_key
+                        .as_deref()
+                        .is_some_and(|value| value != signing_public_key)
+                {
+                    return Err(RuntimeError::IntegrityViolation);
+                }
+                let mut organization_ids =
+                    legacy_config.retired_organization_credential_ids.clone();
+                organization_ids.push(legacy_config.organization_credential_id.clone());
+                for organization_id in organization_ids {
+                    if legacy_organizations.insert(organization_id.clone()) {
+                        self.secrets
+                            .get(&organization_id, SecretSlot::LegacyOrganizationApiKeyV2)?
+                            .ok_or(RuntimeError::MissingOrganizationCredential)?;
+                        copies.push(SecretCopy::LegacyOrganizationCredential {
+                            organization_credential_id: organization_id,
+                        });
+                    }
+                }
+                let mut config = PublicProfileConfig {
+                    schema_version: PUBLIC_SCHEMA_VERSION,
+                    identity_id: identity_id.clone(),
+                    host: legacy_config.host,
+                    organization_credential_id: legacy_config.organization_credential_id,
+                    retired_organization_credential_ids: legacy_config
+                        .retired_organization_credential_ids,
+                    agent_id: legacy_config.agent_id,
+                    encryption_public_key: Some(encryption_public_key),
+                    signing_public_key: Some(signing_public_key),
+                    binding_signature: STANDARD.encode([0_u8; 64]),
+                };
+                let binding =
+                    profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+                config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+                entry.config_digest = Some(
+                    profile_config_digest(&config).map_err(|_| RuntimeError::IntegrityViolation)?,
+                );
+                config_writes.push(ConfigWrite {
+                    identity_id: identity_id.clone(),
+                    config,
+                });
+            }
+            target.agents.push(entry);
+            deletions.push(SecretDeletion::LegacyIdentity { identity_id });
+        }
+        deletions.extend(
+            legacy_organizations
+                .into_iter()
+                .map(
+                    |organization_credential_id| SecretDeletion::LegacyOrganizationCredential {
+                        organization_credential_id,
+                    },
+                ),
+        );
+
+        let synthetic_current = VerifiedState {
+            generation: 0,
+            registry_digest: "0".repeat(64),
+            registry: PublicRegistry::default(),
+            configs: BTreeMap::new(),
+        };
+        self.commit_transition_with_copies(
+            &synthetic_current,
+            target,
+            config_writes,
+            Vec::new(),
+            copies,
+            deletions,
+            false,
+        )?;
+        let state = self.verified_state_locked()?;
+        let profile = resolve_profile_in(&state.registry, profile_name)?;
+        Ok(SecurityUpgradeOutcome {
+            profile,
+            migrated: true,
+        })
+    }
+
+    fn load_identity_verified(
         &self,
         identity_id: &str,
+        expected: Option<&PublicProfileConfig>,
     ) -> Result<(X25519Identity, Ed25519Identity), RuntimeError> {
         let encryption = self
             .secrets
@@ -486,10 +767,18 @@ impl<S: SecretStore> RuntimeService<S> {
             .secrets
             .get(identity_id, SecretSlot::Ed25519SecretKey)?
             .ok_or(RuntimeError::MissingIdentity)?;
-        Ok((
-            X25519Identity::from_private_bytes(encryption.expose_secret().to_vec())?,
-            Ed25519Identity::from_libsodium_secret(signing.expose_secret().to_vec())?,
-        ))
+        let encryption = X25519Identity::from_private_bytes(encryption.expose_secret().to_vec())?;
+        let signing = Ed25519Identity::from_libsodium_secret(signing.expose_secret().to_vec())?;
+        if let Some(expected) = expected {
+            let encryption_public = STANDARD.encode(encryption.public_key());
+            let signing_public = STANDARD.encode(signing.public_key());
+            if expected.encryption_public_key.as_deref() != Some(encryption_public.as_str())
+                || expected.signing_public_key.as_deref() != Some(signing_public.as_str())
+            {
+                return Err(RuntimeError::IntegrityViolation);
+            }
+        }
+        Ok((encryption, signing))
     }
 
     fn load_organization_api_key(
@@ -509,18 +798,14 @@ impl<S: SecretStore> RuntimeService<S> {
 
     fn find_or_create_organization_credential(
         &self,
-        registry: &PublicRegistry,
+        state: &VerifiedState,
         candidate: &OrganizationApiKey,
     ) -> Result<(String, bool), RuntimeError> {
         let candidate = candidate.expose_for_authorized_request().as_bytes();
         let mut visited = BTreeSet::new();
-        for agent in &registry.agents {
-            if !self.repository.config_exists(&agent.identity_id) {
-                continue;
-            }
-            let config = self.repository.load_config(&agent.identity_id)?;
-            let mut organization_ids = config.retired_organization_credential_ids;
-            organization_ids.push(config.organization_credential_id);
+        for config in state.configs.values() {
+            let mut organization_ids = config.retired_organization_credential_ids.clone();
+            organization_ids.push(config.organization_credential_id.clone());
             for organization_id in organization_ids {
                 if !visited.insert(organization_id.clone()) {
                     continue;
@@ -536,46 +821,73 @@ impl<S: SecretStore> RuntimeService<S> {
         }
 
         let organization_id = generate_opaque_id()?;
-        self.schedule_cleanup(CleanupOperation::CreateOrganizationCredential {
+        let allocation = SecretAllocation::OrganizationCredential {
             organization_credential_id: organization_id.clone(),
-        })?;
+        };
+        self.begin_allocation(state, vec![allocation.clone()])?;
         if let Err(error) =
             self.secrets
                 .set(&organization_id, SecretSlot::OrganizationApiKey, candidate)
         {
-            self.recover_or_cleanup_failed_locked()?;
+            self.rollback_allocation(state, &[allocation])?;
             return Err(error.into());
         }
         Ok((organization_id, true))
     }
 
-    fn organization_is_referenced(
-        &self,
-        registry: &PublicRegistry,
-        organization_id: &str,
-    ) -> Result<bool, RuntimeError> {
-        for agent in &registry.agents {
-            if self.repository.config_exists(&agent.identity_id)
-                && self
-                    .repository
-                    .load_config(&agent.identity_id)?
-                    .organization_credential_id
-                    == organization_id
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     fn cleanup_unused_new_organization(
         &self,
-        registry: &PublicRegistry,
+        state: &VerifiedState,
         organization_id: &str,
         created: bool,
     ) -> Result<(), RuntimeError> {
-        if created && !self.organization_is_referenced(registry, organization_id)? {
-            self.recover_pending_operations_locked()?;
+        if created && !organization_referenced_in(&state.configs, organization_id) {
+            self.rollback_allocation(
+                state,
+                &[SecretAllocation::OrganizationCredential {
+                    organization_credential_id: organization_id.to_owned(),
+                }],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn begin_allocation(
+        &self,
+        current: &VerifiedState,
+        allocations: Vec<SecretAllocation>,
+    ) -> Result<(), RuntimeError> {
+        self.write_trust_state(&TrustState::allocating(
+            current.generation,
+            current.registry_digest.clone(),
+            allocations,
+        ))
+    }
+
+    fn rollback_allocation(
+        &self,
+        current: &VerifiedState,
+        allocations: &[SecretAllocation],
+    ) -> Result<(), RuntimeError> {
+        self.delete_allocations(allocations)?;
+        self.write_trust_state(&TrustState::committed(
+            current.generation,
+            current.registry_digest.clone(),
+        ))
+    }
+
+    fn delete_allocations(&self, allocations: &[SecretAllocation]) -> Result<(), RuntimeError> {
+        for allocation in allocations {
+            match allocation {
+                SecretAllocation::Identity { identity_id } => {
+                    delete_identity(&self.secrets, identity_id)?;
+                }
+                SecretAllocation::OrganizationCredential {
+                    organization_credential_id,
+                } => {
+                    delete_organization_credential(&self.secrets, organization_credential_id)?;
+                }
+            }
         }
         Ok(())
     }
@@ -583,19 +895,50 @@ impl<S: SecretStore> RuntimeService<S> {
     fn cleanup_retired_organizations(
         &self,
         identity_id: &str,
-        config: &mut PublicProfileConfig,
-        registry: &PublicRegistry,
+        state: &VerifiedState,
     ) -> Result<(), RuntimeError> {
+        let Some(mut config) = state.configs.get(identity_id).cloned() else {
+            return Ok(());
+        };
         if config.retired_organization_credential_ids.is_empty() {
             return Ok(());
         }
-        for retired in &config.retired_organization_credential_ids {
-            if !self.organization_is_referenced(registry, retired)? {
-                delete_organization_credential(&self.secrets, retired)?;
+        let retired = std::mem::take(&mut config.retired_organization_credential_ids);
+        let (_, signing) =
+            self.load_identity_verified(identity_id, state.configs.get(identity_id))?;
+        let binding =
+            profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+        let digest =
+            profile_config_digest(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        let mut registry = state.registry.clone();
+        registry
+            .agents
+            .iter_mut()
+            .find(|entry| entry.identity_id == identity_id)
+            .ok_or(RuntimeError::IntegrityViolation)?
+            .config_digest = Some(digest);
+        let mut target_configs = state.configs.clone();
+        target_configs.insert(identity_id.to_owned(), config.clone());
+        let mut deletions = Vec::new();
+        for organization_id in retired {
+            if !organization_referenced_in(&target_configs, &organization_id) {
+                deletions.push(SecretDeletion::OrganizationCredential {
+                    organization_credential_id: organization_id,
+                });
             }
         }
-        config.retired_organization_credential_ids.clear();
-        self.repository.save_config(identity_id, config)?;
+        self.commit_transition(
+            state,
+            registry,
+            vec![ConfigWrite {
+                identity_id: identity_id.to_owned(),
+                config,
+            }],
+            Vec::new(),
+            deletions,
+            false,
+        )?;
         Ok(())
     }
 
@@ -605,95 +948,411 @@ impl<S: SecretStore> RuntimeService<S> {
     }
 
     fn recover_pending_operations_locked(&self) -> Result<(), RuntimeError> {
-        let mut journal = self.repository.load_cleanup_journal()?;
-        while let Some(operation) = journal.operations.first().cloned() {
-            let public_root_removed = match &operation {
-                CleanupOperation::CreateIdentity { identity_id } => {
-                    let registry = self.repository.load_registry()?;
-                    if !registry
-                        .agents
-                        .iter()
-                        .any(|agent| agent.identity_id == *identity_id)
-                    {
-                        delete_identity(&self.secrets, identity_id)?;
-                    }
-                    false
+        match self.read_trust_state()? {
+            None => self.bootstrap_integrity_root(),
+            Some(TrustState::Committed {
+                generation,
+                registry_digest,
+                ..
+            }) => {
+                if journal_path(self.repository.root()).exists() {
+                    remove_journal(self.repository.root())?;
                 }
-                CleanupOperation::CreateOrganizationCredential {
+                if self.repository.cleanup_pending() {
+                    self.repository.remove_cleanup_journal()?;
+                }
+                self.repair_initial_registry_if_missing(generation, &registry_digest)?;
+                self.verified_state_locked().map(|_| ())
+            }
+            Some(TrustState::PurgeCommitted { .. }) => self.finish_purge(),
+            Some(TrustState::Allocating {
+                generation,
+                registry_digest,
+                allocations,
+                ..
+            }) => {
+                self.delete_allocations(&allocations)?;
+                self.write_trust_state(&TrustState::committed(generation, registry_digest))?;
+                if journal_path(self.repository.root()).exists() {
+                    remove_journal(self.repository.root())?;
+                }
+                self.verified_state_locked().map(|_| ())
+            }
+            Some(transition @ TrustState::Transition { .. }) => {
+                let journal = load_journal(self.repository.root())?;
+                let journal_digest = journal.digest()?;
+                let TrustState::Transition {
+                    from_generation,
+                    from_registry_digest,
+                    to_generation,
+                    to_registry_digest,
+                    journal_digest: expected_journal_digest,
+                    ..
+                } = transition
+                else {
+                    unreachable!()
+                };
+                if journal_digest != expected_journal_digest
+                    || journal.from_generation != from_generation
+                    || journal.from_registry_digest != from_registry_digest
+                    || journal.to_generation != to_generation
+                    || journal.to_registry_digest != to_registry_digest
+                {
+                    return Err(RuntimeError::IntegrityRecoveryRequired);
+                }
+                self.apply_journal(&journal)?;
+                let committed = if journal.purge_public_root {
+                    TrustState::purge_committed(
+                        journal.to_generation,
+                        journal.to_registry_digest.clone(),
+                    )
+                } else {
+                    TrustState::committed(journal.to_generation, journal.to_registry_digest.clone())
+                };
+                self.write_trust_state(&committed)?;
+                remove_journal(self.repository.root())?;
+                self.finish_purge_if_requested(&journal)
+            }
+        }
+    }
+
+    fn bootstrap_integrity_root(&self) -> Result<(), RuntimeError> {
+        let root = self.repository.root();
+        let has_public_artifacts = match std::fs::read_dir(root) {
+            Ok(mut entries) => entries.next().transpose()?.is_some(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        if has_public_artifacts {
+            return Err(RuntimeError::LegacyMigrationRequired);
+        }
+        let registry = PublicRegistry::default();
+        let digest = registry_digest(&registry).map_err(|_| RuntimeError::IntegrityViolation)?;
+        self.write_trust_state(&TrustState::committed(0, digest))?;
+        self.repository.save_registry(&registry)?;
+        Ok(())
+    }
+
+    fn repair_initial_registry_if_missing(
+        &self,
+        generation: u64,
+        expected_digest: &str,
+    ) -> Result<(), RuntimeError> {
+        match std::fs::symlink_metadata(self.repository.root().join("registry.json")) {
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let registry = PublicRegistry::default();
+                let digest =
+                    registry_digest(&registry).map_err(|_| RuntimeError::IntegrityViolation)?;
+                if generation != 0 || digest != expected_digest {
+                    return Err(RuntimeError::IntegrityViolation);
+                }
+                self.repository.save_registry(&registry)?;
+                Ok(())
+            }
+            Err(_) => Err(RuntimeError::IntegrityViolation),
+        }
+    }
+
+    fn read_trust_state(&self) -> Result<Option<TrustState>, RuntimeError> {
+        self.secrets
+            .get(TRUST_OWNER_ID, SecretSlot::IntegrityTrustStateV1)?
+            .map(|secret| decode_trust_state(secret.expose_secret()))
+            .transpose()
+    }
+
+    fn write_trust_state(&self, state: &TrustState) -> Result<(), RuntimeError> {
+        let encoded = Zeroizing::new(encode_trust_state(state)?);
+        self.secrets
+            .set(TRUST_OWNER_ID, SecretSlot::IntegrityTrustStateV1, &encoded)?;
+        Ok(())
+    }
+
+    fn verified_state_locked(&self) -> Result<VerifiedState, RuntimeError> {
+        let Some(TrustState::Committed {
+            generation,
+            registry_digest: expected_digest,
+            ..
+        }) = self.read_trust_state()?
+        else {
+            return Err(RuntimeError::IntegrityRecoveryRequired);
+        };
+        let registry = self.repository.load_registry()?;
+        let actual_digest =
+            registry_digest(&registry).map_err(|_| RuntimeError::IntegrityViolation)?;
+        if actual_digest != expected_digest {
+            return Err(RuntimeError::IntegrityViolation);
+        }
+        let configs = self.validate_registry_configs(&registry)?;
+        Ok(VerifiedState {
+            generation,
+            registry_digest: expected_digest,
+            registry,
+            configs,
+        })
+    }
+
+    fn validate_registry_configs(
+        &self,
+        registry: &PublicRegistry,
+    ) -> Result<BTreeMap<String, PublicProfileConfig>, RuntimeError> {
+        let mut configs = BTreeMap::new();
+        for entry in &registry.agents {
+            let config_present = self
+                .repository
+                .config_exists_strict(&entry.identity_id)
+                .map_err(|_| RuntimeError::IntegrityViolation)?;
+            match (entry.config_digest.as_deref(), config_present) {
+                (None, false) => {}
+                (None, true) | (Some(_), false) => {
+                    return Err(RuntimeError::IntegrityViolation);
+                }
+                (Some(expected_digest), true) => {
+                    let config = self
+                        .repository
+                        .load_config(&entry.identity_id)
+                        .map_err(|_| RuntimeError::IntegrityViolation)?;
+                    let digest = profile_config_digest(&config)
+                        .map_err(|_| RuntimeError::IntegrityViolation)?;
+                    if config.identity_id != entry.identity_id || digest != expected_digest {
+                        return Err(RuntimeError::IntegrityViolation);
+                    }
+                    verify_config_signature(&config)?;
+                    configs.insert(entry.identity_id.clone(), config);
+                }
+            }
+        }
+        Ok(configs)
+    }
+
+    fn commit_transition(
+        &self,
+        current: &VerifiedState,
+        target_registry: PublicRegistry,
+        config_writes: Vec<ConfigWrite>,
+        remove_identity_directories: Vec<String>,
+        secret_deletions: Vec<SecretDeletion>,
+        purge_public_root: bool,
+    ) -> Result<(), RuntimeError> {
+        self.commit_transition_with_copies(
+            current,
+            target_registry,
+            config_writes,
+            remove_identity_directories,
+            Vec::new(),
+            secret_deletions,
+            purge_public_root,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_transition_with_copies(
+        &self,
+        current: &VerifiedState,
+        target_registry: PublicRegistry,
+        config_writes: Vec<ConfigWrite>,
+        remove_identity_directories: Vec<String>,
+        secret_copies: Vec<SecretCopy>,
+        secret_deletions: Vec<SecretDeletion>,
+        purge_public_root: bool,
+    ) -> Result<(), RuntimeError> {
+        let journal = IntegrityJournal::new(
+            current.generation,
+            current.registry_digest.clone(),
+            target_registry,
+            config_writes,
+            remove_identity_directories,
+            secret_deletions,
+            purge_public_root,
+        )?
+        .with_secret_copies(secret_copies)?;
+        if journal_path(self.repository.root()).exists() {
+            remove_journal(self.repository.root())?;
+        }
+        save_journal(self.repository.root(), &journal)?;
+        let transition = TrustState::transition(
+            journal.from_generation,
+            journal.from_registry_digest.clone(),
+            journal.to_generation,
+            journal.to_registry_digest.clone(),
+            journal.digest()?,
+        );
+        self.write_trust_state(&transition)?;
+        self.apply_journal(&journal)?;
+        let committed = if journal.purge_public_root {
+            TrustState::purge_committed(journal.to_generation, journal.to_registry_digest.clone())
+        } else {
+            TrustState::committed(journal.to_generation, journal.to_registry_digest.clone())
+        };
+        self.write_trust_state(&committed)?;
+        remove_journal(self.repository.root())?;
+        self.finish_purge_if_requested(&journal)
+    }
+
+    fn finish_purge_if_requested(&self, journal: &IntegrityJournal) -> Result<(), RuntimeError> {
+        if journal.purge_public_root {
+            self.finish_purge()?;
+        }
+        Ok(())
+    }
+
+    fn finish_purge(&self) -> Result<(), RuntimeError> {
+        self.repository.purge_public_data()?;
+        self.secrets
+            .delete(TRUST_OWNER_ID, SecretSlot::IntegrityTrustStateV1)?;
+        Ok(())
+    }
+
+    fn apply_journal(&self, journal: &IntegrityJournal) -> Result<(), RuntimeError> {
+        journal.validate()?;
+        for copy in &journal.secret_copies {
+            match copy {
+                SecretCopy::LegacyIdentity { identity_id } => {
+                    if let Some(encryption) = self
+                        .secrets
+                        .get(identity_id, SecretSlot::LegacyX25519PrivateKeyV2)?
+                    {
+                        self.secrets.set(
+                            identity_id,
+                            SecretSlot::X25519PrivateKey,
+                            encryption.expose_secret(),
+                        )?;
+                    }
+                    if let Some(signing) = self
+                        .secrets
+                        .get(identity_id, SecretSlot::LegacyEd25519SecretKeyV2)?
+                    {
+                        self.secrets.set(
+                            identity_id,
+                            SecretSlot::Ed25519SecretKey,
+                            signing.expose_secret(),
+                        )?;
+                    }
+                    let expected = journal
+                        .config_writes
+                        .iter()
+                        .find(|write| write.identity_id == *identity_id)
+                        .map(|write| &write.config);
+                    self.load_identity_verified(identity_id, expected)?;
+                }
+                SecretCopy::LegacyOrganizationCredential {
                     organization_credential_id,
                 } => {
-                    let registry = self.repository.load_registry()?;
-                    if !self.organization_is_referenced(&registry, organization_credential_id)? {
-                        delete_organization_credential(&self.secrets, organization_credential_id)?;
+                    if let Some(secret) = self.secrets.get(
+                        organization_credential_id,
+                        SecretSlot::LegacyOrganizationApiKeyV2,
+                    )? {
+                        self.secrets.set(
+                            organization_credential_id,
+                            SecretSlot::OrganizationApiKey,
+                            secret.expose_secret(),
+                        )?;
                     }
-                    false
+                    self.secrets
+                        .get(organization_credential_id, SecretSlot::OrganizationApiKey)?
+                        .ok_or(RuntimeError::MissingOrganizationCredential)?;
                 }
-                CleanupOperation::DeleteProfile {
-                    identity_id,
-                    organization_credential_ids,
-                } => {
-                    let registry = self.repository.load_registry()?;
-                    if !registry
+            }
+        }
+        for write in &journal.config_writes {
+            self.repository
+                .save_config(&write.identity_id, &write.config)?;
+        }
+        self.repository.save_registry(&journal.target_registry)?;
+        let target_configs = self.validate_registry_configs(&journal.target_registry)?;
+        for deletion in &journal.secret_deletions {
+            match deletion {
+                SecretDeletion::Identity { identity_id } => {
+                    if journal
+                        .target_registry
                         .agents
                         .iter()
-                        .any(|agent| agent.identity_id == *identity_id)
+                        .any(|entry| entry.identity_id == *identity_id)
                     {
-                        delete_identity(&self.secrets, identity_id)?;
-                        for organization_id in organization_credential_ids {
-                            if !self.organization_is_referenced(&registry, organization_id)? {
-                                delete_organization_credential(&self.secrets, organization_id)?;
-                            }
-                        }
-                        self.repository.remove_identity_directory(identity_id)?;
+                        return Err(RuntimeError::IntegrityRecoveryRequired);
                     }
-                    false
+                    delete_identity(&self.secrets, identity_id)?;
                 }
-                CleanupOperation::Purge {
-                    identity_ids,
-                    organization_credential_ids,
+                SecretDeletion::OrganizationCredential {
+                    organization_credential_id,
                 } => {
-                    for identity_id in identity_ids {
-                        delete_identity(&self.secrets, identity_id)?;
+                    if organization_referenced_in(&target_configs, organization_credential_id) {
+                        return Err(RuntimeError::IntegrityRecoveryRequired);
                     }
-                    for organization_id in organization_credential_ids {
-                        delete_organization_credential(&self.secrets, organization_id)?;
-                    }
-                    self.repository.purge_public_data()?;
-                    true
+                    delete_organization_credential(&self.secrets, organization_credential_id)?;
                 }
-            };
-
-            if public_root_removed {
-                return Ok(());
+                SecretDeletion::LegacyIdentity { identity_id } => {
+                    delete_legacy_identity(&self.secrets, identity_id)?;
+                }
+                SecretDeletion::LegacyOrganizationCredential {
+                    organization_credential_id,
+                } => delete_legacy_organization_credential(
+                    &self.secrets,
+                    organization_credential_id,
+                )?,
             }
-            journal.operations.remove(0);
-            self.persist_cleanup_journal(&journal)?;
+        }
+        for identity_id in &journal.remove_identity_directories {
+            if journal
+                .target_registry
+                .agents
+                .iter()
+                .any(|entry| entry.identity_id == *identity_id)
+            {
+                return Err(RuntimeError::IntegrityRecoveryRequired);
+            }
+            self.repository.remove_identity_directory(identity_id)?;
         }
         Ok(())
     }
+}
 
-    fn schedule_cleanup(&self, operation: CleanupOperation) -> Result<(), RuntimeError> {
-        let mut journal = self.repository.load_cleanup_journal()?;
-        if !journal.operations.contains(&operation) {
-            journal.operations.push(operation);
-            self.repository.save_cleanup_journal(&journal)?;
-        }
-        Ok(())
-    }
+fn resolve_profile_in(
+    registry: &PublicRegistry,
+    explicit_name: Option<&str>,
+) -> Result<PublicAgentEntry, RuntimeError> {
+    let name = explicit_name.unwrap_or(&registry.default);
+    ProfileName::parse(name)?;
+    registry
+        .agents
+        .iter()
+        .find(|agent| agent.name == name)
+        .cloned()
+        .ok_or(RuntimeError::ProfileNotFound)
+}
 
-    fn persist_cleanup_journal(&self, journal: &CleanupJournal) -> Result<(), RuntimeError> {
-        if journal.operations.is_empty() {
-            self.repository.remove_cleanup_journal()?;
-        } else {
-            self.repository.save_cleanup_journal(journal)?;
-        }
-        Ok(())
-    }
+fn verify_config_signature(config: &PublicProfileConfig) -> Result<(), RuntimeError> {
+    let signing_public_key: [u8; 32] = STANDARD
+        .decode(
+            config
+                .signing_public_key
+                .as_deref()
+                .ok_or(RuntimeError::IntegrityViolation)?,
+        )
+        .map_err(|_| RuntimeError::IntegrityViolation)?
+        .try_into()
+        .map_err(|_| RuntimeError::IntegrityViolation)?;
+    let signature: [u8; 64] = STANDARD
+        .decode(&config.binding_signature)
+        .map_err(|_| RuntimeError::IntegrityViolation)?
+        .try_into()
+        .map_err(|_| RuntimeError::IntegrityViolation)?;
+    let binding = profile_binding_bytes(config).map_err(|_| RuntimeError::IntegrityViolation)?;
+    verify_profile_binding(&signing_public_key, &binding, &signature)
+        .map_err(|_| RuntimeError::IntegrityViolation)
+}
 
-    fn recover_or_cleanup_failed_locked(&self) -> Result<(), RuntimeError> {
-        self.recover_pending_operations_locked()
-            .map_err(|_| RuntimeError::CleanupFailed)
-    }
+fn organization_referenced_in(
+    configs: &BTreeMap<String, PublicProfileConfig>,
+    organization_id: &str,
+) -> bool {
+    configs.values().any(|config| {
+        config.organization_credential_id == organization_id
+            || config
+                .retired_organization_credential_ids
+                .iter()
+                .any(|retired| retired == organization_id)
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -715,6 +1374,12 @@ pub struct StatusOutcome {
     pub profile: PublicAgentEntry,
     pub config: PublicProfileConfig,
     pub registration: AgentRegistrationResult,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecurityUpgradeOutcome {
+    pub profile: PublicAgentEntry,
+    pub migrated: bool,
 }
 
 pub struct RuntimeSession {
@@ -1055,6 +1720,8 @@ impl std::fmt::Debug for DeliveredCredential {
 pub enum RuntimeError {
     #[error("profile operation failed: {0}")]
     Profile(#[from] ProfileError),
+    #[error("runtime filesystem operation failed")]
+    Io(#[from] std::io::Error),
     #[error("profile does not exist; run: palladin agents create <name>")]
     ProfileNotFound,
     #[error("OS secure storage operation failed: {0}")]
@@ -1075,8 +1742,16 @@ pub enum RuntimeError {
     InvalidStoredSecret,
     #[error("public profile configuration is invalid")]
     InvalidPublicConfig,
-    #[error("legacy Agent data requires the explicit pre-production migration before purge")]
+    #[error("legacy Agent data requires: palladin security upgrade")]
     LegacyMigrationRequired,
+    #[error(
+        "legacy cleanup is still pending; recover it with the previous runtime before upgrading"
+    )]
+    LegacyCleanupPending,
+    #[error("public Agent metadata failed integrity verification; no credential was opened")]
+    IntegrityViolation,
+    #[error("an authenticated integrity transition could not be recovered; no new operation ran")]
+    IntegrityRecoveryRequired,
     #[error("secure rollback failed; run palladin doctor before retrying")]
     CleanupFailed,
     #[error("secure random identifier generation failed")]
@@ -1166,15 +1841,19 @@ fn preflight_script_references(script: &ScriptPayload) -> Result<(), RuntimeErro
 }
 
 fn generate_opaque_id() -> Result<String, RuntimeError> {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).map_err(|_| RuntimeError::RandomGenerationFailed)?;
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut value = String::with_capacity(32);
-    for byte in bytes {
-        value.push(char::from(HEX[usize::from(byte >> 4)]));
-        value.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    loop {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).map_err(|_| RuntimeError::RandomGenerationFailed)?;
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut value = String::with_capacity(32);
+        for byte in bytes {
+            value.push(char::from(HEX[usize::from(byte >> 4)]));
+            value.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        if value != TRUST_OWNER_ID {
+            return Ok(value);
+        }
     }
-    Ok(value)
 }
 
 fn now_rfc3339() -> Result<String, RuntimeError> {
@@ -1229,15 +1908,18 @@ mod tests {
                 identity_id: "11111111111111111111111111111111".to_owned(),
                 created_at: "2026-01-01T00:00:00Z".to_owned(),
                 agent_type: None,
+                config_digest: None,
             },
             config: PublicProfileConfig {
                 schema_version: PUBLIC_SCHEMA_VERSION,
+                identity_id: "11111111111111111111111111111111".to_owned(),
                 host,
                 organization_credential_id: "22222222222222222222222222222222".to_owned(),
                 retired_organization_credential_ids: Vec::new(),
                 agent_id: None,
                 encryption_public_key: None,
                 signing_public_key: None,
+                binding_signature: STANDARD.encode([0_u8; 64]),
             },
             api,
             encryption,
@@ -1478,15 +2160,18 @@ mod tests {
                 identity_id: "11111111111111111111111111111111".to_owned(),
                 created_at: "2026-01-01T00:00:00Z".to_owned(),
                 agent_type: None,
+                config_digest: None,
             },
             config: PublicProfileConfig {
                 schema_version: PUBLIC_SCHEMA_VERSION,
+                identity_id: "11111111111111111111111111111111".to_owned(),
                 host,
                 organization_credential_id: "22222222222222222222222222222222".to_owned(),
                 retired_organization_credential_ids: Vec::new(),
                 agent_id: None,
                 encryption_public_key: None,
                 signing_public_key: None,
+                binding_signature: STANDARD.encode([0_u8; 64]),
             },
             api,
             encryption,
