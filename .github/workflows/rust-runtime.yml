@@ -128,7 +128,7 @@ jobs:
             try { [void][xml](Get-Content -LiteralPath $path.FullName -Raw) } catch { throw "XML parse failed for $($path.FullName): $_" }
           }
           packaging/windows/scripts/Test-RollbackPolicy.ps1
-          Import-Module packaging/windows/scripts/Palladin.Release.psm1 -Force
+          Import-Module (Resolve-Path './packaging/windows/scripts/Palladin.Release.psm1') -Force
           $testPfn = Get-PalladinPackageFamilyName -Name 'Palladin.Runtime.Companion' -Publisher 'CN=Palladin CI'
           if ($testPfn -cnotmatch '^Palladin\.Runtime\.Companion_[a-z0-9]{13}$') { throw 'test Companion PFN is invalid' }
           "PALLADIN_WINDOWS_PACKAGE_FAMILY_NAME=$testPfn" | Add-Content -LiteralPath $env:GITHUB_ENV
@@ -143,7 +143,7 @@ jobs:
       - name: Validate all four native PE outputs
         shell: pwsh
         run: |
-          Import-Module ../packaging/windows/scripts/Palladin.Release.psm1 -Force
+          Import-Module (Resolve-Path '../packaging/windows/scripts/Palladin.Release.psm1') -Force
           foreach ($name in 'palladin-client', 'palladin-companion', 'palladin-service', 'palladin-worker') {
             Assert-PalladinArchitecture -Path "./target/${{ matrix.target }}/release/$name.exe" -Architecture '${{ matrix.architecture }}'
           }

@@ -104,7 +104,7 @@ jobs:
         shell: pwsh
         run: |
           if ($env:PALLADIN_WINDOWS_PACKAGE_FAMILY_NAME -cnotmatch '^Palladin\.Runtime\.Companion_[a-z0-9]{13}$') { throw 'protected Companion PFN is missing or invalid' }
-          Import-Module ../packaging/windows/scripts/Palladin.Release.psm1 -Force
+          Import-Module (Resolve-Path '../packaging/windows/scripts/Palladin.Release.psm1') -Force
           $derivedPfn = Get-PalladinPackageFamilyName -Name 'Palladin.Runtime.Companion' -Publisher $env:PALLADIN_WINDOWS_PUBLISHER
           if ($derivedPfn -cne $env:PALLADIN_WINDOWS_PACKAGE_FAMILY_NAME) { throw 'protected Companion PFN does not match the protected publisher' }
           rustup target add '${{ matrix.target }}'
@@ -152,7 +152,7 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           if ($env:PALLADIN_WINDOWS_PACKAGE_FAMILY_NAME -cnotmatch '^Palladin\.Runtime\.Companion_[a-z0-9]{13}$') { throw 'protected Companion PFN is missing or invalid' }
-          Import-Module packaging/windows/scripts/Palladin.Release.psm1 -Force
+          Import-Module (Resolve-Path './packaging/windows/scripts/Palladin.Release.psm1') -Force
           $derivedPfn = Get-PalladinPackageFamilyName -Name 'Palladin.Runtime.Companion' -Publisher $env:PUBLISHER
           if ($derivedPfn -cne $env:PALLADIN_WINDOWS_PACKAGE_FAMILY_NAME) { throw 'protected Companion PFN does not match the protected publisher' }
           if ((git rev-parse HEAD) -cne $env:SOURCE_SHA) { throw 'unexpected checkout SHA' }
