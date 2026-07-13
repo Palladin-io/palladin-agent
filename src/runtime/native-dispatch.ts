@@ -184,8 +184,9 @@ function systemHost(): NativeDispatchHost {
 function detectSystemLinuxLibc(): LinuxLibc {
   let descriptor: number | undefined;
   try {
-    const executable = realpathSync(process.execPath);
-    descriptor = openSync(executable, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    // /proc/self/exe is a kernel-owned reference to the inode that is actually
+    // executing. process.execPath can be atomically replaced during an upgrade.
+    descriptor = openSync('/proc/self/exe', fsConstants.O_RDONLY);
     const prefix = Buffer.alloc(ELF_PREFIX_LIMIT);
     const length = readSync(descriptor, prefix, 0, prefix.length, 0);
     return detectLinuxLibcFromElf(prefix.subarray(0, length), process.arch);
@@ -248,14 +249,13 @@ export function detectLinuxLibcFromElf(bytes: Buffer, architecture: string): Lin
 }
 
 function classifyLinuxInterpreter(interpreter: string, architecture: string): LinuxLibc {
-  const filename = darwinPath.basename(interpreter);
   if (architecture === 'x64') {
-    if (filename === 'ld-linux-x86-64.so.2') return 'glibc';
-    if (filename === 'ld-musl-x86_64.so.1') return 'musl';
+    if (interpreter === '/lib64/ld-linux-x86-64.so.2') return 'glibc';
+    if (interpreter === '/lib/ld-musl-x86_64.so.1') return 'musl';
   }
   if (architecture === 'arm64') {
-    if (filename === 'ld-linux-aarch64.so.1') return 'glibc';
-    if (filename === 'ld-musl-aarch64.so.1') return 'musl';
+    if (interpreter === '/lib/ld-linux-aarch64.so.1') return 'glibc';
+    if (interpreter === '/lib/ld-musl-aarch64.so.1') return 'musl';
   }
   return 'unsupported';
 }

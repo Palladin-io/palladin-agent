@@ -135,6 +135,12 @@ describe('native runtime dispatcher', () => {
       .toBe('musl');
     expect(detectLinuxLibcFromElf(elfWithInterpreter('/lib/ld-musl-aarch64.so.1'), 'arm64'))
       .toBe('musl');
+    expect(detectLinuxLibcFromElf(elfWithInterpreter('/lib/ld-linux-aarch64.so.1'), 'arm64'))
+      .toBe('glibc');
+    expect(detectLinuxLibcFromElf(elfWithInterpreter('/tmp/ld-musl-x86_64.so.1'), 'x64'))
+      .toBe('unsupported');
+    expect(detectLinuxLibcFromElf(elfWithInterpreter('/tmp/ld-linux-aarch64.so.1'), 'arm64'))
+      .toBe('unsupported');
     expect(detectLinuxLibcFromElf(elfWithInterpreter('/system/bin/linker64'), 'arm64'))
       .toBe('unsupported');
     expect(detectLinuxLibcFromElf(Buffer.alloc(64), 'x64')).toBe('unsupported');
