@@ -85,9 +85,14 @@ const fn hardened_candidate() -> &'static str {
     "optional restricted service-SID broker"
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 const fn hardened_candidate() -> &'static str {
-    "dedicated UID/systemd service or dedicated Agent container"
+    "dedicated UID with the systemd 252+ DEB/RPM broker boundary"
+}
+
+#[cfg(all(target_os = "linux", target_env = "musl"))]
+const fn hardened_candidate() -> &'static str {
+    "unsupported - Alpine/OpenRC Hardened is not available in the MVP"
 }
 
 #[cfg(test)]
@@ -104,6 +109,11 @@ mod tests {
         #[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]
         assert_eq!(info.standalone_tier, "Convenience");
         assert!(!info.hardened_candidate.is_empty());
+        #[cfg(all(target_os = "linux", target_env = "musl"))]
+        assert_eq!(
+            info.hardened_candidate,
+            "unsupported - Alpine/OpenRC Hardened is not available in the MVP"
+        );
     }
 
     #[test]

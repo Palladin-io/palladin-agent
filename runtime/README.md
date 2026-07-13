@@ -29,6 +29,8 @@ The organization API key remains organization-wide in both tiers. User presence 
 
 On Linux, PolKit is limited to one-shot authorization of changes to the root-owned dedicated-principal record. Interactive npm use remains Convenience. The record binds a locked nologin account and UID to a random non-reusable principal namespace, fixed profile, and root-approved origin; revoke leaves a fail-closed tombstone. A dedicated Agent UID is the complete workload trust domain, and an incomplete Hardened installation returns an error instead of opening Secret Service. The broker and one-shot executor run under distinct UIDs and communicate through a broker-only socket with peer-UID verification, so credential-bearing target processes cannot read broker state or memory through same-UID `/proc`, `ptrace`, or `process_vm_readv` access.
 
+Linux musl x64/arm64 is a separate static Convenience build and is exercised on Alpine 3.22 without glibc compatibility libraries. Alpine/OpenRC Hardened is explicitly unsupported in the MVP and no APK is published. Secret-bearing operations require a compatible Secret Service; absence of D-Bus or that service is an error without a file or environment fallback.
+
 `PALLADIN_HOME` is rejected by identity-opening commands. Tests inject an explicit temporary `ProfileRepository` instead of redirecting production state with an environment variable.
 
 ## Removal

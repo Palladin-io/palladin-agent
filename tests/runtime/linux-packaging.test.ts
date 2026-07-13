@@ -9,7 +9,10 @@ function read(path: string): string {
 }
 
 describe('Linux hardened package boundary', () => {
-  it('stages the Linux npm package from the repository template', () => {
+  it.each([
+    ['glibc', 'gnu'],
+    ['musl', 'musl'],
+  ])('stages the Linux %s npm package from the exact repository template', (libc, suffix) => {
     const temporary = mkdtempSync(join(tmpdir(), 'palladin-linux-stage-'));
     try {
       const binaries = join(temporary, 'bin');
@@ -23,6 +26,7 @@ describe('Linux hardened package boundary', () => {
       execFileSync('bash', [
         'packaging/linux/scripts/stage-npm-platform-package.sh',
         '--architecture', 'arm64',
+        '--libc', libc,
         '--binaries', binaries,
         '--output', output,
       ]);
@@ -30,8 +34,8 @@ describe('Linux hardened package boundary', () => {
         name: string;
         libc: string[];
       };
-      expect(manifest.name).toBe('@palladin/runtime-linux-arm64-gnu');
-      expect(manifest.libc).toEqual(['glibc']);
+      expect(manifest.name).toBe(`@palladin/runtime-linux-arm64-${suffix}`);
+      expect(manifest.libc).toEqual([libc]);
     } finally {
       rmSync(temporary, { recursive: true, force: true });
     }
@@ -126,6 +130,11 @@ describe('Linux hardened package boundary', () => {
     expect(workflow).toContain('runner: ubuntu-24.04-arm\n            gnu_target: aarch64-unknown-linux-gnu');
     expect(workflow).toContain('packaging/linux/deb/build-deb.sh');
     expect(workflow).toContain('packaging/linux/rpm/build-rpm.sh');
+    expect(workflow).toContain('--libc musl');
+    expect(workflow).toContain('node:22-alpine3.22');
+    expect(workflow).toContain('unexpectedly needs a dynamic library');
+    expect(workflow).toContain('node dist/bin/palladin.js doctor');
+    expect(workflow).toContain('init unexpectedly succeeded without Secret Service');
     expect(workflow).toContain('test-hardened-boundary.sh');
     expect(workflow).toContain('test-package-family.sh debian');
     expect(workflow).toContain('test-package-family.sh fedora');

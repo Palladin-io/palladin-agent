@@ -56,7 +56,9 @@
   "optionalDependencies": {
     "@palladin/runtime-darwin-universal": "0.1.0",
     "@palladin/runtime-linux-arm64-gnu": "0.1.0",
+    "@palladin/runtime-linux-arm64-musl": "0.1.0",
     "@palladin/runtime-linux-x64-gnu": "0.1.0",
+    "@palladin/runtime-linux-x64-musl": "0.1.0",
     "@palladin/runtime-win32-arm64": "0.1.0",
     "@palladin/runtime-win32-x64": "0.1.0"
   }

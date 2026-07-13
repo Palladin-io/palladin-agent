@@ -175,6 +175,11 @@ jobs:
     defaults:
       run:
         working-directory: runtime
+    env:
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -201,6 +206,14 @@ jobs:
       - run: cargo build --release --locked --target ${{ matrix.gnu_target }} -p palladin-linux-broker -p palladin-linux-executor --bins
       - run: cargo build --release --locked --target ${{ matrix.gnu_target }} -p palladin-linux-broker --example package_state_fixture
       - run: cargo build --release --locked --target ${{ matrix.musl_target }} -p palladin-cli
+        env:
+          CC: musl-gcc
+      - run: cargo build --release --locked --target ${{ matrix.musl_target }} -p palladin-linux-broker --bin palladin-linux-client
+        env:
+          CC: musl-gcc
+      - run: cargo test --workspace --locked --target ${{ matrix.musl_target }}
+        env:
+          CC: musl-gcc
       - run: ./target/${{ matrix.gnu_target }}/release/palladin --version
       - run: ./target/${{ matrix.musl_target }}/release/palladin --version
       - name: Build glibc npm and system packages
@@ -214,7 +227,7 @@ jobs:
           cp "$native/palladin" "$native/palladin-worker"
           stage="$RUNNER_TEMP/npm-linux-$ARCHITECTURE"
           packaging/linux/scripts/stage-npm-platform-package.sh \
-            --architecture "$ARCHITECTURE" --binaries "$native" --output "$stage"
+            --architecture "$ARCHITECTURE" --libc glibc --binaries "$native" --output "$stage"
           node -e '
             const manifest = require(process.argv[1]);
             if (manifest.private !== undefined) process.exit(1);
@@ -235,6 +248,62 @@ jobs:
             --version 0.1.1 --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
           packaging/linux/rpm/build-rpm.sh \
             --version 0.1.1 --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
+      - name: Build and run the native musl npm package on Alpine
+        working-directory: .
+        shell: bash
+        env:
+          ARCHITECTURE: ${{ matrix.musl_target == 'x86_64-unknown-linux-musl' && 'x64' || 'arm64' }}
+        run: |
+          set -euo pipefail
+          native="runtime/target/${{ matrix.musl_target }}/release"
+          cp "$native/palladin" "$native/palladin-worker"
+          stage="$RUNNER_TEMP/npm-linux-$ARCHITECTURE-musl"
+          packaging/linux/scripts/stage-npm-platform-package.sh \
+            --architecture "$ARCHITECTURE" --libc musl --binaries "$native" --output "$stage"
+          node -e '
+            const manifest = require(process.argv[1]);
+            if (manifest.private !== undefined) process.exit(1);
+            if (JSON.stringify(manifest.os) !== JSON.stringify(["linux"])) process.exit(1);
+            if (JSON.stringify(manifest.cpu) !== JSON.stringify([process.argv[2]])) process.exit(1);
+            if (JSON.stringify(manifest.libc) !== JSON.stringify(["musl"])) process.exit(1);
+            if (manifest.scripts !== undefined) process.exit(1);
+          ' "$stage/package.json" "$ARCHITECTURE"
+          for binary in palladin-linux-client palladin-worker; do
+            if readelf --program-headers "$stage/bin/$binary" | grep -Fq ' INTERP '; then
+              echo "$binary unexpectedly has a dynamic ELF interpreter" >&2
+              exit 1
+            fi
+            if readelf --dynamic "$stage/bin/$binary" | grep -Fq '(NEEDED)'; then
+              echo "$binary unexpectedly needs a dynamic library" >&2
+              exit 1
+            fi
+          done
+          npm ci --ignore-scripts --workspaces=false
+          npm run build
+          launcher="$RUNNER_TEMP/alpine-launcher"
+          install -d "$launcher/node_modules/@palladin"
+          cp -R dist package.json "$launcher/"
+          cp -R "$RUNNER_TEMP/npm-linux-$ARCHITECTURE" \
+            "$launcher/node_modules/@palladin/runtime-linux-$ARCHITECTURE-gnu"
+          cp -R "$stage" "$launcher/node_modules/@palladin/runtime-linux-$ARCHITECTURE-musl"
+          docker run --rm --platform "linux/${{ matrix.musl_target == 'x86_64-unknown-linux-musl' && 'amd64' || 'arm64' }}" \
+            --volume "$launcher:/launcher:ro" --workdir /launcher \
+            --tmpfs /tmp node:22-alpine3.22 sh -eu -c '
+              expected=${{ matrix.musl_target == 'x86_64-unknown-linux-musl' && 'x86_64' || 'aarch64' }}
+              test "$(uname -m)" = "$expected"
+              node dist/bin/palladin.js --version
+              node dist/bin/palladin.js doctor | grep -F "standalone-security-tier: Convenience"
+              node dist/bin/palladin.js doctor | grep -F \
+                "hardened-candidate: unsupported - Alpine/OpenRC Hardened is not available in the MVP"
+              export HOME=/tmp/palladin-home
+              install -d -m 0700 "$HOME"
+              if node dist/bin/palladin.js init >/tmp/init.out 2>/tmp/init.err; then
+                echo "init unexpectedly succeeded without Secret Service" >&2
+                exit 1
+              fi
+              test ! -e "$HOME/.palladin/agent.key"
+              test ! -e "$HOME/.palladin/config.json"
+            '
       - name: Install, upgrade, roll back, and reinstall on Debian, Fedora, and Rocky 9
         working-directory: .
         shell: bash

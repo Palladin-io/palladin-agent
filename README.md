@@ -7,7 +7,7 @@ Public npm launcher and native CLI/MCP runtime for Palladin Agent.
 
 ## Security boundary
 
-The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed universal executable inside `@palladin/runtime-darwin-universal/PalladinRuntime.app`. On Windows it starts only the Authenticode-signed `palladin-client.exe` from the exact x64 or arm64 package; that client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. On glibc Linux it starts the exact x64 or arm64 native client; ordinary UIDs use the Convenience worker, while a root-authorized dedicated Agent UID must use the separate system broker. There is no TypeScript, `PATH`, download, or plaintext fallback.
+The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed universal executable inside `@palladin/runtime-darwin-universal/PalladinRuntime.app`. On Windows it starts only the Authenticode-signed `palladin-client.exe` from the exact x64 or arm64 package; that client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. On Linux it reads only the `PT_INTERP` header of its own Node executable and selects the exact x64 or arm64 glibc or musl package; unknown libc loaders fail before package resolution. There is no TypeScript, `PATH`, download, cross-libc, or plaintext fallback.
 
 The native runtime keeps these concepts separate:
 
@@ -23,6 +23,11 @@ The Windows Secure tier is installed separately with the owner-signed one-UAC bo
 
 Linux Secret Service is always Convenience because it cannot distinguish two processes under the same UID. Linux Hardened is an optional DEB/RPM system package: a dedicated Agent account is bound by root-owned configuration to a random immutable principal namespace, fixed profile, and approved origin. The broker owns context-bound encrypted state under a separate UID, and each credential execution uses a broker-only socket plus a one-shot systemd `DynamicUser` executor. PolKit authorizes only management of this record; it is not presented as process isolation. See [the Linux runbook](packaging/linux/README.md).
 
+| Linux target | npm Convenience | Hardened |
+|---|---|---|
+| glibc x64/arm64 + systemd 252+ | Supported | Supported through the separate DEB/RPM |
+| musl x64/arm64, including Alpine 3.22 | Supported when a compatible Secret Service is available; otherwise secret operations fail closed | Unsupported in the MVP; no APK is published |
+
 ## Installation
 
 Once the release packages are available:
@@ -34,7 +39,7 @@ palladin doctor
 
 On Windows, install the matching signed Palladin Runtime bootstrapper once before using Secure mode. npm installation remains script-free and does not prompt for elevation. If the service or companion is unavailable or invalid, the client fails closed instead of falling back to the current-user credential store.
 
-On Linux, npm alone installs the Convenience tier. Install the matching signed `palladin-runtime` DEB or RPM only for a dedicated headless Agent UID. An authorized UID fails closed when the broker, executor socket, root-owned mapping, or permissions are invalid; it never falls back to the npm worker or Secret Service.
+On glibc Linux with systemd 252 or newer, npm alone installs the Convenience tier. Install the matching signed `palladin-runtime` DEB or RPM only for a dedicated headless Agent UID. An authorized UID fails closed when the broker, executor socket, root-owned mapping, or permissions are invalid; it never falls back to the npm worker or Secret Service. Alpine/OpenRC has no Hardened package in the MVP because it lacks an equivalent fresh per-request UID and executor sandbox.
 
 No package uses `preinstall`, `install`, `postinstall`, or `prepare`. npm installs the matching prebuilt platform package; it does not download or compile a binary during installation.
 

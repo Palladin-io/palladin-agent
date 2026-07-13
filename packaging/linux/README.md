@@ -1,14 +1,21 @@
 # Linux runtime tiers
 
-Palladin supports two explicit Linux glibc tiers on x64 and arm64. The Hardened
-system package requires systemd 252 or newer: Debian 12+, Ubuntu 24.04+,
-Fedora, and RHEL/Rocky/AlmaLinux 9+. RHEL 8 and Ubuntu 22.04 are not supported
-by this boundary.
+Palladin publishes separate Linux glibc and musl npm artifacts on x64 and arm64.
+The Hardened system package is glibc-only and requires systemd 252 or newer:
+Debian 12+, Ubuntu 24.04+, Fedora, and RHEL/Rocky/AlmaLinux 9+. RHEL 8,
+Ubuntu 22.04, and Alpine/OpenRC are not supported by this boundary.
 
 | Tier | Installation | Trust boundary |
 |---|---|---|
 | Convenience | `npm install -g @palladin/agent` | Linux Secret Service protects data at rest. Another process under the same UID is inside the trust domain. PolKit does not turn this into process isolation. |
 | Hardened headless | Install the signed `palladin-runtime` DEB or RPM, then authorize one dedicated OS account per Agent | A dedicated Agent UID reaches a broker under `palladin-runtime` through `SO_PEERCRED`. A root-owned record binds the UID and account to one immutable random principal namespace, fixed profile, and approved API origin. Secret-bearing state is broker-only. Credential execution runs through a broker-only socket and a one-shot systemd service with a fresh `DynamicUser` UID. |
+
+Alpine 3.22 receives only the musl npm Convenience runtime. Secret operations
+require a compatible D-Bus Secret Service and fail closed when it is absent.
+There is no Hardened APK in the MVP. OpenRC does not provide an equivalent of
+systemd per-connection socket activation plus a fresh `DynamicUser` executor
+and its unit sandbox. A static executor UID would allow one surviving process
+to attack later credential executions, so it is not an acceptable substitute.
 
 The system package is optional and is never installed by an npm lifecycle hook. A dedicated or revoked Agent UID never falls back to Secret Service, a file, an environment variable, or the npm Convenience worker when the broker installation is incomplete. Revocation preserves a root-owned tombstone. Reauthorization is refused while any process with the numeric UID remains alive, and successful UID reuse creates a new random principal namespace instead of reopening old state.
 
@@ -31,6 +38,12 @@ packaging/linux/rpm/build-rpm.sh \
 ```
 
 Use `arm64` on a native arm64 builder. QEMU user-mode is sufficient for a build smoke test, but is not accepted as proof for UID, systemd, `/proc`, or ptrace isolation.
+
+The musl npm packages are built separately with the matching Rust musl target.
+Both the client and worker are static ELF files without `PT_INTERP` or dynamic
+`NEEDED` libraries. CI executes the public Node launcher in native-architecture
+Alpine 3.22 without `gcompat` or `libc6-compat` and verifies that a missing
+Secret Service produces an error without a file or environment fallback.
 
 The protected production build accepts only the exact Palladin production and staging HTTPS origins. While the project is local-only, build `palladin-cli` with `--features local-development`; that build additionally accepts literal `127.0.0.1` or `[::1]` HTTP with an explicit port. Never enable that feature in a production candidate.
 
@@ -86,4 +99,7 @@ For each supported Debian/Ubuntu, Fedora, and RHEL 9-family image on native x64 
 5. Verify encrypted Agent identity round-trips across update, rollback, uninstall, and reinstall. Before the first production release, the base and upgrade packages exercise packaging compatibility from the initial schema. After the first release, the base package must be the frozen previously published artifact.
 6. Revoke the principal, recycle the numeric UID, remove the socket, and corrupt one permission at a time; confirm every designated or tombstoned principal receives an error without a Convenience fallback.
 
-Use a dedicated container per Agent when the workload platform already provides an immutable image and unique UID. Never share the Agent UID with unrelated Node applications.
+On a supported systemd host, a dedicated container may be the Agent workload
+inside the documented host broker boundary. A plain application container and
+an Alpine/OpenRC container are not Hardened substitutes. Never share the Agent
+UID with unrelated Node applications.

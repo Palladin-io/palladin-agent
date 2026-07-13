@@ -30,7 +30,9 @@ describe('public npm package boundary', () => {
     expect(root.optionalDependencies).toEqual({
       '@palladin/runtime-darwin-universal': root.version,
       '@palladin/runtime-linux-arm64-gnu': root.version,
+      '@palladin/runtime-linux-arm64-musl': root.version,
       '@palladin/runtime-linux-x64-gnu': root.version,
+      '@palladin/runtime-linux-x64-musl': root.version,
       '@palladin/runtime-win32-arm64': root.version,
       '@palladin/runtime-win32-x64': root.version,
     });
@@ -98,10 +100,12 @@ describe('public npm package boundary', () => {
   });
 
   it.each([
-    ['x64', '@palladin/runtime-linux-x64-gnu'],
-    ['arm64', '@palladin/runtime-linux-arm64-gnu'],
-  ])('keeps the Linux glibc %s workspace private and inert', (architecture, name) => {
-    const runtime = manifest(`packages/runtime-linux-${architecture}-gnu/package.json`);
+    ['x64', 'gnu', '@palladin/runtime-linux-x64-gnu'],
+    ['arm64', 'gnu', '@palladin/runtime-linux-arm64-gnu'],
+    ['x64', 'musl', '@palladin/runtime-linux-x64-musl'],
+    ['arm64', 'musl', '@palladin/runtime-linux-arm64-musl'],
+  ])('keeps the Linux %s/%s workspace private and inert', (architecture, libc, name) => {
+    const runtime = manifest(`packages/runtime-linux-${architecture}-${libc}/package.json`);
     expect(runtime.name).toBe(name);
     expect(runtime.private).toBe(true);
     expect(runtime.os).toBeUndefined();
