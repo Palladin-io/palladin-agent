@@ -37,6 +37,7 @@ use zeroize::Zeroizing;
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_UNSAFE_ENVIRONMENT: u8 = 78;
+const INJECT_UNAVAILABLE: &str = "browser injection is disabled because an unauthenticated CDP endpoint can spoof the page origin and receive plaintext; Palladin will enable inject only through a reviewed authenticated browser boundary; no profile was opened and no credential was requested";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -56,6 +57,11 @@ async fn main() -> ExitCode {
     }
     let environment = EnvironmentReport::inspect_current();
     let cli = Cli::parse();
+
+    if matches!(&cli.command, Commands::Inject(_)) {
+        eprintln!("Error: {INJECT_UNAVAILABLE}");
+        return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
+    }
 
     if enforce_environment(environment_requirement(&cli.command), &environment).is_err() {
         print_unsafe_environment(&environment, matches!(cli.command, Commands::Mcp { .. }));
@@ -80,6 +86,7 @@ async fn main() -> ExitCode {
         Commands::Search(args) => search(&service, cli.id.as_deref(), args).await,
         Commands::Get(args) => get(&service, cli.id.as_deref(), args).await,
         Commands::Exec(args) => exec(&service, cli.id.as_deref(), args).await,
+        Commands::Inject(_) => unreachable!("inject exits before identity initialization"),
         Commands::ReportStale(args) => report_stale(&service, cli.id.as_deref(), args).await,
         Commands::Mcp { command } => mcp(&service, cli.id.as_deref(), command).await,
         Commands::Agents { command } => agents(&service, command),
@@ -97,6 +104,7 @@ const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
         | Commands::Search(_)
         | Commands::Get(_)
         | Commands::Exec(_)
+        | Commands::Inject(_)
         | Commands::ReportStale(_)
         | Commands::Mcp { .. }
         | Commands::Agents { .. }
@@ -741,7 +749,7 @@ fn write_secret_json(value: &impl Serialize) -> ExitCode {
 fn emit_get_warning(quiet: bool, result: ExitCode) -> ExitCode {
     if result == ExitCode::SUCCESS && !quiet {
         eprintln!(
-            "Note: this secret is now in the agent's context. On a hosted LLM it may leave your machine. Prefer `palladin exec` (injects into a subprocess) or `palladin inject` (fills a login form) to avoid exposing it."
+            "Note: this secret is now in the agent's context. On a hosted LLM it may leave your machine. Prefer `palladin exec` when the credential only needs to authenticate a child process. Browser injection is disabled until an authenticated browser boundary is installed."
         );
     }
     result

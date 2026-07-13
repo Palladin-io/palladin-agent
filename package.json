@@ -52,7 +52,6 @@
     "node": ">=20"
   },
   "optionalDependencies": {
-    "@napi-rs/keyring": "^1.3.0",
-    "playwright-core": "^1.60.0"
+    "@napi-rs/keyring": "^1.3.0"
   }
 }

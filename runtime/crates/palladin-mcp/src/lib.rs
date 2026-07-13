@@ -48,7 +48,8 @@ const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 const UNSUPPORTED_VERSION_SENTINEL: &str = "palladin-unsupported-version";
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
     ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
-const GET_EXPOSURE_WARNING: &str = "Note: this secret is now in the Agent's context. On a hosted LLM it may leave your machine. Prefer palladin exec or palladin inject to avoid exposing it.";
+const GET_EXPOSURE_WARNING: &str = "Note: this secret is now in the Agent's context. On a hosted LLM it may leave your machine. Prefer palladin exec when the credential only needs to authenticate a child process. Browser injection is disabled until an authenticated browser boundary is installed.";
+const INJECT_UNAVAILABLE: &str = "Browser injection is disabled because an unauthenticated CDP endpoint can spoof the page origin and receive plaintext. Palladin will enable inject only through a reviewed authenticated browser boundary. No browser endpoint was contacted and no credential was requested or decrypted.";
 const CONTRACT_JSON: &str = include_str!("../../../contracts/v1/mcp-tools.json");
 
 type ApplicationFuture<'a> = Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
@@ -71,18 +72,6 @@ pub trait McpApplication: Send + Sync + 'static {
         Box::pin(async {
             ToolOutcome::error(
                 "Native exec is not available in this runtime build. Update Palladin Runtime after the reviewed process-isolation component is installed.",
-            )
-        })
-    }
-
-    fn inject<'a>(
-        &'a self,
-        _input: InjectInput,
-        _cancellation: CancellationToken,
-    ) -> ApplicationFuture<'a> {
-        Box::pin(async {
-            ToolOutcome::error(
-                "Native browser injection is not available in this runtime build. Update Palladin Runtime after the reviewed browser boundary is installed.",
             )
         })
     }
@@ -391,10 +380,7 @@ impl<A: McpApplication> PalladinMcpServer<A> {
             "inject_credential" => {
                 let input = parse_input::<InjectInput>(arguments)?;
                 validate_inject(&input)?;
-                let _secret = self.secret_limit.clone().try_acquire_owned().map_err(|_| {
-                    McpError::internal_error("Another credential operation is in progress", None)
-                })?;
-                self.application.inject(input, cancellation).await
+                ToolOutcome::error(INJECT_UNAVAILABLE)
             }
             "report_credential_stale" => {
                 let input = parse_input::<ReportStaleInput>(arguments)?;
@@ -419,7 +405,7 @@ impl<A: McpApplication> ServerHandler for PalladinMcpServer<A> {
                     .with_description("Zero-knowledge credential tools for AI Agents"),
             )
             .with_instructions(
-                "Prefer exec_with_credential or inject_credential. Use get_credential only when plaintext must enter the model context.",
+                "Prefer exec_with_credential. Use get_credential only when plaintext must enter the model context. Browser injection is fail-closed until an authenticated browser boundary is installed.",
             )
     }
 
@@ -1098,7 +1084,7 @@ fn load_tools() -> Result<Vec<Tool>, ContractError> {
         ("search_entries", None),
         ("get_credential", Some("Get")),
         ("exec_with_credential", Some("Exec")),
-        ("inject_credential", Some("Inject")),
+        ("inject_credential", None),
         ("report_credential_stale", None),
     ];
     if contract.tools.len() != expected.len()

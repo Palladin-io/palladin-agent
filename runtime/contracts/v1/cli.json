@@ -9,7 +9,8 @@
     "connect-id-after-subcommand-is-rejected-use-name-for-display-or-place-profile-id-before-connect",
     "init-force-in-place-identity-rotation-is-rejected-use-a-new-profile",
     "security-upgrade-is-a-verification-no-op-because-native-identities-start-in-os-secure-storage",
-    "human-readable-long-identifiers-use-prefix-and-suffix"
+    "human-readable-long-identifiers-use-prefix-and-suffix",
+    "inject-external-cdp-is-rejected-before-profile-open-because-cdp-cannot-attest-browser-origin"
   ],
   "identityModel": {
     "apiKeyOwner": "organization",
@@ -28,6 +29,7 @@
     { "argv": ["get", "vault-fixture", "entry-fixture", "--no-wait", "--wait", "30s"], "name": "get", "secretOutput": true },
     { "argv": ["retrieve", "vault-fixture", "entry-fixture", "--no-wait"], "name": "get", "secretOutput": true },
     { "argv": ["exec", "vault-fixture", "entry-fixture", "--no-wait", "--", "fixture-program", "$CLAW_SECRET"], "name": "exec", "secretOutput": false },
+    { "argv": ["inject", "vault-fixture", "entry-fixture", "--cdp", "http://127.0.0.1:9222", "--no-wait"], "name": "inject", "secretOutput": false },
     { "argv": ["report-stale", "vault-fixture", "entry-fixture", "--code", "login_rejected"], "name": "report-stale", "secretOutput": false },
     { "argv": ["mcp", "serve"], "name": "mcp", "secretOutput": false },
     { "argv": ["agents", "list"], "name": "agents", "secretOutput": false },
@@ -62,6 +64,13 @@
       "exitCode": 1,
       "stdoutExact": "",
       "stderrExact": "Error: command-line arguments contain unsupported control characters\n"
+    },
+    {
+      "name": "inject-fake-cdp-fails-before-profile-open",
+      "argv": ["inject", "vault-fixture", "entry-fixture", "--cdp", "http://127.0.0.1:9222"],
+      "exitCode": 78,
+      "stdoutExact": "",
+      "stderrExact": "Error: browser injection is disabled because an unauthenticated CDP endpoint can spoof the page origin and receive plaintext; Palladin will enable inject only through a reviewed authenticated browser boundary; no profile was opened and no credential was requested\n"
     },
     {
       "name": "unsafe-environment",

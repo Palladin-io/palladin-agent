@@ -35,3 +35,9 @@ Native `exec` starts programs without an implicit shell, rebuilds the child envi
 Script entries resolve an allowlisted interpreter and all credential references before starting. Temporary script files use a private directory and explicit cleanup on every handled completion, error, and cancellation path.
 
 These controls are defense in depth inside the Convenience tier. The precise residual risks and the separate cross-platform broker requirements for a future Hardened tier are recorded in [ADR 0002](docs/adr/0002-exec-process-boundary.md).
+
+## Browser injection
+
+Browser injection is currently unavailable on macOS, Windows, and Linux for Chrome, Edge, Brave, Chromium, Firefox, and Safari. The CLI fails before opening an Agent profile. MCP may already have an Agent session open in order to serve other tools, but `inject_credential` never contacts a browser endpoint, requests a credential, or decrypts one.
+
+Caller-provided CDP endpoints are never contacted. CDP cannot attest the browser or page origin: a fake endpoint can report an allowed URL and then receive the plaintext fill operation. The decision, support matrix, and requirements for a future authenticated browser component are recorded in [ADR 0003](docs/adr/0003-browser-injection-boundary.md).

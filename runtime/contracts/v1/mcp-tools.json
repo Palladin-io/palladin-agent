@@ -23,7 +23,7 @@
   "tools": [
     {
       "name": "search_entries",
-      "description": "Search vault entries by name, URL, or description across the Agent's organization. Returns metadata only: entryId, vaultId, label, urlDomain, description, and Agent-visible fields. Pick one result and call get_credential, exec_with_credential, or inject_credential with its vaultId and entryId.",
+      "description": "Search vault entries by name, URL, or description across the Agent's organization. Returns metadata only: entryId, vaultId, label, urlDomain, description, and Agent-visible fields. Pick one result and call exec_with_credential, or get_credential only when plaintext must enter the model context. Browser injection is currently unavailable.",
       "requiredMethod": null,
       "inputSchema": {
         "type": "object",
@@ -93,15 +93,15 @@
     },
     {
       "name": "inject_credential",
-      "description": "Securely fill a Chromium login form without returning the secret to the model. The browser endpoint must be local, the page origin is checked against the entry's bound domain before every fill, and no arbitrary browser JavaScript is exposed.",
-      "requiredMethod": "Inject",
+      "description": "Fail closed without requesting or decrypting a credential. External CDP cannot attest the browser or page origin, so browser injection remains unavailable until a reviewed authenticated browser boundary is installed.",
+      "requiredMethod": null,
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
           "vaultId": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Vault ID." },
           "entryId": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Entry ID." },
-          "cdp": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Loopback CDP endpoint for Chrome, Edge, Brave, or Chromium." },
+          "cdp": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Deprecated unauthenticated CDP endpoint. It is accepted only to return a deterministic fail-closed error and is never contacted." },
           "reason": { "type": "string", "maxLength": 4096, "description": "Justification shown to the approving user." },
           "pageUrl": { "type": "string", "maxLength": 4096, "description": "Select an open page by exact parsed URL prefix; no match fails closed." },
           "usernameSelector": { "type": "string", "maxLength": 2048, "description": "CSS selector override for the username field." },

@@ -9,9 +9,9 @@ use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ApplicationFuture, BoundedLineReader, ExecInput, ExecToolResult, GetInput, InjectInput,
-    MAX_BATCH_ITEMS, MAX_FRAME_BYTES, McpApplication, PalladinMcpServer, ProtocolBridgeState,
-    ReportStaleInput, SearchInput, ToolOutcome, collect_batch_response, load_tools, parse_input,
+    ApplicationFuture, BoundedLineReader, ExecInput, ExecToolResult, GetInput, MAX_BATCH_ITEMS,
+    MAX_FRAME_BYTES, McpApplication, PalladinMcpServer, ProtocolBridgeState, ReportStaleInput,
+    SearchInput, ToolOutcome, collect_batch_response, load_tools, parse_input,
     prepare_incoming_message, pretty_result, serve_io, validate_get, validate_search, wait_options,
 };
 
@@ -56,14 +56,6 @@ impl McpApplication for FakeApplication {
         Box::pin(async move { ToolOutcome::success("synthetic-exec") })
     }
 
-    fn inject<'a>(
-        &'a self,
-        _input: InjectInput,
-        _cancellation: CancellationToken,
-    ) -> ApplicationFuture<'a> {
-        Box::pin(async move { ToolOutcome::success("synthetic-inject") })
-    }
-
     fn report_stale<'a>(
         &'a self,
         _input: ReportStaleInput,
@@ -93,6 +85,23 @@ fn frozen_contract_exposes_exactly_five_legacy_tools() {
         assert!(tool.description.is_some());
         assert_eq!(tool.input_schema.get("type"), Some(&json!("object")));
     }
+}
+
+#[test]
+fn frozen_inject_contract_is_explicitly_fail_closed() {
+    let tools = load_tools().expect("contract");
+    let inject = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "inject_credential")
+        .expect("inject compatibility tool");
+    let description = inject.description.as_deref().expect("description");
+
+    assert!(description.contains("Fail closed"));
+    assert!(description.contains("without requesting or decrypting"));
+    assert_eq!(
+        inject.input_schema.get("required"),
+        Some(&json!(["vaultId", "entryId", "cdp"]))
+    );
 }
 
 #[test]
@@ -274,6 +283,32 @@ async fn declared_protocol_versions_complete_the_raw_stdio_lifecycle() {
                 .as_str()
                 .expect("text")
                 .contains("fixture")
+        );
+        assert_eq!(calls.lock().await.as_slice(), ["search"]);
+
+        send(
+            &mut client_write,
+            &json!({
+                "jsonrpc":"2.0",
+                "id":4,
+                "method":"tools/call",
+                "params":{
+                    "name":"inject_credential",
+                    "arguments":{
+                        "vaultId":"vault-fixture",
+                        "entryId":"entry-fixture",
+                        "cdp":"http://127.0.0.1:9222"
+                    }
+                }
+            }),
+        )
+        .await;
+        let rejected = receive(&mut client_read).await;
+        assert_eq!(rejected["id"], 4);
+        assert_eq!(rejected["result"]["isError"], true);
+        assert_eq!(
+            rejected["result"]["content"][0]["text"],
+            super::INJECT_UNAVAILABLE
         );
         assert_eq!(calls.lock().await.as_slice(), ["search"]);
 

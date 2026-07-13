@@ -76,7 +76,7 @@ Agent:    ✓ active
 | `palladin search <query>` | Discover entries by name/url/description (metadata only, no secrets). Lists any fields the owner marked agent-visible. |
 | `palladin get <vaultId> <entryId>` | Fetch a credential as plaintext. `--field <label>` / `--field-id <uuid>` returns one field. |
 | `palladin exec <vaultId> <entryId> -- <cmd>` | Run a command with the secret in its environment. Omit the command for a **Script** entry to run the stored script. |
-| `palladin inject <vaultId> <entryId> --cdp <endpoint>` | Fill a login form in your browser over CDP (the secret never enters your context). |
+| `palladin inject <vaultId> <entryId> --cdp <endpoint>` | Reserved compatibility surface. Fails before profile access or credential delivery because external CDP cannot attest the browser or page origin. |
 | `palladin mcp serve` | Start MCP server (for AI assistant integration). |
 
 ### Named fields, TOTP & scripts
@@ -95,7 +95,7 @@ Well-known aliases: `username`, `password`, `url`, `value`, `notes`. For `exec`,
 ```bash
 palladin get <vaultId> <entryId> --field "Authenticator"     # → { "code": "123456", "expiresIn": 17 }
 palladin exec <vaultId> <entryId> --env OTP="Authenticator" -- some-tool     # OTP=<code> in the env
-palladin inject <vaultId> <entryId> --cdp … --fill-only --password-selector '#otp' --field "Authenticator"
+# Browser injection is unavailable until an authenticated browser boundary is installed.
 ```
 
 A full `get` (no `--field`) redacts every TOTP secret in the output, substituting the current code.
@@ -166,14 +166,14 @@ Restart Claude Desktop. The agent must be **Active** before tools work.
 | `search_entries` | Discover entries by name/url/description (metadata only, no secrets) |
 | `get_credential` | Get a credential as plaintext. `field` returns one field (a TOTP field returns only its current code) |
 | `exec_with_credential` | Run a command with the secret in its environment; output withheld from the model. Omit `command` to run a **Script** entry |
-| `inject_credential` | Fill a login form in a browser over CDP; the secret is never returned |
+| `inject_credential` | Fail closed without profile access or credential delivery; external CDP is never contacted |
 | `report_credential_stale` | Report that a stored credential did not work, so owners can rotate it |
 
 ## Security notes
 
 - **HTTPS only.** `connect --host` (and every request) rejects `http://` to a remote host — the API key is a bearer secret and must never travel in cleartext. `http://` is allowed only for loopback hosts (`localhost`, `127.0.0.1`, `::1`) for local development; use `https://` everywhere else.
-- **`exec_with_credential` withholds command output.** The secret is injected into the child's environment, but the command's stdout/stderr are **not** returned to the model — a prompt-injected agent could make the command re-encode the secret (base64/hex/reverse) to defeat any output filter. The model receives only the exit code and a note; the human operator sees the output on the terminal (CLI) or the server's stderr (MCP), and a best-effort masked tail is written to `~/.palladin/exec-logs/` (opt out with `PALLADIN_NO_DIAGNOSTICS=1`). Judge success from the exit code.
-- **`inject` field-readback is an inherent limitation.** Because the agent controls its own browser, after the CLI types the password it can read the field's value back with its own JavaScript. This cannot be removed without taking browser control away from the agent, and it is not a regression: the origin/domain binding remains a solid control (the secret only ever reaches the real bound domain, never a phishing page), and `inject` protects against accidental leakage into a hosted-LLM context — not against a malicious agent that already holds the secret it is logging in with.
+- **`exec_with_credential` withholds command output from MCP.** The secret is injected into the child's environment, but stdout/stderr are discarded and the model receives only the exit code. The CLI may stream output directly to the operator's terminal. Judge success from the exit code.
+- **Browser injection fails closed.** A caller-provided CDP endpoint controls both the reported page URL and the operation that receives the typed value, so checking an origin reported by that same endpoint is not authentication. The CLI rejects `inject` before opening an Agent profile. The MCP compatibility tool may run inside an already-open Agent session, but it never contacts the browser, requests a credential, or decrypts one. Chrome, Edge, Brave, Chromium, Firefox, and Safari injection are currently unsupported on macOS, Windows, and Linux.
 - **Config/key files are private.** The Palladin home and its subdirectories are created with mode `0700`; key/config files with mode `0600`.
 
 ## Config files

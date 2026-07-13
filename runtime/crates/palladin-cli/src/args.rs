@@ -31,6 +31,8 @@ pub enum Commands {
     Get(GetArgs),
     /// Run a command with a credential in a sanitized child environment.
     Exec(ExecArgs),
+    /// Refuse browser injection until an authenticated browser boundary is installed.
+    Inject(InjectArgs),
     /// Report that a credential is stale without sending its value.
     ReportStale(ReportStaleArgs),
     /// Serve Palladin tools over the Model Context Protocol.
@@ -142,6 +144,57 @@ pub struct ExecArgs {
     /// Executable and arguments after `--`; omit for a Script entry.
     #[arg(last = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct InjectArgs {
+    pub vault_id: String,
+    pub entry_id: String,
+    /// Deprecated and rejected unauthenticated CDP endpoint.
+    #[arg(long)]
+    pub cdp: String,
+    /// Reserved for a future reviewed implementation.
+    #[arg(long)]
+    pub reason: Option<String>,
+    /// Reserved for a future reviewed implementation.
+    #[arg(long)]
+    pub page_url: Option<String>,
+    /// Reserved for a future reviewed implementation.
+    #[arg(long)]
+    pub username_selector: Option<String>,
+    /// Reserved for a future reviewed implementation.
+    #[arg(long)]
+    pub password_selector: Option<String>,
+    /// Reserved for a future reviewed implementation.
+    #[arg(long)]
+    pub submit_selector: Option<String>,
+    /// Reserved for a future reviewed implementation.
+    #[arg(long)]
+    pub no_submit: bool,
+    /// Reserved for a future reviewed implementation.
+    #[arg(long)]
+    pub fill_only: bool,
+    /// Reserved for a future reviewed implementation.
+    #[arg(long)]
+    pub field: Option<String>,
+    /// Reserved for a future reviewed implementation.
+    #[arg(long)]
+    pub field_id: Option<String>,
+    /// Reserved for value-free diagnostics in a future reviewed implementation.
+    #[arg(long)]
+    pub verbose: bool,
+    /// Reserved for a future reviewed implementation.
+    #[arg(long, overrides_with = "no_wait")]
+    pub wait: Option<String>,
+    /// Reserved for a future reviewed implementation.
+    #[arg(long, overrides_with = "wait")]
+    pub no_wait: bool,
+    /// Reserved for a future reviewed implementation.
+    #[arg(long)]
+    pub poll_interval: Option<String>,
+    /// Reserved for the reviewed browser extension.
+    #[arg(long, value_enum)]
+    pub progress: Option<ProgressArg>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
