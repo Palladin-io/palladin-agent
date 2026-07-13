@@ -63,3 +63,75 @@ fn doctor_reports_only_the_name_of_a_dangerous_variable() {
     assert!(!stdout.contains(synthetic_value));
     assert!(!stderr.contains(synthetic_value));
 }
+
+#[test]
+fn legacy_positional_api_key_is_rejected_without_echoing_it() {
+    let synthetic = "pl_synthetic_must_not_appear";
+    let output = runtime()
+        .args(["connect", synthetic])
+        .output()
+        .expect("run connect");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout");
+    let stderr = String::from_utf8(output.stderr).expect("stderr");
+    assert!(!stdout.contains(synthetic));
+    assert!(!stderr.contains(synthetic));
+    assert!(stderr.contains("forbidden in argv"));
+}
+
+#[test]
+fn connect_help_has_no_api_key_positional_argument() {
+    let output = runtime()
+        .args(["connect", "--help"])
+        .output()
+        .expect("connect help");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout");
+    assert!(!stdout.to_ascii_lowercase().contains("<api-key>"));
+    assert!(stdout.contains("--api-key-stdin"));
+}
+
+#[test]
+fn invalid_stdin_api_key_is_not_echoed() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let synthetic = "synthetic-invalid-key-must-not-appear";
+    let mut child = runtime()
+        .args(["connect", "--api-key-stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn connect");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(format!("{synthetic}\n").as_bytes())
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("wait");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout");
+    let stderr = String::from_utf8(output.stderr).expect("stderr");
+    assert!(!stdout.contains(synthetic));
+    assert!(!stderr.contains(synthetic));
+}
+
+#[test]
+fn palladin_home_is_rejected_without_revealing_its_value() {
+    let synthetic = "/synthetic/private/path/must-not-appear";
+    let output = runtime()
+        .env("PALLADIN_HOME", synthetic)
+        .arg("agents")
+        .arg("list")
+        .output()
+        .expect("run agents list");
+    assert_eq!(output.status.code(), Some(78));
+    let stdout = String::from_utf8(output.stdout).expect("stdout");
+    let stderr = String::from_utf8(output.stderr).expect("stderr");
+    assert!(stdout.contains("PALLADIN_HOME"));
+    assert!(!stdout.contains(synthetic));
+    assert!(!stderr.contains(synthetic));
+}

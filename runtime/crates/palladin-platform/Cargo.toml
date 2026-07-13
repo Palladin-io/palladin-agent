@@ -13,4 +13,6 @@ directories.workspace = true
 nix.workspace = true
 
 [dependencies]
+keyring.workspace = true
+secrecy.workspace = true
 thiserror.workspace = true

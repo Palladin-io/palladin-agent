@@ -8,12 +8,13 @@ use thiserror::Error;
 
 use crate::host::ApiHost;
 
-pub const PUBLIC_SCHEMA_VERSION: u32 = 1;
+pub const PUBLIC_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PublicAgentEntry {
     pub name: String,
+    pub identity_id: String,
     pub created_at: String,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
@@ -44,7 +45,7 @@ impl PublicRegistry {
             || self
                 .agents
                 .iter()
-                .any(|agent| !is_profile_name(&agent.name))
+                .any(|agent| !is_profile_name(&agent.name) || !is_opaque_id(&agent.identity_id))
         {
             return Err(PublicStoreError::InvalidPublicData);
         }
@@ -54,7 +55,13 @@ impl PublicRegistry {
             .iter()
             .map(|agent| agent.name.as_str())
             .collect::<std::collections::BTreeSet<_>>();
+        let identity_ids = self
+            .agents
+            .iter()
+            .map(|agent| agent.identity_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
         if names.len() != self.agents.len()
+            || identity_ids.len() != self.agents.len()
             || (!self.agents.is_empty() && !names.contains(self.default.as_str()))
         {
             return Err(PublicStoreError::InvalidPublicData);
@@ -69,6 +76,9 @@ impl PublicRegistry {
 pub struct PublicProfileConfig {
     pub schema_version: u32,
     pub host: String,
+    pub organization_credential_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_organization_credential_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,7 +89,19 @@ pub struct PublicProfileConfig {
 
 impl PublicProfileConfig {
     fn validate(&self) -> Result<(), PublicStoreError> {
-        if self.schema_version != PUBLIC_SCHEMA_VERSION {
+        if self.schema_version != PUBLIC_SCHEMA_VERSION
+            || !is_opaque_id(&self.organization_credential_id)
+            || self
+                .retired_organization_credential_ids
+                .iter()
+                .any(|value| !is_opaque_id(value) || value == &self.organization_credential_id)
+            || self
+                .retired_organization_credential_ids
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.retired_organization_credential_ids.len()
+        {
             return Err(PublicStoreError::InvalidPublicData);
         }
 
@@ -126,12 +148,15 @@ pub fn save_profile_config(
     save_json_atomic(path, config)
 }
 
-fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T, PublicStoreError> {
+pub(crate) fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T, PublicStoreError> {
     let file = File::open(path)?;
     Ok(serde_json::from_reader(BufReader::new(file))?)
 }
 
-fn save_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), PublicStoreError> {
+pub(crate) fn save_json_atomic<T: Serialize>(
+    path: &Path,
+    value: &T,
+) -> Result<(), PublicStoreError> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "store path has no parent")
     })?;
@@ -153,12 +178,44 @@ fn save_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), PublicSt
     Ok(())
 }
 
-fn is_profile_name(name: &str) -> bool {
+pub fn is_profile_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
-        && name
+        && name.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+        && !matches!(
+            name.to_ascii_uppercase().as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        )
+}
+
+pub fn is_opaque_id(value: &str) -> bool {
+    value.len() == 32
+        && value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(unix)]
@@ -199,6 +256,7 @@ mod tests {
             default: "build".to_owned(),
             agents: vec![PublicAgentEntry {
                 name: "build".to_owned(),
+                identity_id: "11111111111111111111111111111111".to_owned(),
                 created_at: "2026-07-12T00:00:00Z".to_owned(),
                 agent_type: Some("coding".to_owned()),
             }],
@@ -251,6 +309,8 @@ mod tests {
         let config = PublicProfileConfig {
             schema_version: PUBLIC_SCHEMA_VERSION,
             host: "https://user:synthetic-password@example.test".to_owned(),
+            organization_credential_id: "22222222222222222222222222222222".to_owned(),
+            retired_organization_credential_ids: Vec::new(),
             agent_id: None,
             encryption_public_key: None,
             signing_public_key: None,
@@ -273,6 +333,8 @@ mod tests {
             let config = PublicProfileConfig {
                 schema_version: PUBLIC_SCHEMA_VERSION,
                 host: host.to_owned(),
+                organization_credential_id: "22222222222222222222222222222222".to_owned(),
+                retired_organization_credential_ids: Vec::new(),
                 agent_id: None,
                 encryption_public_key: None,
                 signing_public_key: None,
@@ -293,6 +355,8 @@ mod tests {
             let config = PublicProfileConfig {
                 schema_version: PUBLIC_SCHEMA_VERSION,
                 host: host.to_owned(),
+                organization_credential_id: "22222222222222222222222222222222".to_owned(),
+                retired_organization_credential_ids: Vec::new(),
                 agent_id: None,
                 encryption_public_key: None,
                 signing_public_key: None,
@@ -309,6 +373,8 @@ mod tests {
         let config = PublicProfileConfig {
             schema_version: PUBLIC_SCHEMA_VERSION,
             host: "https://api.palladin.io/v1/".to_owned(),
+            organization_credential_id: "22222222222222222222222222222222".to_owned(),
+            retired_organization_credential_ids: Vec::new(),
             agent_id: Some("agent-public-id".to_owned()),
             encryption_public_key: Some("public-encryption-key".to_owned()),
             signing_public_key: Some("public-signing-key".to_owned()),

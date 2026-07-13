@@ -8,7 +8,9 @@ const EXACT_DANGEROUS_NAMES: &[&str] = &[
     "NODE_OPTIONS",
     "NODE_PATH",
     "PALLADIN_API_KEY",
+    "PALLADIN_HOME",
     "PALLADIN_PRIVATE_KEY",
+    "PALLADIN_SIGNING_KEY",
     "PALLADIN_SIGNING_PRIVATE_KEY",
     "REQUESTS_CA_BUNDLE",
     "SSL_CERT_DIR",
@@ -100,6 +102,8 @@ fn is_dangerous_name_with_case(name: &str, case_insensitive: bool) -> bool {
 
     normalized.starts_with("DYLD_")
         || normalized.starts_with("LD_")
+        || normalized.starts_with("PALLADIN_PRIVATE_KEY_")
+        || normalized.starts_with("PALLADIN_SIGNING_KEY_")
         || EXACT_DANGEROUS_NAMES.contains(&normalized.as_str())
 }
 
@@ -136,6 +140,7 @@ mod tests {
             "DYLD_INSERT_LIBRARIES",
             "NODE_OPTIONS",
             "PALLADIN_API_KEY",
+            "PALLADIN_HOME",
         ]);
 
         assert_eq!(
@@ -144,7 +149,8 @@ mod tests {
                 "DYLD_INSERT_LIBRARIES",
                 "LD_PRELOAD",
                 "NODE_OPTIONS",
-                "PALLADIN_API_KEY"
+                "PALLADIN_API_KEY",
+                "PALLADIN_HOME"
             ]
         );
         assert!(!report.is_safe());
@@ -157,6 +163,9 @@ mod tests {
         assert!(is_dangerous_name("DYLD_FUTURE_INJECTION_FLAG"));
         assert!(!is_dangerous_name("SAFE_DYLD_VALUE"));
         assert!(is_dangerous_name("SSL_CERT_FILE"));
+        assert!(is_dangerous_name("PALLADIN_SIGNING_KEY"));
+        assert!(is_dangerous_name("PALLADIN_PRIVATE_KEY_BUILD_AGENT"));
+        assert!(is_dangerous_name("PALLADIN_SIGNING_KEY_BUILD_AGENT"));
     }
 
     #[test]
@@ -189,6 +198,8 @@ mod tests {
         command.env("LD_PRELOAD", "synthetic-not-a-library");
         command.env("NODE_OPTIONS", "--synthetic");
         command.env("PALLADIN_API_KEY", "synthetic-not-a-secret");
+        command.env("PALLADIN_PRIVATE_KEY_BUILD", "synthetic-not-a-secret");
+        command.env("PALLADIN_SIGNING_KEY_BUILD", "synthetic-not-a-secret");
         command.env("SSL_CERT_FILE", "synthetic-ca-path");
         command.env("SAFE_VALUE", "preserved");
         if cfg!(windows) {
@@ -204,6 +215,8 @@ mod tests {
         assert_eq!(environment.get("LD_PRELOAD"), Some(&false));
         assert_eq!(environment.get("NODE_OPTIONS"), Some(&false));
         assert_eq!(environment.get("PALLADIN_API_KEY"), Some(&false));
+        assert_eq!(environment.get("PALLADIN_PRIVATE_KEY_BUILD"), Some(&false));
+        assert_eq!(environment.get("PALLADIN_SIGNING_KEY_BUILD"), Some(&false));
         assert_eq!(environment.get("SSL_CERT_FILE"), Some(&false));
         assert_eq!(environment.get("SAFE_VALUE"), Some(&true));
         if cfg!(windows) {
