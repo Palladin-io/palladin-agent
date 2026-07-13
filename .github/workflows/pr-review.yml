@@ -25,7 +25,9 @@ jobs:
   review:
     # Claude review is intentionally manual and restricted to the repository
     # owner so public contributors cannot consume the configured OAuth quota.
-    if: github.actor == 'patryk-roguszewski'
+    if: >
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'patryk-roguszewski'
     name: Claude Code Review
     runs-on: ubuntu-latest
     timeout-minutes: 30
