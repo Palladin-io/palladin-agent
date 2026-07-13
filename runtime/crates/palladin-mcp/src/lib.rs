@@ -1507,7 +1507,7 @@ fn exec_failure(error: &RuntimeError) -> ToolOutcome {
             "The Script entry uses an unsupported interpreter."
         }
         RuntimeError::Exec(palladin_runtime::ExecError::InterpreterUnavailable) => {
-            "The Script entry interpreter is not installed in a trusted PATH directory. Nothing was executed."
+            "The Script entry interpreter is not installed as an executable in PATH. Nothing was executed."
         }
         RuntimeError::Exec(palladin_runtime::ExecError::ImplicitShellForbidden) => {
             "Windows command scripts require an explicit shell executable."

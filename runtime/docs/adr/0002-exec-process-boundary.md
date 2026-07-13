@@ -17,7 +17,7 @@ The standalone runtime retains identity keys and the organization API key in its
 The standalone runtime applies the following defense-in-depth controls:
 
 - It starts the selected executable directly. It never inserts an implicit shell. Windows `.bat` and `.cmd` files are rejected unless the caller explicitly starts a shell.
-- Script entries use only the allowlisted `bash`, `sh`, `node`, and `python` interpreters. The executable is resolved and validated as an absolute canonical path before any referenced credential is delivered. Unix candidates and their direct parent directory must not be world-writable; group-shared managed installations remain supported in the Convenience tier.
+- Script entries use only the allowlisted `bash`, `sh`, `node`, and `python` interpreters. The executable is resolved and validated as an absolute canonical path to a regular executable before any referenced credential is delivered. This prevents a Script entry from supplying its own path or arguments, but it is not a same-user `PATH` integrity boundary.
 - All Script references are validated and delivered before the script starts. One denied or invalid reference aborts execution.
 - The child environment is cleared and rebuilt from a small positive allowlist plus explicitly scoped credential variables. Palladin identity keys, the organization API key, loader variables, and unrelated parent variables are not inherited.
 - Child standard input is null, so an MCP child cannot consume JSON-RPC traffic and a CLI child cannot obtain additional terminal input through this path.
@@ -44,4 +44,4 @@ The platform executor must expose a narrow operation protocol, not raw secret re
 
 ## Consequences
 
-CVT-314 materially reduces accidental leakage, environment inheritance, output exfiltration through MCP, temporary-file residue on handled paths, and orphaned subprocesses. It does not defend against a malicious process with effective same-user debugging or memory-read capability. That threat requires the platform boundary described above and is outside the standalone runtime delivered by this issue.
+CVT-314 materially reduces accidental leakage, environment inheritance, output exfiltration through MCP, temporary-file residue on handled paths, and orphaned subprocesses. It does not defend against a malicious process with effective same-user debugging, memory-read, or parent-environment tampering capability. That threat requires the platform boundary described above and is outside the standalone runtime delivered by this issue.
