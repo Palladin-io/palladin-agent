@@ -1,14 +1,14 @@
 use palladin_crypto::EncryptedCredential;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentVisibleField {
     pub label: String,
     pub value: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntrySearchItem {
     pub entry_id: String,
@@ -20,7 +20,7 @@ pub struct EntrySearchItem {
     pub agent_fields: Vec<AgentVisibleField>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntrySearchResult {
     pub items: Vec<EntrySearchItem>,

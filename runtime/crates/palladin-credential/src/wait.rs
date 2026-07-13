@@ -2,6 +2,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use palladin_api::CredentialAccess;
+use palladin_core::terminal::shorten_identifier;
 use serde::Serialize;
 use thiserror::Error;
 use tokio::time::{Instant, timeout_at};
@@ -283,22 +284,6 @@ pub fn parse_duration(value: &str) -> Result<u64, DurationParseError> {
         return Err(DurationParseError::Invalid);
     }
     Ok(milliseconds.round() as u64)
-}
-
-fn shorten_identifier(value: &str) -> String {
-    if value.chars().count() <= 16 {
-        return value.to_owned();
-    }
-    let prefix = value.chars().take(8).collect::<String>();
-    let suffix = value
-        .chars()
-        .rev()
-        .take(6)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect::<String>();
-    format!("{prefix}…{suffix}")
 }
 
 #[derive(Debug, Error)]

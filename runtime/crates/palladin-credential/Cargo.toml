@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 hmac.workspace = true
 palladin-api = { path = "../palladin-api" }
+palladin-core = { path = "../palladin-core" }
 percent-encoding.workspace = true
 secrecy.workspace = true
 serde.workspace = true

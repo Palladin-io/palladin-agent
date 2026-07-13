@@ -428,6 +428,47 @@ async fn invalid_key_is_not_persisted_in_public_or_secure_storage() {
 }
 
 #[tokio::test]
+async fn existing_agent_requests_use_its_signing_identity_with_the_shared_organization_key() {
+    let root = tempfile::tempdir().expect("root");
+    let store = MemoryStore::default();
+    let service = service(root.path(), store);
+    let profile = service.create_profile("build", None).expect("profile");
+    let (connect_host, _) = response_server(vec![Response::active("agent-build")]).await;
+    service
+        .connect(
+            Some("build"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            ApiHost::parse(&connect_host).expect("host"),
+            None,
+            None,
+            "fixture-host",
+        )
+        .await
+        .expect("connect");
+
+    let (status_host, requests) = response_server(vec![Response::active("agent-build")]).await;
+    let mut config = service
+        .repository()
+        .load_config(&profile.identity_id)
+        .expect("config");
+    config.host = status_host;
+    service
+        .repository()
+        .save_config(&profile.identity_id, &config)
+        .expect("save host");
+    service
+        .status(Some("build"), "fixture-host")
+        .await
+        .expect("status");
+
+    let request = requests.lock().expect("requests")[0].to_ascii_lowercase();
+    assert!(request.contains("x-agent-id: agent-build\r\n"));
+    assert!(request.contains("x-agent-signature: "));
+    assert!(request.contains("x-agent-timestamp: "));
+    assert!(request.contains("x-agent-nonce: "));
+}
+
+#[tokio::test]
 async fn explicit_purge_removes_native_shared_and_identity_slots() {
     let root = tempfile::tempdir().expect("root");
     let root_path = root.path().to_path_buf();

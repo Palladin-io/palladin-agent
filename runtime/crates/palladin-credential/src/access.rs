@@ -1,4 +1,5 @@
 use palladin_api::{CredentialAccess, CredentialMethod};
+use palladin_core::terminal::shorten_identifier;
 
 pub const EX_OK: u8 = 0;
 pub const EX_GENERIC: u8 = 1;
@@ -75,22 +76,6 @@ const fn method_name(method: CredentialMethod) -> &'static str {
         CredentialMethod::Exec => "exec",
         CredentialMethod::Inject => "inject",
     }
-}
-
-fn shorten_identifier(value: &str) -> String {
-    if value.chars().count() <= 16 {
-        return value.to_owned();
-    }
-    let prefix = value.chars().take(8).collect::<String>();
-    let suffix = value
-        .chars()
-        .rev()
-        .take(6)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect::<String>();
-    format!("{prefix}…{suffix}")
 }
 
 #[cfg(test)]

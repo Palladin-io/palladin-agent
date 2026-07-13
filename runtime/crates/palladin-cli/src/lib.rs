@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+pub mod args;
+pub mod output;
+
 use std::collections::BTreeSet;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -13,7 +16,10 @@ use palladin_core::public_store::{
     PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicProfileConfig, PublicRegistry,
 };
 use palladin_core::secret::OrganizationApiKey;
-use palladin_crypto::{Ed25519Identity, X25519Identity};
+pub use palladin_core::terminal::{safe_terminal_text, shorten_identifier};
+use palladin_crypto::{
+    DecryptedCredential, Ed25519Identity, EncryptedCredential, X25519Identity, decrypt_credential,
+};
 use palladin_platform::secure_store::{
     SecretSlot, SecretStore, StoreError, delete_identity, delete_organization_credential,
 };
@@ -253,9 +259,23 @@ impl<S: SecretStore> RuntimeService<S> {
         let (organization_credential_id, created_organization) =
             self.find_or_create_organization_credential(&registry, &organization_api_key)?;
         let host_string = host.as_url().as_str().trim_end_matches('/').to_owned();
-        let signing_public_key = STANDARD.encode(signing.public_key());
+        let signing_public_key_bytes = *signing.public_key();
+        let signing_public_key = STANDARD.encode(signing_public_key_bytes);
         let encryption_public_key = STANDARD.encode(encryption.public_key());
-        let client = match ApiClient::new(host, organization_api_key, &encryption, hostname, None) {
+        let signing_context = existing_config
+            .as_ref()
+            .and_then(|config| config.agent_id.as_ref())
+            .map(|agent_id| palladin_api::SigningContext {
+                agent_id: agent_id.clone(),
+                identity: signing,
+            });
+        let client = match ApiClient::new(
+            host,
+            organization_api_key,
+            &encryption,
+            hostname,
+            signing_context,
+        ) {
             Ok(client) => client,
             Err(error) => {
                 self.cleanup_unused_new_organization(
@@ -270,7 +290,7 @@ impl<S: SecretStore> RuntimeService<S> {
             .register_agent(
                 display_name.or_else(|| (agent.name != "default").then_some(agent.name.as_str())),
                 agent_type.or(agent.agent_type.as_deref()),
-                Some(signing.public_key()),
+                Some(&signing_public_key_bytes),
             )
             .await
         {
@@ -363,16 +383,27 @@ impl<S: SecretStore> RuntimeService<S> {
         let registry = self.repository.load_registry()?;
         self.cleanup_retired_organizations(&agent.identity_id, &mut config, &registry)?;
         let (encryption, signing) = self.load_identity(&agent.identity_id)?;
+        let signing_public_key = *signing.public_key();
         let organization_api_key =
             self.load_organization_api_key(&config.organization_credential_id)?;
         let host = ApiHost::parse(&config.host).map_err(|_| RuntimeError::InvalidPublicConfig)?;
-        let client = ApiClient::new(host, organization_api_key, &encryption, hostname, None)?;
+        let signing_context =
+            config
+                .agent_id
+                .as_ref()
+                .map(|agent_id| palladin_api::SigningContext {
+                    agent_id: agent_id.clone(),
+                    identity: signing,
+                });
+        let client = ApiClient::new(
+            host,
+            organization_api_key,
+            &encryption,
+            hostname,
+            signing_context,
+        )?;
         let registration = client
-            .register_agent(
-                None,
-                agent.agent_type.as_deref(),
-                Some(signing.public_key()),
-            )
+            .register_agent(None, agent.agent_type.as_deref(), Some(&signing_public_key))
             .await?;
         if let AgentRegistrationResult::Pending { agent_id }
         | AgentRegistrationResult::Active { agent_id, .. }
@@ -380,7 +411,7 @@ impl<S: SecretStore> RuntimeService<S> {
         {
             config.agent_id = Some(agent_id.clone());
             config.encryption_public_key = Some(STANDARD.encode(encryption.public_key()));
-            config.signing_public_key = Some(STANDARD.encode(signing.public_key()));
+            config.signing_public_key = Some(STANDARD.encode(signing_public_key));
             self.repository.save_config(&agent.identity_id, &config)?;
         }
         Ok(StatusOutcome {
@@ -388,6 +419,49 @@ impl<S: SecretStore> RuntimeService<S> {
             config,
             registration,
         })
+    }
+
+    pub fn open_session(
+        &self,
+        profile_name: Option<&str>,
+        hostname: &str,
+    ) -> Result<RuntimeSession, RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let profile = self.resolve_profile_locked(profile_name)?;
+        let mut config = self.repository.load_config(&profile.identity_id)?;
+        let registry = self.repository.load_registry()?;
+        self.cleanup_retired_organizations(&profile.identity_id, &mut config, &registry)?;
+        let (encryption, signing) = self.load_identity(&profile.identity_id)?;
+        let organization_api_key =
+            self.load_organization_api_key(&config.organization_credential_id)?;
+        let host = ApiHost::parse(&config.host).map_err(|_| RuntimeError::InvalidPublicConfig)?;
+        let agent_id = config
+            .agent_id
+            .as_ref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        let signing = Some(palladin_api::SigningContext {
+            agent_id: agent_id.clone(),
+            identity: signing,
+        });
+        let api = ApiClient::new(host, organization_api_key, &encryption, hostname, signing)?;
+        Ok(RuntimeSession {
+            profile,
+            config,
+            api,
+            encryption,
+        })
+    }
+
+    pub fn verify_identity(
+        &self,
+        profile_name: Option<&str>,
+    ) -> Result<PublicAgentEntry, RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let profile = self.resolve_profile_locked(profile_name)?;
+        let _identity = self.load_identity(&profile.identity_id)?;
+        Ok(profile)
     }
 
     fn load_identity(
@@ -633,6 +707,22 @@ pub struct StatusOutcome {
     pub registration: AgentRegistrationResult,
 }
 
+pub struct RuntimeSession {
+    pub profile: PublicAgentEntry,
+    pub config: PublicProfileConfig,
+    pub api: ApiClient,
+    encryption: X25519Identity,
+}
+
+impl RuntimeSession {
+    pub fn decrypt(
+        &self,
+        envelope: &EncryptedCredential,
+    ) -> Result<DecryptedCredential, RuntimeError> {
+        decrypt_credential(envelope, &self.encryption).map_err(RuntimeError::Crypto)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum RuntimeError {
     #[error("profile operation failed: {0}")]
@@ -651,6 +741,8 @@ pub enum RuntimeError {
     MissingIdentity,
     #[error("stored organization credential is missing")]
     MissingOrganizationCredential,
+    #[error("Agent is not registered; run palladin status or reconnect it")]
+    MissingAgentId,
     #[error("stored secret has an invalid format")]
     InvalidStoredSecret,
     #[error("public profile configuration is invalid")]
@@ -681,21 +773,4 @@ fn now_rfc3339() -> Result<String, RuntimeError> {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .map_err(|_| RuntimeError::Clock)
-}
-
-#[must_use]
-pub fn shorten_identifier(value: &str) -> String {
-    if value.chars().count() <= 17 {
-        return value.to_owned();
-    }
-    let prefix = value.chars().take(8).collect::<String>();
-    let suffix = value
-        .chars()
-        .rev()
-        .take(6)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect::<String>();
-    format!("{prefix}…{suffix}")
 }

@@ -1,97 +1,43 @@
 #![forbid(unsafe_code)]
 
-use std::io::{self, BufRead, IsTerminal, Read};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand};
-use palladin_api::AgentRegistrationResult;
-use palladin_cli::{RuntimeError, RuntimeService, shorten_identifier};
+use clap::Parser;
+use palladin_api::{
+    CredentialAccess, CredentialMethod, GetCredentialOptions, ReportCredentialStaleInput,
+    StaleReasonCode,
+};
+use palladin_cli::args::{
+    AgentsCommand, Cli, Commands, ConnectArgs, GetArgs, ProgressArg, ReportStaleArgs, SearchArgs,
+    SecurityCommand, StaleCodeArg,
+};
+use palladin_cli::output::{
+    CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
+    render_agent_list, render_connect, render_init, render_profile_created, render_report_stale,
+    render_search_human, render_security_upgrade, render_status,
+};
+use palladin_cli::{RuntimeError, RuntimeService, safe_terminal_text};
 use palladin_core::environment::{EnvironmentReport, EnvironmentRequirement, enforce_environment};
 use palladin_core::host::ApiHost;
 use palladin_core::panic::install_redacted_panic_hook;
 use palladin_core::profiles::ProfileRepository;
 use palladin_core::secret::OrganizationApiKey;
+use palladin_core::terminal::is_safe_terminal_text;
+use palladin_credential::access::{access_message, exit_code_for_access};
+use palladin_credential::fields::{FieldSelector, redact_totp_secrets, resolve_field};
+use palladin_credential::secret::parse_secret;
+use palladin_credential::wait::{
+    ProgressMode, WaitHints, WaitOptions, await_grant, heartbeat_line, parse_duration,
+    resolve_wait_policy, signal_cancellation_token,
+};
 use palladin_platform::secure_store::{OsSecretStore, convenience_tier_description};
+use secrecy::ExposeSecret;
+use serde::Serialize;
 use zeroize::Zeroizing;
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_UNSAFE_ENVIRONMENT: u8 = 78;
-
-#[derive(Debug, Parser)]
-#[command(name = "palladin", version, about = "Palladin native Agent runtime")]
-struct Cli {
-    /// Local Agent profile alias.
-    #[arg(long, global = true)]
-    id: Option<String>,
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Debug, Subcommand)]
-enum Commands {
-    /// Check the native runtime boundary without opening Agent Identity.
-    Doctor,
-    /// Connect an Agent using a masked prompt or protected standard input.
-    Connect(ConnectArgs),
-    /// Show registration status for an Agent profile.
-    Status,
-    /// Manage local Agent profiles.
-    Agents {
-        #[command(subcommand)]
-        command: AgentsCommand,
-    },
-    /// Explicitly remove every native profile and secret.
-    Purge {
-        /// Required acknowledgement; purge is never run by npm uninstall hooks.
-        #[arg(long)]
-        confirm: bool,
-    },
-}
-
-#[derive(Debug, Args)]
-struct ConnectArgs {
-    /// Read the organization API key from one line of standard input.
-    #[arg(long)]
-    api_key_stdin: bool,
-    /// Palladin API base URL.
-    #[arg(long, default_value = "https://api.palladin.io")]
-    host: String,
-    /// Backend display name; the local profile alias remains unchanged.
-    #[arg(long)]
-    name: Option<String>,
-    /// Agent category, for example ci, browser, or backend.
-    #[arg(long)]
-    r#type: Option<String>,
-}
-
-#[derive(Debug, Subcommand)]
-enum AgentsCommand {
-    /// List Agent profile aliases.
-    List,
-    /// Create a profile with a fresh native identity.
-    Create {
-        name: String,
-        #[arg(long)]
-        r#type: Option<String>,
-    },
-    /// Delete a non-default Agent profile.
-    Delete { name: String },
-    /// Change the default profile.
-    SetDefault { name: String },
-    /// Rename an alias without moving or rewriting secret slots.
-    Rename { old_name: String, new_name: String },
-}
-
-impl Commands {
-    const fn environment_requirement(&self) -> EnvironmentRequirement {
-        match self {
-            Self::Doctor => EnvironmentRequirement::DiagnosticOnly,
-            Self::Connect(_) | Self::Status | Self::Agents { .. } | Self::Purge { .. } => {
-                EnvironmentRequirement::Clean
-            }
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -101,10 +47,18 @@ async fn main() -> ExitCode {
             "API keys are forbidden in argv; use a masked prompt or connect --api-key-stdin",
         );
     }
+    if deprecated_connect_id_usage() {
+        return fail(
+            "connect --id no longer sets the backend display name; use connect --name <name>. To select a local profile, place --id <profile> before connect",
+        );
+    }
+    if argv_contains_unsafe_terminal_text() {
+        return fail("command-line arguments contain unsupported control characters");
+    }
     let environment = EnvironmentReport::inspect_current();
     let cli = Cli::parse();
 
-    if enforce_environment(cli.command.environment_requirement(), &environment).is_err() {
+    if enforce_environment(environment_requirement(&cli.command), &environment).is_err() {
         print_unsafe_environment(&environment);
         return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
     }
@@ -120,11 +74,76 @@ async fn main() -> ExitCode {
     let service = RuntimeService::new(repository, OsSecretStore);
 
     match cli.command {
+        Commands::Init { force } => init(&service, cli.id.as_deref(), force),
         Commands::Doctor => doctor(&environment, &service),
         Commands::Connect(args) => connect(&service, cli.id.as_deref(), args).await,
         Commands::Status => status(&service, cli.id.as_deref()).await,
+        Commands::Search(args) => search(&service, cli.id.as_deref(), args).await,
+        Commands::Get(args) => get(&service, cli.id.as_deref(), args).await,
+        Commands::ReportStale(args) => report_stale(&service, cli.id.as_deref(), args).await,
         Commands::Agents { command } => agents(&service, command),
+        Commands::Security { command } => security(&service, cli.id.as_deref(), command),
         Commands::Purge { confirm } => purge(&service, confirm),
+    }
+}
+
+const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
+    match command {
+        Commands::Doctor => EnvironmentRequirement::DiagnosticOnly,
+        Commands::Init { .. }
+        | Commands::Connect(_)
+        | Commands::Status
+        | Commands::Search(_)
+        | Commands::Get(_)
+        | Commands::ReportStale(_)
+        | Commands::Agents { .. }
+        | Commands::Security { .. }
+        | Commands::Purge { .. } => EnvironmentRequirement::Clean,
+    }
+}
+
+fn init(
+    service: &RuntimeService<OsSecretStore>,
+    profile_name: Option<&str>,
+    force: bool,
+) -> ExitCode {
+    if force {
+        return fail(
+            "in-place identity rotation is disabled; create a new profile with palladin agents create <name>",
+        );
+    }
+    let registry = match service.registry() {
+        Ok(registry) => registry,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let profile_name = profile_name.unwrap_or("default");
+    if registry
+        .agents
+        .iter()
+        .any(|profile| profile.name == profile_name)
+    {
+        let profile = match service.verify_identity(Some(profile_name)) {
+            Ok(profile) => profile,
+            Err(error) => return fail(&error.to_string()),
+        };
+        return emit_output(render_init(
+            &profile.name,
+            convenience_tier_description(),
+            true,
+            profile.name == registry.default,
+        ));
+    }
+    match service.create_profile(profile_name, None) {
+        Ok(profile) => {
+            let is_default = profile.name == registry.default || registry.agents.is_empty();
+            emit_output(render_init(
+                &profile.name,
+                convenience_tier_description(),
+                false,
+                is_default,
+            ))
+        }
+        Err(error) => fail(&error.to_string()),
     }
 }
 
@@ -201,40 +220,11 @@ async fn connect(
         Err(error) => return fail(&error.to_string()),
     };
 
-    println!("Security: {}", convenience_tier_description());
-    match outcome.registration {
-        AgentRegistrationResult::Pending { agent_id } => {
-            println!("Agent registered - awaiting approval");
-            println!("Agent ID: {}", shorten_identifier(&agent_id));
-            println!("Approve this Agent in the Palladin panel.");
-            ExitCode::SUCCESS
-        }
-        AgentRegistrationResult::Active { agent_id, name } => {
-            println!("Agent active");
-            println!("Agent ID: {}", shorten_identifier(&agent_id));
-            if let Some(name) = name {
-                println!("Backend name: {name}");
-            }
-            ExitCode::SUCCESS
-        }
-        AgentRegistrationResult::Deactivated { agent_id } => {
-            eprintln!(
-                "Error: Agent is deactivated ({})",
-                shorten_identifier(&agent_id)
-            );
-            ExitCode::from(EXIT_FAILURE)
-        }
-        AgentRegistrationResult::InvalidKey => fail("API key is invalid or revoked"),
-        AgentRegistrationResult::Unreachable { error } => {
-            eprintln!("Warning: server unreachable ({error})");
-            if outcome.config_saved {
-                eprintln!("Configuration saved. Run: palladin status");
-            } else {
-                eprintln!("Existing working configuration was preserved.");
-            }
-            ExitCode::SUCCESS
-        }
-    }
+    emit_output(render_connect(
+        &outcome.registration,
+        outcome.config_saved,
+        convenience_tier_description(),
+    ))
 }
 
 async fn status(service: &RuntimeService<OsSecretStore>, profile: Option<&str>) -> ExitCode {
@@ -246,92 +236,296 @@ async fn status(service: &RuntimeService<OsSecretStore>, profile: Option<&str>) 
         Ok(outcome) => outcome,
         Err(error) => return fail(&error.to_string()),
     };
-    println!("Profile: {}", outcome.profile.name);
-    println!("Host: {}", outcome.config.host);
-    println!("Security: {}", convenience_tier_description());
-    match outcome.registration {
-        AgentRegistrationResult::Pending { agent_id } => {
-            println!(
-                "Agent: pending approval ({})",
-                shorten_identifier(&agent_id)
-            );
-            ExitCode::SUCCESS
+    emit_output(render_status(
+        &outcome.profile.name,
+        &outcome.config.host,
+        &outcome.registration,
+        convenience_tier_description(),
+    ))
+}
+
+async fn search(
+    service: &RuntimeService<OsSecretStore>,
+    profile: Option<&str>,
+    args: SearchArgs,
+) -> ExitCode {
+    let query = args.query.trim();
+    if query.chars().count() < 2 {
+        return fail("search query must contain at least two characters");
+    }
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let session = match service.open_session(profile, &hostname) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let result = match session
+        .api
+        .search_entries(query, args.cursor.as_deref(), args.page_size)
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => return fail(&error.to_string()),
+    };
+    if args.json {
+        let stdout = io::stdout();
+        let mut output = stdout.lock();
+        if serde_json::to_writer_pretty(&mut output, &result).is_err()
+            || output.write_all(b"\n").is_err()
+        {
+            return fail("could not write search results to standard output");
         }
-        AgentRegistrationResult::Active { agent_id, name } => {
-            println!("Agent: active ({})", shorten_identifier(&agent_id));
-            if let Some(name) = name {
-                println!("Backend name: {name}");
+        return ExitCode::SUCCESS;
+    }
+    emit_output(render_search_human(&result))
+}
+
+async fn get(
+    service: &RuntimeService<OsSecretStore>,
+    profile: Option<&str>,
+    args: GetArgs,
+) -> ExitCode {
+    let wait_ms = if args.no_wait {
+        Some(0)
+    } else {
+        match args.wait.as_deref().map(parse_duration).transpose() {
+            Ok(value) => value,
+            Err(error) => return fail(&error.to_string()),
+        }
+    };
+    let poll_ms = match args
+        .poll_interval
+        .as_deref()
+        .map(parse_duration)
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let session = match service.open_session(profile, &hostname) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let options = GetCredentialOptions {
+        reason: args.reason.clone(),
+        method: Some(CredentialMethod::Get),
+        requested_methods: Vec::new(),
+    };
+    let initial = match session
+        .api
+        .get_credential(&args.vault_id, &args.entry_id, &options)
+        .await
+    {
+        Ok(access) => access,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let hints = match &initial {
+        CredentialAccess::Pending {
+            poll_interval_ms,
+            max_wait_ms,
+            ..
+        } => WaitHints {
+            poll_interval_ms: *poll_interval_ms,
+            max_wait_ms: *max_wait_ms,
+        },
+        _ => WaitHints::default(),
+    };
+    let progress = args.progress.map(|value| match value {
+        ProgressArg::Plain => ProgressMode::Plain,
+        ProgressArg::Json => ProgressMode::Json,
+        ProgressArg::None => ProgressMode::None,
+    });
+    let policy = resolve_wait_policy(
+        WaitOptions {
+            wait_ms,
+            poll_ms,
+            progress,
+        },
+        hints,
+    );
+    let cancellation = signal_cancellation_token();
+    let access = match await_grant(
+        initial,
+        policy,
+        &cancellation,
+        || {
+            session
+                .api
+                .get_credential(&args.vault_id, &args.entry_id, &options)
+        },
+        tokio::time::sleep,
+        |heartbeat| {
+            if let Some(line) = heartbeat_line(policy.progress, &heartbeat) {
+                eprint!("{line}");
             }
-            ExitCode::SUCCESS
+        },
+    )
+    .await
+    {
+        Ok(access) => access,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let CredentialAccess::Granted {
+        entry_id,
+        label,
+        envelope,
+        ..
+    } = access
+    else {
+        if let Some(message) = access_message(&access, CredentialMethod::Get) {
+            eprintln!("Error: {}", safe_terminal_text(&message));
         }
-        AgentRegistrationResult::Deactivated { agent_id } => {
-            println!("Agent: deactivated ({})", shorten_identifier(&agent_id));
-            ExitCode::SUCCESS
-        }
-        AgentRegistrationResult::InvalidKey => fail("API key is invalid or revoked"),
-        AgentRegistrationResult::Unreachable { error } => {
-            fail(&format!("server unreachable ({error})"))
-        }
+        return ExitCode::from(exit_code_for_access(&access));
+    };
+    let credential = match session.decrypt(&envelope) {
+        Ok(credential) => credential,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let selector = FieldSelector {
+        field: args.field,
+        field_id: args.field_id,
+    };
+    if selector.field.is_some() || selector.field_id.is_some() {
+        let parsed = match parse_secret(credential.expose_for_authorized_operation()) {
+            Ok(parsed) => parsed,
+            Err(error) => return fail(&error.to_string()),
+        };
+        let selected = match resolve_field(&parsed, &selector) {
+            Ok(selected) => selected,
+            Err(error) => return fail(&error.to_string()),
+        };
+        let result = match &selected {
+            palladin_credential::fields::ResolvedField::Value {
+                label: field,
+                value,
+                ..
+            } => write_secret_json(&FieldValueOutput {
+                entry_id: &entry_id,
+                label: &label,
+                field,
+                value: value.expose_secret(),
+            }),
+            palladin_credential::fields::ResolvedField::Totp {
+                label: field,
+                code,
+                expires_in,
+            } => write_secret_json(&TotpOutput {
+                entry_id: &entry_id,
+                label: &label,
+                field,
+                code: code.expose_secret(),
+                expires_in: *expires_in,
+            }),
+        };
+        return emit_get_warning(args.quiet, result);
+    }
+    let unix_seconds = u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp()).unwrap_or(0);
+    let output =
+        match redact_totp_secrets(credential.expose_for_authorized_operation(), unix_seconds) {
+            Ok(output) => output,
+            Err(error) => return fail(&error.to_string()),
+        };
+    let result = write_secret_json(&CredentialOutput {
+        entry_id: &entry_id,
+        label: &label,
+        secret: output.expose_secret(),
+    });
+    emit_get_warning(args.quiet, result)
+}
+
+async fn report_stale(
+    service: &RuntimeService<OsSecretStore>,
+    profile: Option<&str>,
+    args: ReportStaleArgs,
+) -> ExitCode {
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let session = match service.open_session(profile, &hostname) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let code = match args.code {
+        StaleCodeArg::LoginRejected => StaleReasonCode::LoginRejected,
+        StaleCodeArg::AuthFailed => StaleReasonCode::AuthFailed,
+        StaleCodeArg::Manual => StaleReasonCode::Manual,
+    };
+    let note = args.note.and_then(|note| {
+        let note = note.trim();
+        (!note.is_empty()).then(|| note.to_owned())
+    });
+    let input = ReportCredentialStaleInput {
+        vault_id: args.vault_id.trim().to_owned(),
+        entry_id: args.entry_id.trim().to_owned(),
+        code,
+        note,
+    };
+    match session.api.report_credential_stale(&input).await {
+        Ok(()) => emit_output(render_report_stale()),
+        Err(error) => fail(&error.to_string()),
     }
 }
 
 fn agents(service: &RuntimeService<OsSecretStore>, command: AgentsCommand) -> ExitCode {
     match agents_result(service, command) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(output) => emit_output(output),
         Err(error) => fail(&error.to_string()),
+    }
+}
+
+fn security(
+    service: &RuntimeService<OsSecretStore>,
+    profile: Option<&str>,
+    command: SecurityCommand,
+) -> ExitCode {
+    match command {
+        SecurityCommand::Upgrade => match service.verify_identity(profile) {
+            Ok(profile) => emit_output(render_security_upgrade(
+                &profile.name,
+                convenience_tier_description(),
+            )),
+            Err(error) => fail(&error.to_string()),
+        },
     }
 }
 
 fn agents_result(
     service: &RuntimeService<OsSecretStore>,
     command: AgentsCommand,
-) -> Result<(), RuntimeError> {
+) -> Result<RenderedOutput, RuntimeError> {
     match command {
         AgentsCommand::List => {
             let registry = service.registry()?;
-            if registry.agents.is_empty() {
-                println!("No agents. Run: palladin agents create <name>");
-            } else {
-                for agent in registry.agents {
-                    let marker = if agent.name == registry.default {
-                        "*"
-                    } else {
-                        " "
-                    };
-                    println!("{marker} {}", agent.name);
-                }
-            }
-            Ok(())
+            Ok(render_agent_list(&registry))
         }
         AgentsCommand::Create { name, r#type } => {
             let created = service.create_profile(&name, r#type)?;
-            println!("Agent profile created: {}", created.name);
-            println!(
-                "Encryption key: {}",
-                shorten_identifier(&created.encryption_public_key)
-            );
-            println!(
-                "Signing key: {}",
-                shorten_identifier(&created.signing_public_key)
-            );
-            println!("Security: {}", convenience_tier_description());
-            println!("Next: palladin --id {} connect", created.name);
-            Ok(())
+            Ok(render_profile_created(
+                &created,
+                convenience_tier_description(),
+            ))
         }
         AgentsCommand::Delete { name } => {
             service.delete_profile(&name)?;
-            println!("Agent profile deleted: {name}");
-            Ok(())
+            Ok(render_agent_action("Agent profile deleted", &name))
         }
         AgentsCommand::SetDefault { name } => {
             service.set_default_profile(&name)?;
-            println!("Default Agent profile: {name}");
-            Ok(())
+            Ok(render_agent_action("Default Agent profile", &name))
         }
         AgentsCommand::Rename { old_name, new_name } => {
             service.rename_profile(&old_name, &new_name)?;
-            println!("Agent profile renamed: {old_name} -> {new_name}");
-            Ok(())
+            Ok(render_agent_action(
+                "Agent profile renamed",
+                &format!("{old_name} -> {new_name}"),
+            ))
         }
     }
 }
@@ -381,16 +575,103 @@ fn read_api_key(from_stdin: bool) -> Result<OrganizationApiKey, String> {
 }
 
 fn argv_contains_api_key() -> bool {
+    std::env::args_os()
+        .skip(1)
+        .any(|argument| os_argument_contains_api_key(&argument))
+}
+
+fn deprecated_connect_id_usage() -> bool {
+    let mut arguments = std::env::args_os().skip(1);
+    while let Some(argument) = arguments.next() {
+        let Some(argument) = argument.to_str() else {
+            return false;
+        };
+        if argument == "--id" {
+            let _profile_name = arguments.next();
+            continue;
+        }
+        if argument.starts_with("--id=") {
+            continue;
+        }
+        if argument != "connect" {
+            return false;
+        }
+        return arguments.any(|argument| {
+            argument
+                .to_str()
+                .is_some_and(|argument| argument == "--id" || argument.starts_with("--id="))
+        });
+    }
+    false
+}
+
+fn argv_contains_unsafe_terminal_text() -> bool {
     std::env::args_os().skip(1).any(|argument| {
         argument
             .to_str()
-            .is_some_and(|value| value.starts_with("pl_"))
+            .is_none_or(|value| !is_safe_terminal_text(value))
     })
 }
 
+#[cfg(unix)]
+fn os_argument_contains_api_key(argument: &std::ffi::OsStr) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    argument.as_bytes().windows(3).any(|value| value == b"pl_")
+}
+
+#[cfg(windows)]
+fn os_argument_contains_api_key(argument: &std::ffi::OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    let value = argument.encode_wide().collect::<Vec<_>>();
+    value
+        .windows(3)
+        .any(|value| value == ['p' as u16, 'l' as u16, '_' as u16])
+}
+
 fn fail(message: &str) -> ExitCode {
-    eprintln!("Error: {message}");
+    eprintln!("Error: {}", safe_terminal_text(message));
     ExitCode::from(EXIT_FAILURE)
+}
+
+fn emit_output(output: RenderedOutput) -> ExitCode {
+    if !output.stdout.is_empty() {
+        print!("{}", output.stdout);
+    }
+    if !output.stderr.is_empty() {
+        eprint!("{}", output.stderr);
+    }
+    ExitCode::from(output.exit_code)
+}
+
+fn operating_system_hostname() -> Result<String, &'static str> {
+    hostname::get()
+        .map(|hostname| hostname.to_string_lossy().into_owned())
+        .map_err(|_| "the operating-system hostname is unavailable")
+}
+
+fn write_secret_json(value: &impl Serialize) -> ExitCode {
+    let mut buffer = Zeroizing::new(Vec::new());
+    if serde_json::to_writer_pretty(&mut *buffer, value).is_err() {
+        return fail("could not serialize the requested credential");
+    }
+    buffer.push(b'\n');
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    if output.write_all(&buffer).is_err() {
+        return fail("could not write the requested credential to standard output");
+    }
+    ExitCode::SUCCESS
+}
+
+fn emit_get_warning(quiet: bool, result: ExitCode) -> ExitCode {
+    if result == ExitCode::SUCCESS && !quiet {
+        eprintln!(
+            "Note: this secret is now in the agent's context. On a hosted LLM it may leave your machine. Prefer `palladin exec` (injects into a subprocess) or `palladin inject` (fills a login form) to avoid exposing it."
+        );
+    }
+    result
 }
 
 fn print_unsafe_environment(environment: &EnvironmentReport) {

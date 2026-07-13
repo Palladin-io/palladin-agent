@@ -18,13 +18,17 @@ hostname.workspace = true
 palladin-api = { path = "../palladin-api" }
 palladin-core = { path = "../palladin-core" }
 palladin-crypto = { path = "../palladin-crypto" }
+palladin-credential = { path = "../palladin-credential" }
 palladin-platform = { path = "../palladin-platform" }
 rpassword.workspace = true
 secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 subtle.workspace = true
 time.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

@@ -1,3 +1,4 @@
+use palladin_core::terminal::shorten_identifier;
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -273,22 +274,6 @@ fn totp_replacement(descriptor: &str, unix_seconds: u64) -> Value {
                 })
             },
         )
-}
-
-fn shorten_identifier(value: &str) -> String {
-    if value.chars().count() <= 16 {
-        return value.to_owned();
-    }
-    let prefix = value.chars().take(8).collect::<String>();
-    let suffix = value
-        .chars()
-        .rev()
-        .take(6)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect::<String>();
-    format!("{prefix}…{suffix}")
 }
 
 struct SensitiveJson(Value);

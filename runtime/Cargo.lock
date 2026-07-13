@@ -1353,15 +1353,19 @@ dependencies = [
  "hostname",
  "palladin-api",
  "palladin-core",
+ "palladin-credential",
  "palladin-crypto",
  "palladin-platform",
  "rpassword",
  "secrecy",
+ "serde",
+ "serde_json",
  "subtle",
  "tempfile",
  "thiserror",
  "time",
  "tokio",
+ "tokio-util",
  "zeroize",
 ]
 
@@ -1385,6 +1389,7 @@ version = "0.1.0"
 dependencies = [
  "hmac",
  "palladin-api",
+ "palladin-core",
  "percent-encoding",
  "secrecy",
  "serde",
