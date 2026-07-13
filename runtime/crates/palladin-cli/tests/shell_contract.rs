@@ -104,28 +104,28 @@ fn cmd_and_powershell_preserve_path_quoting_stdout_and_exit_code() {
 
     assert_version(
         Command::new("powershell.exe")
+            .env("PALLADIN_TEST_RUNTIME", &runtime)
             .args([
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "& $args[0] --version",
+                "& $env:PALLADIN_TEST_RUNTIME --version",
             ])
-            .arg(&runtime)
             .output()
             .expect("run PowerShell"),
         "PowerShell",
     );
     assert_usage_error(
         Command::new("powershell.exe")
+            .env("PALLADIN_TEST_RUNTIME", &runtime)
             .args([
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "& $args[0] definitely-unknown; exit $LASTEXITCODE",
+                "& $env:PALLADIN_TEST_RUNTIME definitely-unknown; exit $LASTEXITCODE",
             ])
-            .arg(&runtime)
             .output()
             .expect("run PowerShell usage error"),
         "PowerShell",
