@@ -218,18 +218,28 @@ fn frozen_process_outputs_keep_stdout_stderr_and_exit_codes_distinct() {
         assert_eq!(output.status.code(), Some(case.exit_code), "{}", case.name);
         assert_eq!(
             stdout,
-            case.stdout_exact
-                .replace("{{VERSION}}", env!("CARGO_PKG_VERSION")),
+            expand_platform_tokens(&case.stdout_exact),
             "{} stdout",
             case.name
         );
         if let Some(expected) = case.stderr_exact {
-            assert_eq!(stderr, expected, "{} stderr", case.name);
+            assert_eq!(
+                stderr,
+                expand_platform_tokens(&expected),
+                "{} stderr",
+                case.name
+            );
         }
         if let Some(expected) = case.stderr_contains {
             assert!(stderr.contains(&expected), "{} stderr: {stderr}", case.name);
         }
     }
+}
+
+fn expand_platform_tokens(value: &str) -> String {
+    value
+        .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
+        .replace("{{EXE}}", std::env::consts::EXE_SUFFIX)
 }
 
 #[test]

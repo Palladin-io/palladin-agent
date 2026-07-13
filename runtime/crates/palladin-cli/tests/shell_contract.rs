@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Command, Output};
 
 fn runtime_copy() -> (tempfile::TempDir, PathBuf) {

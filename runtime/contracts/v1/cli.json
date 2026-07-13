@@ -45,7 +45,7 @@
       "argv": ["definitely-unknown"],
       "exitCode": 2,
       "stdoutExact": "",
-      "stderrExact": "error: unrecognized subcommand 'definitely-unknown'\n\n  tip: a similar subcommand exists: 'init'\n\nUsage: palladin [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n"
+      "stderrExact": "error: unrecognized subcommand 'definitely-unknown'\n\n  tip: a similar subcommand exists: 'init'\n\nUsage: palladin{{EXE}} [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n"
     },
     {
       "name": "deprecated-connect-id",
