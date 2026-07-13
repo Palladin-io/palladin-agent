@@ -258,7 +258,7 @@ jobs:
 
           npm ci --ignore-scripts
           npm run build
-          npm pack --workspace @palladin/runtime-darwin-universal \
+          npm pack --workspaces=true --workspace @palladin/runtime-darwin-universal \
             --pack-destination "$RUNNER_TEMP" >/dev/null
           npm pack --pack-destination "$RUNNER_TEMP" >/dev/null
           runtime_tgz=$(find "$RUNNER_TEMP" -maxdepth 1 -type f \

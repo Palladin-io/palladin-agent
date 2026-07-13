@@ -34,6 +34,10 @@ describe('public npm package boundary', () => {
     }
   });
 
+  it('keeps root development installs cross-platform while platform packages stay OS-scoped', () => {
+    expect(readFileSync('.npmrc', 'utf8').trim()).toBe('workspaces=false');
+  });
+
   it('excludes every legacy TypeScript implementation from the launcher tarball', () => {
     const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
     const output = execFileSync(npm, ['pack', '--dry-run', '--json'], {
