@@ -1056,7 +1056,8 @@ mod tests {
             "/D".to_owned(),
             "/S".to_owned(),
             "/C".to_owned(),
-            "start /B cmd.exe /D /C for /L %i in (0,0,0) do @rem & for /L %i in (0,0,0) do @rem".to_owned(),
+            "start /B cmd.exe /D /C for /L %i in (0,0,0) do @rem & for /L %i in (0,0,0) do @rem"
+                .to_owned(),
         ];
         let cancellation = CancellationToken::new();
         let signal = cancellation.clone();
