@@ -51,10 +51,12 @@
     "vitest": "^4.1.10"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.5.0",
+    "npm": ">=9.7.1"
   },
   "optionalDependencies": {
-    "@palladin/runtime-darwin-universal": "0.1.0",
+    "@palladin/runtime-darwin-arm64": "0.1.0",
+    "@palladin/runtime-darwin-x64": "0.1.0",
     "@palladin/runtime-linux-arm64-gnu": "0.1.0",
     "@palladin/runtime-linux-arm64-musl": "0.1.0",
     "@palladin/runtime-linux-x64-gnu": "0.1.0",

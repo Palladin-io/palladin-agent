@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
@@ -13,7 +14,9 @@ interface PackageManifest {
   optionalDependencies?: Record<string, string>;
   os?: string[];
   cpu?: string[];
+  libc?: string[];
   publishConfig?: { access?: string; provenance?: boolean };
+  engines?: { node?: string; npm?: string };
 }
 
 function manifest(path: string): PackageManifest {
@@ -23,12 +26,16 @@ function manifest(path: string): PackageManifest {
 describe('public npm package boundary', () => {
   it('publishes only the native dispatcher and an exact platform dependency', () => {
     const root = manifest('package.json');
+    const dispatcher = readFileSync('src/runtime/native-dispatch.ts', 'utf8');
     expect(root.files).toContain('dist/bin/');
     expect(root.files).toContain('dist/runtime/');
     expect(root.files).not.toContain('dist/');
     expect(root.dependencies).toBeUndefined();
+    expect(root.engines).toEqual({ node: '>=20.5.0', npm: '>=9.7.1' });
+    expect(dispatcher).toContain(`const NATIVE_RUNTIME_VERSION = '${root.version}'`);
     expect(root.optionalDependencies).toEqual({
-      '@palladin/runtime-darwin-universal': root.version,
+      '@palladin/runtime-darwin-arm64': root.version,
+      '@palladin/runtime-darwin-x64': root.version,
       '@palladin/runtime-linux-arm64-gnu': root.version,
       '@palladin/runtime-linux-arm64-musl': root.version,
       '@palladin/runtime-linux-x64-gnu': root.version,
@@ -36,13 +43,24 @@ describe('public npm package boundary', () => {
       '@palladin/runtime-win32-arm64': root.version,
       '@palladin/runtime-win32-x64': root.version,
     });
-    for (const lifecycle of ['preinstall', 'install', 'postinstall', 'prepare']) {
+    for (const lifecycle of [
+      'preinstall', 'install', 'postinstall', 'preprepare', 'prepare', 'postprepare',
+    ]) {
       expect(root.scripts?.[lifecycle]).toBeUndefined();
     }
   });
 
   it('keeps root development installs cross-platform while platform packages stay OS-scoped', () => {
     expect(readFileSync('.npmrc', 'utf8').trim()).toBe('workspaces=false');
+  });
+
+  it('documents the supported global, local, exact-version npx, omit, and offline policies', () => {
+    const readme = readFileSync('README.md', 'utf8');
+    expect(readme).toContain('npm install --global @palladin/agent@<exact-version>');
+    expect(readme).toContain('npm exec -- palladin doctor');
+    expect(readme).toContain('npx --yes @palladin/agent@<exact-version> -- doctor');
+    expect(readme).toContain('`--omit=optional` is unsupported');
+    expect(readme).toContain('npm cache or proxy');
   });
 
   it('excludes every legacy TypeScript implementation from the launcher tarball', () => {
@@ -70,9 +88,9 @@ describe('public npm package boundary', () => {
     ]);
   });
 
-  it('keeps the development workspace private and platform-neutral', () => {
-    const runtime = manifest('packages/runtime-darwin-universal/package.json');
-    expect(runtime.name).toBe('@palladin/runtime-darwin-universal');
+  it.each(['arm64', 'x64'])('keeps the darwin/%s development workspace private and platform-neutral', (architecture) => {
+    const runtime = manifest(`packages/runtime-darwin-${architecture}/package.json`);
+    expect(runtime.name).toBe(`@palladin/runtime-darwin-${architecture}`);
     expect(runtime.private).toBe(true);
     expect(runtime.os).toBeUndefined();
     expect(runtime.cpu).toBeUndefined();
@@ -119,5 +137,44 @@ describe('public npm package boundary', () => {
     expect(runtime.dependencies).toBeUndefined();
     expect(runtime.optionalDependencies).toBeUndefined();
     expect(runtime.publishConfig).toEqual({ access: 'public', provenance: true });
+  });
+
+  it.each([
+    ['darwin', 'arm64', 'none', '@palladin/runtime-darwin-arm64', ['PalladinRuntime.app/', 'README.md', 'LICENSE']],
+    ['darwin', 'x64', 'none', '@palladin/runtime-darwin-x64', ['PalladinRuntime.app/', 'README.md', 'LICENSE']],
+    ['win32', 'arm64', 'none', '@palladin/runtime-win32-arm64', ['bin/palladin-client.exe', 'README.md', 'LICENSE']],
+    ['win32', 'x64', 'none', '@palladin/runtime-win32-x64', ['bin/palladin-client.exe', 'README.md', 'LICENSE']],
+    ['linux', 'arm64', 'glibc', '@palladin/runtime-linux-arm64-gnu', ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE']],
+    ['linux', 'arm64', 'musl', '@palladin/runtime-linux-arm64-musl', ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE']],
+    ['linux', 'x64', 'glibc', '@palladin/runtime-linux-x64-gnu', ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE']],
+    ['linux', 'x64', 'musl', '@palladin/runtime-linux-x64-musl', ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE']],
+  ])('verifies the staged public %s/%s/%s manifest', (os, cpu, libc, name, files) => {
+    const temporary = mkdtempSync(join(tmpdir(), 'palladin-platform-manifest-'));
+    try {
+      const packageDirectory = join(temporary, 'package');
+      mkdirSync(packageDirectory);
+      const root = manifest('package.json');
+      writeFileSync(join(packageDirectory, 'package.json'), `${JSON.stringify({
+        name,
+        version: root.version,
+        license: 'Apache-2.0',
+        files,
+        os: [os],
+        cpu: [cpu],
+        ...(libc === 'none' ? {} : { libc: [libc] }),
+        publishConfig: { access: 'public', provenance: true },
+      }, null, 2)}\n`);
+      execFileSync(process.execPath, [
+        'packaging/npm/verify-platform-package.mjs',
+        '--package', packageDirectory,
+        '--name', name,
+        '--os', os,
+        '--cpu', cpu,
+        '--libc', libc,
+        '--files', JSON.stringify(files),
+      ]);
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
   });
 });

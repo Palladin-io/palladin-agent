@@ -8,8 +8,8 @@ import {
   type NativeDispatchHost,
 } from '../../src/runtime/native-dispatch.js';
 
-const packageJson = '/fixture/node_modules/@palladin/runtime-darwin-universal/package.json';
-const executable = '/fixture/node_modules/@palladin/runtime-darwin-universal/PalladinRuntime.app/Contents/MacOS/palladin';
+const packageJson = '/fixture/node_modules/@palladin/runtime-darwin-arm64/package.json';
+const executable = '/fixture/node_modules/@palladin/runtime-darwin-arm64/PalladinRuntime.app/Contents/MacOS/palladin';
 const windowsPackageJson = 'C:\\fixture\\node_modules\\@palladin\\runtime-win32-x64\\package.json';
 const windowsExecutable = 'C:\\fixture\\node_modules\\@palladin\\runtime-win32-x64\\bin\\palladin-client.exe';
 const linuxPackageJson = '/fixture/node_modules/@palladin/runtime-linux-x64-gnu/package.json';
@@ -43,18 +43,28 @@ function host(overrides: Partial<NativeDispatchHost> = {}): NativeDispatchHost {
     realpath: vi.fn((path: string) => path),
     assertExecutable: vi.fn(),
     spawnRuntime: vi.fn(() => childProcess()),
+    addSignalHandler: vi.fn(),
+    removeSignalHandler: vi.fn(),
     ...overrides,
   };
 }
 
 describe('native runtime dispatcher', () => {
-  it.each(['arm64', 'x64'])('resolves the universal signed bundle for darwin/%s', (architecture) => {
-    const fixture = host({ architecture });
-    expect(resolveNativeRuntime(fixture)).toBe(executable);
+  it.each([
+    ['arm64', '@palladin/runtime-darwin-arm64/package.json', packageJson, executable],
+    [
+      'x64',
+      '@palladin/runtime-darwin-x64/package.json',
+      '/fixture/node_modules/@palladin/runtime-darwin-x64/package.json',
+      '/fixture/node_modules/@palladin/runtime-darwin-x64/PalladinRuntime.app/Contents/MacOS/palladin',
+    ],
+  ])('resolves the universal signed bundle from the darwin/%s package', (architecture, specifier, manifest, runtime) => {
+    const fixture = host({ architecture, resolvePackageJson: vi.fn(() => manifest) });
+    expect(resolveNativeRuntime(fixture)).toBe(runtime);
     expect(fixture.resolvePackageJson).toHaveBeenCalledWith(
-      '@palladin/runtime-darwin-universal/package.json',
+      specifier,
     );
-    expect(fixture.assertExecutable).toHaveBeenCalledWith(executable);
+    expect(fixture.assertExecutable).toHaveBeenCalledWith(runtime);
   });
 
   it.each([
@@ -81,6 +91,16 @@ describe('native runtime dispatcher', () => {
     expect(() => resolveNativeRuntime(fixture)).toThrow('not installed for freebsd/arm64');
     expect(fixture.resolvePackageJson).not.toHaveBeenCalled();
     expect(fixture.spawnRuntime).not.toHaveBeenCalled();
+  });
+
+  it('explains how to recover when optional platform packages are unavailable', async () => {
+    const fixture = host({ resolvePackageJson: vi.fn(() => { throw new Error('missing'); }) });
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await expect(launchNativeRuntime([], fixture)).resolves.toBe(1);
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('@palladin/runtime-darwin-arm64@0.1.0'));
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('--omit=optional'));
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('npm cache or registry proxy'));
+    write.mockRestore();
   });
 
   it.each([
@@ -204,7 +224,28 @@ describe('native runtime dispatcher', () => {
     expect(fixture.spawnRuntime).toHaveBeenCalledWith(executable, [
       'get',
       'entry;$(touch attacker)',
-    ]);
+    ], {
+      shell: false,
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+  });
+
+  it('forwards termination signals to the native child and removes its handler', async () => {
+    const child = childProcess();
+    const handlers = new Map<NodeJS.Signals, () => void>();
+    const fixture = host({
+      spawnRuntime: vi.fn(() => child),
+      addSignalHandler: vi.fn((signal, handler) => handlers.set(signal, handler)),
+      removeSignalHandler: vi.fn((signal) => handlers.delete(signal)),
+    });
+    const result = launchNativeRuntime([], fixture);
+    expect(handlers.has('SIGTERM')).toBe(true);
+    handlers.get('SIGTERM')?.();
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('exit', 0, null);
+    await expect(result).resolves.toBe(0);
+    expect(handlers.has('SIGTERM')).toBe(false);
   });
 
   it('propagates the native exit code', async () => {

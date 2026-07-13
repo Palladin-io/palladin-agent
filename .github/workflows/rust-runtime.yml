@@ -10,6 +10,12 @@ on:
       - "packaging/macos/**"
       - "packaging/linux/**"
       - "packaging/windows/**"
+      - "packaging/npm/**"
+      - "packages/**"
+      - "src/runtime/**"
+      - "tests/runtime/**"
+      - "package.json"
+      - "package-lock.json"
       - "runtime/**"
 
 permissions:
@@ -52,15 +58,17 @@ jobs:
           xcrun swiftc -warnings-as-errors -typecheck ../packaging/macos/tests/untrusted-dpk-probe.swift
           fake_root="$(mktemp -d)"
           mkdir -p "$fake_root/PalladinRuntime.app"
+          npm_arch=${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'x64' }}
           ../packaging/macos/scripts/stage-npm-platform-package.sh \
+            --architecture "$npm_arch" \
             --app "$fake_root/PalladinRuntime.app" \
             --output-dir "$fake_root/staged"
           node -e '
             const manifest = require(process.argv[1]);
             if (manifest.private !== undefined) process.exit(1);
             if (JSON.stringify(manifest.os) !== JSON.stringify(["darwin"])) process.exit(1);
-            if (JSON.stringify(manifest.cpu) !== JSON.stringify(["arm64", "x64"])) process.exit(1);
-          ' "$fake_root/staged/package.json"
+            if (JSON.stringify(manifest.cpu) !== JSON.stringify([process.argv[2]])) process.exit(1);
+          ' "$fake_root/staged/package.json" "$npm_arch"
       - name: Verify native runner architecture
         shell: bash
         run: |

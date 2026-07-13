@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import {
   constants as fsConstants,
   accessSync,
@@ -10,7 +10,10 @@ import {
 import { createRequire } from 'node:module';
 import { posix as darwinPath, win32 as windowsPath } from 'node:path';
 
-const DARWIN_RUNTIME_PACKAGE = '@palladin/runtime-darwin-universal';
+const DARWIN_RUNTIME_PACKAGES = {
+  arm64: '@palladin/runtime-darwin-arm64',
+  x64: '@palladin/runtime-darwin-x64',
+} as const;
 const BUNDLE_EXECUTABLE = ['PalladinRuntime.app', 'Contents', 'MacOS', 'palladin'] as const;
 const WINDOWS_RUNTIME_PACKAGES = {
   arm64: '@palladin/runtime-win32-arm64',
@@ -32,6 +35,7 @@ const FORWARDED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 const ELF_PREFIX_LIMIT = 1024 * 1024;
 const ELF64_PROGRAM_HEADER_BYTES = 56;
 const PT_INTERP = 3;
+const NATIVE_RUNTIME_VERSION = '0.1.0';
 
 export interface NativeDispatchHost {
   platform: NodeJS.Platform;
@@ -40,7 +44,9 @@ export interface NativeDispatchHost {
   resolvePackageJson(specifier: string): string;
   realpath(path: string): string;
   assertExecutable(path: string): void;
-  spawnRuntime(path: string, args: readonly string[]): ChildProcess;
+  spawnRuntime(path: string, args: readonly string[], options: SpawnOptions): ChildProcess;
+  addSignalHandler(signal: NodeJS.Signals, handler: () => void): void;
+  removeSignalHandler(signal: NodeJS.Signals, handler: () => void): void;
 }
 
 export type LinuxLibc = 'glibc' | 'musl' | 'unsupported';
@@ -53,7 +59,7 @@ export function resolveNativeRuntime(host: NativeDispatchHost): string {
 
     return resolvePackageExecutable(
       host,
-      DARWIN_RUNTIME_PACKAGE,
+      DARWIN_RUNTIME_PACKAGES[host.architecture],
       BUNDLE_EXECUTABLE,
       darwinPath,
     );
@@ -98,7 +104,15 @@ function resolvePackageExecutable(
   executableSegments: readonly string[],
   pathApi: typeof darwinPath,
 ): string {
-  const packageJson = host.realpath(host.resolvePackageJson(`${packageName}/package.json`));
+  let resolvedPackageJson: string;
+  try {
+    resolvedPackageJson = host.resolvePackageJson(`${packageName}/package.json`);
+  } catch {
+    throw new Error(
+      `Palladin native runtime package ${packageName}@${NATIVE_RUNTIME_VERSION} is unavailable; reinstall @palladin/agent@${NATIVE_RUNTIME_VERSION} without --omit=optional. For an offline install, prefill the npm cache or registry proxy with both exact tarballs`,
+    );
+  }
+  const packageJson = host.realpath(resolvedPackageJson);
   const packageRoot = pathApi.dirname(packageJson);
   const executable = host.realpath(pathApi.join(packageRoot, ...executableSegments));
   const pathFromPackage = pathApi.relative(packageRoot, executable);
@@ -128,7 +142,11 @@ export async function launchNativeRuntime(
 
   let child: ChildProcess;
   try {
-    child = host.spawnRuntime(executable, args);
+    child = host.spawnRuntime(executable, args, {
+      shell: false,
+      stdio: 'inherit',
+      windowsHide: true,
+    });
   } catch {
     process.stderr.write('Error: Palladin native runtime could not be started\n');
     return 1;
@@ -140,12 +158,12 @@ export async function launchNativeRuntime(
       if (child.exitCode === null && child.signalCode === null) child.kill(signal);
     };
     handlers.set(signal, handler);
-    process.on(signal, handler);
+    host.addSignalHandler(signal, handler);
   }
 
   return await new Promise<number>((resolve) => {
     const cleanup = (): void => {
-      for (const [signal, handler] of handlers) process.off(signal, handler);
+      for (const [signal, handler] of handlers) host.removeSignalHandler(signal, handler);
     };
     child.once('error', () => {
       cleanup();
@@ -173,11 +191,9 @@ function systemHost(): NativeDispatchHost {
     resolvePackageJson: (specifier) => require.resolve(specifier),
     realpath: realpathSync,
     assertExecutable: (path) => accessSync(path, fsConstants.X_OK),
-    spawnRuntime: (path, args) => spawn(path, [...args], {
-      shell: false,
-      stdio: 'inherit',
-      windowsHide: true,
-    }),
+    spawnRuntime: (path, args, options) => spawn(path, [...args], options),
+    addSignalHandler: (signal, handler) => process.on(signal, handler),
+    removeSignalHandler: (signal, handler) => process.off(signal, handler),
   };
 }
 
@@ -268,5 +284,5 @@ function boundedNumber(value: bigint, maximum: number): number | undefined {
 function safeError(error: unknown): string {
   if (!(error instanceof Error)) return 'Palladin native runtime is unavailable';
   if (error.message.startsWith('Palladin native runtime')) return error.message;
-  return 'Palladin native runtime package is missing or invalid; reinstall @palladin/agent';
+  return 'Palladin native runtime package is missing or invalid; reinstall @palladin/agent without --omit=optional and ensure npm has online proxy/cache access to @palladin packages';
 }

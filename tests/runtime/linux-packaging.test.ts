@@ -10,9 +10,11 @@ function read(path: string): string {
 
 describe('Linux hardened package boundary', () => {
   it.each([
-    ['glibc', 'gnu'],
-    ['musl', 'musl'],
-  ])('stages the Linux %s npm package from the exact repository template', (libc, suffix) => {
+    ['x64', 'glibc', 'gnu'],
+    ['arm64', 'glibc', 'gnu'],
+    ['x64', 'musl', 'musl'],
+    ['arm64', 'musl', 'musl'],
+  ])('stages the Linux %s/%s npm package from the exact repository template', (architecture, libc, suffix) => {
     const temporary = mkdtempSync(join(tmpdir(), 'palladin-linux-stage-'));
     try {
       const binaries = join(temporary, 'bin');
@@ -25,17 +27,38 @@ describe('Linux hardened package boundary', () => {
       }
       execFileSync('bash', [
         'packaging/linux/scripts/stage-npm-platform-package.sh',
-        '--architecture', 'arm64',
+        '--architecture', architecture,
         '--libc', libc,
         '--binaries', binaries,
         '--output', output,
       ]);
       const manifest = JSON.parse(readFileSync(join(output, 'package.json'), 'utf8')) as {
         name: string;
+        version: string;
+        private?: boolean;
+        os: string[];
+        cpu: string[];
         libc: string[];
+        files: string[];
+        scripts?: unknown;
+        dependencies?: unknown;
+        optionalDependencies?: unknown;
       };
-      expect(manifest.name).toBe(`@palladin/runtime-linux-arm64-${suffix}`);
+      expect(manifest.name).toBe(`@palladin/runtime-linux-${architecture}-${suffix}`);
+      expect(manifest.version).toBe('0.1.0');
+      expect(manifest.private).toBeUndefined();
+      expect(manifest.os).toEqual(['linux']);
+      expect(manifest.cpu).toEqual([architecture]);
       expect(manifest.libc).toEqual([libc]);
+      expect(manifest.files).toEqual([
+        'bin/palladin-linux-client',
+        'bin/palladin-worker',
+        'README.md',
+        'LICENSE',
+      ]);
+      expect(manifest.scripts).toBeUndefined();
+      expect(manifest.dependencies).toBeUndefined();
+      expect(manifest.optionalDependencies).toBeUndefined();
     } finally {
       rmSync(temporary, { recursive: true, force: true });
     }
@@ -102,7 +125,9 @@ describe('Linux hardened package boundary', () => {
 
   it('keeps privileged installation explicit and outside npm', () => {
     const root = JSON.parse(read('package.json')) as { scripts?: Record<string, string> };
-    for (const lifecycle of ['preinstall', 'install', 'postinstall', 'prepare']) {
+    for (const lifecycle of [
+      'preinstall', 'install', 'postinstall', 'preprepare', 'prepare', 'postprepare',
+    ]) {
       expect(root.scripts?.[lifecycle]).toBeUndefined();
     }
     const policy = read('packaging/linux/polkit/io.palladin.runtime.policy');

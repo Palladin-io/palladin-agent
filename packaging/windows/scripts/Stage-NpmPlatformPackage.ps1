@@ -32,3 +32,11 @@ $manifest.PSObject.Properties.Remove('private')
 $manifest | Add-Member -NotePropertyName os -NotePropertyValue @('win32')
 $manifest | Add-Member -NotePropertyName cpu -NotePropertyValue @($Architecture)
 $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'package.json') -Encoding utf8NoBOM
+& node (Join-Path $root 'packaging/npm/verify-platform-package.mjs') `
+  --package $OutputDirectory `
+  --name "@palladin/runtime-win32-$Architecture" `
+  --os win32 `
+  --cpu $Architecture `
+  --libc none `
+  --files '["bin/palladin-client.exe","README.md","LICENSE"]'
+if ($LASTEXITCODE -ne 0) { throw 'staged npm package manifest verification failed' }

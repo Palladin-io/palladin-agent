@@ -38,6 +38,10 @@ node - "$template/package.json" "$output/package.json" "$architecture" "$libc_fa
 const [source, output, architecture, libc] = process.argv.slice(2);
 const fs = require('node:fs');
 const manifest = JSON.parse(fs.readFileSync(source, 'utf8'));
+if (manifest.private !== true) throw new Error('platform workspace must remain private');
+for (const field of ['scripts', 'dependencies', 'optionalDependencies']) {
+  if (Object.hasOwn(manifest, field)) throw new Error(`platform package must not contain ${field}`);
+}
 delete manifest.private;
 manifest.os = ['linux'];
 manifest.cpu = [architecture];
@@ -45,3 +49,10 @@ manifest.libc = [libc];
 manifest.files = ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE'];
 fs.writeFileSync(output, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o644 });
 NODE
+node "$root/packaging/npm/verify-platform-package.mjs" \
+  --package "$output" \
+  --name "@palladin/runtime-linux-${architecture}-${package_suffix}" \
+  --os linux \
+  --cpu "$architecture" \
+  --libc "$libc_family" \
+  --files '["bin/palladin-linux-client","bin/palladin-worker","README.md","LICENSE"]'

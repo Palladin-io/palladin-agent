@@ -37,6 +37,11 @@ describe('Windows hardened packaging contract', () => {
     expect(stage).toContain('Assert-PalladinSignature');
     expect(stage).toContain('-RequireTimestamp');
     expect(stage).toContain("foreach ($field in 'scripts', 'dependencies', 'optionalDependencies')");
+    expect(stage).toContain('packaging/npm/verify-platform-package.mjs');
+    expect(stage).toContain('--name "@palladin/runtime-win32-$Architecture"');
+    expect(stage).toContain('--os win32');
+    expect(stage).toContain('--cpu $Architecture');
+    expect(stage).toContain('--libc none');
   });
 
   it('builds a one-UAC administrator bootstrapper with embedded installer components', () => {

@@ -81,9 +81,11 @@ jobs:
         run: |
           set -euo pipefail
           root_version=$(node -p 'require("./package.json").version')
-          runtime_version=$(node -p 'require("./packages/runtime-darwin-universal/package.json").version')
           test "$root_version" = "$MARKETING_VERSION"
-          test "$runtime_version" = "$MARKETING_VERSION"
+          for architecture in arm64 x64; do
+            runtime_version=$(node -p "require('./packages/runtime-darwin-$architecture/package.json').version")
+            test "$runtime_version" = "$MARKETING_VERSION"
+          done
 
       - name: Potwierdź natywną architekturę bez Rosetty
         run: |
@@ -252,18 +254,24 @@ jobs:
           mkdir -p "$unpacked"
           ditto -x -k "$RUNNER_TEMP/palladin-runtime-darwin-universal.zip" "$unpacked"
           test -d "$unpacked/PalladinRuntime.app"
-          runtime_package="$RUNNER_TEMP/runtime-darwin-universal-package"
-          packaging/macos/scripts/stage-npm-platform-package.sh \
-            --app "$unpacked/PalladinRuntime.app" \
-            --output-dir "$runtime_package"
+          for architecture in arm64 x64; do
+            runtime_package="$RUNNER_TEMP/runtime-darwin-$architecture-package"
+            packaging/macos/scripts/stage-npm-platform-package.sh \
+              --architecture "$architecture" \
+              --app "$unpacked/PalladinRuntime.app" \
+              --output-dir "$runtime_package"
+          done
 
           npm ci --ignore-scripts --workspaces=false
           npm run build
-          npm pack "$runtime_package" \
-            --pack-destination "$RUNNER_TEMP" >/dev/null
+          for architecture in arm64 x64; do
+            npm pack "$RUNNER_TEMP/runtime-darwin-$architecture-package" \
+              --pack-destination "$RUNNER_TEMP" >/dev/null
+          done
           npm pack --pack-destination "$RUNNER_TEMP" >/dev/null
+          runtime_arch=$(node -p 'process.arch')
           runtime_tgz=$(find "$RUNNER_TEMP" -maxdepth 1 -type f \
-            -name 'palladin-runtime-darwin-universal-*.tgz' -print -quit)
+            -name "palladin-runtime-darwin-$runtime_arch-*.tgz" -print -quit)
           launcher_tgz=$(find "$RUNNER_TEMP" -maxdepth 1 -type f \
             -name 'palladin-agent-*.tgz' -print -quit)
           test -n "$runtime_tgz"
@@ -272,14 +280,14 @@ jobs:
           smoke="$RUNNER_TEMP/npm-smoke"
           mkdir -p "$smoke"
           npm install --prefix "$smoke" --ignore-scripts "$runtime_tgz" "$launcher_tgz"
-          installed_app="$smoke/node_modules/@palladin/runtime-darwin-universal/PalladinRuntime.app"
+          installed_app="$smoke/node_modules/@palladin/runtime-darwin-$runtime_arch/PalladinRuntime.app"
           packaging/macos/scripts/verify-bundle.sh \
             --app "$installed_app" --architecture universal
           doctor=$("$smoke/node_modules/.bin/palladin" doctor)
           grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
           grep -F 'identity-opened: no' <<<"$doctor"
-          cp "$runtime_tgz" "$RUNNER_TEMP/palladin-runtime-darwin-universal.tgz"
           cp "$launcher_tgz" "$RUNNER_TEMP/palladin-agent.tgz"
+          echo "PALLADIN_NPM_RUNTIME_ARCH=$runtime_arch" >>"$GITHUB_ENV"
 
       - name: Przetestuj granicę Keychain na podpisanym runtime
         env:
@@ -287,7 +295,7 @@ jobs:
           SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_IDENTITY }}
         run: |
           set -euo pipefail
-          installed_app="$RUNNER_TEMP/npm-smoke/node_modules/@palladin/runtime-darwin-universal/PalladinRuntime.app"
+          installed_app="$RUNNER_TEMP/npm-smoke/node_modules/@palladin/runtime-darwin-$PALLADIN_NPM_RUNTIME_ARCH/PalladinRuntime.app"
           packaging/macos/scripts/test-security-boundary.sh \
             --app "$installed_app" \
             --entitlements "$RUNNER_TEMP/palladin-universal-bundle/PalladinRuntime.entitlements.plist" \
@@ -297,10 +305,11 @@ jobs:
       - name: Opublikuj zweryfikowany artefakt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: palladin-runtime-darwin-universal
+          name: palladin-runtime-darwin
           path: |
             ${{ runner.temp }}/palladin-runtime-darwin-universal.zip
-            ${{ runner.temp }}/palladin-runtime-darwin-universal.tgz
+            ${{ runner.temp }}/palladin-runtime-darwin-arm64-*.tgz
+            ${{ runner.temp }}/palladin-runtime-darwin-x64-*.tgz
             ${{ runner.temp }}/palladin-agent.tgz
           if-no-files-found: error
           retention-days: 7
