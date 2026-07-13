@@ -170,7 +170,7 @@ fn runtime_secret_store(
     hardened_root: Option<&std::path::Path>,
 ) -> Result<RuntimeSecretStore, StoreError> {
     hardened_root.map_or_else(
-        || Ok(RuntimeSecretStore::Convenience(NativeSecretStore)),
+        || Ok(RuntimeSecretStore::Convenience(NativeSecretStore::default())),
         |root| BrokerSecretStore::new(root).map(RuntimeSecretStore::Hardened),
     )
 }
