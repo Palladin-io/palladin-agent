@@ -19,7 +19,7 @@ The Rust runtime is the client-side security boundary for Agent identities. It d
 secret-provider | palladin --id build connect --api-key-stdin
 ```
 
-API keys are rejected in command-line arguments and environment variables. Convenience builds use the operating-system credential store. Windows Secure runs only behind the authenticated AppContainer/LocalService broker and stores DPAPI-protected blobs under a restricted service-SID ACL. There is no fallback to a plaintext file or environment variable.
+API keys are rejected in command-line arguments and environment variables. Convenience builds use the operating-system credential store. Windows Secure runs only behind the authenticated AppContainer/LocalService broker and stores DPAPI-protected blobs under a restricted service-SID ACL. Linux Hardened runs only for a root-authorized dedicated Agent UID, stores authenticated ciphertext under a separate broker UID, and uses a one-shot systemd `DynamicUser` executor. There is no fallback to a plaintext file or environment variable.
 
 The standalone native build reports this as the Convenience tier. Login Keychain, Windows Credential Manager, and Linux Secret Service protect data at rest but do not provide a universal boundary against every process running as the same OS user or UID.
 
@@ -27,13 +27,17 @@ The `macos-hardened` build is a separate, fail-closed delivery tier. It is compi
 
 The organization API key remains organization-wide in both tiers. User presence gates use of that shared credential; it does not turn it into a per-Agent key. X25519 and Ed25519 slots remain distinct for each Agent identity.
 
+On Linux, PolKit is limited to one-shot authorization of changes to the root-owned dedicated-principal record. Interactive npm use remains Convenience. The record binds a locked nologin account and UID to a random non-reusable principal namespace, fixed profile, and root-approved origin; revoke leaves a fail-closed tombstone. A dedicated Agent UID is the complete workload trust domain, and an incomplete Hardened installation returns an error instead of opening Secret Service. The broker and one-shot executor run under distinct UIDs and communicate through a broker-only socket with peer-UID verification, so credential-bearing target processes cannot read broker state or memory through same-UID `/proc`, `ptrace`, or `process_vm_readv` access.
+
 `PALLADIN_HOME` is rejected by identity-opening commands. Tests inject an explicit temporary `ProfileRepository` instead of redirecting production state with an environment variable.
 
 ## Removal
 
 `palladin purge --confirm` explicitly schedules recoverable removal of native profiles and their known secret slots. A public integrity journal is inert by itself: its exact digest must be pinned in the secure trust state before it can authorize idempotent cleanup. The operation only reports success after the authenticated transition, trust root, journal, and public profile root are gone. It is never invoked by an npm lifecycle hook.
 
-Pre-production schema v2 state is migrated only by `palladin security upgrade`. The migration derives and verifies public keys from legacy private identities, accepts only the origin policy compiled into the binary, writes signed schema v3 configs, rotates every secret into a versioned v3 slot behind an authenticated recovery plan, commits the transition, and then removes legacy slots. Release builds accept only `https://api.palladin.io`; literal loopback HTTP requires the explicit `local-development` source-build feature. Restoring v2 public files after the upgrade cannot recover the deleted legacy slots.
+Pre-production schema v2 state is migrated only by `palladin security upgrade`. The migration derives and verifies public keys from legacy private identities, accepts only the origin policy compiled into the binary, writes signed schema v3 configs, rotates every secret into a versioned v3 slot behind an authenticated recovery plan, commits the transition, and then removes legacy slots. Release builds accept only the exact production and staging origins; literal loopback HTTP requires the explicit `local-development` source-build feature. Restoring v2 public files after the upgrade cannot recover the deleted legacy slots.
+
+Linux package lifecycle tests preserve and reopen the encrypted Agent identity and organization API-key slots across upgrade, rollback, uninstall, and reinstall. Test credentials are synthetic, compiled into a test-only fixture, and are never passed through argv, environment variables, or logs.
 
 ## Credential execution
 

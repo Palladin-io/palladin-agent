@@ -30,6 +30,8 @@ use palladin_credential::secret::parse_secret;
 use palladin_credential::wait::{
     ProgressMode, WaitOptions, heartbeat_line, parse_duration, signal_cancellation_token,
 };
+#[cfg(target_os = "linux")]
+use palladin_linux_broker::store::LinuxBrokerSecretStore;
 use palladin_platform::secure_store::{
     NativeSecretStore, SecretSlot, SecretStore, StoreError, storage_tier_description,
 };
@@ -41,13 +43,16 @@ use zeroize::Zeroizing;
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_UNSAFE_ENVIRONMENT: u8 = 78;
+#[cfg(windows)]
 const WINDOWS_HARDENED_TIER: &str = "Hardened - restricted LocalService service-SID broker with authenticated AppContainer and Windows Hello consent";
+#[cfg(target_os = "linux")]
+const LINUX_HARDENED_TIER: &str = "Hardened - dedicated Agent UID, authenticated Unix broker, encrypted broker-owned store, and separate executor UID";
 const INJECT_UNAVAILABLE: &str = "browser injection is disabled because an unauthenticated CDP endpoint can spoof the page origin and receive plaintext; Palladin will enable inject only through a reviewed authenticated browser boundary; no profile was opened and no credential was requested";
 
 #[tokio::main]
 async fn main() -> ExitCode {
     install_redacted_panic_hook();
-    let hardened_worker_root = match hardened_windows_worker_root() {
+    let hardened_worker_root = match hardened_worker_root() {
         Ok(root) => root,
         Err(error) => return fail(&error),
     };
@@ -55,11 +60,7 @@ async fn main() -> ExitCode {
         Ok(store) => store,
         Err(error) => return fail(&error.to_string()),
     };
-    let runtime_storage_tier = if hardened_worker_root.is_some() {
-        WINDOWS_HARDENED_TIER
-    } else {
-        storage_tier_description()
-    };
+    let runtime_storage_tier = hardened_tier_description(hardened_worker_root.is_some());
     if argv_contains_api_key() {
         return fail(
             "API keys are forbidden in argv; use a masked prompt or connect --api-key-stdin",
@@ -124,6 +125,8 @@ enum RuntimeSecretStore {
     Convenience(NativeSecretStore),
     #[cfg(windows)]
     Hardened(BrokerSecretStore),
+    #[cfg(target_os = "linux")]
+    LinuxHardened(LinuxBrokerSecretStore),
 }
 
 impl SecretStore for RuntimeSecretStore {
@@ -136,6 +139,8 @@ impl SecretStore for RuntimeSecretStore {
             Self::Convenience(store) => store.get(owner_id, slot),
             #[cfg(windows)]
             Self::Hardened(store) => store.get(owner_id, slot),
+            #[cfg(target_os = "linux")]
+            Self::LinuxHardened(store) => store.get(owner_id, slot),
         }
     }
 
@@ -144,6 +149,8 @@ impl SecretStore for RuntimeSecretStore {
             Self::Convenience(store) => store.set(owner_id, slot, secret),
             #[cfg(windows)]
             Self::Hardened(store) => store.set(owner_id, slot, secret),
+            #[cfg(target_os = "linux")]
+            Self::LinuxHardened(store) => store.set(owner_id, slot, secret),
         }
     }
 
@@ -152,6 +159,8 @@ impl SecretStore for RuntimeSecretStore {
             Self::Convenience(store) => store.delete(owner_id, slot),
             #[cfg(windows)]
             Self::Hardened(store) => store.delete(owner_id, slot),
+            #[cfg(target_os = "linux")]
+            Self::LinuxHardened(store) => store.delete(owner_id, slot),
         }
     }
 }
@@ -166,11 +175,27 @@ fn runtime_secret_store(
     )
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn runtime_secret_store(
     _hardened_root: Option<&std::path::Path>,
 ) -> Result<RuntimeSecretStore, StoreError> {
     Ok(RuntimeSecretStore::Convenience(NativeSecretStore::default()))
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_secret_store(
+    hardened_root: Option<&std::path::Path>,
+) -> Result<RuntimeSecretStore, StoreError> {
+    hardened_root.map_or_else(
+        || Ok(RuntimeSecretStore::Convenience(NativeSecretStore::default())),
+        |root| {
+            LinuxBrokerSecretStore::new(
+                root,
+                std::path::Path::new("/var/lib/palladin-runtime/v1/master.key"),
+            )
+            .map(RuntimeSecretStore::LinuxHardened)
+        },
+    )
 }
 
 #[cfg(windows)]
@@ -200,9 +225,100 @@ fn hardened_windows_worker_root() -> Result<Option<std::path::PathBuf>, String> 
     Ok(Some(root))
 }
 
-#[cfg(not(windows))]
-fn hardened_windows_worker_root() -> Result<Option<std::path::PathBuf>, String> {
-    Ok(None)
+fn hardened_worker_root() -> Result<Option<std::path::PathBuf>, String> {
+    #[cfg(windows)]
+    {
+        return hardened_windows_worker_root();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return hardened_linux_worker_root();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Ok(None)
+    }
+}
+
+fn hardened_tier_description(hardened: bool) -> &'static str {
+    if !hardened {
+        return storage_tier_description();
+    }
+    #[cfg(windows)]
+    {
+        WINDOWS_HARDENED_TIER
+    }
+    #[cfg(target_os = "linux")]
+    {
+        LINUX_HARDENED_TIER
+    }
+    #[cfg(target_os = "macos")]
+    {
+        storage_tier_description()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn hardened_linux_worker_root() -> Result<Option<std::path::PathBuf>, String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::path::{Path, PathBuf};
+
+    if std::env::var_os("PALLADIN_LINUX_HARDENED").is_none() {
+        return Ok(None);
+    }
+    if std::env::var("PALLADIN_LINUX_HARDENED").as_deref() != Ok("1") {
+        return Err("the Linux Hardened worker marker is invalid".to_owned());
+    }
+    let executable = std::fs::canonicalize(
+        std::env::current_exe()
+            .map_err(|_| "the Linux runtime executable path is unavailable".to_owned())?,
+    )
+    .map_err(|_| "the Linux runtime executable path is unavailable".to_owned())?;
+    if executable != Path::new(palladin_linux_broker::SYSTEM_WORKER) {
+        return Err("the Linux Hardened worker executable is invalid".to_owned());
+    }
+    let executable_metadata = std::fs::symlink_metadata(&executable)
+        .map_err(|_| "the Linux Hardened worker executable is unavailable".to_owned())?;
+    if executable_metadata.uid() != 0
+        || executable_metadata.permissions().mode() & 0o022 != 0
+        || executable_metadata.nlink() != 1
+    {
+        return Err("the Linux Hardened worker executable permissions are invalid".to_owned());
+    }
+    if nix::unistd::geteuid().is_root() || nix::unistd::geteuid() != nix::unistd::getuid() {
+        return Err("the Linux Hardened worker UID is invalid".to_owned());
+    }
+    // The broker is deliberately non-dumpable, so its child cannot inspect the
+    // parent's /proc executable link. The effective UID and broker-owned 0700
+    // principal root are the enforceable boundary: a process that already has
+    // the broker UID can already read the master key and is in the same trust
+    // domain, while every Agent UID fails the ownership check below.
+    let root = std::env::var_os("PALLADIN_LINUX_BROKER_ROOT")
+        .map(PathBuf::from)
+        .ok_or_else(|| "the Linux broker-owned runtime root is unavailable".to_owned())?;
+    let principals_root = Path::new(palladin_linux_broker::STATE_ROOT).join("agents");
+    let relative = root
+        .strip_prefix(&principals_root)
+        .map_err(|_| "the Linux broker-owned runtime root is invalid".to_owned())?;
+    let valid_principal = relative.to_str().is_some_and(|value| {
+        value.len() == 32
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if relative.components().count() != 1 || !valid_principal {
+        return Err("the Linux broker-owned runtime root is invalid".to_owned());
+    }
+    let root_metadata = std::fs::symlink_metadata(&root)
+        .map_err(|_| "the Linux broker-owned runtime root is unavailable".to_owned())?;
+    if !root_metadata.file_type().is_dir()
+        || root_metadata.file_type().is_symlink()
+        || root_metadata.uid() != nix::unistd::geteuid().as_raw()
+        || root_metadata.permissions().mode() & 0o777 != 0o700
+    {
+        return Err("the Linux broker-owned runtime root permissions are invalid".to_owned());
+    }
+    Ok(Some(root))
 }
 
 const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
@@ -310,7 +426,7 @@ fn doctor(
     );
     println!(
         "standalone-security-tier: {}",
-        if runtime_storage_tier == WINDOWS_HARDENED_TIER {
+        if runtime_storage_tier.starts_with("Hardened -") {
             "Hardened"
         } else {
             platform.standalone_tier

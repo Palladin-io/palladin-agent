@@ -1,0 +1,50 @@
+Name: palladin-runtime
+Version: @VERSION@
+Release: 1%{?dist}
+Summary: Hardened native runtime broker for dedicated Palladin Agent UIDs
+License: Apache-2.0
+URL: https://palladin.io
+Source0: palladin-runtime-stage.tar.gz
+BuildArch: @ARCHITECTURE@
+Requires: systemd >= 252
+Requires: polkit
+Requires: shadow-utils
+Requires: util-linux
+
+%description
+Optional Linux Hardened broker and one-shot executor boundary for Palladin.
+The public npm package remains unprivileged and has no install lifecycle hook.
+
+%prep
+%setup -q -c -T
+tar -xzf %{SOURCE0}
+
+%install
+mkdir -p %{buildroot}
+cp -a . %{buildroot}/
+
+%post
+systemd-sysusers /usr/lib/sysusers.d/palladin-runtime.conf
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/palladin-runtime.conf
+/usr/lib/palladin/runtime/configure-package
+
+%preun
+if [ "$1" -eq 0 ]; then
+  systemctl disable --now palladin-runtime.service palladin-executor.socket >/dev/null 2>&1 || true
+fi
+
+%postun
+systemctl daemon-reload >/dev/null 2>&1 || true
+
+%files
+/usr/lib/palladin/runtime
+/usr/lib/systemd/system/palladin-runtime.service
+/usr/lib/systemd/system/palladin-executor.socket
+/usr/lib/systemd/system/palladin-executor@.service
+/usr/lib/sysusers.d/palladin-runtime.conf
+/usr/lib/tmpfiles.d/palladin-runtime.conf
+/usr/share/polkit-1/actions/io.palladin.runtime.policy
+
+%changelog
+* Mon Jul 13 2026 Palladin Security <security@palladin.io> - @VERSION@-1
+- Initial hardened Linux runtime package

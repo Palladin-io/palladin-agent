@@ -1,0 +1,52 @@
+[Unit]
+Description=Palladin hardened runtime broker
+Documentation=https://github.com/Palladin-io/palladin-agent/tree/main/packaging/linux
+After=network-online.target palladin-executor.socket
+Wants=network-online.target palladin-executor.socket
+StartLimitIntervalSec=60s
+StartLimitBurst=20
+
+[Service]
+Type=simple
+User=palladin-runtime
+Group=palladin-runtime
+SupplementaryGroups=palladin-executor
+ExecStart=/usr/lib/palladin/runtime/palladin-linux-service
+StateDirectory=palladin-runtime
+StateDirectoryMode=0700
+RuntimeDirectory=palladin-runtime
+RuntimeDirectoryMode=0750
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+LimitCORE=0
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/palladin-runtime /run/palladin-runtime
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG GLIBC_TUNABLES BASH_ENV ENV NODE_OPTIONS NODE_PATH PYTHONPATH PYTHONHOME PALLADIN_HOME
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

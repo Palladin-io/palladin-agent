@@ -11,6 +11,8 @@ const packageJson = '/fixture/node_modules/@palladin/runtime-darwin-universal/pa
 const executable = '/fixture/node_modules/@palladin/runtime-darwin-universal/PalladinRuntime.app/Contents/MacOS/palladin';
 const windowsPackageJson = 'C:\\fixture\\node_modules\\@palladin\\runtime-win32-x64\\package.json';
 const windowsExecutable = 'C:\\fixture\\node_modules\\@palladin\\runtime-win32-x64\\bin\\palladin-client.exe';
+const linuxPackageJson = '/fixture/node_modules/@palladin/runtime-linux-x64-gnu/package.json';
+const linuxExecutable = '/fixture/node_modules/@palladin/runtime-linux-x64-gnu/bin/palladin-linux-client';
 
 function childProcess(): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
@@ -60,10 +62,35 @@ describe('native runtime dispatcher', () => {
   });
 
   it('has no TypeScript, PATH, download, or unsupported-platform fallback', () => {
-    const fixture = host({ platform: 'linux' });
-    expect(() => resolveNativeRuntime(fixture)).toThrow('not installed for linux/arm64');
+    const fixture = host({ platform: 'freebsd' });
+    expect(() => resolveNativeRuntime(fixture)).toThrow('not installed for freebsd/arm64');
     expect(fixture.resolvePackageJson).not.toHaveBeenCalled();
     expect(fixture.spawnRuntime).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['x64', '@palladin/runtime-linux-x64-gnu/package.json', linuxPackageJson, linuxExecutable],
+    [
+      'arm64',
+      '@palladin/runtime-linux-arm64-gnu/package.json',
+      '/fixture/node_modules/@palladin/runtime-linux-arm64-gnu/package.json',
+      '/fixture/node_modules/@palladin/runtime-linux-arm64-gnu/bin/palladin-linux-client',
+    ],
+  ])('resolves only the fixed glibc client for linux/%s', (architecture, specifier, manifest, client) => {
+    const fixture = host({
+      platform: 'linux',
+      architecture,
+      resolvePackageJson: vi.fn(() => manifest),
+    });
+    expect(resolveNativeRuntime(fixture)).toBe(client);
+    expect(fixture.resolvePackageJson).toHaveBeenCalledWith(specifier);
+    expect(fixture.assertExecutable).toHaveBeenCalledWith(client);
+  });
+
+  it('rejects unsupported Linux architectures before package resolution', () => {
+    const fixture = host({ platform: 'linux', architecture: 'riscv64' });
+    expect(() => resolveNativeRuntime(fixture)).toThrow('does not support linux/riscv64');
+    expect(fixture.resolvePackageJson).not.toHaveBeenCalled();
   });
 
   it('rejects unsupported Windows architectures before package resolution', () => {

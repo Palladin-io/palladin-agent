@@ -8,6 +8,7 @@ on:
       - ".github/workflows/macos-signed-runtime.yml"
       - ".github/workflows/windows-signed-runtime.yml"
       - "packaging/macos/**"
+      - "packaging/linux/**"
       - "packaging/windows/**"
       - "runtime/**"
 
@@ -157,7 +158,7 @@ jobs:
 
   linux:
     name: Build ${{ matrix.gnu_target }} and ${{ matrix.musl_target }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -179,7 +180,7 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
-      - run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - run: sudo apt-get update && sudo apt-get install --yes gcc libxml2-utils musl-tools rpm
       - run: rustup target add ${{ matrix.gnu_target }} ${{ matrix.musl_target }}
       - if: matrix.quality
         run: cargo fmt --all -- --check
@@ -187,7 +188,79 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - if: matrix.quality
         run: cargo test --workspace --locked
+      - name: Validate Linux packaging source
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n packaging/linux/scripts/*.sh packaging/linux/deb/*.sh packaging/linux/rpm/*.sh packaging/linux/tests/*.sh
+          xmllint --noout packaging/linux/polkit/io.palladin.runtime.policy
+          cc -Wall -Wextra -Werror packaging/linux/tests/security-boundary-probe.c -o /tmp/palladin-security-boundary-probe
+          cc -Wall -Wextra -Werror -shared -fPIC packaging/linux/tests/ld-preload-probe.c -o /tmp/palladin-ld-preload-probe.so
       - run: cargo build --release --locked --target ${{ matrix.gnu_target }} -p palladin-cli
+      - run: cargo build --release --locked --target ${{ matrix.gnu_target }} -p palladin-linux-broker -p palladin-linux-executor --bins
+      - run: cargo build --release --locked --target ${{ matrix.gnu_target }} -p palladin-linux-broker --example package_state_fixture
       - run: cargo build --release --locked --target ${{ matrix.musl_target }} -p palladin-cli
       - run: ./target/${{ matrix.gnu_target }}/release/palladin --version
       - run: ./target/${{ matrix.musl_target }}/release/palladin --version
+      - name: Build glibc npm and system packages
+        working-directory: .
+        shell: bash
+        env:
+          ARCHITECTURE: ${{ matrix.gnu_target == 'x86_64-unknown-linux-gnu' && 'x64' || 'arm64' }}
+        run: |
+          set -euo pipefail
+          native="runtime/target/${{ matrix.gnu_target }}/release"
+          cp "$native/palladin" "$native/palladin-worker"
+          stage="$RUNNER_TEMP/npm-linux-$ARCHITECTURE"
+          packaging/linux/scripts/stage-npm-platform-package.sh \
+            --architecture "$ARCHITECTURE" --binaries "$native" --output "$stage"
+          node -e '
+            const manifest = require(process.argv[1]);
+            if (manifest.private !== undefined) process.exit(1);
+            if (JSON.stringify(manifest.os) !== JSON.stringify(["linux"])) process.exit(1);
+            if (JSON.stringify(manifest.cpu) !== JSON.stringify([process.argv[2]])) process.exit(1);
+            if (JSON.stringify(manifest.libc) !== JSON.stringify(["glibc"])) process.exit(1);
+            if (manifest.scripts !== undefined) process.exit(1);
+          ' "$stage/package.json" "$ARCHITECTURE"
+          output="$RUNNER_TEMP/linux-packages/base"
+          packaging/linux/deb/build-deb.sh \
+            --version 0.1.0 --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
+          packaging/linux/rpm/build-rpm.sh \
+            --version 0.1.0 --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
+          test "$(find "$output" -name '*.deb' | wc -l)" -eq 1
+          test "$(find "$output" -name '*.rpm' | wc -l)" -eq 1
+          output="$RUNNER_TEMP/linux-packages/upgrade"
+          packaging/linux/deb/build-deb.sh \
+            --version 0.1.1 --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
+          packaging/linux/rpm/build-rpm.sh \
+            --version 0.1.1 --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
+      - name: Install, upgrade, roll back, and reinstall on Debian, Fedora, and Rocky 9
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          packaging/linux/tests/test-package-family.sh debian \
+            "$(find "$RUNNER_TEMP/linux-packages/base" -name '*.deb' -print -quit)" \
+            "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)" \
+            "runtime/target/${{ matrix.gnu_target }}/release/examples/package_state_fixture"
+          packaging/linux/tests/test-package-family.sh fedora \
+            "$(find "$RUNNER_TEMP/linux-packages/base" -name '*.rpm' -print -quit)" \
+            "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.rpm' -print -quit)" \
+            "runtime/target/${{ matrix.gnu_target }}/release/examples/package_state_fixture"
+          packaging/linux/tests/test-package-family.sh rocky9 \
+            "$(find "$RUNNER_TEMP/linux-packages/base" -name '*.rpm' -print -quit)" \
+            "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.rpm' -print -quit)" \
+            "runtime/target/${{ matrix.gnu_target }}/release/examples/package_state_fixture"
+      - name: Verify native UID, ptrace, loader, and peer boundaries
+        working-directory: .
+        shell: bash
+        env:
+          ARCHITECTURE: ${{ matrix.gnu_target == 'x86_64-unknown-linux-gnu' && 'x64' || 'arm64' }}
+        run: |
+          set -euo pipefail
+          packaging/linux/tests/test-convenience-boundary.sh
+          sudo sysctl -w kernel.yama.ptrace_scope=0
+          deb=$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)
+          sudo apt-get install --yes "$deb"
+          sudo packaging/linux/tests/test-hardened-boundary.sh

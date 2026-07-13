@@ -15,12 +15,12 @@ use palladin_credential::secret::{ParsedSecret, env_field_key};
 use secrecy::{ExposeSecret, SecretString};
 use tempfile::TempDir;
 use thiserror::Error;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use tokio::io::AsyncWriteExt as _;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use palladin_windows_executor::{ExecutorRequest, SecretVariable};
 
 const INHERITED_ENVIRONMENT: &[&str] = &[
@@ -145,7 +145,7 @@ impl SecretEnvironment {
             .any(|name| name.eq_ignore_ascii_case(candidate))
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn into_executor_variables(self) -> Vec<SecretVariable> {
         self.values
             .into_iter()
@@ -283,6 +283,15 @@ pub async fn run_command(
     }
     #[cfg(not(windows))]
     {
+        #[cfg(target_os = "linux")]
+        if linux_hardened_worker() {
+            return run_linux_request(
+                ExecutorRequest::command(command.to_vec(), environment.into_executor_variables()),
+                output,
+                cancellation,
+            )
+            .await;
+        }
         let (program, arguments) = command.split_first().ok_or(ExecError::MissingCommand)?;
         if cancellation.is_cancelled() {
             return Ok(ExecResult {
@@ -326,6 +335,132 @@ pub async fn run_command(
             cancelled,
         })
     }
+}
+
+#[cfg(target_os = "linux")]
+async fn run_linux_request(
+    request: ExecutorRequest,
+    output: OperatorOutput,
+    cancellation: &CancellationToken,
+) -> Result<ExecResult, ExecError> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+
+    if cancellation.is_cancelled() {
+        return Ok(ExecResult {
+            exit_code: 130,
+            cancelled: true,
+        });
+    }
+    let payload = palladin_linux_executor::encode_request(&request)
+        .map_err(|_| ExecError::HardenedExecutorProtocol)?;
+    drop(request);
+    let marker = std::fs::read_to_string(palladin_linux_executor::INSTALL_MARKER)
+        .map_err(|_| ExecError::HardenedExecutorUnavailable)?;
+    let marker_metadata = std::fs::symlink_metadata(palladin_linux_executor::INSTALL_MARKER)
+        .map_err(|_| ExecError::HardenedExecutorUnavailable)?;
+    if !marker_metadata.file_type().is_file()
+        || marker_metadata.file_type().is_symlink()
+        || marker_metadata.uid() != 0
+        || marker_metadata.permissions().mode() & 0o777 != 0o644
+        || marker_metadata.nlink() != 1
+    {
+        return Err(ExecError::HardenedExecutorUnavailable);
+    }
+    let (_, _, executor_gid) = palladin_linux_executor::parse_install_identity(&marker)
+        .ok_or(ExecError::HardenedExecutorUnavailable)?;
+    let stream = tokio::net::UnixStream::connect(palladin_linux_executor::SOCKET_PATH)
+        .await
+        .map_err(|_| ExecError::HardenedExecutorUnavailable)?;
+    let socket_metadata = std::fs::symlink_metadata(palladin_linux_executor::SOCKET_PATH)
+        .map_err(|_| ExecError::HardenedExecutorUnavailable)?;
+    if !socket_metadata.file_type().is_socket()
+        || socket_metadata.file_type().is_symlink()
+        || socket_metadata.uid() != 0
+        || socket_metadata.gid() != executor_gid
+        || socket_metadata.permissions().mode() & 0o777 != 0o660
+    {
+        return Err(ExecError::HardenedExecutorUnavailable);
+    }
+    let (mut reader, mut writer) = stream.into_split();
+    let length = u32::try_from(payload.len()).map_err(|_| ExecError::HardenedExecutorProtocol)?;
+    writer
+        .write_u32(length)
+        .await
+        .map_err(|_| ExecError::HardenedExecutorProtocol)?;
+    writer
+        .write_all(&payload)
+        .await
+        .map_err(|_| ExecError::HardenedExecutorProtocol)?;
+    writer
+        .flush()
+        .await
+        .map_err(|_| ExecError::HardenedExecutorProtocol)?;
+    drop(payload);
+
+    loop {
+        let frame = tokio::select! {
+            result = read_linux_executor_frame(&mut reader) => result?,
+            () = cancellation.cancelled() => {
+                drop(writer);
+                return Ok(ExecResult { exit_code: 130, cancelled: true });
+            }
+        };
+        match &frame {
+            palladin_linux_executor::ExecutorFrame::Output { stream, bytes, .. } => {
+                if output == OperatorOutput::Terminal {
+                    match stream {
+                        palladin_linux_executor::ExecutorOutput::Stdout => tokio::io::stdout()
+                            .write_all(&bytes)
+                            .await
+                            .map_err(|_| ExecError::HardenedExecutorProtocol)?,
+                        palladin_linux_executor::ExecutorOutput::Stderr => tokio::io::stderr()
+                            .write_all(&bytes)
+                            .await
+                            .map_err(|_| ExecError::HardenedExecutorProtocol)?,
+                    }
+                }
+            }
+            palladin_linux_executor::ExecutorFrame::Exited { code } => {
+                drop(writer);
+                return Ok(ExecResult {
+                    exit_code: *code,
+                    cancelled: false,
+                });
+            }
+            palladin_linux_executor::ExecutorFrame::Rejected => {
+                return Err(ExecError::HardenedExecutorProtocol);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn read_linux_executor_frame<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<palladin_linux_executor::ExecutorFrame, ExecError> {
+    use tokio::io::AsyncReadExt as _;
+    use zeroize::Zeroize as _;
+
+    let length = reader
+        .read_u32()
+        .await
+        .map_err(|_| ExecError::HardenedExecutorProtocol)? as usize;
+    if length == 0 || length > palladin_linux_executor::MAX_FRAME_BYTES {
+        return Err(ExecError::HardenedExecutorProtocol);
+    }
+    let mut bytes = vec![0_u8; length];
+    if reader.read_exact(&mut bytes).await.is_err() {
+        bytes.zeroize();
+        return Err(ExecError::HardenedExecutorProtocol);
+    }
+    let frame = serde_json::from_slice(&bytes).map_err(|_| ExecError::HardenedExecutorProtocol);
+    bytes.zeroize();
+    frame
+}
+
+#[cfg(target_os = "linux")]
+fn linux_hardened_worker() -> bool {
+    std::env::var("PALLADIN_LINUX_HARDENED").as_deref() == Ok("1")
 }
 
 #[cfg(windows)]
@@ -478,6 +613,19 @@ pub async fn run_script(
     }
     #[cfg(not(windows))]
     {
+        #[cfg(target_os = "linux")]
+        if linux_hardened_worker() {
+            return run_linux_request(
+                ExecutorRequest::script(
+                    interpreter.executable.clone(),
+                    script,
+                    environment.into_executor_variables(),
+                ),
+                output,
+                cancellation,
+            )
+            .await;
+        }
         let temporary = TempScript::new(script)?;
         let command = vec![
             interpreter.executable.to_string_lossy().into_owned(),
@@ -643,9 +791,9 @@ pub enum ExecError {
     TemporaryScript,
     #[error("the private temporary script could not be deleted")]
     TemporaryCleanup,
-    #[error("the signed hardened Windows executor is unavailable")]
+    #[error("the platform Hardened executor is unavailable")]
     HardenedExecutorUnavailable,
-    #[error("the hardened Windows executor rejected its private request")]
+    #[error("the platform Hardened executor rejected its private request")]
     HardenedExecutorProtocol,
 }
 

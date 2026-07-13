@@ -7,7 +7,7 @@ Public npm launcher and native CLI/MCP runtime for Palladin Agent.
 
 ## Security boundary
 
-The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed universal executable inside `@palladin/runtime-darwin-universal/PalladinRuntime.app`. On Windows it starts only the Authenticode-signed `palladin-client.exe` from the exact x64 or arm64 package; that client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. There is no TypeScript, `PATH`, download, or plaintext fallback.
+The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed universal executable inside `@palladin/runtime-darwin-universal/PalladinRuntime.app`. On Windows it starts only the Authenticode-signed `palladin-client.exe` from the exact x64 or arm64 package; that client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. On glibc Linux it starts the exact x64 or arm64 native client; ordinary UIDs use the Convenience worker, while a root-authorized dedicated Agent UID must use the separate system broker. There is no TypeScript, `PATH`, download, or plaintext fallback.
 
 The native runtime keeps these concepts separate:
 
@@ -19,7 +19,9 @@ A small trust state in OS secure storage commits the complete public registry. E
 
 The macOS Hardened build uses a provisioned Data Protection Keychain access group. Items are non-synchronizable and `WhenUnlockedThisDeviceOnly`; access to the shared organization credential requires user presence. Homebrew Node, an unsigned clone, and a differently signed fork do not have the entitlement. An unsigned development binary fails closed and does not fall back to Login Keychain, a file, or an environment variable.
 
-The Windows Secure tier is installed separately with the owner-signed one-UAC bootstrapper. It registers `PalladinRuntime` as packaged `LocalService`, sets a restricted service SID, and protects `C:\ProgramData\Palladin\Runtime\v1` so only SYSTEM, Administrators, and `NT SERVICE\PalladinRuntime` have access. The npm package never performs privileged installation. A source build using Windows Credential Manager outside this broker boundary reports `Convenience`, never `Hardened`. Linux remains a separate epic task.
+The Windows Secure tier is installed separately with the owner-signed one-UAC bootstrapper. It registers `PalladinRuntime` as packaged `LocalService`, sets a restricted service SID, and protects `C:\ProgramData\Palladin\Runtime\v1` so only SYSTEM, Administrators, and `NT SERVICE\PalladinRuntime` have access. The npm package never performs privileged installation. A source build using Windows Credential Manager outside this broker boundary reports `Convenience`, never `Hardened`.
+
+Linux Secret Service is always Convenience because it cannot distinguish two processes under the same UID. Linux Hardened is an optional DEB/RPM system package: a dedicated Agent account is bound by root-owned configuration to a random immutable principal namespace, fixed profile, and approved origin. The broker owns context-bound encrypted state under a separate UID, and each credential execution uses a broker-only socket plus a one-shot systemd `DynamicUser` executor. PolKit authorizes only management of this record; it is not presented as process isolation. See [the Linux runbook](packaging/linux/README.md).
 
 ## Installation
 
@@ -31,6 +33,8 @@ palladin doctor
 ```
 
 On Windows, install the matching signed Palladin Runtime bootstrapper once before using Secure mode. npm installation remains script-free and does not prompt for elevation. If the service or companion is unavailable or invalid, the client fails closed instead of falling back to the current-user credential store.
+
+On Linux, npm alone installs the Convenience tier. Install the matching signed `palladin-runtime` DEB or RPM only for a dedicated headless Agent UID. An authorized UID fails closed when the broker, executor socket, root-owned mapping, or permissions are invalid; it never falls back to the npm worker or Secret Service.
 
 No package uses `preinstall`, `install`, `postinstall`, or `prepare`. npm installs the matching prebuilt platform package; it does not download or compile a binary during installation.
 
@@ -51,7 +55,7 @@ Create a local Agent identity:
 palladin init
 ```
 
-Release builds are pinned to the production API origin. Connect using the organization API key from a masked prompt:
+Release builds are pinned to the exact Palladin production and staging API origins. Connect using the organization API key from a masked prompt:
 
 ```bash
 palladin connect --host https://api.palladin.io
@@ -117,7 +121,7 @@ The Agent must be active before credential tools work.
 
 ## Security notes
 
-- The production origin is pinned to exactly `https://api.palladin.io`; development HTTP accepts only literal `127.0.0.1` or `[::1]` with an explicit port.
+- Release origins are pinned to exactly `https://api.palladin.io` and `https://api.stage.palladin.io`; development HTTP accepts only literal `127.0.0.1` or `[::1]` with an explicit port.
 - Native secret storage has no file or environment fallback.
 - The organization API key and private keys are never child-process environment variables.
 - `exec` uses no implicit shell, rebuilds the child environment from an allowlist, and supplies null stdin.
@@ -127,7 +131,7 @@ The Agent must be active before credential tools work.
 
 ## Public local state
 
-Native public state lives under `~/.palladin` and contains only profile aliases, opaque identity/organization references, host, Agent ID, public keys, signatures, and SHA-256 commitments. Secret values and the small registry trust root remain in the selected OS secure store. `PALLADIN_HOME` is rejected by identity-opening commands.
+Convenience public state lives under `~/.palladin`. Linux Hardened public state lives in a broker-owned random principal namespace that is never derived from a reusable numeric UID. Both contain only profile aliases, opaque identity/organization references, host, Agent ID, public keys, signatures, and SHA-256 commitments. Secret values and the small registry trust root remain in the selected secure store. `PALLADIN_HOME` is rejected by identity-opening commands.
 
 ## Development
 

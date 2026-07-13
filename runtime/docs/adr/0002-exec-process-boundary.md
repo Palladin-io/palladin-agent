@@ -1,7 +1,7 @@
 # ADR 0002: Credential execution process boundary
 
 - Status: Accepted
-- Issues: CVT-314, CVT-337
+- Issues: CVT-314, CVT-319, CVT-337
 - Date: 2026-07-13
 
 ## Context
@@ -50,6 +50,18 @@ The executor creates the selected process inside a fixed AppContainer with outbo
 
 AppContainer is intentionally a security boundary and not a transparent user-session token. Commands cannot read arbitrary user files, broker storage, Windows Hello pins, machine-DPAPI ciphertexts, or another process's memory unless a future reviewed capability explicitly grants such access. CVT-337 does not add `broadFileSystemAccess`, a LocalSystem launcher, or a plaintext fallback.
 
+### Linux glibc implementation (CVT-319)
+
+Interactive npm use remains Convenience. Secret Service, PolKit, an executable path, and a Unix group cannot distinguish trusted Palladin JavaScript from other code running under the same UID. PolKit is used only for the narrow administrative action that creates or revokes a root-owned mapping between a dedicated Agent UID and one local profile.
+
+Linux Hardened requires systemd 252 or newer, the signed DEB or RPM, plus a locked nologin OS account or an equivalent dedicated container. The systemd broker runs as `palladin-runtime`; `SO_PEERCRED` supplies the connecting UID, and a root-owned record binds that UID and account to a random immutable principal namespace, fixed profile, and approved API origin. Revocation retains a tombstone and terminates authenticated sessions. Reauthorization refuses a numeric UID while any process with that UID is alive; later safe UID reuse receives a new principal namespace. The complete dedicated Agent UID is the workload trust domain. Ordinary interactive UIDs and an unmapped UID cannot use the broker even if they can reach its socket.
+
+The broker is non-dumpable. Its fixed root-owned worker therefore does not rely on `/proc/<parent>/exe`, which the kernel intentionally hides from the child. Worker admission instead requires the installed root-owned single-link executable, the broker marker, the dedicated non-root broker UID, and a broker-owned mode-0700 root under the selected immutable principal. An Agent UID cannot forge those ownership checks. Any arbitrary process already running as `palladin-runtime` is inside the broker trust domain because that UID can read the master key directly.
+
+The broker owns public state and authenticated secret ciphertext in `/var/lib/palladin-runtime/v1`. Its device key and state are inaccessible to the Agent UID. The npm client has no secret operation and an authorized UID never falls back to the Convenience worker, Secret Service, a file, or an environment variable after a broker failure.
+
+Credential execution crosses a second boundary. A root-owned socket assigned to a broker-only group starts one executor instance with a fresh `DynamicUser` UID for one request. The executor also checks `SO_PEERCRED` for the installed broker UID and requires a matching versioned protocol envelope. The broker sends only the already-approved command and scoped credential environment. The executor never receives the organization API key, X25519 or Ed25519 private key, or DEK. Broker and executor units clear loader variables and use `NoNewPrivileges`, `ProtectProc`, an empty capability set, and a core-dump prohibition. Native negative tests set the permissive Yama baseline and still require `ptrace`, `/proc`, and `process_vm_readv` access from the Agent UID to fail.
+
 ## Consequences
 
-CVT-314 materially reduces accidental leakage, environment inheritance, output exfiltration through MCP, temporary-file residue on handled paths, and orphaned subprocesses. The standalone tier still does not defend against effective same-user debugging or memory reads. On Windows Secure, CVT-337 adds the AppContainer process boundary described above; macOS and Linux retain their separately documented platform requirements.
+CVT-314 materially reduces accidental leakage, environment inheritance, output exfiltration through MCP, temporary-file residue on handled paths, and orphaned subprocesses. The standalone tier still does not defend against effective same-user debugging or memory reads. Windows Secure adds the AppContainer boundary described above. Linux Hardened adds the dedicated Agent UID, broker UID, and one-shot executor UID boundary described above. macOS retains its separately documented execution-boundary requirement.

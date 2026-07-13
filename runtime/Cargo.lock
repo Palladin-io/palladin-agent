@@ -1333,6 +1333,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -1490,10 +1491,12 @@ dependencies = [
  "clap",
  "getrandom 0.4.3",
  "hostname",
+ "nix 0.31.3",
  "palladin-api",
  "palladin-core",
  "palladin-credential",
  "palladin-crypto",
+ "palladin-linux-broker",
  "palladin-mcp",
  "palladin-platform",
  "palladin-runtime",
@@ -1575,12 +1578,57 @@ dependencies = [
  "command-group",
  "palladin-core",
  "palladin-credential",
+ "palladin-linux-executor",
  "palladin-windows-executor",
  "secrecy",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
+ "zeroize",
+]
+
+[[package]]
+name = "palladin-linux-broker"
+version = "0.1.0"
+dependencies = [
+ "crypto_secretbox",
+ "getrandom 0.4.3",
+ "libc",
+ "nix 0.31.3",
+ "palladin-core",
+ "palladin-linux-executor",
+ "palladin-platform",
+ "rpassword",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "url",
+ "zeroize",
+]
+
+[[package]]
+name = "palladin-linux-executor"
+version = "0.1.0"
+dependencies = [
+ "command-group",
+ "getrandom 0.4.3",
+ "libc",
+ "nix 0.31.3",
+ "palladin-core",
+ "palladin-windows-executor",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "zeroize",
 ]
 
 [[package]]

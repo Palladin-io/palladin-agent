@@ -44,3 +44,7 @@ tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 palladin-windows-broker = { path = "../palladin-windows-broker" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix.workspace = true
+palladin-linux-broker = { path = "../palladin-linux-broker" }

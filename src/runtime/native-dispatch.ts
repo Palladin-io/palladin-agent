@@ -10,6 +10,11 @@ const WINDOWS_RUNTIME_PACKAGES = {
   x64: '@palladin/runtime-win32-x64',
 } as const;
 const WINDOWS_CLIENT_EXECUTABLE = ['bin', 'palladin-client.exe'] as const;
+const LINUX_RUNTIME_PACKAGES = {
+  arm64: '@palladin/runtime-linux-arm64-gnu',
+  x64: '@palladin/runtime-linux-x64-gnu',
+} as const;
+const LINUX_CLIENT_EXECUTABLE = ['bin', 'palladin-linux-client'] as const;
 const FORWARDED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 
 export interface NativeDispatchHost {
@@ -45,6 +50,19 @@ export function resolveNativeRuntime(host: NativeDispatchHost): string {
       WINDOWS_RUNTIME_PACKAGES[host.architecture],
       WINDOWS_CLIENT_EXECUTABLE,
       windowsPath,
+    );
+  }
+
+  if (host.platform === 'linux') {
+    if (host.architecture !== 'arm64' && host.architecture !== 'x64') {
+      throw new Error(`Palladin native runtime does not support linux/${host.architecture}`);
+    }
+
+    return resolvePackageExecutable(
+      host,
+      LINUX_RUNTIME_PACKAGES[host.architecture],
+      LINUX_CLIENT_EXECUTABLE,
+      darwinPath,
     );
   }
 

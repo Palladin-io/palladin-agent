@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+systemd-sysusers /usr/lib/sysusers.d/palladin-runtime.conf
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/palladin-runtime.conf
+/usr/lib/palladin/runtime/configure-package

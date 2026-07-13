@@ -2,6 +2,7 @@ use thiserror::Error;
 use url::{Host, Url};
 
 const PRODUCTION_ORIGIN: &str = "https://api.palladin.io";
+const STAGING_ORIGIN: &str = "https://api.stage.palladin.io";
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct ApiHost(Url);
@@ -22,6 +23,10 @@ impl ApiHost {
             && url.scheme() == "https"
             && url.host_str() == Some("api.palladin.io")
             && url.port().is_none();
+        let staging = value == STAGING_ORIGIN
+            && url.scheme() == "https"
+            && url.host_str() == Some("api.stage.palladin.io")
+            && url.port().is_none();
         let literal_loopback = matches!(
             url.host(),
             Some(Host::Ipv4(address)) if address == std::net::Ipv4Addr::LOCALHOST
@@ -33,7 +38,7 @@ impl ApiHost {
             && url.scheme() == "http"
             && url.port().is_some_and(|port| port != 0)
             && literal_loopback;
-        if !production && !local_http {
+        if !production && !staging && !local_http {
             return Err(ApiHostError::Invalid);
         }
         Ok(Self(url))
@@ -89,6 +94,7 @@ mod tests {
     #[test]
     fn accepts_pinned_production() {
         assert!(ApiHost::parse("https://api.palladin.io").is_ok());
+        assert!(ApiHost::parse("https://api.stage.palladin.io").is_ok());
     }
 
     #[cfg(feature = "local-development")]

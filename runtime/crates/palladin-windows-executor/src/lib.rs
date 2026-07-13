@@ -99,6 +99,13 @@ impl ExecutorRequest {
         }
         Ok(Zeroizing::new(payload))
     }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, ExecutorError> {
+        if bytes.is_empty() || bytes.len() > MAX_REQUEST_BYTES {
+            return Err(ExecutorError::InvalidRequest);
+        }
+        serde_json::from_slice(bytes).map_err(|_| ExecutorError::InvalidRequest)
+    }
 }
 
 impl Drop for ExecutorRequest {
