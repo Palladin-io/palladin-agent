@@ -1426,12 +1426,11 @@ mod tests {
     #[cfg(windows)]
     fn native_exec_test_command() -> Vec<String> {
         vec![
-            "powershell.exe".to_owned(),
-            "-NoLogo".to_owned(),
-            "-NoProfile".to_owned(),
-            "-NonInteractive".to_owned(),
-            "-Command".to_owned(),
-            "$ok = $env:CLAW_SECRET -ceq 'fixture-password-not-production' -and $env:CLAW_USERNAME -ceq 'fixture-user' -and $null -eq $env:PALLADIN_API_KEY -and [Console]::In.Read() -eq -1; if ($ok) { exit 0 } else { exit 91 }".to_owned(),
+            "cmd.exe".to_owned(),
+            "/D".to_owned(),
+            "/S".to_owned(),
+            "/C".to_owned(),
+            "setlocal EnableExtensions DisableDelayedExpansion & set /p PALLADIN_INPUT= & if not errorlevel 1 exit /b 90 & if not x%CLAW_SECRET%==xfixture-password-not-production exit /b 91 & if not x%CLAW_USERNAME%==xfixture-user exit /b 92 & if defined PALLADIN_API_KEY exit /b 93 & exit /b 0".to_owned(),
         ]
     }
 
