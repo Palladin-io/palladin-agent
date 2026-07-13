@@ -239,12 +239,15 @@ fn trusted_interpreter_candidate(candidate: &Path) -> bool {
     let Ok(metadata) = std::fs::metadata(candidate) else {
         return false;
     };
+    // Group-shared installations are standard in CI tool caches and managed hosts.
+    // The standalone runtime is Convenience tier; reject world-writable paths here,
+    // while the Hardened tier requires the separate broker boundary from ADR 0002.
     metadata.is_file()
         && metadata.permissions().mode() & 0o111 != 0
-        && metadata.permissions().mode() & 0o022 == 0
+        && metadata.permissions().mode() & 0o002 == 0
         && candidate.parent().is_some_and(|directory| {
             std::fs::metadata(directory).is_ok_and(|metadata| {
-                metadata.is_dir() && metadata.permissions().mode() & 0o022 == 0
+                metadata.is_dir() && metadata.permissions().mode() & 0o002 == 0
             })
         })
 }
@@ -645,6 +648,29 @@ mod tests {
             resolved.executable,
             std::fs::canonicalize(candidate).expect("canonical")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interpreter_accepts_group_tool_caches_but_rejects_world_writable_paths() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let candidate = interpreter_candidate(directory.path(), Interpreter::Node.executable());
+        std::fs::write(&candidate, b"synthetic executable").expect("candidate");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o770))
+            .expect("group tool cache");
+        std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o750))
+            .expect("group executable");
+        let path = std::env::join_paths([directory.path()]).expect("PATH");
+        assert!(resolve_interpreter_from(Interpreter::Node, &path).is_ok());
+
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o707))
+            .expect("world-writable directory");
+        assert!(matches!(
+            resolve_interpreter_from(Interpreter::Node, &path),
+            Err(ExecError::InterpreterUnavailable)
+        ));
     }
 
     #[test]

@@ -17,7 +17,7 @@ The standalone runtime retains identity keys and the organization API key in its
 The standalone runtime applies the following defense-in-depth controls:
 
 - It starts the selected executable directly. It never inserts an implicit shell. Windows `.bat` and `.cmd` files are rejected unless the caller explicitly starts a shell.
-- Script entries use only the allowlisted `bash`, `sh`, `node`, and `python` interpreters. The executable is resolved and validated as an absolute canonical path before any referenced credential is delivered.
+- Script entries use only the allowlisted `bash`, `sh`, `node`, and `python` interpreters. The executable is resolved and validated as an absolute canonical path before any referenced credential is delivered. Unix candidates and their direct parent directory must not be world-writable; group-shared managed installations remain supported in the Convenience tier.
 - All Script references are validated and delivered before the script starts. One denied or invalid reference aborts execution.
 - The child environment is cleared and rebuilt from a small positive allowlist plus explicitly scoped credential variables. Palladin identity keys, the organization API key, loader variables, and unrelated parent variables are not inherited.
 - Child standard input is null, so an MCP child cannot consume JSON-RPC traffic and a CLI child cannot obtain additional terminal input through this path.
