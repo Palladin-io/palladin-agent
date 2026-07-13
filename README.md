@@ -7,7 +7,7 @@ Public npm launcher and native CLI/MCP runtime for Palladin Agent.
 
 ## Security boundary
 
-The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed universal executable inside `@palladin/runtime-darwin-universal/PalladinRuntime.app`. There is no TypeScript, `PATH`, download, or plaintext fallback.
+The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed universal executable inside `@palladin/runtime-darwin-universal/PalladinRuntime.app`. On Windows it starts only the Authenticode-signed `palladin-client.exe` from the exact x64 or arm64 package; that client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. There is no TypeScript, `PATH`, download, or plaintext fallback.
 
 The native runtime keeps these concepts separate:
 
@@ -17,7 +17,7 @@ The native runtime keeps these concepts separate:
 
 The macOS Hardened build uses a provisioned Data Protection Keychain access group. Items are non-synchronizable and `WhenUnlockedThisDeviceOnly`; access to the shared organization credential requires user presence. Homebrew Node, an unsigned clone, and a differently signed fork do not have the entitlement. An unsigned development binary fails closed and does not fall back to Login Keychain, a file, or an environment variable.
 
-Windows and Linux platform packages are not included in this pre-production macOS change. Their native packages are delivered by separate epic tasks. A source build using Login Keychain, Windows Credential Manager, or Linux Secret Service reports `Convenience`, never `Hardened`.
+The Windows Secure tier is installed separately with the owner-signed one-UAC bootstrapper. It registers `PalladinRuntime` as packaged `LocalService`, sets a restricted service SID, and protects `C:\ProgramData\Palladin\Runtime\v1` so only SYSTEM, Administrators, and `NT SERVICE\PalladinRuntime` have access. The npm package never performs privileged installation. A source build using Windows Credential Manager outside this broker boundary reports `Convenience`, never `Hardened`. Linux remains a separate epic task.
 
 ## Installation
 
@@ -27,6 +27,8 @@ Once the release packages are available:
 npm install --global @palladin/agent
 palladin doctor
 ```
+
+On Windows, install the matching signed Palladin Runtime bootstrapper once before using Secure mode. npm installation remains script-free and does not prompt for elevation. If the service or companion is unavailable or invalid, the client fails closed instead of falling back to the current-user credential store.
 
 No package uses `preinstall`, `install`, `postinstall`, or `prepare`. npm installs the matching prebuilt platform package; it does not download or compile a binary during installation.
 

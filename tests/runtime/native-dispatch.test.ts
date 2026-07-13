@@ -9,6 +9,8 @@ import {
 
 const packageJson = '/fixture/node_modules/@palladin/runtime-darwin-universal/package.json';
 const executable = '/fixture/node_modules/@palladin/runtime-darwin-universal/PalladinRuntime.app/Contents/MacOS/palladin';
+const windowsPackageJson = 'C:\\fixture\\node_modules\\@palladin\\runtime-win32-x64\\package.json';
+const windowsExecutable = 'C:\\fixture\\node_modules\\@palladin\\runtime-win32-x64\\bin\\palladin-client.exe';
 
 function childProcess(): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
@@ -38,11 +40,49 @@ describe('native runtime dispatcher', () => {
     expect(fixture.assertExecutable).toHaveBeenCalledWith(executable);
   });
 
+  it.each([
+    ['x64', '@palladin/runtime-win32-x64/package.json', windowsPackageJson, windowsExecutable],
+    [
+      'arm64',
+      '@palladin/runtime-win32-arm64/package.json',
+      'C:\\fixture\\node_modules\\@palladin\\runtime-win32-arm64\\package.json',
+      'C:\\fixture\\node_modules\\@palladin\\runtime-win32-arm64\\bin\\palladin-client.exe',
+    ],
+  ])('resolves only the fixed signed client for win32/%s', (architecture, specifier, manifest, client) => {
+    const fixture = host({
+      platform: 'win32',
+      architecture,
+      resolvePackageJson: vi.fn(() => manifest),
+    });
+    expect(resolveNativeRuntime(fixture)).toBe(client);
+    expect(fixture.resolvePackageJson).toHaveBeenCalledWith(specifier);
+    expect(fixture.assertExecutable).toHaveBeenCalledWith(client);
+  });
+
   it('has no TypeScript, PATH, download, or unsupported-platform fallback', () => {
     const fixture = host({ platform: 'linux' });
     expect(() => resolveNativeRuntime(fixture)).toThrow('not installed for linux/arm64');
     expect(fixture.resolvePackageJson).not.toHaveBeenCalled();
     expect(fixture.spawnRuntime).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported Windows architectures before package resolution', () => {
+    const fixture = host({ platform: 'win32', architecture: 'ia32' });
+    expect(() => resolveNativeRuntime(fixture)).toThrow('does not support win32/ia32');
+    expect(fixture.resolvePackageJson).not.toHaveBeenCalled();
+  });
+
+  it('rejects a Windows client resolving outside its exact platform package', () => {
+    const fixture = host({
+      platform: 'win32',
+      architecture: 'x64',
+      resolvePackageJson: vi.fn(() => windowsPackageJson),
+      realpath: vi.fn((path: string) => path.endsWith('palladin-client.exe')
+        ? 'C:\\attacker\\palladin-client.exe'
+        : path),
+    });
+    expect(() => resolveNativeRuntime(fixture)).toThrow('resolved outside');
+    expect(fixture.assertExecutable).not.toHaveBeenCalled();
   });
 
   it('rejects a symlinked executable escaping the platform package', () => {

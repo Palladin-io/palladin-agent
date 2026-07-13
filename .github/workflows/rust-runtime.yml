@@ -6,7 +6,9 @@ on:
     paths:
       - ".github/workflows/rust-runtime.yml"
       - ".github/workflows/macos-signed-runtime.yml"
+      - ".github/workflows/windows-signed-runtime.yml"
       - "packaging/macos/**"
+      - "packaging/windows/**"
       - "runtime/**"
 
 permissions:
@@ -96,8 +98,12 @@ jobs:
         include:
           - runner: windows-2025
             target: x86_64-pc-windows-msvc
+            architecture: x64
+            os_architecture: X64
           - runner: windows-11-arm
             target: aarch64-pc-windows-msvc
+            architecture: arm64
+            os_architecture: Arm64
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -108,9 +114,39 @@ jobs:
         with:
           node-version: 22
       - run: rustup target add ${{ matrix.target }}
+      - name: Validate Windows packaging source
+        shell: pwsh
+        working-directory: .
+        run: |
+          foreach ($path in Get-ChildItem packaging/windows/scripts -Include '*.ps1','*.psm1' -Recurse) {
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile($path.FullName, [ref]$null, [ref]$errors)
+            if ($errors.Count -ne 0) { throw "PowerShell parse failed for $($path.FullName): $errors" }
+          }
+          foreach ($path in Get-ChildItem packaging/windows -Include '*.xml','*.in','*.manifest','*.csproj' -Recurse | Where-Object Name -NotLike '*.json.in') {
+            if ($path.Name -eq 'Program.cs.in') { continue }
+            try { [void][xml](Get-Content -LiteralPath $path.FullName -Raw) } catch { throw "XML parse failed for $($path.FullName): $_" }
+          }
+          packaging/windows/scripts/Test-RollbackPolicy.ps1
+          Import-Module packaging/windows/scripts/Palladin.Release.psm1 -Force
+          $testPfn = Get-PalladinPackageFamilyName -Name 'Palladin.Runtime.Companion' -Publisher 'CN=Palladin CI'
+          if ($testPfn -cnotmatch '^Palladin\.Runtime\.Companion_[a-z0-9]{13}$') { throw 'test Companion PFN is invalid' }
+          "PALLADIN_WINDOWS_PACKAGE_FAMILY_NAME=$testPfn" | Add-Content -LiteralPath $env:GITHUB_ENV
+          if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -cne '${{ matrix.os_architecture }}') { throw 'emulated Windows runner is forbidden' }
       - run: cargo test --workspace --locked --target ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
       - run: ./target/${{ matrix.target }}/release/palladin.exe --version
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-windows-broker --bins
+      - name: Stage the attested CLI as the fixed broker worker
+        shell: pwsh
+        run: Copy-Item -LiteralPath './target/${{ matrix.target }}/release/palladin.exe' -Destination './target/${{ matrix.target }}/release/palladin-worker.exe'
+      - name: Validate all four native PE outputs
+        shell: pwsh
+        run: |
+          Import-Module ../packaging/windows/scripts/Palladin.Release.psm1 -Force
+          foreach ($name in 'palladin-client', 'palladin-companion', 'palladin-service', 'palladin-worker') {
+            Assert-PalladinArchitecture -Path "./target/${{ matrix.target }}/release/$name.exe" -Architecture '${{ matrix.architecture }}'
+          }
 
   linux:
     name: Build ${{ matrix.gnu_target }} and ${{ matrix.musl_target }}

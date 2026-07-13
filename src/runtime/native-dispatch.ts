@@ -1,10 +1,15 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { constants as fsConstants, accessSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { posix as darwinPath } from 'node:path';
+import { posix as darwinPath, win32 as windowsPath } from 'node:path';
 
 const DARWIN_RUNTIME_PACKAGE = '@palladin/runtime-darwin-universal';
 const BUNDLE_EXECUTABLE = ['PalladinRuntime.app', 'Contents', 'MacOS', 'palladin'] as const;
+const WINDOWS_RUNTIME_PACKAGES = {
+  arm64: '@palladin/runtime-win32-arm64',
+  x64: '@palladin/runtime-win32-x64',
+} as const;
+const WINDOWS_CLIENT_EXECUTABLE = ['bin', 'palladin-client.exe'] as const;
 const FORWARDED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 
 export interface NativeDispatchHost {
@@ -17,22 +22,50 @@ export interface NativeDispatchHost {
 }
 
 export function resolveNativeRuntime(host: NativeDispatchHost): string {
-  if (host.platform !== 'darwin') {
-    throw new Error(`Palladin native runtime is not installed for ${host.platform}/${host.architecture}`);
-  }
-  if (host.architecture !== 'arm64' && host.architecture !== 'x64') {
-    throw new Error(`Palladin native runtime does not support darwin/${host.architecture}`);
+  if (host.platform === 'darwin') {
+    if (host.architecture !== 'arm64' && host.architecture !== 'x64') {
+      throw new Error(`Palladin native runtime does not support darwin/${host.architecture}`);
+    }
+
+    return resolvePackageExecutable(
+      host,
+      DARWIN_RUNTIME_PACKAGE,
+      BUNDLE_EXECUTABLE,
+      darwinPath,
+    );
   }
 
-  const packageJson = host.realpath(host.resolvePackageJson(`${DARWIN_RUNTIME_PACKAGE}/package.json`));
-  const packageRoot = darwinPath.dirname(packageJson);
-  const executable = host.realpath(darwinPath.join(packageRoot, ...BUNDLE_EXECUTABLE));
-  const pathFromPackage = darwinPath.relative(packageRoot, executable);
+  if (host.platform === 'win32') {
+    if (host.architecture !== 'arm64' && host.architecture !== 'x64') {
+      throw new Error(`Palladin native runtime does not support win32/${host.architecture}`);
+    }
+
+    return resolvePackageExecutable(
+      host,
+      WINDOWS_RUNTIME_PACKAGES[host.architecture],
+      WINDOWS_CLIENT_EXECUTABLE,
+      windowsPath,
+    );
+  }
+
+  throw new Error(`Palladin native runtime is not installed for ${host.platform}/${host.architecture}`);
+}
+
+function resolvePackageExecutable(
+  host: NativeDispatchHost,
+  packageName: string,
+  executableSegments: readonly string[],
+  pathApi: typeof darwinPath,
+): string {
+  const packageJson = host.realpath(host.resolvePackageJson(`${packageName}/package.json`));
+  const packageRoot = pathApi.dirname(packageJson);
+  const executable = host.realpath(pathApi.join(packageRoot, ...executableSegments));
+  const pathFromPackage = pathApi.relative(packageRoot, executable);
   if (
     pathFromPackage === ''
     || pathFromPackage === '..'
-    || pathFromPackage.startsWith(`..${darwinPath.sep}`)
-    || darwinPath.isAbsolute(pathFromPackage)
+    || pathFromPackage.startsWith(`..${pathApi.sep}`)
+    || pathApi.isAbsolute(pathFromPackage)
   ) {
     throw new Error('Palladin native runtime resolved outside its platform package');
   }

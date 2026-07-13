@@ -1,0 +1,42 @@
+[package]
+name = "palladin-windows-broker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+getrandom.workspace = true
+palladin-platform = { path = "../palladin-platform" }
+secrecy.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Foundation",
+    "Security_Credentials",
+    "Security_Cryptography",
+    "Security_Cryptography_Core",
+    "Storage_Streams",
+    "Win32_System_WinRT",
+] }
+windows-sys.workspace = true
+windows-service.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "palladin-client"
+path = "src/bin/client.rs"
+
+[[bin]]
+name = "palladin-companion"
+path = "src/bin/companion.rs"
+
+[[bin]]
+name = "palladin-service"
+path = "src/bin/service.rs"

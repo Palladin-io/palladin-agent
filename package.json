@@ -54,6 +54,8 @@
     "node": ">=20"
   },
   "optionalDependencies": {
-    "@palladin/runtime-darwin-universal": "0.1.0"
+    "@palladin/runtime-darwin-universal": "0.1.0",
+    "@palladin/runtime-win32-arm64": "0.1.0",
+    "@palladin/runtime-win32-x64": "0.1.0"
   }
 }

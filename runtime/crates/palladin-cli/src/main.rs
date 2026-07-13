@@ -30,18 +30,36 @@ use palladin_credential::secret::parse_secret;
 use palladin_credential::wait::{
     ProgressMode, WaitOptions, heartbeat_line, parse_duration, signal_cancellation_token,
 };
-use palladin_platform::secure_store::{NativeSecretStore, storage_tier_description};
+use palladin_platform::secure_store::{
+    NativeSecretStore, SecretSlot, SecretStore, StoreError, storage_tier_description,
+};
+#[cfg(windows)]
+use palladin_windows_broker::BrokerSecretStore;
 use secrecy::ExposeSecret;
 use serde::Serialize;
 use zeroize::Zeroizing;
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_UNSAFE_ENVIRONMENT: u8 = 78;
+const WINDOWS_HARDENED_TIER: &str = "Hardened - restricted LocalService service-SID broker with authenticated AppContainer and Windows Hello consent";
 const INJECT_UNAVAILABLE: &str = "browser injection is disabled because an unauthenticated CDP endpoint can spoof the page origin and receive plaintext; Palladin will enable inject only through a reviewed authenticated browser boundary; no profile was opened and no credential was requested";
 
 #[tokio::main]
 async fn main() -> ExitCode {
     install_redacted_panic_hook();
+    let hardened_worker_root = match hardened_windows_worker_root() {
+        Ok(root) => root,
+        Err(error) => return fail(&error),
+    };
+    let secret_store = match runtime_secret_store(hardened_worker_root.as_deref()) {
+        Ok(store) => store,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let runtime_storage_tier = if hardened_worker_root.is_some() {
+        WINDOWS_HARDENED_TIER
+    } else {
+        storage_tier_description()
+    };
     if argv_contains_api_key() {
         return fail(
             "API keys are forbidden in argv; use a masked prompt or connect --api-key-stdin",
@@ -58,6 +76,15 @@ async fn main() -> ExitCode {
     let environment = EnvironmentReport::inspect_current();
     let cli = Cli::parse();
 
+    if hardened_worker_root.is_some()
+        && matches!(
+            &cli.command,
+            Commands::Exec(_) | Commands::Inject(_) | Commands::Mcp { .. }
+        )
+    {
+        return fail("this operation is forbidden by the Windows Secure v1 worker policy");
+    }
+
     if matches!(&cli.command, Commands::Inject(_)) {
         eprintln!("Error: {INJECT_UNAVAILABLE}");
         return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
@@ -68,31 +95,123 @@ async fn main() -> ExitCode {
         return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
     }
 
-    let root = match palladin_platform::palladin_root() {
-        Ok(root) => root,
-        Err(error) => return fail(&error.to_string()),
+    let root = match hardened_worker_root {
+        Some(root) => root,
+        None => match palladin_platform::palladin_root() {
+            Ok(root) => root,
+            Err(error) => return fail(&error.to_string()),
+        },
     };
     let repository = match ProfileRepository::new(root) {
         Ok(repository) => repository,
         Err(error) => return fail(&error.to_string()),
     };
-    let service = RuntimeService::new(repository, NativeSecretStore::default());
+    let service = RuntimeService::new(repository, secret_store);
 
     match cli.command {
-        Commands::Init { force } => init(&service, cli.id.as_deref(), force),
-        Commands::Doctor => doctor(&environment, &service),
-        Commands::Connect(args) => connect(&service, cli.id.as_deref(), args).await,
-        Commands::Status => status(&service, cli.id.as_deref()).await,
+        Commands::Init { force } => init(&service, cli.id.as_deref(), force, runtime_storage_tier),
+        Commands::Doctor => doctor(&environment, &service, runtime_storage_tier),
+        Commands::Connect(args) => {
+            connect(&service, cli.id.as_deref(), args, runtime_storage_tier).await
+        }
+        Commands::Status => status(&service, cli.id.as_deref(), runtime_storage_tier).await,
         Commands::Search(args) => search(&service, cli.id.as_deref(), args).await,
         Commands::Get(args) => get(&service, cli.id.as_deref(), args).await,
         Commands::Exec(args) => exec(&service, cli.id.as_deref(), args).await,
         Commands::Inject(_) => unreachable!("inject exits before identity initialization"),
         Commands::ReportStale(args) => report_stale(&service, cli.id.as_deref(), args).await,
         Commands::Mcp { command } => mcp(&service, cli.id.as_deref(), command).await,
-        Commands::Agents { command } => agents(&service, command),
-        Commands::Security { command } => security(&service, cli.id.as_deref(), command),
+        Commands::Agents { command } => agents(&service, command, runtime_storage_tier),
+        Commands::Security { command } => {
+            security(&service, cli.id.as_deref(), command, runtime_storage_tier)
+        }
         Commands::Purge { confirm } => purge(&service, confirm),
     }
+}
+
+enum RuntimeSecretStore {
+    Convenience(NativeSecretStore),
+    #[cfg(windows)]
+    Hardened(BrokerSecretStore),
+}
+
+impl SecretStore for RuntimeSecretStore {
+    fn get(
+        &self,
+        owner_id: &str,
+        slot: SecretSlot,
+    ) -> Result<Option<secrecy::SecretSlice<u8>>, StoreError> {
+        match self {
+            Self::Convenience(store) => store.get(owner_id, slot),
+            #[cfg(windows)]
+            Self::Hardened(store) => store.get(owner_id, slot),
+        }
+    }
+
+    fn set(&self, owner_id: &str, slot: SecretSlot, secret: &[u8]) -> Result<(), StoreError> {
+        match self {
+            Self::Convenience(store) => store.set(owner_id, slot, secret),
+            #[cfg(windows)]
+            Self::Hardened(store) => store.set(owner_id, slot, secret),
+        }
+    }
+
+    fn delete(&self, owner_id: &str, slot: SecretSlot) -> Result<(), StoreError> {
+        match self {
+            Self::Convenience(store) => store.delete(owner_id, slot),
+            #[cfg(windows)]
+            Self::Hardened(store) => store.delete(owner_id, slot),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn runtime_secret_store(
+    hardened_root: Option<&std::path::Path>,
+) -> Result<RuntimeSecretStore, StoreError> {
+    hardened_root.map_or_else(
+        || Ok(RuntimeSecretStore::Convenience(NativeSecretStore)),
+        |root| BrokerSecretStore::new(root).map(RuntimeSecretStore::Hardened),
+    )
+}
+
+#[cfg(not(windows))]
+fn runtime_secret_store(
+    _hardened_root: Option<&std::path::Path>,
+) -> Result<RuntimeSecretStore, StoreError> {
+    Ok(RuntimeSecretStore::Convenience(NativeSecretStore::default()))
+}
+
+#[cfg(windows)]
+fn hardened_windows_worker_root() -> Result<Option<std::path::PathBuf>, String> {
+    use std::path::PathBuf;
+
+    let executable = std::env::current_exe()
+        .map_err(|_| "the Windows runtime executable path is unavailable".to_owned())?;
+    if executable.file_name().and_then(|name| name.to_str()) != Some("palladin-worker.exe") {
+        return Ok(None);
+    }
+    palladin_windows_broker::attest_service_identity().map_err(|error| error.to_string())?;
+    let root = std::env::var_os("PALLADIN_BROKER_ROOT")
+        .map(PathBuf::from)
+        .ok_or_else(|| "the broker-owned runtime root is unavailable".to_owned())?;
+    let program_data =
+        palladin_windows_broker::program_data_path().map_err(|error| error.to_string())?;
+    let caller_sid = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "the broker-owned runtime root is invalid".to_owned())?;
+    let expected = palladin_windows_broker::broker_profile_root(&program_data, caller_sid)
+        .map_err(|error| error.to_string())?;
+    if root != expected {
+        return Err("the broker-owned runtime root is invalid".to_owned());
+    }
+    Ok(Some(root))
+}
+
+#[cfg(not(windows))]
+fn hardened_windows_worker_root() -> Result<Option<std::path::PathBuf>, String> {
+    Ok(None)
 }
 
 const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
@@ -114,7 +233,7 @@ const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
 }
 
 async fn mcp(
-    service: &RuntimeService<NativeSecretStore>,
+    service: &RuntimeService<RuntimeSecretStore>,
     profile: Option<&str>,
     command: McpCommand,
 ) -> ExitCode {
@@ -141,9 +260,10 @@ async fn mcp(
 }
 
 fn init(
-    service: &RuntimeService<NativeSecretStore>,
+    service: &RuntimeService<RuntimeSecretStore>,
     profile_name: Option<&str>,
     force: bool,
+    runtime_storage_tier: &str,
 ) -> ExitCode {
     if force {
         return fail(
@@ -166,7 +286,7 @@ fn init(
         };
         return emit_output(render_init(
             &profile.name,
-            storage_tier_description(),
+            runtime_storage_tier,
             true,
             profile.name == registry.default,
         ));
@@ -176,7 +296,7 @@ fn init(
             let is_default = profile.name == registry.default || registry.agents.is_empty();
             emit_output(render_init(
                 &profile.name,
-                storage_tier_description(),
+                runtime_storage_tier,
                 false,
                 is_default,
             ))
@@ -187,7 +307,8 @@ fn init(
 
 fn doctor(
     environment: &EnvironmentReport,
-    service: &RuntimeService<NativeSecretStore>,
+    service: &RuntimeService<RuntimeSecretStore>,
+    runtime_storage_tier: &str,
 ) -> ExitCode {
     let platform = palladin_platform::current();
     println!("Palladin Runtime Doctor");
@@ -196,8 +317,15 @@ fn doctor(
         "platform: {}/{}",
         platform.operating_system, platform.architecture
     );
-    println!("standalone-security-tier: {}", platform.standalone_tier);
-    println!("storage-boundary: {}", storage_tier_description());
+    println!(
+        "standalone-security-tier: {}",
+        if runtime_storage_tier == WINDOWS_HARDENED_TIER {
+            "Hardened"
+        } else {
+            platform.standalone_tier
+        }
+    );
+    println!("storage-boundary: {runtime_storage_tier}");
     println!("hardened-candidate: {}", platform.hardened_candidate);
     println!("identity-opened: no");
     println!("project-runtime-dependencies: disabled");
@@ -230,9 +358,10 @@ fn doctor(
 }
 
 async fn connect(
-    service: &RuntimeService<NativeSecretStore>,
+    service: &RuntimeService<RuntimeSecretStore>,
     profile: Option<&str>,
     args: ConnectArgs,
+    runtime_storage_tier: &str,
 ) -> ExitCode {
     let api_key = match read_api_key(args.api_key_stdin) {
         Ok(api_key) => api_key,
@@ -264,11 +393,15 @@ async fn connect(
     emit_output(render_connect(
         &outcome.registration,
         outcome.config_saved,
-        storage_tier_description(),
+        runtime_storage_tier,
     ))
 }
 
-async fn status(service: &RuntimeService<NativeSecretStore>, profile: Option<&str>) -> ExitCode {
+async fn status(
+    service: &RuntimeService<RuntimeSecretStore>,
+    profile: Option<&str>,
+    runtime_storage_tier: &str,
+) -> ExitCode {
     let hostname = match hostname::get() {
         Ok(hostname) => hostname.to_string_lossy().into_owned(),
         Err(_) => return fail("the operating-system hostname is unavailable"),
@@ -281,12 +414,12 @@ async fn status(service: &RuntimeService<NativeSecretStore>, profile: Option<&st
         &outcome.profile.name,
         &outcome.config.host,
         &outcome.registration,
-        storage_tier_description(),
+        runtime_storage_tier,
     ))
 }
 
 async fn search(
-    service: &RuntimeService<NativeSecretStore>,
+    service: &RuntimeService<RuntimeSecretStore>,
     profile: Option<&str>,
     args: SearchArgs,
 ) -> ExitCode {
@@ -323,7 +456,7 @@ async fn search(
 }
 
 async fn get(
-    service: &RuntimeService<NativeSecretStore>,
+    service: &RuntimeService<RuntimeSecretStore>,
     profile: Option<&str>,
     args: GetArgs,
 ) -> ExitCode {
@@ -445,7 +578,7 @@ async fn get(
 }
 
 async fn exec(
-    service: &RuntimeService<NativeSecretStore>,
+    service: &RuntimeService<RuntimeSecretStore>,
     profile: Option<&str>,
     args: ExecArgs,
 ) -> ExitCode {
@@ -524,7 +657,7 @@ async fn exec(
 }
 
 async fn report_stale(
-    service: &RuntimeService<NativeSecretStore>,
+    service: &RuntimeService<RuntimeSecretStore>,
     profile: Option<&str>,
     args: ReportStaleArgs,
 ) -> ExitCode {
@@ -557,32 +690,37 @@ async fn report_stale(
     }
 }
 
-fn agents(service: &RuntimeService<NativeSecretStore>, command: AgentsCommand) -> ExitCode {
-    match agents_result(service, command) {
+fn agents(
+    service: &RuntimeService<RuntimeSecretStore>,
+    command: AgentsCommand,
+    runtime_storage_tier: &str,
+) -> ExitCode {
+    match agents_result(service, command, runtime_storage_tier) {
         Ok(output) => emit_output(output),
         Err(error) => fail(&error.to_string()),
     }
 }
 
 fn security(
-    service: &RuntimeService<NativeSecretStore>,
+    service: &RuntimeService<RuntimeSecretStore>,
     profile: Option<&str>,
     command: SecurityCommand,
+    runtime_storage_tier: &str,
 ) -> ExitCode {
     match command {
         SecurityCommand::Upgrade => match service.verify_identity(profile) {
-            Ok(profile) => emit_output(render_security_upgrade(
-                &profile.name,
-                storage_tier_description(),
-            )),
+            Ok(profile) => {
+                emit_output(render_security_upgrade(&profile.name, runtime_storage_tier))
+            }
             Err(error) => fail(&error.to_string()),
         },
     }
 }
 
 fn agents_result(
-    service: &RuntimeService<NativeSecretStore>,
+    service: &RuntimeService<RuntimeSecretStore>,
     command: AgentsCommand,
+    runtime_storage_tier: &str,
 ) -> Result<RenderedOutput, RuntimeError> {
     match command {
         AgentsCommand::List => {
@@ -591,7 +729,7 @@ fn agents_result(
         }
         AgentsCommand::Create { name, r#type } => {
             let created = service.create_profile(&name, r#type)?;
-            Ok(render_profile_created(&created, storage_tier_description()))
+            Ok(render_profile_created(&created, runtime_storage_tier))
         }
         AgentsCommand::Delete { name } => {
             service.delete_profile(&name)?;
@@ -611,7 +749,7 @@ fn agents_result(
     }
 }
 
-fn purge(service: &RuntimeService<NativeSecretStore>, confirm: bool) -> ExitCode {
+fn purge(service: &RuntimeService<RuntimeSecretStore>, confirm: bool) -> ExitCode {
     if !confirm {
         return fail("purge requires --confirm and is never run automatically");
     }

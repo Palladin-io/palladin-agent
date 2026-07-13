@@ -29,6 +29,8 @@ describe('public npm package boundary', () => {
     expect(root.dependencies).toBeUndefined();
     expect(root.optionalDependencies).toEqual({
       '@palladin/runtime-darwin-universal': root.version,
+      '@palladin/runtime-win32-arm64': root.version,
+      '@palladin/runtime-win32-x64': root.version,
     });
     for (const lifecycle of ['preinstall', 'install', 'postinstall', 'prepare']) {
       expect(root.scripts?.[lifecycle]).toBeUndefined();
@@ -71,6 +73,22 @@ describe('public npm package boundary', () => {
     expect(runtime.os).toBeUndefined();
     expect(runtime.cpu).toBeUndefined();
     expect(runtime.files).toContain('PalladinRuntime.app/');
+    expect(runtime.scripts).toBeUndefined();
+    expect(runtime.dependencies).toBeUndefined();
+    expect(runtime.optionalDependencies).toBeUndefined();
+    expect(runtime.publishConfig).toEqual({ access: 'public', provenance: true });
+  });
+
+  it.each([
+    ['x64', '@palladin/runtime-win32-x64'],
+    ['arm64', '@palladin/runtime-win32-arm64'],
+  ])('keeps the Windows %s workspace private, inert, and architecture-neutral', (architecture, name) => {
+    const runtime = manifest(`packages/runtime-win32-${architecture}/package.json`);
+    expect(runtime.name).toBe(name);
+    expect(runtime.private).toBe(true);
+    expect(runtime.os).toBeUndefined();
+    expect(runtime.cpu).toBeUndefined();
+    expect(runtime.files).toEqual(['bin/palladin-client.exe', 'README.md', 'LICENSE']);
     expect(runtime.scripts).toBeUndefined();
     expect(runtime.dependencies).toBeUndefined();
     expect(runtime.optionalDependencies).toBeUndefined();

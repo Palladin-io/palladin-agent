@@ -39,3 +39,6 @@ zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+palladin-windows-broker = { path = "../palladin-windows-broker" }

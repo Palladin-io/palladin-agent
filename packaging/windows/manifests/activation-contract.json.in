@@ -1,0 +1,7 @@
+{
+  "packageName": "Palladin.Runtime.Companion",
+  "publisher": "__PUBLISHER__",
+  "applicationId": "PalladinCompanion",
+  "aumid": "__PACKAGE_FAMILY_NAME__!PalladinCompanion",
+  "executionAlias": "palladin-runtime-companion.exe"
+}

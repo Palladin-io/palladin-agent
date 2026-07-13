@@ -21,6 +21,13 @@ security-framework.workspace = true
 security-framework-sys.workspace = true
 
 [dependencies]
+getrandom.workspace = true
 keyring.workspace = true
+rsa.workspace = true
 secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true

@@ -1,0 +1,21 @@
+{
+  "name": "@palladin/runtime-win32-arm64",
+  "version": "0.1.0",
+  "description": "Signed Windows arm64 client for Palladin Agent",
+  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Palladin-io/palladin-agent.git",
+    "directory": "packages/runtime-win32-arm64"
+  },
+  "files": [
+    "bin/palladin-client.exe",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

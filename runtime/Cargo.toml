@@ -9,6 +9,7 @@ members = [
     "crates/palladin-mcp",
     "crates/palladin-platform",
     "crates/palladin-runtime",
+    "crates/palladin-windows-broker",
 ]
 resolver = "3"
 
@@ -35,6 +36,7 @@ keyring = "4.1.4"
 nix = { version = "0.31.3", default-features = false, features = ["user"] }
 percent-encoding = "2.3.2"
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
+rsa = "0.9.10"
 rpassword = "7.5.4"
 rmcp = { version = "2.2.0", default-features = false, features = ["server", "transport-async-rw"] }
 salsa20 = "0.10.2"
@@ -44,7 +46,7 @@ security-framework-sys = "2.17.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha1 = "0.10.6"
-sha2 = "0.10.9"
+sha2 = { version = "0.10.9", features = ["oid"] }
 subtle = "2.6.1"
 tempfile = "3.27.0"
 thiserror = "2.0.18"
@@ -55,6 +57,27 @@ tracing = { version = "0.1.44", features = ["max_level_off", "release_max_level_
 url = "2.5.8"
 x25519-dalek = { version = "2.0.1", features = ["static_secrets", "zeroize"] }
 zeroize = { version = "1.9.0", features = ["derive"] }
+windows = "0.62.2"
+windows-service = "0.8.0"
+
+[workspace.dependencies.windows-sys]
+version = "0.61.2"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Isolation",
+    "Win32_Storage_FileSystem",
+    "Win32_Storage_Packaging_Appx",
+    "Win32_System_Com",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+]
 
 [profile.release]
 codegen-units = 1
