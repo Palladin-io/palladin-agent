@@ -5,6 +5,7 @@ param(
   [Parameter(Mandatory)][string] $Publisher,
   [Parameter(Mandatory)][string] $BrokerBinary,
   [Parameter(Mandatory)][string] $WorkerBinary,
+  [Parameter(Mandatory)][string] $ExecutorBinary,
   [Parameter(Mandatory)][string] $CompanionBinary,
   [Parameter(Mandatory)][string] $AssetsDirectory,
   [Parameter(Mandatory)][string] $OutputDirectory
@@ -16,6 +17,7 @@ Import-Module (Join-Path $PSScriptRoot 'Palladin.Release.psm1') -Force
 if (Test-Path -LiteralPath $OutputDirectory) { throw "output directory already exists: $OutputDirectory" }
 Assert-PalladinArchitecture -Path $BrokerBinary -Architecture $Architecture
 Assert-PalladinArchitecture -Path $WorkerBinary -Architecture $Architecture
+Assert-PalladinArchitecture -Path $ExecutorBinary -Architecture $Architecture
 Assert-PalladinArchitecture -Path $CompanionBinary -Architecture $Architecture
 foreach ($asset in 'StoreLogo.png', 'Square150x150Logo.png', 'Square44x44Logo.png') {
   $null = Assert-PalladinRegularFile -Path (Join-Path $AssetsDirectory $asset) -Label 'MSIX asset'
@@ -34,6 +36,7 @@ try {
     Copy-Item -LiteralPath $binary -Destination (Join-Path $stage "bin/$name")
     if ($kind -eq 'Broker') {
       Copy-Item -LiteralPath $WorkerBinary -Destination (Join-Path $stage 'bin/palladin-worker.exe')
+      Copy-Item -LiteralPath $ExecutorBinary -Destination (Join-Path $stage 'bin/palladin-executor.exe')
     }
     $manifest = Get-Content -LiteralPath (Join-Path $templateRoot "Palladin.$kind.appxmanifest.in") -Raw
     $publisherXml = [Security.SecurityElement]::Escape($Publisher)

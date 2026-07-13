@@ -1185,6 +1185,7 @@ fn now_rfc3339() -> Result<String, RuntimeError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
     use std::io::Read;
     use std::sync::{Arc, Mutex};
 
@@ -1315,16 +1316,7 @@ mod tests {
         )
         .expect("API client");
         let session = runtime_session(host, api, encryption);
-        let command = vec![
-            std::env::current_exe()
-                .expect("test executable")
-                .to_string_lossy()
-                .into_owned(),
-            "--ignored".to_owned(),
-            "--exact".to_owned(),
-            "tests::native_exec_child".to_owned(),
-            "--nocapture".to_owned(),
-        ];
+        let command = native_exec_test_command();
         let outcome = session
             .execute_with_credential(
                 CredentialExecRequest {
@@ -1351,6 +1343,7 @@ mod tests {
         assert!(requests[0].contains("x-api-key: pl_shared_organization_fixture\r\n"));
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn script_resolves_every_reference_before_spawning_the_allowlisted_interpreter() {
         let main = r#"{"access":"granted","entryId":"script-entry","label":"Fixture Script","urlDomain":null,"nonce":"p4zno4W6mNfd0WESkmk6Kg2IzO9VsLxw","reEncryptedBlob":"sd652QzdkDm9esJ/oNXFj2J5fC1yiVt40hc3KdkrX9oosfMa1mNPQq9uJs0aY+MJlcID+MJpSALUZssy1+4pg3nYTsg0Tg/58BaKvfs34FT3vDZZvBexrh4l+erGCHrxX1ZMuPcz3E1Y5dcXH9hTb9d0imuq0udEc3ggfR5NcTkj9qLTrWUGyUKta0MWzJ10t8GmsJD899XLNnLu/IpmDcLoiUaPICtNrKMQUco=","agentWrappedDek":"7zIytOfJ4bPy68f1zA6o9hCieaMWSV/KbhQlaMQbtXiNP+okqawLXloq78+y7TU+OaldelM2pCAx/bBrw7WKIVq+MRhs/AXtAxHXeIzqgB8="}"#.to_owned();
@@ -1398,6 +1391,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     #[ignore = "subprocess helper"]
     fn native_exec_child() {
@@ -1413,6 +1407,32 @@ mod tests {
             Ok("fixture-user")
         );
         assert!(std::env::var_os("PALLADIN_API_KEY").is_none());
+    }
+
+    #[cfg(not(windows))]
+    fn native_exec_test_command() -> Vec<String> {
+        vec![
+            std::env::current_exe()
+                .expect("test executable")
+                .to_string_lossy()
+                .into_owned(),
+            "--ignored".to_owned(),
+            "--exact".to_owned(),
+            "tests::native_exec_child".to_owned(),
+            "--nocapture".to_owned(),
+        ]
+    }
+
+    #[cfg(windows)]
+    fn native_exec_test_command() -> Vec<String> {
+        vec![
+            "powershell.exe".to_owned(),
+            "-NoLogo".to_owned(),
+            "-NoProfile".to_owned(),
+            "-NonInteractive".to_owned(),
+            "-Command".to_owned(),
+            "$ok = $env:CLAW_SECRET -ceq 'fixture-password-not-production' -and $env:CLAW_USERNAME -ceq 'fixture-user' -and $null -eq $env:PALLADIN_API_KEY -and [Console]::In.Read() -eq -1; if ($ok) { exit 0 } else { exit 91 }".to_owned(),
+        ]
     }
 
     fn request() -> CredentialDeliveryRequest<'static> {

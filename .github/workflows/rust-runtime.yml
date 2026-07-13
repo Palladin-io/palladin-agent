@@ -133,18 +133,25 @@ jobs:
           if ($testPfn -cnotmatch '^Palladin\.Runtime\.Companion_[a-z0-9]{13}$') { throw 'test Companion PFN is invalid' }
           "PALLADIN_WINDOWS_PACKAGE_FAMILY_NAME=$testPfn" | Add-Content -LiteralPath $env:GITHUB_ENV
           if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -cne '${{ matrix.os_architecture }}') { throw 'emulated Windows runner is forbidden' }
+      - name: Zbuduj i przypnij executor do testowych hostów
+        shell: pwsh
+        run: |
+          cargo build --locked --target '${{ matrix.target }}' -p palladin-windows-executor --bin palladin-executor
+          $debug = './target/${{ matrix.target }}/debug'
+          New-Item -ItemType Directory -Force -Path (Join-Path $debug 'deps') | Out-Null
+          Copy-Item -LiteralPath (Join-Path $debug 'palladin-executor.exe') -Destination (Join-Path $debug 'deps/palladin-executor.exe')
       - run: cargo test --workspace --locked --target ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
       - run: ./target/${{ matrix.target }}/release/palladin.exe --version
-      - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-windows-broker --bins
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-windows-broker -p palladin-windows-executor --bins
       - name: Stage the attested CLI as the fixed broker worker
         shell: pwsh
         run: Copy-Item -LiteralPath './target/${{ matrix.target }}/release/palladin.exe' -Destination './target/${{ matrix.target }}/release/palladin-worker.exe'
-      - name: Validate all four native PE outputs
+      - name: Validate all five native PE outputs
         shell: pwsh
         run: |
           Import-Module (Resolve-Path '../packaging/windows/scripts/Palladin.Release.psm1') -Force
-          foreach ($name in 'palladin-client', 'palladin-companion', 'palladin-service', 'palladin-worker') {
+          foreach ($name in 'palladin-client', 'palladin-companion', 'palladin-service', 'palladin-worker', 'palladin-executor') {
             Assert-PalladinArchitecture -Path "./target/${{ matrix.target }}/release/$name.exe" -Architecture '${{ matrix.architecture }}'
           }
 

@@ -13,8 +13,13 @@ use palladin_credential::secret::{ParsedSecret, env_field_key};
 use secrecy::{ExposeSecret, SecretString};
 use tempfile::TempDir;
 use thiserror::Error;
+#[cfg(windows)]
+use tokio::io::AsyncWriteExt as _;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
+
+#[cfg(windows)]
+use palladin_windows_executor::{ExecutorRequest, SecretVariable};
 
 const INHERITED_ENVIRONMENT: &[&str] = &[
     "PATH",
@@ -137,6 +142,14 @@ impl SecretEnvironment {
             .keys()
             .any(|name| name.eq_ignore_ascii_case(candidate))
     }
+
+    #[cfg(windows)]
+    fn into_executor_variables(self) -> Vec<SecretVariable> {
+        self.values
+            .into_iter()
+            .map(|(name, value)| SecretVariable::new(name, &value))
+            .collect()
+    }
 }
 
 impl Default for SecretEnvironment {
@@ -257,39 +270,121 @@ pub async fn run_command(
     cancellation: &CancellationToken,
 ) -> Result<ExecResult, ExecError> {
     validate_command(command)?;
-    let (program, arguments) = command.split_first().ok_or(ExecError::MissingCommand)?;
+    #[cfg(windows)]
+    {
+        return run_windows_request(
+            ExecutorRequest::command(command.to_vec(), environment.into_executor_variables()),
+            output,
+            cancellation,
+        )
+        .await;
+    }
+    #[cfg(not(windows))]
+    {
+        let (program, arguments) = command.split_first().ok_or(ExecError::MissingCommand)?;
+        if cancellation.is_cancelled() {
+            return Ok(ExecResult {
+                exit_code: 130,
+                cancelled: true,
+            });
+        }
+
+        let mut process = Command::new(program);
+        process
+            .args(arguments)
+            .env_clear()
+            .envs(sanitized_environment())
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        for (name, value) in &environment.values {
+            process.env(name, value.expose_secret());
+        }
+        sanitize_child(process.as_std_mut());
+        configure_output(&mut process, output);
+
+        let mut child = match process.group().kill_on_drop(true).spawn() {
+            Ok(child) => child,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(ExecResult {
+                    exit_code: 127,
+                    cancelled: false,
+                });
+            }
+            Err(_) => return Err(ExecError::Spawn),
+        };
+        drop(process);
+        drop(environment);
+        let (status, cancelled) = wait_for_group(&mut child, cancellation).await?;
+        Ok(ExecResult {
+            exit_code: if cancelled {
+                130
+            } else {
+                status.code().unwrap_or(1)
+            },
+            cancelled,
+        })
+    }
+}
+
+#[cfg(windows)]
+async fn run_windows_request(
+    request: ExecutorRequest,
+    output: OperatorOutput,
+    cancellation: &CancellationToken,
+) -> Result<ExecResult, ExecError> {
     if cancellation.is_cancelled() {
         return Ok(ExecResult {
             exit_code: 130,
             cancelled: true,
         });
     }
-
-    let mut process = Command::new(program);
+    let payload = request
+        .encode()
+        .map_err(|_| ExecError::HardenedExecutorProtocol)?;
+    drop(request);
+    let length = u32::try_from(payload.len())
+        .map_err(|_| ExecError::HardenedExecutorProtocol)?
+        .to_be_bytes();
+    let executable = palladin_windows_executor::trusted_executor_path()
+        .map_err(|_| ExecError::HardenedExecutorUnavailable)?;
+    let mut process = Command::new(executable);
     process
-        .args(arguments)
         .env_clear()
         .envs(sanitized_environment())
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .kill_on_drop(true);
-    for (name, value) in &environment.values {
-        process.env(name, value.expose_secret());
-    }
     sanitize_child(process.as_std_mut());
     configure_output(&mut process, output);
-
-    let mut child = match process.group().kill_on_drop(true).spawn() {
-        Ok(child) => child,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+    let mut child = process
+        .group()
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| ExecError::HardenedExecutorUnavailable)?;
+    drop(process);
+    let mut standard_input = child
+        .inner()
+        .stdin
+        .take()
+        .ok_or(ExecError::HardenedExecutorProtocol)?;
+    let request_write = async {
+        standard_input.write_all(&length).await?;
+        standard_input.write_all(&payload).await?;
+        standard_input.shutdown().await
+    };
+    tokio::select! {
+        result = request_write => {
+            result.map_err(|_| ExecError::HardenedExecutorProtocol)?;
+        }
+        () = cancellation.cancelled() => {
+            let _ = child.kill().await;
             return Ok(ExecResult {
-                exit_code: 127,
-                cancelled: false,
+                exit_code: 130,
+                cancelled: true,
             });
         }
-        Err(_) => return Err(ExecError::Spawn),
-    };
-    drop(process);
-    drop(environment);
+    }
+    drop(standard_input);
+    drop(payload);
     let (status, cancelled) = wait_for_group(&mut child, cancellation).await?;
     Ok(ExecResult {
         exit_code: if cancelled {
@@ -366,14 +461,30 @@ pub async fn run_script(
     output: OperatorOutput,
     cancellation: &CancellationToken,
 ) -> Result<ExecResult, ExecError> {
-    let temporary = TempScript::new(script)?;
-    let command = vec![
-        interpreter.executable.to_string_lossy().into_owned(),
-        temporary.path().to_string_lossy().into_owned(),
-    ];
-    let result = run_command(&command, environment, output, cancellation).await;
-    temporary.close()?;
-    result
+    #[cfg(windows)]
+    {
+        return run_windows_request(
+            ExecutorRequest::script(
+                interpreter.executable.clone(),
+                script,
+                environment.into_executor_variables(),
+            ),
+            output,
+            cancellation,
+        )
+        .await;
+    }
+    #[cfg(not(windows))]
+    {
+        let temporary = TempScript::new(script)?;
+        let command = vec![
+            interpreter.executable.to_string_lossy().into_owned(),
+            temporary.path().to_string_lossy().into_owned(),
+        ];
+        let result = run_command(&command, environment, output, cancellation).await;
+        temporary.close()?;
+        result
+    }
 }
 
 fn sanitized_environment() -> BTreeMap<OsString, OsString> {
@@ -527,11 +638,16 @@ pub enum ExecError {
     TemporaryScript,
     #[error("the private temporary script could not be deleted")]
     TemporaryCleanup,
+    #[error("the signed hardened Windows executor is unavailable")]
+    HardenedExecutorUnavailable,
+    #[error("the hardened Windows executor rejected its private request")]
+    HardenedExecutorProtocol,
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    #[cfg(not(windows))]
     use std::io::Read;
     use std::time::Duration;
 
@@ -695,6 +811,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn child_gets_only_scoped_secrets_and_protocol_stdin_is_eof() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -719,6 +836,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(marker).expect("marker"), "ok");
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn direct_spawn_never_interprets_shell_metacharacters() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -767,6 +885,7 @@ mod tests {
         assert!(correct);
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn cancellation_terminates_the_entire_process_tree() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -832,6 +951,7 @@ mod tests {
         std::fs::write(Path::new(&root).join("survived"), b"survived").expect("survived");
     }
 
+    #[cfg(not(windows))]
     fn test_child_command(name: &str) -> Vec<String> {
         vec![
             std::env::current_exe()
@@ -866,5 +986,89 @@ mod tests {
                 Err(ExecError::ImplicitShellForbidden)
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_executor_delivers_only_scoped_secret_with_null_stdin() {
+        let parsed = parse_secret(
+            br#"{"username":"fixture-user","password":"fixture-password","region":"eu"}"#,
+        )
+        .expect("credential");
+        let command = vec![
+            "powershell.exe".to_owned(),
+            "-NoLogo".to_owned(),
+            "-NoProfile".to_owned(),
+            "-NonInteractive".to_owned(),
+            "-Command".to_owned(),
+            "$ok = $env:CLAW_SECRET -ceq 'fixture-password' -and $env:CLAW_USERNAME -ceq 'fixture-user' -and $env:CLAW_REGION -ceq 'eu' -and $null -eq $env:PALLADIN_API_KEY -and [Console]::In.Read() -eq -1; if ($ok) { exit 0 } else { exit 91 }".to_owned(),
+        ];
+        let result = run_command(
+            &command,
+            SecretEnvironment::for_credential(&parsed),
+            OperatorOutput::Discard,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("contained Windows execution");
+        assert_eq!(result.exit_code, 0);
+        assert!(!result.cancelled);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_executor_propagates_the_exact_child_exit_code() {
+        let command = vec![
+            "powershell.exe".to_owned(),
+            "-NoLogo".to_owned(),
+            "-NoProfile".to_owned(),
+            "-NonInteractive".to_owned(),
+            "-Command".to_owned(),
+            "exit 23".to_owned(),
+        ];
+        let result = run_command(
+            &command,
+            SecretEnvironment::new(),
+            OperatorOutput::Discard,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("contained Windows execution");
+        assert_eq!(result.exit_code, 23);
+        assert!(!result.cancelled);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_cancellation_terminates_executor_with_a_descendant_promptly() {
+        let command = vec![
+            "powershell.exe".to_owned(),
+            "-NoLogo".to_owned(),
+            "-NoProfile".to_owned(),
+            "-NonInteractive".to_owned(),
+            "-Command".to_owned(),
+            "$child = [Diagnostics.Process]::Start('powershell.exe', '-NoLogo -NoProfile -NonInteractive -Command Start-Sleep -Seconds 30'); Start-Sleep -Seconds 30".to_owned(),
+        ];
+        let cancellation = CancellationToken::new();
+        let signal = cancellation.clone();
+        let cancel = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            signal.cancel();
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            run_command(
+                &command,
+                SecretEnvironment::new(),
+                OperatorOutput::Discard,
+                &cancellation,
+            ),
+        )
+        .await
+        .expect("Windows cancellation timed out")
+        .expect("contained Windows cancellation");
+        cancel.await.expect("cancellation signal");
+        assert_eq!(result.exit_code, 130);
+        assert!(result.cancelled);
     }
 }

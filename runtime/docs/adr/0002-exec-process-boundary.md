@@ -1,7 +1,7 @@
 # ADR 0002: Credential execution process boundary
 
 - Status: Accepted
-- Issue: CVT-314
+- Issues: CVT-314, CVT-337
 - Date: 2026-07-13
 
 ## Context
@@ -42,6 +42,14 @@ Required platform directions are:
 
 The platform executor must expose a narrow operation protocol, not raw secret retrieval. A package without the appropriate broker and passing negative tests reports Convenience and never silently downgrades a requested Hardened operation.
 
+### Windows implementation (CVT-337)
+
+The signed Broker MSIX contains a one-shot `palladin-executor.exe`; it is not a second service. The restricted `LocalService` worker sends only one already-approved command and its scoped credential environment through the executor's bounded stdin. API key, DEK, X25519 and Ed25519 material remain in the worker.
+
+The executor creates the selected process inside a fixed AppContainer with outbound Internet client capability. The child is created suspended with an exact inherited-handle list containing only null stdin and executor-owned stdout/stderr pipes, assigned to a kill-on-close Job Object, and only then resumed. The selected executable is canonicalized, opened without write/delete sharing, rejected when the final handle is a reparse point, and kept pinned across `CreateProcessW` to prevent same-user replacement after consent. Script files live only in the AppContainer profile and are removed on every handled exit path.
+
+AppContainer is intentionally a security boundary and not a transparent user-session token. Commands cannot read arbitrary user files, broker storage, Windows Hello pins, machine-DPAPI ciphertexts, or another process's memory unless a future reviewed capability explicitly grants such access. CVT-337 does not add `broadFileSystemAccess`, a LocalSystem launcher, or a plaintext fallback.
+
 ## Consequences
 
-CVT-314 materially reduces accidental leakage, environment inheritance, output exfiltration through MCP, temporary-file residue on handled paths, and orphaned subprocesses. It does not defend against a malicious process with effective same-user debugging, memory-read, or parent-environment tampering capability. That threat requires the platform boundary described above and is outside the standalone runtime delivered by this issue.
+CVT-314 materially reduces accidental leakage, environment inheritance, output exfiltration through MCP, temporary-file residue on handled paths, and orphaned subprocesses. The standalone tier still does not defend against effective same-user debugging or memory reads. On Windows Secure, CVT-337 adds the AppContainer process boundary described above; macOS and Linux retain their separately documented platform requirements.

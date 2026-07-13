@@ -119,12 +119,43 @@ describe('Windows hardened packaging contract', () => {
     expect(companion).toContain('Windows Hello consent expired; retry the command');
   });
 
-  it('packages worker with broker and produces x64 plus arm64 bundles', () => {
+  it('packages worker and executor with broker and produces x64 plus arm64 bundles', () => {
     const build = read('packaging/windows/scripts/Build-Msix.ps1');
     const bundle = read('packaging/windows/scripts/Build-MsixBundle.ps1');
     expect(build).toContain("'bin/palladin-worker.exe'");
+    expect(build).toContain("'bin/palladin-executor.exe'");
+    expect(build).toContain('[Parameter(Mandatory)][string] $ExecutorBinary');
     expect(bundle).toContain("'x64 MSIX'");
     expect(bundle).toContain("'arm64 MSIX'");
+  });
+
+  it('verifies the packaged executor architecture and timestamped Authenticode signature', () => {
+    const verify = read('packaging/windows/scripts/Verify-Release.ps1');
+    expect(verify).toContain("$brokerExecutor = Join-Path $brokerRoot 'bin/palladin-executor.exe'");
+    expect(verify).toContain('Assert-PalladinArchitecture -Path $brokerExecutor -Architecture $Architecture');
+    expect(verify).toContain(
+      'Assert-PalladinSignature -Path $brokerExecutor -Publisher $Publisher -Thumbprint $SignerThumbprint -RequireTimestamp',
+    );
+  });
+
+  it('keeps every credential-bearing command inside one AppContainer and Job Object boundary', () => {
+    const executor = read('runtime/crates/palladin-windows-executor/src/windows.rs');
+    const execution = read('runtime/crates/palladin-exec/src/lib.rs');
+    const cli = read('runtime/crates/palladin-cli/src/main.rs');
+    expect(executor).toContain('PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES');
+    expect(executor).toContain('PROC_THREAD_ATTRIBUTE_HANDLE_LIST');
+    expect(executor).toContain('CREATE_SUSPENDED');
+    expect(executor).toContain('AssignProcessToJobObject');
+    expect(executor).toContain('JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE');
+    expect(executor).toContain('FILE_FLAG_OPEN_REPARSE_POINT');
+    expect(executor).toContain('DeleteAppContainerProfile');
+    expect(executor).toContain('open_pinned_path(&ancestor, true)');
+    expect(executor.indexOf('drop(job);')).toBeLessThan(executor.indexOf('output.join()'));
+    expect(executor).toContain('PROCESS_VM_READ | PROCESS_DUP_HANDLE');
+    expect(execution).toContain('palladin_windows_executor::trusted_executor_path()');
+    expect(execution).toContain('.stdin(Stdio::piped())');
+    expect(execution).not.toContain('.arg(payload)');
+    expect(cli).not.toContain('WindowsHardenedUnavailable');
   });
 
   it('compiles the broker with the exact publisher-derived Companion PFN', () => {
@@ -138,12 +169,17 @@ describe('Windows hardened packaging contract', () => {
     expect(workflow).toContain("if ($derivedPfn -cne $env:PALLADIN_WINDOWS_PACKAGE_FAMILY_NAME)");
   });
 
-  it('keeps signing owner-only and stages the CLI as the fixed worker', () => {
+  it('keeps signing owner-only and builds the fixed worker plus isolated executor', () => {
     const pullRequest = read('.github/workflows/rust-runtime.yml');
     const signed = read('.github/workflows/windows-signed-runtime.yml');
     expect(signed).toContain("if: github.actor == 'patryk-roguszewski'");
     expect(signed).toContain('environment: windows-signing');
     expect(signed).toContain("Copy-Item -LiteralPath (Join-Path $source 'palladin.exe') -Destination (Join-Path $source 'palladin-worker.exe')");
+    expect(signed).toContain("-p palladin-windows-broker -p palladin-windows-executor --bins");
+    expect(signed).toContain("'palladin-worker', 'palladin-executor'");
+    expect(signed).toContain("-ExecutorBinary (Join-Path $native 'palladin-executor.exe')");
     expect(pullRequest).toContain("-Destination './target/${{ matrix.target }}/release/palladin-worker.exe'");
+    expect(pullRequest).toContain("-p palladin-windows-broker -p palladin-windows-executor --bins");
+    expect(pullRequest).toContain("'palladin-worker', 'palladin-executor'");
   });
 });

@@ -53,6 +53,14 @@ mod windows_service_entry {
     const MAX_WORKER_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
     const OUTPUT_CHUNK_BYTES: usize = 64 * 1024;
     const BROKER_ROOT_ENV: &str = "PALLADIN_BROKER_ROOT";
+    const TRUSTED_WORKER_ENVIRONMENT: &[&str] = &[
+        "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+    ];
 
     #[derive(Debug, Error)]
     enum ServiceError {
@@ -356,15 +364,24 @@ mod windows_service_entry {
         worker: &Path,
         session_timeout: Duration,
     ) -> Result<(), ServiceError> {
-        let mut child = Command::new(worker)
+        let mut command = Command::new(worker);
+        command
             .args(&request.arguments)
             .env_clear()
             .env(BROKER_ROOT_ENV, root)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
+            .kill_on_drop(true);
+        // The SCM constructs the service environment from machine-level state,
+        // not from the untrusted Node/AppContainer caller. Pass only the fixed
+        // executable-discovery allowlist needed by Script interpreters.
+        for name in TRUSTED_WORKER_ENVIRONMENT {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        let mut child = command.spawn()?;
         let duplex = request.operation == SecureOperation::McpServe;
         let input = Zeroizing::new(std::mem::take(&mut request.standard_input));
         let mut worker_stdin = child

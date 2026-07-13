@@ -10,20 +10,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     ApplicationFuture, BoundedLineReader, ExecInput, ExecToolResult, GetInput, MAX_BATCH_ITEMS,
-    MAX_FRAME_BYTES, McpApplication, NativeExecPolicy, PalladinMcpServer, ProtocolBridgeState,
-    ReportStaleInput, SearchInput, ToolOutcome, collect_batch_response, load_tools, parse_input,
+    MAX_FRAME_BYTES, McpApplication, PalladinMcpServer, ProtocolBridgeState, ReportStaleInput,
+    SearchInput, ToolOutcome, collect_batch_response, load_tools, parse_input,
     prepare_incoming_message, pretty_result, serve_io, validate_get, validate_search, wait_options,
 };
-
-#[test]
-fn windows_hardened_exec_policy_fails_before_native_delivery() {
-    let message = NativeExecPolicy::WindowsHardenedUnavailable
-        .unavailable_message()
-        .expect("unavailable");
-    assert!(message.contains("process-isolation"));
-    assert!(message.contains("No credential was requested or decrypted"));
-    assert_eq!(NativeExecPolicy::Enabled.unavailable_message(), None);
-}
 
 #[derive(Clone, Default)]
 struct FakeApplication {

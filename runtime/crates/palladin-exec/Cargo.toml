@@ -15,3 +15,6 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+palladin-windows-executor = { path = "../palladin-windows-executor" }

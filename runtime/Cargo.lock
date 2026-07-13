@@ -1571,6 +1571,7 @@ dependencies = [
  "command-group",
  "palladin-core",
  "palladin-credential",
+ "palladin-windows-executor",
  "secrecy",
  "tempfile",
  "thiserror",
@@ -1655,6 +1656,20 @@ dependencies = [
  "windows",
  "windows-service",
  "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "palladin-windows-executor"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "windows",
  "zeroize",
 ]
 

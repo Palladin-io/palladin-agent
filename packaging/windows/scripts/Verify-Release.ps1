@@ -39,8 +39,11 @@ try {
   }
   $brokerService = Join-Path $brokerRoot 'bin/palladin-service.exe'
   $brokerWorker = Join-Path $brokerRoot 'bin/palladin-worker.exe'
+  $brokerExecutor = Join-Path $brokerRoot 'bin/palladin-executor.exe'
   Assert-PalladinArchitecture -Path $brokerService -Architecture $Architecture
   Assert-PalladinArchitecture -Path $brokerWorker -Architecture $Architecture
+  Assert-PalladinArchitecture -Path $brokerExecutor -Architecture $Architecture
+  Assert-PalladinSignature -Path $brokerExecutor -Publisher $Publisher -Thumbprint $SignerThumbprint -RequireTimestamp
   if ($companionManifest -notmatch 'uap10:TrustLevel="appContainer"' -or
       $companionManifest -notmatch 'Alias="palladin-runtime-companion.exe"' -or
       $companionManifest -match 'runFullTrust') {
