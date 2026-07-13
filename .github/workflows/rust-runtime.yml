@@ -47,6 +47,17 @@ jobs:
           plutil -lint ../packaging/macos/PalladinRuntime.entitlements.in
           node --check ../packaging/macos/tests/node-keyring-probe.mjs
           xcrun swiftc -warnings-as-errors -typecheck ../packaging/macos/tests/untrusted-dpk-probe.swift
+          fake_root="$(mktemp -d)"
+          mkdir -p "$fake_root/PalladinRuntime.app"
+          ../packaging/macos/scripts/stage-npm-platform-package.sh \
+            --app "$fake_root/PalladinRuntime.app" \
+            --output-dir "$fake_root/staged"
+          node -e '
+            const manifest = require(process.argv[1]);
+            if (manifest.private !== undefined) process.exit(1);
+            if (JSON.stringify(manifest.os) !== JSON.stringify(["darwin"])) process.exit(1);
+            if (JSON.stringify(manifest.cpu) !== JSON.stringify(["arm64", "x64"])) process.exit(1);
+          ' "$fake_root/staged/package.json"
       - name: Verify native runner architecture
         shell: bash
         run: |

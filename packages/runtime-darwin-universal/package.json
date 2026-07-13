@@ -2,6 +2,7 @@
   "name": "@palladin/runtime-darwin-universal",
   "version": "0.1.0",
   "description": "Signed universal macOS runtime for Palladin Agent",
+  "private": true,
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -12,13 +13,6 @@
     "PalladinRuntime.app/",
     "README.md",
     "LICENSE"
-  ],
-  "os": [
-    "darwin"
-  ],
-  "cpu": [
-    "arm64",
-    "x64"
   ],
   "publishConfig": {
     "access": "public",

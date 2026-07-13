@@ -252,13 +252,14 @@ jobs:
           mkdir -p "$unpacked"
           ditto -x -k "$RUNNER_TEMP/palladin-runtime-darwin-universal.zip" "$unpacked"
           test -d "$unpacked/PalladinRuntime.app"
-          rm -rf packages/runtime-darwin-universal/PalladinRuntime.app
-          ditto "$unpacked/PalladinRuntime.app" \
-            packages/runtime-darwin-universal/PalladinRuntime.app
+          runtime_package="$RUNNER_TEMP/runtime-darwin-universal-package"
+          packaging/macos/scripts/stage-npm-platform-package.sh \
+            --app "$unpacked/PalladinRuntime.app" \
+            --output-dir "$runtime_package"
 
           npm ci --ignore-scripts --workspaces=false
           npm run build
-          npm pack --workspaces=true --workspace @palladin/runtime-darwin-universal \
+          npm pack "$runtime_package" \
             --pack-destination "$RUNNER_TEMP" >/dev/null
           npm pack --pack-destination "$RUNNER_TEMP" >/dev/null
           runtime_tgz=$(find "$RUNNER_TEMP" -maxdepth 1 -type f \

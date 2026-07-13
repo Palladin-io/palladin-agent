@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 interface PackageManifest {
   name: string;
   version: string;
+  private?: boolean;
   files?: string[];
   scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
@@ -62,11 +63,12 @@ describe('public npm package boundary', () => {
     ]);
   });
 
-  it('keeps the universal macOS package public and lifecycle-script free', () => {
+  it('keeps the development workspace private and platform-neutral', () => {
     const runtime = manifest('packages/runtime-darwin-universal/package.json');
     expect(runtime.name).toBe('@palladin/runtime-darwin-universal');
-    expect(runtime.os).toEqual(['darwin']);
-    expect(runtime.cpu).toEqual(['arm64', 'x64']);
+    expect(runtime.private).toBe(true);
+    expect(runtime.os).toBeUndefined();
+    expect(runtime.cpu).toBeUndefined();
     expect(runtime.files).toContain('PalladinRuntime.app/');
     expect(runtime.scripts).toBeUndefined();
     expect(runtime.dependencies).toBeUndefined();
