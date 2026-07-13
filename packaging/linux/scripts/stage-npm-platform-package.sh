@@ -20,7 +20,7 @@ done
 [[ $architecture == x64 || $architecture == arm64 ]] || usage
 [[ -d $binaries && -n $output ]] || usage
 
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 template="$root/packages/runtime-linux-${architecture}-gnu"
 [[ -f $template/package.json ]] || { echo 'Error: Linux package template is missing' >&2; exit 1; }
 rm -rf "$output"

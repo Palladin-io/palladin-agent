@@ -1,4 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 function read(path: string): string {
@@ -6,6 +9,34 @@ function read(path: string): string {
 }
 
 describe('Linux hardened package boundary', () => {
+  it('stages the Linux npm package from the repository template', () => {
+    const temporary = mkdtempSync(join(tmpdir(), 'palladin-linux-stage-'));
+    try {
+      const binaries = join(temporary, 'bin');
+      const output = join(temporary, 'out');
+      mkdirSync(binaries);
+      for (const name of ['palladin-linux-client', 'palladin-worker']) {
+        const path = join(binaries, name);
+        writeFileSync(path, '#!/bin/sh\nexit 0\n');
+        chmodSync(path, 0o755);
+      }
+      execFileSync('bash', [
+        'packaging/linux/scripts/stage-npm-platform-package.sh',
+        '--architecture', 'arm64',
+        '--binaries', binaries,
+        '--output', output,
+      ]);
+      const manifest = JSON.parse(readFileSync(join(output, 'package.json'), 'utf8')) as {
+        name: string;
+        libc: string[];
+      };
+      expect(manifest.name).toBe('@palladin/runtime-linux-arm64-gnu');
+      expect(manifest.libc).toEqual(['glibc']);
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+
   it('runs the secret-bearing broker under a dedicated non-root UID', () => {
     const unit = read('packaging/linux/systemd/palladin-runtime.service');
     expect(unit).toContain('User=palladin-runtime');
