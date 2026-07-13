@@ -256,7 +256,7 @@ jobs:
           ditto "$unpacked/PalladinRuntime.app" \
             packages/runtime-darwin-universal/PalladinRuntime.app
 
-          npm ci --ignore-scripts
+          npm ci --ignore-scripts --workspaces=false
           npm run build
           npm pack --workspaces=true --workspace @palladin/runtime-darwin-universal \
             --pack-destination "$RUNNER_TEMP" >/dev/null

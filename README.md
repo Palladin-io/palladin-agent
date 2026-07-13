@@ -120,7 +120,7 @@ Native public state lives under `~/.palladin` and contains only profile aliases,
 ## Development
 
 ```bash
-npm ci --ignore-scripts
+npm ci --ignore-scripts --workspaces=false
 npm run build
 npm test
 

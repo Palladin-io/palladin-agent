@@ -56,7 +56,7 @@ Edytuj pliki używając `Edit`. Przestrzegaj konwencji (AGENTS.md):
 ### Krok 4 — zbuduj i sprawdź typy
 
 ```bash
-npm ci
+npm ci --workspaces=false
 npm run lint
 npm run build
 cd runtime && cargo fmt --check && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked

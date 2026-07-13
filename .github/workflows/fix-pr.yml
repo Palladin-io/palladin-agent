@@ -77,7 +77,7 @@ jobs:
           USER_CONTEXT: ${{ github.event.inputs.user_context }}
           PR: ${{ steps.pr.outputs.number }}
         run: |
-          npm ci
+          npm ci --workspaces=false
 
           {
             echo '## Pre-fetched dane PR'
@@ -104,5 +104,5 @@ jobs:
             --model "$CLAUDE_MODEL" \
             --max-turns 50 \
             --dangerously-skip-permissions \
-            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(jq:*),Bash(gh pr:*),Bash(gh api:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),Bash(git restore:*),Bash(git switch:*),Bash(git fetch:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git config:*),Bash(npm ci),Bash(npm run build:*),Bash(npm test:*),Bash(npm run lint:*)" \
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(jq:*),Bash(gh pr:*),Bash(gh api:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),Bash(git restore:*),Bash(git switch:*),Bash(git fetch:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git config:*),Bash(npm ci:*),Bash(npm run build:*),Bash(npm test:*),Bash(npm run lint:*)" \
             < /tmp/fix_prompt.md

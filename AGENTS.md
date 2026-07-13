@@ -31,7 +31,7 @@ Security violations are blocking findings.
 ## Commands
 
 ```bash
-npm ci
+npm ci --workspaces=false
 npm run lint
 npm run build
 npm test
