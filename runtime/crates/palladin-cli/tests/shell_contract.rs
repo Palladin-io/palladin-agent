@@ -74,19 +74,29 @@ fn bash_and_zsh_preserve_path_quoting_stdout_and_exit_code() {
 #[test]
 fn cmd_and_powershell_preserve_path_quoting_stdout_and_exit_code() {
     let (_root, runtime) = runtime_copy();
-    let command = format!("\"\"{}\" --version\"", runtime.display());
     let cmd = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
     assert_version(
-        Command::new(cmd)
-            .args(["/D", "/S", "/C", &command])
+        Command::new(&cmd)
+            .env("PALLADIN_TEST_RUNTIME", &runtime)
+            .args([
+                "/D",
+                "/S",
+                "/C",
+                "call \"%PALLADIN_TEST_RUNTIME%\" --version",
+            ])
             .output()
             .expect("run cmd"),
         "cmd",
     );
-    let command = format!("\"\"{}\" definitely-unknown\"", runtime.display());
     assert_usage_error(
-        Command::new(std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into()))
-            .args(["/D", "/S", "/C", &command])
+        Command::new(cmd)
+            .env("PALLADIN_TEST_RUNTIME", &runtime)
+            .args([
+                "/D",
+                "/S",
+                "/C",
+                "call \"%PALLADIN_TEST_RUNTIME%\" definitely-unknown",
+            ])
             .output()
             .expect("run cmd usage error"),
         "cmd",
