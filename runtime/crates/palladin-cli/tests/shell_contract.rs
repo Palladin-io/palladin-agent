@@ -8,8 +8,12 @@ fn runtime_copy() -> (tempfile::TempDir, PathBuf) {
         .prefix("palladin shell contract ")
         .tempdir()
         .expect("temporary directory");
-    let extension = if cfg!(windows) { ".exe" } else { "" };
-    let target = root.path().join(format!("palladin runtime{extension}"));
+    let binary_name = if cfg!(windows) {
+        "palladin-runtime.exe"
+    } else {
+        "palladin runtime"
+    };
+    let target = root.path().join(binary_name);
     std::fs::copy(env!("CARGO_BIN_EXE_palladin"), &target).expect("copy runtime");
     (root, target)
 }
@@ -73,29 +77,25 @@ fn bash_and_zsh_preserve_path_quoting_stdout_and_exit_code() {
 #[cfg(windows)]
 #[test]
 fn cmd_and_powershell_preserve_path_quoting_stdout_and_exit_code() {
-    let (_root, runtime) = runtime_copy();
+    let (root, runtime) = runtime_copy();
+    assert!(root.path().to_string_lossy().contains(' '));
     let cmd = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
     assert_version(
         Command::new(&cmd)
-            .env("PALLADIN_TEST_RUNTIME", &runtime)
-            .args([
-                "/D",
-                "/S",
-                "/C",
-                "call \"%PALLADIN_TEST_RUNTIME%\" --version",
-            ])
+            .current_dir(root.path())
+            .args(["/D", "/S", "/C", ".\\palladin-runtime.exe --version"])
             .output()
             .expect("run cmd"),
         "cmd",
     );
     assert_usage_error(
         Command::new(cmd)
-            .env("PALLADIN_TEST_RUNTIME", &runtime)
+            .current_dir(root.path())
             .args([
                 "/D",
                 "/S",
                 "/C",
-                "call \"%PALLADIN_TEST_RUNTIME%\" definitely-unknown",
+                ".\\palladin-runtime.exe definitely-unknown",
             ])
             .output()
             .expect("run cmd usage error"),
