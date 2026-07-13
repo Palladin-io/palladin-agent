@@ -1,22 +1,12 @@
 # Pull Request Reviewers
 
-The web panel supports Claude Code and Codex as independent pull request reviewers. Claude remains the default reviewer and the existing Claude implementation is also used by `fix-pr.yml`.
+The Agent CLI supports Claude Code and Codex as independent pull request reviewers. The existing Claude implementation is also used by `fix-pr.yml`.
 
-## Automatic flow
+## Manual flow
 
-Ready, non-WIP pull requests use the repository variable `DEFAULT_PR_REVIEWER`:
+The Agent CLI repository is public, so subscription-backed reviews never run automatically. Both reviewers must be dispatched manually from `main`: `pr-review.yml` for Claude or `codex-pr-review.yml` for Codex. Both workflows are restricted to the repository owner so public contributors and collaborators cannot consume the configured subscription allowance.
 
-| Value | Automatic review |
-|---|---|
-| unset, `claude`, or an unsupported value | Claude Code |
-| `codex` | Codex |
-| `both` | Claude Code and Codex in parallel |
-
-Draft pull requests, titles starting with `WIP`, and pull requests created by `github-actions[bot]` are skipped. The default can be changed without a code change under **Settings → Secrets and variables → Actions → Variables**.
-
-The Codex authorization job refuses runs triggered by users without write access to the repository. Review external-contributor pull requests with Claude or dispatch Codex only after a maintainer has validated the diff.
-
-Manual runs use the reviewer-specific workflow: `pr-review.yml` for Claude or `codex-pr-review.yml` for Codex. The manual selection does not change the repository default.
+The Codex authorization job additionally verifies repository write access before starting the job that receives the ChatGPT session. Dispatch Codex only after validating that the target pull request is appropriate for subscription-backed review.
 
 ## Results and failure isolation
 
@@ -33,7 +23,7 @@ The reviewers do not depend on each other. A Codex failure does not remove or mo
 | Claude Code | `CLAUDE_CODE_OAUTH_TOKEN` | Existing Claude Code subscription/session allowance |
 | Codex | organization secret `CODEX_AUTH_JSON_B64` | ChatGPT-managed Codex subscription session |
 
-The Codex workflow uses `pull_request_target` so its definition and reviewer sources always come from the trusted base branch. It never checks out or executes pull request code; it fetches the diff as untrusted review input. Automatic runs are limited to same-repository pull requests triggered by actors with write access. The Codex analysis job has only `contents: read` and `pull-requests: read`, and checkout credentials are not persisted.
+The Codex workflow accepts manual dispatches only from `main`, so its definition and reviewer sources come from the trusted default branch. It never checks out or executes pull request code; it fetches the diff as untrusted review input. The Codex analysis job has only `contents: read` and `pull-requests: read`, and checkout credentials are not persisted.
 
 The organization secret contains the Base64-encoded `auth.json` produced by a ChatGPT login and is exposed only to the Codex process. The runner validates `auth_mode=chatgpt`, drops `sudo`, starts Codex in an empty directory with a read-only sandbox, disables shell and external tools, and removes the temporary credential file on exit. The separate publisher receives only the structured review result and has `pull-requests: write`; it never receives the ChatGPT session.
 
@@ -53,4 +43,4 @@ Current provider details:
 
 ## Rollback
 
-Set `DEFAULT_PR_REVIEWER=claude` or remove the variable. Automatic pull request review immediately returns to the existing Claude-only path without changing `fix-pr.yml` or the Claude job. Manual Codex runs remain available for diagnosis; removing access to `CODEX_AUTH_JSON_B64` disables them completely.
+Remove the repository secret `CODEX_AUTH_JSON_B64` to disable Codex Review completely. Claude Review and `fix-pr.yml` remain unchanged.

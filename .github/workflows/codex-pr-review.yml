@@ -1,8 +1,6 @@
 name: "Codex: PR Review"
 
 on:
-  pull_request_target:
-    types: [opened, synchronize]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -21,14 +19,11 @@ concurrency:
 
 jobs:
   authorize:
+    # The public repository keeps subscription-backed reviews manual and owner-only.
+    # Requiring main prevents dispatching a branch-modified workflow with the secret.
     if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request_target' &&
-       github.actor != 'github-actions[bot]' &&
-       github.event.pull_request.draft == false &&
-       !startsWith(github.event.pull_request.title, 'WIP') &&
-       github.event.pull_request.head.repo.full_name == github.repository &&
-       (vars.DEFAULT_PR_REVIEWER == 'codex' || vars.DEFAULT_PR_REVIEWER == 'both'))
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'don-flamingo'
     name: Authorize Codex
     runs-on: ubuntu-latest
     timeout-minutes: 5
