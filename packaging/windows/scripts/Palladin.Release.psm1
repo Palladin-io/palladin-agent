@@ -45,7 +45,7 @@ function Assert-PalladinSignature {
   $null = Assert-PalladinRegularFile -Path $Path -Label 'signed artifact'
   $signature = Get-AuthenticodeSignature -LiteralPath $Path
   if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-    throw "Authenticode signature is not valid for $Path: $($signature.Status)"
+    throw "Authenticode signature is not valid for ${Path}: $($signature.Status)"
   }
   $actualThumbprint = $signature.SignerCertificate.Thumbprint.Replace(' ', '').ToUpperInvariant()
   $expectedThumbprint = $Thumbprint.Replace(' ', '').ToUpperInvariant()
