@@ -113,6 +113,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Search(_) => "search",
         Commands::Get(_) => "get",
         Commands::ReportStale(_) => "report-stale",
+        Commands::Mcp { .. } => "mcp",
         Commands::Agents { .. } => "agents",
         Commands::Security { .. } => "security",
         Commands::Purge { .. } => "purge",

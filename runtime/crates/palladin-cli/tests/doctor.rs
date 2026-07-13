@@ -65,6 +65,22 @@ fn doctor_reports_only_the_name_of_a_dangerous_variable() {
 }
 
 #[test]
+fn mcp_startup_failure_never_writes_plain_text_to_protocol_stdout() {
+    let synthetic_value = "synthetic-value-must-not-appear";
+    let output = runtime()
+        .env("NODE_OPTIONS", synthetic_value)
+        .args(["mcp", "serve"])
+        .output()
+        .expect("run unsafe MCP server");
+
+    assert_eq!(output.status.code(), Some(78));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("dangerous-variable-names: NODE_OPTIONS"));
+    assert!(!stderr.contains(synthetic_value));
+}
+
+#[test]
 fn legacy_positional_api_key_is_rejected_without_echoing_it() {
     let synthetic = "pl_synthetic_must_not_appear";
     let output = runtime()

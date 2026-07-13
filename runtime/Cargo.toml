@@ -5,7 +5,9 @@ members = [
     "crates/palladin-core",
     "crates/palladin-credential",
     "crates/palladin-crypto",
+    "crates/palladin-mcp",
     "crates/palladin-platform",
+    "crates/palladin-runtime",
 ]
 resolver = "3"
 
@@ -32,6 +34,7 @@ nix = { version = "0.31.3", default-features = false, features = ["user"] }
 percent-encoding = "2.3.2"
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 rpassword = "7.5.4"
+rmcp = { version = "2.2.0", default-features = false, features = ["server", "transport-async-rw"] }
 salsa20 = "0.10.2"
 secrecy = "0.10.3"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -42,8 +45,9 @@ subtle = "2.6.1"
 tempfile = "3.27.0"
 thiserror = "2.0.18"
 time = { version = "0.3.44", features = ["formatting"] }
-tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.52.3", features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = "0.7.18"
+tracing = { version = "0.1.44", features = ["max_level_off", "release_max_level_off"] }
 url = "2.5.8"
 x25519-dalek = { version = "2.0.1", features = ["static_secrets", "zeroize"] }
 zeroize = { version = "1.9.0", features = ["derive"] }

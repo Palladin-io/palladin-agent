@@ -166,15 +166,17 @@ impl ApiClient {
         cursor: Option<&str>,
         page_size: Option<u32>,
     ) -> Result<EntrySearchResult, ApiError> {
-        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-        serializer.append_pair("query", query);
-        if let Some(cursor) = cursor {
-            serializer.append_pair("cursor", cursor);
-        }
-        if let Some(page_size) = page_size {
-            serializer.append_pair("pageSize", &page_size.to_string());
-        }
-        let path = format!("/api/agent/entries?{}", serializer.finish());
+        let path = {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            serializer.append_pair("query", query);
+            if let Some(cursor) = cursor {
+                serializer.append_pair("cursor", cursor);
+            }
+            if let Some(page_size) = page_size {
+                serializer.append_pair("pageSize", &page_size.to_string());
+            }
+            format!("/api/agent/entries?{}", serializer.finish())
+        };
         let response = self.send(Method::GET, &path, None, &[]).await?;
         decode_success(response).await
     }

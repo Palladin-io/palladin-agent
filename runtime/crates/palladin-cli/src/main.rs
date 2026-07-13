@@ -4,20 +4,19 @@ use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::process::ExitCode;
 
 use clap::Parser;
-use palladin_api::{
-    CredentialAccess, CredentialMethod, GetCredentialOptions, ReportCredentialStaleInput,
-    StaleReasonCode,
-};
+use palladin_api::{CredentialMethod, ReportCredentialStaleInput, StaleReasonCode};
 use palladin_cli::args::{
-    AgentsCommand, Cli, Commands, ConnectArgs, GetArgs, ProgressArg, ReportStaleArgs, SearchArgs,
-    SecurityCommand, StaleCodeArg,
+    AgentsCommand, Cli, Commands, ConnectArgs, GetArgs, McpCommand, ProgressArg, ReportStaleArgs,
+    SearchArgs, SecurityCommand, StaleCodeArg,
 };
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
     render_agent_list, render_connect, render_init, render_profile_created, render_report_stale,
     render_search_human, render_security_upgrade, render_status,
 };
-use palladin_cli::{RuntimeError, RuntimeService, safe_terminal_text};
+use palladin_cli::{
+    CredentialDelivery, CredentialDeliveryRequest, RuntimeError, RuntimeService, safe_terminal_text,
+};
 use palladin_core::environment::{EnvironmentReport, EnvironmentRequirement, enforce_environment};
 use palladin_core::host::ApiHost;
 use palladin_core::panic::install_redacted_panic_hook;
@@ -28,8 +27,7 @@ use palladin_credential::access::{access_message, exit_code_for_access};
 use palladin_credential::fields::{FieldSelector, redact_totp_secrets, resolve_field};
 use palladin_credential::secret::parse_secret;
 use palladin_credential::wait::{
-    ProgressMode, WaitHints, WaitOptions, await_grant, heartbeat_line, parse_duration,
-    resolve_wait_policy, signal_cancellation_token,
+    ProgressMode, WaitOptions, heartbeat_line, parse_duration, signal_cancellation_token,
 };
 use palladin_platform::secure_store::{OsSecretStore, convenience_tier_description};
 use secrecy::ExposeSecret;
@@ -59,7 +57,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     if enforce_environment(environment_requirement(&cli.command), &environment).is_err() {
-        print_unsafe_environment(&environment);
+        print_unsafe_environment(&environment, matches!(cli.command, Commands::Mcp { .. }));
         return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
     }
 
@@ -81,6 +79,7 @@ async fn main() -> ExitCode {
         Commands::Search(args) => search(&service, cli.id.as_deref(), args).await,
         Commands::Get(args) => get(&service, cli.id.as_deref(), args).await,
         Commands::ReportStale(args) => report_stale(&service, cli.id.as_deref(), args).await,
+        Commands::Mcp { command } => mcp(&service, cli.id.as_deref(), command).await,
         Commands::Agents { command } => agents(&service, command),
         Commands::Security { command } => security(&service, cli.id.as_deref(), command),
         Commands::Purge { confirm } => purge(&service, confirm),
@@ -96,9 +95,37 @@ const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
         | Commands::Search(_)
         | Commands::Get(_)
         | Commands::ReportStale(_)
+        | Commands::Mcp { .. }
         | Commands::Agents { .. }
         | Commands::Security { .. }
         | Commands::Purge { .. } => EnvironmentRequirement::Clean,
+    }
+}
+
+async fn mcp(
+    service: &RuntimeService<OsSecretStore>,
+    profile: Option<&str>,
+    command: McpCommand,
+) -> ExitCode {
+    match command {
+        McpCommand::Serve => {
+            let hostname = match operating_system_hostname() {
+                Ok(hostname) => hostname,
+                Err(error) => return fail(error),
+            };
+            let session = match service.open_session(profile, &hostname) {
+                Ok(session) => session,
+                Err(error) => return fail(&error.to_string()),
+            };
+            let server = match palladin_mcp::native_server(session) {
+                Ok(server) => server,
+                Err(error) => return fail(&error.to_string()),
+            };
+            match palladin_mcp::serve_stdio(server).await {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => fail(&error.to_string()),
+            }
+        }
     }
 }
 
@@ -183,7 +210,7 @@ fn doctor(environment: &EnvironmentReport, service: &RuntimeService<OsSecretStor
         ExitCode::SUCCESS
     } else {
         println!("environment: unsafe");
-        print_unsafe_environment(environment);
+        print_unsafe_environment(environment, false);
         ExitCode::from(EXIT_UNSAFE_ENVIRONMENT)
     }
 }
@@ -262,7 +289,6 @@ async fn search(
         Err(error) => return fail(&error.to_string()),
     };
     let result = match session
-        .api
         .search_entries(query, args.cursor.as_deref(), args.page_size)
         .await
     {
@@ -312,80 +338,45 @@ async fn get(
         Ok(session) => session,
         Err(error) => return fail(&error.to_string()),
     };
-    let options = GetCredentialOptions {
-        reason: args.reason.clone(),
-        method: Some(CredentialMethod::Get),
-        requested_methods: Vec::new(),
-    };
-    let initial = match session
-        .api
-        .get_credential(&args.vault_id, &args.entry_id, &options)
-        .await
-    {
-        Ok(access) => access,
-        Err(error) => return fail(&error.to_string()),
-    };
-    let hints = match &initial {
-        CredentialAccess::Pending {
-            poll_interval_ms,
-            max_wait_ms,
-            ..
-        } => WaitHints {
-            poll_interval_ms: *poll_interval_ms,
-            max_wait_ms: *max_wait_ms,
-        },
-        _ => WaitHints::default(),
-    };
     let progress = args.progress.map(|value| match value {
         ProgressArg::Plain => ProgressMode::Plain,
         ProgressArg::Json => ProgressMode::Json,
         ProgressArg::None => ProgressMode::None,
     });
-    let policy = resolve_wait_policy(
-        WaitOptions {
-            wait_ms,
-            poll_ms,
-            progress,
-        },
-        hints,
-    );
+    let wait = WaitOptions {
+        wait_ms,
+        poll_ms,
+        progress,
+    };
     let cancellation = signal_cancellation_token();
-    let access = match await_grant(
-        initial,
-        policy,
-        &cancellation,
-        || {
-            session
-                .api
-                .get_credential(&args.vault_id, &args.entry_id, &options)
-        },
-        tokio::time::sleep,
-        |heartbeat| {
-            if let Some(line) = heartbeat_line(policy.progress, &heartbeat) {
-                eprint!("{line}");
-            }
-        },
-    )
-    .await
+    let delivery = match session
+        .deliver_for_get(
+            CredentialDeliveryRequest {
+                vault_id: &args.vault_id,
+                entry_id: &args.entry_id,
+                reason: args.reason.as_deref(),
+                wait,
+            },
+            &cancellation,
+            |heartbeat| {
+                if let Some(line) = heartbeat_line(progress.unwrap_or_default(), &heartbeat) {
+                    eprint!("{line}");
+                }
+            },
+        )
+        .await
     {
-        Ok(access) => access,
+        Ok(delivery) => delivery,
         Err(error) => return fail(&error.to_string()),
     };
-    let CredentialAccess::Granted {
-        entry_id,
-        label,
-        envelope,
-        ..
-    } = access
-    else {
-        if let Some(message) = access_message(&access, CredentialMethod::Get) {
-            eprintln!("Error: {}", safe_terminal_text(&message));
+    let credential = match delivery {
+        CredentialDelivery::Granted(credential) => credential,
+        CredentialDelivery::NotGranted(access) => {
+            if let Some(message) = access_message(&access, CredentialMethod::Get) {
+                eprintln!("Error: {}", safe_terminal_text(&message));
+            }
+            return ExitCode::from(exit_code_for_access(&access));
         }
-        return ExitCode::from(exit_code_for_access(&access));
-    };
-    let credential = match session.decrypt(&envelope) {
-        Ok(credential) => credential,
-        Err(error) => return fail(&error.to_string()),
     };
     let selector = FieldSelector {
         field: args.field,
@@ -406,8 +397,8 @@ async fn get(
                 value,
                 ..
             } => write_secret_json(&FieldValueOutput {
-                entry_id: &entry_id,
-                label: &label,
+                entry_id: &credential.entry_id,
+                label: &credential.label,
                 field,
                 value: value.expose_secret(),
             }),
@@ -416,8 +407,8 @@ async fn get(
                 code,
                 expires_in,
             } => write_secret_json(&TotpOutput {
-                entry_id: &entry_id,
-                label: &label,
+                entry_id: &credential.entry_id,
+                label: &credential.label,
                 field,
                 code: code.expose_secret(),
                 expires_in: *expires_in,
@@ -432,8 +423,8 @@ async fn get(
             Err(error) => return fail(&error.to_string()),
         };
     let result = write_secret_json(&CredentialOutput {
-        entry_id: &entry_id,
-        label: &label,
+        entry_id: &credential.entry_id,
+        label: &credential.label,
         secret: output.expose_secret(),
     });
     emit_get_warning(args.quiet, result)
@@ -467,7 +458,7 @@ async fn report_stale(
         code,
         note,
     };
-    match session.api.report_credential_stale(&input).await {
+    match session.report_credential_stale(&input).await {
         Ok(()) => emit_output(render_report_stale()),
         Err(error) => fail(&error.to_string()),
     }
@@ -674,9 +665,14 @@ fn emit_get_warning(quiet: bool, result: ExitCode) -> ExitCode {
     result
 }
 
-fn print_unsafe_environment(environment: &EnvironmentReport) {
-    println!(
+fn print_unsafe_environment(environment: &EnvironmentReport, protocol_stdout: bool) {
+    let message = format!(
         "dangerous-variable-names: {}",
         environment.dangerous_names().join(",")
     );
+    if protocol_stdout {
+        eprintln!("{message}");
+    } else {
+        println!("{message}");
+    }
 }

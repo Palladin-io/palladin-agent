@@ -1,37 +1,23 @@
 [package]
-name = "palladin-cli"
+name = "palladin-runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "palladin"
-path = "src/main.rs"
-
 [dependencies]
 base64.workspace = true
-clap.workspace = true
 getrandom.workspace = true
-hostname.workspace = true
 palladin-api = { path = "../palladin-api" }
 palladin-core = { path = "../palladin-core" }
-palladin-crypto = { path = "../palladin-crypto" }
 palladin-credential = { path = "../palladin-credential" }
+palladin-crypto = { path = "../palladin-crypto" }
 palladin-platform = { path = "../palladin-platform" }
-palladin-runtime = { path = "../palladin-runtime" }
-palladin-mcp = { path = "../palladin-mcp" }
-rpassword.workspace = true
 secrecy.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 subtle.workspace = true
-time.workspace = true
 thiserror.workspace = true
+time.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 zeroize.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true

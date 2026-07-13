@@ -31,6 +31,11 @@ pub enum Commands {
     Get(GetArgs),
     /// Report that a credential is stale without sending its value.
     ReportStale(ReportStaleArgs),
+    /// Serve Palladin tools over the Model Context Protocol.
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
     /// Manage local Agent profiles.
     Agents {
         #[command(subcommand)]
@@ -161,4 +166,10 @@ pub enum AgentsCommand {
 pub enum SecurityCommand {
     /// Verify that this profile already uses the operating-system secure store.
     Upgrade,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum McpCommand {
+    /// Start the long-lived MCP server over standard input and output.
+    Serve,
 }
