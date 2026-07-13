@@ -40,8 +40,9 @@ describe('public npm package boundary', () => {
   });
 
   it('excludes every legacy TypeScript implementation from the launcher tarball', () => {
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const output = execFileSync(npm, ['pack', '--dry-run', '--json'], {
+    const npmCli = process.env.npm_execpath;
+    if (!npmCli) throw new Error('npm_execpath is unavailable');
+    const output = execFileSync(process.execPath, [npmCli, 'pack', '--dry-run', '--json'], {
       encoding: 'utf8',
       env: { ...process.env, npm_config_loglevel: 'silent' },
     });

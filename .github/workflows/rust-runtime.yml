@@ -64,7 +64,8 @@ jobs:
           set -euo pipefail
           expected=${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'x86_64' }}
           test "$(uname -m)" = "$expected"
-          translated=$(sysctl -in sysctl.proc_translated 2>/dev/null || echo 0)
+          translated=$(sysctl -in sysctl.proc_translated 2>/dev/null || true)
+          translated=${translated:-0}
           test "$translated" = 0
       - run: cargo test --workspace --locked --target ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli

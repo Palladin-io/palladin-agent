@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { constants as fsConstants, accessSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { posix as darwinPath } from 'node:path';
 
 const DARWIN_RUNTIME_PACKAGE = '@palladin/runtime-darwin-universal';
 const BUNDLE_EXECUTABLE = ['PalladinRuntime.app', 'Contents', 'MacOS', 'palladin'] as const;
@@ -25,14 +25,14 @@ export function resolveNativeRuntime(host: NativeDispatchHost): string {
   }
 
   const packageJson = host.realpath(host.resolvePackageJson(`${DARWIN_RUNTIME_PACKAGE}/package.json`));
-  const packageRoot = dirname(packageJson);
-  const executable = host.realpath(join(packageRoot, ...BUNDLE_EXECUTABLE));
-  const pathFromPackage = relative(packageRoot, executable);
+  const packageRoot = darwinPath.dirname(packageJson);
+  const executable = host.realpath(darwinPath.join(packageRoot, ...BUNDLE_EXECUTABLE));
+  const pathFromPackage = darwinPath.relative(packageRoot, executable);
   if (
     pathFromPackage === ''
     || pathFromPackage === '..'
-    || pathFromPackage.startsWith(`..${sep}`)
-    || isAbsolute(pathFromPackage)
+    || pathFromPackage.startsWith(`..${darwinPath.sep}`)
+    || darwinPath.isAbsolute(pathFromPackage)
   ) {
     throw new Error('Palladin native runtime resolved outside its platform package');
   }
