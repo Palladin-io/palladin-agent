@@ -768,8 +768,10 @@ fn hash_current_executable() -> Result<String, RuntimeError> {
     let path = PathBuf::from("/proc/self/exe");
     #[cfg(not(target_os = "linux"))]
     let path = std::env::current_exe().map_err(|_| RuntimeError::VersionPolicyViolation)?;
+    #[cfg(not(target_os = "linux"))]
     let path_metadata =
         fs::symlink_metadata(&path).map_err(|_| RuntimeError::VersionPolicyViolation)?;
+    #[cfg(not(target_os = "linux"))]
     if !path_metadata.file_type().is_file() || path_metadata.file_type().is_symlink() {
         return Err(RuntimeError::VersionPolicyViolation);
     }
