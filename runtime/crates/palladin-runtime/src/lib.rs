@@ -976,6 +976,28 @@ impl<S: SecretStore> RuntimeService<S> {
         self.recover_pending_operations_locked()
     }
 
+    /// Creates only the authenticated empty-state root needed before release-policy
+    /// enforcement can persist its protected anti-rollback metadata.
+    ///
+    /// No Agent identity or organization credential is created or opened here. Existing
+    /// and legacy repositories are deliberately left untouched so their normal integrity
+    /// and migration checks still decide whether an identity operation may proceed.
+    pub fn prepare_empty_state_for_version_policy(&self) -> Result<(), RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        if self.read_trust_state()?.is_some() {
+            return Ok(());
+        }
+        let root_is_empty = match std::fs::read_dir(self.repository.root()) {
+            Ok(mut entries) => entries.next().transpose()?.is_none(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => return Err(error.into()),
+        };
+        if root_is_empty {
+            self.bootstrap_integrity_root()?;
+        }
+        Ok(())
+    }
+
     fn recover_pending_operations_locked(&self) -> Result<(), RuntimeError> {
         match self.read_trust_state()? {
             None => self.bootstrap_integrity_root(),

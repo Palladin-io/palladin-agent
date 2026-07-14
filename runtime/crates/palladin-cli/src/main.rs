@@ -120,6 +120,9 @@ async fn main() -> ExitCode {
         Commands::Doctor | Commands::Disconnect { .. } | Commands::Purge { .. }
     ) {
         if palladin_runtime::version_policy::system_version_policy_configured() {
+            if let Err(error) = service.prepare_empty_state_for_version_policy() {
+                return fail(&error.to_string());
+            }
             if let Err(error) = service
                 .enforce_system_version_policy(env!("CARGO_PKG_VERSION"))
                 .await

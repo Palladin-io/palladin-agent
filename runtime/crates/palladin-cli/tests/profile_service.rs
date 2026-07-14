@@ -153,6 +153,56 @@ fn only_generation_zero_can_repair_a_missing_empty_registry() {
     assert!(service.registry().is_err());
 }
 
+#[test]
+fn empty_integrity_state_precedes_version_policy_metadata_on_first_init() {
+    const TRUST_OWNER: &str = "00000000000000000000000000000000";
+
+    let root = tempfile::tempdir().expect("root");
+    let store = MemoryStore::default();
+    let service = service(root.path(), store.clone());
+
+    service
+        .prepare_empty_state_for_version_policy()
+        .expect("prepare empty state");
+    assert!(root.path().join("registry.json").is_file());
+    assert!(store.contains(TRUST_OWNER, SecretSlot::IntegrityTrustStateV1));
+
+    // Linux Hardened persists protected metadata below this internal directory.
+    std::fs::create_dir(root.path().join("secrets")).expect("secure store directory");
+    store
+        .set(
+            TRUST_OWNER,
+            SecretSlot::VersionPolicyTrustStateV1,
+            br#"{"schemaVersion":1,"highestSequence":1,"policyDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+        )
+        .expect("version policy trust state");
+
+    let profile = service
+        .create_profile("package-state", None)
+        .expect("first profile");
+    assert_eq!(profile.name, "package-state");
+}
+
+#[test]
+fn version_policy_preparation_does_not_adopt_legacy_public_state() {
+    const TRUST_OWNER: &str = "00000000000000000000000000000000";
+
+    let root = tempfile::tempdir().expect("root");
+    std::fs::create_dir(root.path().join("agents")).expect("legacy agents");
+    let store = MemoryStore::default();
+    let service = service(root.path(), store.clone());
+
+    service
+        .prepare_empty_state_for_version_policy()
+        .expect("leave legacy state untouched");
+
+    assert!(!store.contains(TRUST_OWNER, SecretSlot::IntegrityTrustStateV1));
+    assert!(matches!(
+        service.registry(),
+        Err(RuntimeError::LegacyMigrationRequired)
+    ));
+}
+
 #[tokio::test]
 async fn multiple_agents_share_one_organization_credential_reference_safely() {
     let root = tempfile::tempdir().expect("root");
