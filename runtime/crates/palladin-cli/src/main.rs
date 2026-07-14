@@ -120,17 +120,7 @@ async fn main() -> ExitCode {
     };
     let service = RuntimeService::new(repository, secret_store);
 
-    if !matches!(
-        &cli.command,
-        Commands::Doctor
-            | Commands::Disconnect { .. }
-            | Commands::Purge { .. }
-            | Commands::Security {
-                command: SecurityCommand::LegacyStatus
-                    | SecurityCommand::LegacyCutover { .. }
-                    | SecurityCommand::LegacyCleanup { .. }
-            }
-    ) {
+    if requires_version_policy(&cli.command) {
         if palladin_runtime::version_policy::system_version_policy_configured() {
             if let Err(error) = service.prepare_empty_state_for_version_policy() {
                 return fail(&error.to_string());
@@ -410,6 +400,17 @@ const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
         }
         | Commands::Purge { .. } => EnvironmentRequirement::Clean,
     }
+}
+
+const fn requires_version_policy(command: &Commands) -> bool {
+    !matches!(
+        command,
+        Commands::Doctor
+            | Commands::VerifyReleasePolicy { .. }
+            | Commands::Security {
+                command: SecurityCommand::LegacyStatus,
+            }
+    )
 }
 
 async fn mcp(
@@ -1273,5 +1274,56 @@ fn print_unsafe_environment(environment: &EnvironmentReport, protocol_stdout: bo
         eprintln!("{message}");
     } else {
         println!("{message}");
+    }
+}
+
+#[cfg(test)]
+mod version_policy_gate_tests {
+    use clap::Parser;
+
+    use super::{Cli, requires_version_policy};
+
+    fn command(arguments: &[&str]) -> Cli {
+        Cli::try_parse_from(arguments).expect("valid command")
+    }
+
+    #[test]
+    fn secret_mutations_and_purge_require_the_anti_rollback_gate() {
+        for arguments in [
+            &[
+                "palladin",
+                "--id",
+                "agent",
+                "disconnect",
+                "--purge",
+                "--confirm",
+            ][..],
+            &["palladin", "purge", "--confirm"][..],
+            &[
+                "palladin",
+                "security",
+                "legacy-cutover",
+                "--confirm-pre-production-reset",
+            ][..],
+            &[
+                "palladin",
+                "security",
+                "legacy-cleanup",
+                "cutover-id",
+                "--confirm",
+            ][..],
+        ] {
+            assert!(requires_version_policy(&command(arguments).command));
+        }
+    }
+
+    #[test]
+    fn only_identity_free_diagnostics_bypass_the_stateful_gate() {
+        assert!(!requires_version_policy(
+            &command(&["palladin", "doctor"]).command
+        ));
+        assert!(!requires_version_policy(
+            &command(&["palladin", "security", "legacy-status"]).command
+        ));
     }
 }
