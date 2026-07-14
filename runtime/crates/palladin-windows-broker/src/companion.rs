@@ -2,7 +2,7 @@ use std::io::{self, BufRead, IsTerminal, Read};
 use std::time::Duration;
 
 use palladin_platform::broker_protocol::{
-    BrokerFrame, ClientFrame, ConsentChallenge, ExecuteRequest, MAX_MCP_MESSAGE_BYTES,
+    BrokerFrame, ClientFrame, ConsentChallenge, ExecuteRequest, InputChunk, MAX_MCP_MESSAGE_BYTES,
     MAX_STREAM_CHUNK_BYTES, McpConsentResponse, McpMessage, OutputStream, ProtocolError,
     SecureOperation, consent_payload, operation_and_profile, read_frame, request_hash, write_frame,
 };
@@ -87,9 +87,13 @@ pub fn run_companion() -> Result<i32, CompanionError> {
     let mut arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let (operation, agent_id) =
         operation_and_profile(&arguments).map_err(|_| CompanionError::UnsupportedCommand)?;
-    let standard_input = prepare_standard_input(operation, &mut arguments)?;
-    let request_hash = request_hash(operation, &arguments, &standard_input)
-        .map_err(|_| CompanionError::UnsupportedCommand)?;
+    let standard_input_plan = prepare_standard_input_plan(operation, &mut arguments)?;
+    // Secret input is deliberately excluded from the pre-acceptance request.
+    // The authenticated broker first validates the operation, Windows Hello
+    // consent, caller session and signed worker policy. Connect input is read
+    // only after the broker returns Accepted.
+    let request_hash =
+        request_hash(operation, &arguments, &[]).map_err(|_| CompanionError::UnsupportedCommand)?;
     let mut request_id = [0_u8; 16];
     getrandom::fill(&mut request_id).map_err(|_| CompanionError::Transport)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -101,7 +105,7 @@ pub fn run_companion() -> Result<i32, CompanionError> {
         operation,
         agent_id,
         arguments,
-        standard_input,
+        standard_input_plan,
         request_hash,
     ))
 }
@@ -111,7 +115,7 @@ async fn execute(
     operation: SecureOperation,
     agent_id: String,
     arguments: Vec<String>,
-    mut standard_input: Zeroizing<Vec<u8>>,
+    standard_input_plan: StandardInputPlan,
     expected_request_hash: [u8; 32],
 ) -> Result<i32, CompanionError> {
     let mut pipe = connect_to_authenticated_service().await?;
@@ -175,7 +179,7 @@ async fn execute(
         request_id,
         operation,
         arguments,
-        standard_input: std::mem::take(&mut *standard_input),
+        standard_input: Vec::new(),
         consent,
     };
     write_client_frame(&mut pipe, &ClientFrame::Execute(request)).await?;
@@ -184,16 +188,40 @@ async fn execute(
         return execute_duplex(pipe, request_id, credential, agent_id).await;
     }
 
-    execute_one_shot(pipe, request_id).await
+    execute_one_shot(pipe, request_id, operation, standard_input_plan).await
 }
 
 async fn execute_one_shot(
     pipe: NamedPipeClient,
     request_id: [u8; 16],
+    operation: SecureOperation,
+    standard_input_plan: StandardInputPlan,
 ) -> Result<i32, CompanionError> {
+    execute_one_shot_stream(
+        pipe,
+        request_id,
+        operation,
+        standard_input_plan,
+        collect_standard_input,
+    )
+    .await
+}
+
+async fn execute_one_shot_stream<S, F>(
+    pipe: S,
+    request_id: [u8; 16],
+    operation: SecureOperation,
+    standard_input_plan: StandardInputPlan,
+    collect_input: F,
+) -> Result<i32, CompanionError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    F: FnOnce(StandardInputPlan) -> Result<Zeroizing<Vec<u8>>, CompanionError>,
+{
     let (reader, mut writer) = tokio::io::split(pipe);
     let (mut frames, _reader_task) = broker_frame_reader(reader);
     let mut accepted = false;
+    let mut collect_input = Some(collect_input);
     let mut next_output_sequence = 0_u64;
     let mut cancel_sent = false;
 
@@ -203,7 +231,32 @@ async fn execute_one_shot(
                 let frame = frame.ok_or(CompanionError::Transport)??;
                 match &frame {
                     BrokerFrame::Accepted { request_id: response_id }
-                        if *response_id == request_id && !accepted => accepted = true,
+                        if *response_id == request_id && !accepted => {
+                            if operation == SecureOperation::Connect {
+                                let collector = collect_input
+                                    .take()
+                                    .ok_or(CompanionError::InvalidResponse)?;
+                                let mut input = collector(standard_input_plan)?;
+                                write_client_frame(
+                                    &mut writer,
+                                    &ClientFrame::Input(InputChunk {
+                                        request_id,
+                                        sequence: 0,
+                                        bytes: std::mem::take(&mut *input),
+                                    }),
+                                )
+                                .await?;
+                                write_client_frame(
+                                    &mut writer,
+                                    &ClientFrame::InputClosed {
+                                        request_id,
+                                        sequence: 1,
+                                    },
+                                )
+                                .await?;
+                            }
+                            accepted = true;
+                        }
                     BrokerFrame::Output {
                         request_id: response_id,
                         sequence,
@@ -560,21 +613,40 @@ async fn connect_to_authenticated_service() -> Result<NamedPipeClient, Companion
     Err(CompanionError::ServiceUnavailable)
 }
 
-fn prepare_standard_input(
+fn prepare_standard_input_plan(
     operation: SecureOperation,
     arguments: &mut Vec<String>,
-) -> Result<Zeroizing<Vec<u8>>, CompanionError> {
+) -> Result<StandardInputPlan, CompanionError> {
     let uses_api_key_stdin = arguments
         .iter()
         .any(|argument| argument == "--api-key-stdin");
     if uses_api_key_stdin && operation != SecureOperation::Connect {
         return Err(CompanionError::OperationForbidden);
     }
-    match standard_input_plan(
+    let plan = standard_input_plan(
         operation,
         uses_api_key_stdin,
         std::io::stdin().is_terminal(),
-    ) {
+    );
+    match plan {
+        StandardInputPlan::Prompt => {
+            arguments.push("--api-key-stdin".to_owned());
+            Ok(plan)
+        }
+        StandardInputPlan::ReadRedirected
+        | StandardInputPlan::Duplex
+        | StandardInputPlan::Empty => Ok(plan),
+        StandardInputPlan::RejectFlagRequiresRedirect => {
+            Err(CompanionError::ApiKeyStdinRequiresRedirect)
+        }
+        StandardInputPlan::RejectRedirectRequiresFlag => {
+            Err(CompanionError::RedirectedApiKeyRequiresFlag)
+        }
+    }
+}
+
+fn collect_standard_input(plan: StandardInputPlan) -> Result<Zeroizing<Vec<u8>>, CompanionError> {
+    match plan {
         StandardInputPlan::Prompt => {
             let mut secret = Zeroizing::new(
                 rpassword::prompt_password("Organization API key: ")
@@ -583,20 +655,14 @@ fn prepare_standard_input(
             if !secret.starts_with("pl_") || secret.len() > 4096 {
                 return Err(CompanionError::ApiKeyPrompt);
             }
-            arguments.push("--api-key-stdin".to_owned());
             let bytes = Zeroizing::new(secret.as_bytes().to_vec());
             secret.zeroize();
             Ok(bytes)
         }
         StandardInputPlan::ReadRedirected => read_bounded_standard_input(),
-        StandardInputPlan::Duplex => Ok(Zeroizing::new(Vec::new())),
-        StandardInputPlan::Empty => Ok(Zeroizing::new(Vec::new())),
-        StandardInputPlan::RejectFlagRequiresRedirect => {
-            Err(CompanionError::ApiKeyStdinRequiresRedirect)
-        }
-        StandardInputPlan::RejectRedirectRequiresFlag => {
-            Err(CompanionError::RedirectedApiKeyRequiresFlag)
-        }
+        StandardInputPlan::Duplex | StandardInputPlan::Empty => Ok(Zeroizing::new(Vec::new())),
+        StandardInputPlan::RejectFlagRequiresRedirect
+        | StandardInputPlan::RejectRedirectRequiresFlag => Err(CompanionError::InvalidRequest),
     }
 }
 
@@ -801,12 +867,18 @@ impl Drop for WinRtApartment {
 #[cfg(test)]
 mod tests {
     use palladin_platform::broker_protocol::{
-        MAX_MCP_MESSAGE_BYTES, RejectionCode, SecureOperation,
+        BrokerFrame, ClientFrame, MAX_MCP_MESSAGE_BYTES, RejectionCode, SecureOperation,
+        read_frame, write_frame,
     };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    use zeroize::Zeroizing;
 
     use super::{
-        CompanionError, McpFlowControl, StandardInputPlan, operation_display_name, rejection_error,
-        response_matches_request, safe_profile_hint, standard_input_plan, take_next_mcp_message,
+        CompanionError, McpFlowControl, StandardInputPlan, execute_one_shot_stream,
+        operation_display_name, rejection_error, response_matches_request, safe_profile_hint,
+        standard_input_plan, take_next_mcp_message,
     };
 
     #[test]
@@ -878,6 +950,102 @@ mod tests {
             standard_input_plan(SecureOperation::McpServe, false, true),
             StandardInputPlan::Duplex
         );
+    }
+
+    #[tokio::test]
+    async fn rejected_connect_never_collects_deferred_secret_input() {
+        let request_id = [5; 16];
+        let (client, mut broker) = tokio::io::duplex(1024);
+        let collected = Arc::new(AtomicBool::new(false));
+        let collector_observation = Arc::clone(&collected);
+        let client = execute_one_shot_stream(
+            client,
+            request_id,
+            SecureOperation::Connect,
+            StandardInputPlan::Prompt,
+            move |_| {
+                collector_observation.store(true, Ordering::SeqCst);
+                Ok(Zeroizing::new(b"pl_deferred_fixture".to_vec()))
+            },
+        );
+        let service = async {
+            write_frame(
+                &mut broker,
+                &BrokerFrame::Rejected {
+                    request_id: Some(request_id),
+                    code: RejectionCode::OperationForbidden,
+                },
+            )
+            .await
+            .expect("reject");
+        };
+        let (result, ()) = tokio::join!(client, service);
+        assert!(matches!(result, Err(CompanionError::OperationForbidden)));
+        assert!(!collected.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn accepted_connect_collects_and_sends_secret_only_after_acceptance() {
+        let request_id = [6; 16];
+        let (client, mut broker) = tokio::io::duplex(2048);
+        let collected = Arc::new(AtomicBool::new(false));
+        let collector_observation = Arc::clone(&collected);
+        let client = execute_one_shot_stream(
+            client,
+            request_id,
+            SecureOperation::Connect,
+            StandardInputPlan::Prompt,
+            move |_| {
+                collector_observation.store(true, Ordering::SeqCst);
+                Ok(Zeroizing::new(b"pl_deferred_fixture".to_vec()))
+            },
+        );
+        let service = async {
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(20),
+                    read_frame::<_, ClientFrame>(&mut broker),
+                )
+                .await
+                .is_err(),
+                "the client must not send or collect input before Accepted"
+            );
+            assert!(!collected.load(Ordering::SeqCst));
+            write_frame(&mut broker, &BrokerFrame::Accepted { request_id })
+                .await
+                .expect("accept");
+            let input = read_frame::<_, ClientFrame>(&mut broker)
+                .await
+                .expect("deferred input");
+            assert!(matches!(
+                input,
+                ClientFrame::Input(ref chunk)
+                    if chunk.request_id == request_id
+                        && chunk.sequence == 0
+                        && chunk.bytes == b"pl_deferred_fixture"
+            ));
+            assert!(matches!(
+                read_frame::<_, ClientFrame>(&mut broker)
+                    .await
+                    .expect("input close"),
+                ClientFrame::InputClosed {
+                    request_id: closed_request_id,
+                    sequence: 1,
+                } if closed_request_id == request_id
+            ));
+            write_frame(
+                &mut broker,
+                &BrokerFrame::Exited {
+                    request_id,
+                    exit_code: 0,
+                },
+            )
+            .await
+            .expect("exit");
+        };
+        let (result, ()) = tokio::join!(client, service);
+        assert_eq!(result.expect("client result"), 0);
+        assert!(collected.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

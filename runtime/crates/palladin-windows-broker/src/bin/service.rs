@@ -46,6 +46,7 @@ mod windows_service_entry {
     const CONSENT_CLOCK_SKEW: Duration = Duration::from_secs(5);
     const INITIAL_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
     const CONSENT_FRAME_TIMEOUT: Duration = Duration::from_secs(65);
+    const CONNECT_INPUT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
     const MAX_ACTIVE_CONNECTIONS: usize = 8;
     const MAX_ACTIVE_CONNECTIONS_PER_USER: u32 = 2;
     const MAX_CONNECTIONS_PER_USER_WINDOW: u32 = 30;
@@ -54,6 +55,7 @@ mod windows_service_entry {
     const MCP_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
     const OUTPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
     const MAX_WORKER_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+    const MAX_CONNECT_INPUT_BYTES: usize = 4096;
     const OUTPUT_CHUNK_BYTES: usize = 64 * 1024;
     const BROKER_ROOT_ENV: &str = "PALLADIN_BROKER_ROOT";
     const TRUSTED_WORKER_ENVIRONMENT: &[&str] = &[
@@ -430,6 +432,41 @@ mod windows_service_entry {
             },
         )
         .await?;
+        if request.operation == SecureOperation::Connect {
+            let deferred_input = tokio::select! {
+                biased;
+                () = lifecycle.wait_for_revocation() => {
+                    reject(
+                        &mut pipe,
+                        Some(request_id),
+                        RejectionCode::AuthenticationRequired,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                input = tokio::time::timeout(
+                    CONNECT_INPUT_TIMEOUT,
+                    read_deferred_connect_input(&mut pipe, request_id),
+                ) => input,
+            };
+            let mut deferred_input = match deferred_input {
+                Ok(Ok(input)) if lifecycle.is_current() => input,
+                Ok(Ok(_)) => {
+                    reject(
+                        &mut pipe,
+                        Some(request_id),
+                        RejectionCode::AuthenticationRequired,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                Ok(Err(_)) | Err(_) => {
+                    reject(&mut pipe, Some(request_id), RejectionCode::InvalidRequest).await?;
+                    return Ok(());
+                }
+            };
+            request.standard_input = std::mem::take(&mut *deferred_input);
+        }
         let session_timeout = match request.operation {
             palladin_platform::broker_protocol::SecureOperation::McpServe => MCP_SESSION_TIMEOUT,
             _ => ONE_SHOT_SESSION_TIMEOUT,
@@ -448,6 +485,30 @@ mod windows_service_entry {
             lifecycle,
         )
         .await
+    }
+
+    async fn read_deferred_connect_input<R: AsyncRead + Unpin>(
+        reader: &mut R,
+        request_id: [u8; 16],
+    ) -> Result<Zeroizing<Vec<u8>>, ProtocolError> {
+        let ClientFrame::Input(mut input) = read_frame(reader).await? else {
+            return Err(ProtocolError::InvalidRequest);
+        };
+        if input.request_id != request_id
+            || input.sequence != 0
+            || input.bytes.is_empty()
+            || input.bytes.len() > MAX_CONNECT_INPUT_BYTES
+        {
+            return Err(ProtocolError::InvalidRequest);
+        }
+        let bytes = Zeroizing::new(std::mem::take(&mut input.bytes));
+        match read_frame(reader).await? {
+            ClientFrame::InputClosed {
+                request_id: closed_request_id,
+                sequence: 1,
+            } if closed_request_id == request_id => Ok(bytes),
+            _ => Err(ProtocolError::InvalidRequest),
+        }
     }
 
     fn prepare_caller_root(root: &Path) -> Result<(), ServiceError> {
@@ -1154,7 +1215,7 @@ mod windows_service_entry {
         use std::time::Duration;
 
         use palladin_platform::broker_protocol::{
-            BrokerFrame, ClientFrame, ConsentChallenge, ConsentSignatureVerifier,
+            BrokerFrame, ClientFrame, ConsentChallenge, ConsentSignatureVerifier, InputChunk,
             McpConsentResponse, OutputStream, ProtocolError, ReplayGuard, read_frame, write_frame,
         };
         use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -1163,7 +1224,8 @@ mod windows_service_entry {
         use super::{
             ConnectionLifecycle, MAX_WORKER_OUTPUT_BYTES, MCP_SESSION_TIMEOUT,
             ONE_SHOT_SESSION_TIMEOUT, OutboundItem, SessionEpochs, WorkerCompletion, WorkerOutput,
-            authorize_mcp_message, output_budget_exceeded, read_client_input, write_worker_output,
+            authorize_mcp_message, output_budget_exceeded, read_client_input,
+            read_deferred_connect_input, write_worker_output,
         };
 
         struct AcceptConsent;
@@ -1172,6 +1234,53 @@ mod windows_service_entry {
             fn verify(&self, _: &[u8], _: &[u8]) -> Result<(), ProtocolError> {
                 Ok(())
             }
+        }
+
+        #[tokio::test]
+        async fn deferred_connect_input_requires_exact_bounded_sequence() {
+            let request_id = [2; 16];
+            let (mut service, mut client) = tokio::io::duplex(1024);
+            let receive = read_deferred_connect_input(&mut service, request_id);
+            let send = async {
+                write_frame(
+                    &mut client,
+                    &ClientFrame::Input(InputChunk {
+                        request_id,
+                        sequence: 0,
+                        bytes: b"pl_deferred_fixture".to_vec(),
+                    }),
+                )
+                .await
+                .expect("input");
+                write_frame(
+                    &mut client,
+                    &ClientFrame::InputClosed {
+                        request_id,
+                        sequence: 1,
+                    },
+                )
+                .await
+                .expect("input close");
+            };
+            let (input, ()) = tokio::join!(receive, send);
+            assert_eq!(&*input.expect("deferred input"), b"pl_deferred_fixture");
+
+            let (mut service, mut client) = tokio::io::duplex(1024);
+            let receive = read_deferred_connect_input(&mut service, request_id);
+            let send = async {
+                write_frame(
+                    &mut client,
+                    &ClientFrame::Input(InputChunk {
+                        request_id,
+                        sequence: 1,
+                        bytes: b"pl_out_of_order".to_vec(),
+                    }),
+                )
+                .await
+                .expect("out of order input");
+            };
+            let (input, ()) = tokio::join!(receive, send);
+            assert!(matches!(input, Err(ProtocolError::InvalidRequest)));
         }
 
         struct BlockingWriter {
