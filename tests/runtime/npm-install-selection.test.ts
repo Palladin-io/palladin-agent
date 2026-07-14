@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 interface TargetPackage {
   name: string;
@@ -36,9 +36,62 @@ const nativeTarget = targets.find((target) => (
   && (target.os !== 'linux' || target.libc === 'glibc')
 ));
 
+let archiveFixture = '';
+const packageArchives = new Map<string, string>();
+
 function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 }
+
+beforeAll(() => {
+  const npmCli = process.env.npm_execpath;
+  if (!npmCli) throw new Error('npm_execpath is unavailable');
+  archiveFixture = mkdtempSync(join(tmpdir(), 'palladin-npm-archives-'));
+  const packageSources = join(archiveFixture, 'sources');
+  const packageOutput = join(archiveFixture, 'archives');
+  mkdirSync(packageOutput, { recursive: true });
+
+  for (const target of targets) {
+    const directoryName = target.name.slice('@palladin/'.length);
+    const directory = join(packageSources, directoryName);
+    mkdirSync(directory, { recursive: true });
+    writeJson(join(directory, 'package.json'), {
+      name: target.name,
+      version: '0.1.0',
+      os: [target.os],
+      cpu: [target.cpu],
+      ...(target.libc === undefined ? {} : { libc: [target.libc] }),
+      files: ['README.md'],
+    });
+    writeFileSync(join(directory, 'README.md'), `${target.name}\n`, { mode: 0o600 });
+    const output = execFileSync(process.execPath, [
+      npmCli,
+      'pack',
+      directory,
+      '--pack-destination',
+      packageOutput,
+      '--ignore-scripts',
+      '--json',
+    ], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        npm_config_cache: join(archiveFixture, '.npm-cache'),
+        npm_config_loglevel: 'error',
+      },
+    });
+    const packed = JSON.parse(output) as Array<{ filename: string }>;
+    if (packed.length !== 1 || !packed[0]?.filename) {
+      throw new Error(`npm pack did not produce exactly one archive for ${target.name}`);
+    }
+    packageArchives.set(target.name, pathToFileURL(join(packageOutput, packed[0].filename)).href);
+  }
+}, 30_000);
+
+afterAll(() => {
+  if (archiveFixture) rmSync(archiveFixture, { recursive: true, force: true });
+});
 
 describe('npm platform selection', () => {
   it.each(testedTargets)('installs only $name for $os/$cpu/$libc', (selected) => {
@@ -48,19 +101,9 @@ describe('npm platform selection', () => {
     try {
       const optionalDependencies: Record<string, string> = {};
       for (const target of targets) {
-        const directoryName = target.name.slice('@palladin/'.length);
-        const directory = join(fixture, 'packages', directoryName);
-        mkdirSync(directory, { recursive: true });
-        writeJson(join(directory, 'package.json'), {
-          name: target.name,
-          version: '0.1.0',
-          os: [target.os],
-          cpu: [target.cpu],
-          ...(target.libc === undefined ? {} : { libc: [target.libc] }),
-          files: ['README.md'],
-        });
-        writeFileSync(join(directory, 'README.md'), `${target.name}\n`, { mode: 0o600 });
-        optionalDependencies[target.name] = pathToFileURL(directory).href;
+        const archive = packageArchives.get(target.name);
+        if (!archive) throw new Error(`missing packed fixture for ${target.name}`);
+        optionalDependencies[target.name] = archive;
       }
       writeJson(join(fixture, 'package.json'), {
         name: 'palladin-install-selection-fixture',

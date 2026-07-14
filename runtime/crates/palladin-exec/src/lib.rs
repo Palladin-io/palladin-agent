@@ -12,7 +12,10 @@ use std::process::Stdio;
 use command_group::{AsyncCommandGroup, AsyncGroupChild};
 use palladin_core::environment::{is_dangerous_name, sanitize_child};
 use palladin_credential::secret::{ParsedSecret, env_field_key};
-use secrecy::{ExposeSecret, SecretString};
+#[cfg(not(windows))]
+use secrecy::ExposeSecret;
+use secrecy::SecretString;
+#[cfg(not(windows))]
 use tempfile::TempDir;
 use thiserror::Error;
 #[cfg(any(windows, target_os = "linux"))]
@@ -410,11 +413,11 @@ async fn run_linux_request(
                 if output == OperatorOutput::Terminal {
                     match stream {
                         palladin_linux_executor::ExecutorOutput::Stdout => tokio::io::stdout()
-                            .write_all(&bytes)
+                            .write_all(bytes)
                             .await
                             .map_err(|_| ExecError::HardenedExecutorProtocol)?,
                         palladin_linux_executor::ExecutorOutput::Stderr => tokio::io::stderr()
-                            .write_all(&bytes)
+                            .write_all(bytes)
                             .await
                             .map_err(|_| ExecError::HardenedExecutorProtocol)?,
                     }

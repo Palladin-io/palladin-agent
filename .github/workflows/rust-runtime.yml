@@ -65,8 +65,14 @@ jobs:
           translated=$(sysctl -in sysctl.proc_translated 2>/dev/null || true)
           translated=${translated:-0}
           test "$translated" = 0
-      - run: cargo clippy --workspace --all-targets --locked --target ${{ matrix.target }} -- -D warnings
-      - run: cargo test --workspace --locked --target ${{ matrix.target }}
+      - run: >-
+          cargo clippy --workspace --all-targets --locked --target ${{ matrix.target }}
+          --exclude palladin-linux-broker --exclude palladin-linux-executor
+          --exclude palladin-windows-broker --exclude palladin-windows-executor -- -D warnings
+      - run: >-
+          cargo test --workspace --locked --target ${{ matrix.target }}
+          --exclude palladin-linux-broker --exclude palladin-linux-executor
+          --exclude palladin-windows-broker --exclude palladin-windows-executor
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
       - run: ./target/${{ matrix.target }}/release/palladin --version
       - name: Hardened build fails closed without Developer ID provisioning
@@ -130,15 +136,19 @@ jobs:
           if ($testPfn -cnotmatch '^Palladin\.Runtime\.Companion_[a-z0-9]{13}$') { throw 'test Companion PFN is invalid' }
           "PALLADIN_WINDOWS_PACKAGE_FAMILY_NAME=$testPfn" | Add-Content -LiteralPath $env:GITHUB_ENV
           if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -cne '${{ matrix.os_architecture }}') { throw 'emulated Windows runner is forbidden' }
-      - name: Zbuduj i przypnij executor do testowych hostów
+      - name: Build and pin the executor for test hosts
         shell: pwsh
         run: |
           cargo build --locked --target '${{ matrix.target }}' -p palladin-windows-executor --bin palladin-executor
           $debug = './target/${{ matrix.target }}/debug'
           New-Item -ItemType Directory -Force -Path (Join-Path $debug 'deps') | Out-Null
           Copy-Item -LiteralPath (Join-Path $debug 'palladin-executor.exe') -Destination (Join-Path $debug 'deps/palladin-executor.exe')
-      - run: cargo clippy --workspace --all-targets --locked --target ${{ matrix.target }} -- -D warnings
-      - run: cargo test --workspace --locked --target ${{ matrix.target }}
+      - run: >-
+          cargo clippy --workspace --all-targets --locked --target ${{ matrix.target }}
+          --exclude palladin-linux-broker --exclude palladin-linux-executor -- -D warnings
+      - run: >-
+          cargo test --workspace --locked --target ${{ matrix.target }}
+          --exclude palladin-linux-broker --exclude palladin-linux-executor
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
       - run: ./target/${{ matrix.target }}/release/palladin.exe --version
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-windows-broker -p palladin-windows-executor --bins
@@ -191,12 +201,18 @@ jobs:
           xmllint --noout packaging/linux/polkit/io.palladin.runtime.policy
           cc -Wall -Wextra -Werror packaging/linux/tests/security-boundary-probe.c -o /tmp/palladin-security-boundary-probe
           cc -Wall -Wextra -Werror -shared -fPIC packaging/linux/tests/ld-preload-probe.c -o /tmp/palladin-ld-preload-probe.so
-      - run: cargo clippy --workspace --all-targets --locked --target ${{ matrix.gnu_target }} -- -D warnings
-      - run: cargo clippy --workspace --all-targets --locked --target ${{ matrix.musl_target }} -- -D warnings
+      - run: >-
+          cargo clippy --workspace --all-targets --locked --target ${{ matrix.gnu_target }}
+          --exclude palladin-windows-broker -- -D warnings
+      - run: >-
+          cargo clippy --workspace --all-targets --locked --target ${{ matrix.musl_target }}
+          --exclude palladin-windows-broker -- -D warnings
         env:
           CC: musl-gcc
       - run: cargo build --release --locked --target ${{ matrix.gnu_target }} -p palladin-cli
-      - run: cargo test --workspace --locked --target ${{ matrix.gnu_target }}
+      - run: >-
+          cargo test --workspace --locked --target ${{ matrix.gnu_target }}
+          --exclude palladin-windows-broker
       - run: cargo build --release --locked --target ${{ matrix.gnu_target }} -p palladin-linux-broker -p palladin-linux-executor --bins
       - run: cargo build --release --locked --target ${{ matrix.gnu_target }} -p palladin-linux-broker --example package_state_fixture
       - run: cargo build --release --locked --target ${{ matrix.musl_target }} -p palladin-cli
@@ -205,7 +221,9 @@ jobs:
       - run: cargo build --release --locked --target ${{ matrix.musl_target }} -p palladin-linux-broker --bin palladin-linux-client
         env:
           CC: musl-gcc
-      - run: cargo test --workspace --locked --target ${{ matrix.musl_target }}
+      - run: >-
+          cargo test --workspace --locked --target ${{ matrix.musl_target }}
+          --exclude palladin-windows-broker
         env:
           CC: musl-gcc
       - run: ./target/${{ matrix.gnu_target }}/release/palladin --version

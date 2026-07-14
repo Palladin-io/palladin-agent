@@ -311,7 +311,7 @@ fn authenticate_broker_peer(expected_uid: u32) -> Result<(), ExecutorServiceErro
             nix::sys::socket::sockopt::PeerCredentials,
         )
         .map_err(|_| ExecutorServiceError::PeerIdentity)?;
-        return authorize_broker_uid(credentials.uid(), expected_uid);
+        authorize_broker_uid(credentials.uid(), expected_uid)
     }
     #[cfg(not(target_os = "linux"))]
     {

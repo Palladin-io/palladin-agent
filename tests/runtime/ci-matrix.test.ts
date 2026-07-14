@@ -12,7 +12,7 @@ interface RootPackage {
   optionalDependencies: Record<string, string>;
 }
 
-const read = (path: string): string => readFileSync(path, 'utf8');
+const read = (path: string): string => readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
 
 function filesUnder(root: string, suffixes: string[]): string[] {
   const files: string[] = [];
