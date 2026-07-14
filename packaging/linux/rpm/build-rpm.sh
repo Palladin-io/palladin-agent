@@ -45,5 +45,19 @@ tar -C "$stage" -czf "$top/SOURCES/palladin-runtime-stage.tar.gz" .
 sed -e "s/@VERSION@/$version/g" -e "s/@ARCHITECTURE@/$rpm_arch/g" \
   "$root/rpm/palladin-runtime.spec.in" > "$top/SPECS/palladin-runtime.spec"
 rpmbuild --define "_topdir $top" -bb "$top/SPECS/palladin-runtime.spec"
+mapfile -t packages < <(find "$top/RPMS" -type f -name '*.rpm')
+[[ ${#packages[@]} -eq 1 ]]
+package=${packages[0]}
+payload_digests=$(rpm -qp --qf '[%{FILENAMES}\t%{FILEDIGESTS}\n]' "$package")
+for binary in palladin-linux-client palladin-linux-service palladin-linux-executor \
+  palladin-linux-admin-purge palladin-worker; do
+  expected=$(sha256sum "$binaries/$binary" | cut -d' ' -f1)
+  installed="/usr/lib/palladin/runtime/$binary"
+  actual=$(awk -F '\t' -v path="$installed" '$1 == path { print $2 }' <<< "$payload_digests")
+  if [[ ! $actual =~ ^[0-9a-f]{64}$ || $actual != "$expected" ]]; then
+    echo "RPM payload changed the attested $binary bytes" >&2
+    exit 1
+  fi
+done
 mkdir -p "$output"
-find "$top/RPMS" -type f -name '*.rpm' -exec cp {} "$output/" \;
+cp "$package" "$output/"
