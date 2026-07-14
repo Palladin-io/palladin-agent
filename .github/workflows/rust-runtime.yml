@@ -500,6 +500,13 @@ jobs:
           sudo sysctl -w kernel.yama.ptrace_scope=0
           deb=$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)
           sudo apt-get install --yes "$deb"
+          policy="$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
+          node -e 'if (require(process.argv[1]).signed.sequence !== 1) process.exit(1)' "$policy"
+          policy_digest=$(sha256sum "$policy" | cut -d' ' -f1)
+          policy_cache=/var/lib/palladin-runtime/v1/.policy.palladin-policy-cache-v1
+          sudo install -d -m 0700 -o palladin-runtime -g palladin-runtime "$policy_cache"
+          sudo install -m 0600 -o palladin-runtime -g palladin-runtime \
+            "$policy" "$policy_cache/1-$policy_digest.json"
           sudo packaging/linux/tests/test-hardened-boundary.sh
 
   native-platform-gate:
