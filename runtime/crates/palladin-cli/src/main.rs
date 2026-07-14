@@ -228,11 +228,11 @@ fn hardened_windows_worker_root() -> Result<Option<std::path::PathBuf>, String> 
 fn hardened_worker_root() -> Result<Option<std::path::PathBuf>, String> {
     #[cfg(windows)]
     {
-        return hardened_windows_worker_root();
+        hardened_windows_worker_root()
     }
     #[cfg(target_os = "linux")]
     {
-        return hardened_linux_worker_root();
+        hardened_linux_worker_root()
     }
     #[cfg(target_os = "macos")]
     {

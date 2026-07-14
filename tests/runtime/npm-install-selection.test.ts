@@ -1,8 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { basename, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 interface TargetPackage {
@@ -85,7 +84,7 @@ beforeAll(() => {
     if (packed.length !== 1 || !packed[0]?.filename) {
       throw new Error(`npm pack did not produce exactly one archive for ${target.name}`);
     }
-    packageArchives.set(target.name, pathToFileURL(join(packageOutput, packed[0].filename)).href);
+    packageArchives.set(target.name, join(packageOutput, packed[0].filename));
   }
 }, 30_000);
 
@@ -99,11 +98,15 @@ describe('npm platform selection', () => {
     if (!npmCli) throw new Error('npm_execpath is unavailable');
     const fixture = mkdtempSync(join(tmpdir(), 'palladin-npm-selection-'));
     try {
+      const fixtureArchives = join(fixture, 'archives');
+      mkdirSync(fixtureArchives, { recursive: true });
       const optionalDependencies: Record<string, string> = {};
       for (const target of targets) {
         const archive = packageArchives.get(target.name);
         if (!archive) throw new Error(`missing packed fixture for ${target.name}`);
-        optionalDependencies[target.name] = archive;
+        const filename = basename(archive);
+        copyFileSync(archive, join(fixtureArchives, filename));
+        optionalDependencies[target.name] = `file:archives/${filename}`;
       }
       writeJson(join(fixture, 'package.json'), {
         name: 'palladin-install-selection-fixture',
