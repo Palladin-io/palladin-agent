@@ -6,13 +6,14 @@ use palladin_api::{
     AgentRegistrationResult, AgentVisibleField, CredentialAccess, EntrySearchItem,
     EntrySearchResult,
 };
-use palladin_cli::CreatedProfile;
 use palladin_cli::args::{Cli, Commands};
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_list,
-    render_connect, render_init, render_profile_created, render_report_stale, render_search_human,
-    render_security_upgrade, render_status,
+    render_connect, render_init, render_legacy_cleanup, render_legacy_cutover,
+    render_profile_created, render_report_stale, render_search_human, render_security_upgrade,
+    render_status,
 };
+use palladin_cli::{CreatedProfile, LegacyCleanupOutcome, LegacyCutoverOutcome};
 use palladin_core::public_store::{PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicRegistry};
 use palladin_credential::access::exit_code_for_access;
 use serde::Deserialize;
@@ -428,6 +429,19 @@ fn frozen_command_outputs_cover_every_ported_public_surface() {
         (
             "security-upgrade",
             render_security_upgrade("build", "OS secure storage", false),
+        ),
+        (
+            "legacy-cutover",
+            render_legacy_cutover(&LegacyCutoverOutcome {
+                cutover_id: "11111111111111111111111111111111".to_owned(),
+                created: 2,
+                profiles: 2,
+                profile_names: vec!["default".to_owned(), "build".to_owned()],
+            }),
+        ),
+        (
+            "legacy-cleanup",
+            render_legacy_cleanup(&LegacyCleanupOutcome { profiles: 2 }),
         ),
         ("search-human", render_search_human(&search)),
         ("report-stale", render_report_stale()),

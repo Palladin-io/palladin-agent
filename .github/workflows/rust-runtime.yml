@@ -73,6 +73,31 @@ jobs:
           cargo test --workspace --locked --target ${{ matrix.target }}
           --exclude palladin-linux-broker --exclude palladin-linux-executor
           --exclude palladin-windows-broker --exclude palladin-windows-executor
+      - name: Prove Node-seeded Keychain records are deleted by Rust
+        working-directory: .
+        shell: bash
+        env:
+          PALLADIN_LEGACY_KEYRING_TEST_PROFILE: cvt332-${{ github.run_id }}-${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cleanup() {
+            node packaging/npm/run-bounded.mjs 30 node \
+              packaging/npm/legacy-keyring-interop.mjs cleanup \
+              "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
+          }
+          trap cleanup EXIT
+          npm ci --ignore-scripts --workspaces=false
+          node packaging/npm/run-bounded.mjs 30 node \
+            packaging/npm/legacy-keyring-interop.mjs seed \
+            "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
+          node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test \
+            --manifest-path runtime/Cargo.toml --locked --target "${{ matrix.target }}" \
+            -p palladin-platform \
+            legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client \
+            -- --ignored --exact
+          node packaging/npm/run-bounded.mjs 30 node \
+            packaging/npm/legacy-keyring-interop.mjs assert-missing \
+            "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
       - run: ./target/${{ matrix.target }}/release/palladin --version
       - name: Hardened build fails closed without Developer ID provisioning
@@ -149,6 +174,35 @@ jobs:
       - run: >-
           cargo test --workspace --locked --target ${{ matrix.target }}
           --exclude palladin-linux-broker --exclude palladin-linux-executor
+      - name: Prove Node-seeded Credential Manager records are deleted by Rust
+        working-directory: .
+        shell: pwsh
+        env:
+          PALLADIN_LEGACY_KEYRING_TEST_PROFILE: cvt332-${{ github.run_id }}-${{ matrix.target }}
+        run: |
+          try {
+            npm ci --ignore-scripts --workspaces=false
+            if ($LASTEXITCODE -ne 0) { throw 'npm dependency installation failed' }
+            node packaging/npm/run-bounded.mjs 30 node `
+              packaging/npm/legacy-keyring-interop.mjs seed `
+              $env:PALLADIN_LEGACY_KEYRING_TEST_PROFILE
+            if ($LASTEXITCODE -ne 0) { throw 'legacy credential seed failed' }
+            node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test `
+              --manifest-path runtime/Cargo.toml --locked --target '${{ matrix.target }}' `
+              -p palladin-platform `
+              'legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client' `
+              -- --ignored --exact
+            if ($LASTEXITCODE -ne 0) { throw 'Rust legacy credential deletion failed' }
+            node packaging/npm/run-bounded.mjs 30 node `
+              packaging/npm/legacy-keyring-interop.mjs assert-missing `
+              $env:PALLADIN_LEGACY_KEYRING_TEST_PROFILE
+            if ($LASTEXITCODE -ne 0) { throw 'legacy credential deletion assertion failed' }
+          } finally {
+            node packaging/npm/run-bounded.mjs 30 node `
+              packaging/npm/legacy-keyring-interop.mjs cleanup `
+              $env:PALLADIN_LEGACY_KEYRING_TEST_PROFILE
+            if ($LASTEXITCODE -ne 0) { throw 'legacy credential cleanup failed' }
+          }
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
       - run: ./target/${{ matrix.target }}/release/palladin.exe --version
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-windows-broker -p palladin-windows-executor --bins
@@ -242,6 +296,32 @@ jobs:
       - run: >-
           cargo test --workspace --locked --target ${{ matrix.gnu_target }}
           --exclude palladin-windows-broker
+      - name: Prove Node-seeded Linux keyring records are deleted by Rust
+        working-directory: .
+        shell: bash
+        env:
+          PALLADIN_LEGACY_KEYRING_TEST_PROFILE: cvt332-${{ github.run_id }}-${{ matrix.gnu_target }}
+          PALLADIN_LEGACY_KEYRING_TEST_BACKEND: keyutils
+        run: |
+          set -euo pipefail
+          cleanup() {
+            node packaging/npm/run-bounded.mjs 30 node \
+              packaging/npm/legacy-keyring-interop.mjs cleanup \
+              "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
+          }
+          trap cleanup EXIT
+          npm ci --ignore-scripts --workspaces=false
+          node packaging/npm/run-bounded.mjs 30 node \
+            packaging/npm/legacy-keyring-interop.mjs seed \
+            "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
+          node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test \
+            --manifest-path runtime/Cargo.toml --locked --target "${{ matrix.gnu_target }}" \
+            -p palladin-platform \
+            legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client \
+            -- --ignored --exact
+          node packaging/npm/run-bounded.mjs 30 node \
+            packaging/npm/legacy-keyring-interop.mjs assert-missing \
+            "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
       - run: >-
           cargo zigbuild --release --locked
           --target "${{ matrix.gnu_target }}.${GLIBC_BASELINE}"

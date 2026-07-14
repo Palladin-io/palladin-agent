@@ -103,11 +103,17 @@ pub struct PublicProfileConfig {
     pub retired_organization_credential_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub agent_active: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encryption_public_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signing_public_key: Option<String>,
     pub binding_signature: String,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Read-only representation used by the explicit pre-production v2 -> v3 migration.
@@ -171,6 +177,7 @@ impl PublicProfileConfig {
                 .agent_id
                 .as_deref()
                 .is_some_and(|value| !is_safe_public_text(value, 256))
+            || (self.agent_active && self.agent_id.is_none())
             || !valid_optional_public_key(
                 self.encryption_public_key.as_deref(),
                 X25519_PUBLIC_KEY_BYTES,
@@ -334,6 +341,12 @@ pub fn profile_config_digest(config: &PublicProfileConfig) -> Result<String, Pub
     digest.optional_text(config.agent_id.as_deref());
     digest.optional_text(config.encryption_public_key.as_deref());
     digest.optional_text(config.signing_public_key.as_deref());
+    // Preserve the pre-production v3 commitment for configs that have not yet observed an
+    // active registration. The one-way extension is present only for the security-relevant
+    // active state, so toggling either direction still invalidates the signed commitment.
+    if config.agent_active {
+        digest.u32(1);
+    }
     digest.text(&config.binding_signature);
     Ok(digest.finish())
 }
@@ -356,6 +369,9 @@ pub fn profile_binding_bytes(config: &PublicProfileConfig) -> Result<Vec<u8>, Pu
     bytes.optional_text(config.agent_id.as_deref());
     bytes.optional_text(config.encryption_public_key.as_deref());
     bytes.optional_text(config.signing_public_key.as_deref());
+    if config.agent_active {
+        bytes.u32(1);
+    }
     Ok(bytes.finish())
 }
 
@@ -673,6 +689,7 @@ mod tests {
             organization_credential_id: "22222222222222222222222222222222".to_owned(),
             retired_organization_credential_ids: Vec::new(),
             agent_id: Some("agent-public-id".to_owned()),
+            agent_active: false,
             encryption_public_key: Some(
                 base64::engine::general_purpose::STANDARD.encode([3_u8; 32]),
             ),
@@ -812,6 +829,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_active_registration_without_an_agent_id() {
+        let directory = private_tempdir();
+        let path = directory.path().join("config.json");
+        let mut config = fixture_config("https://api.palladin.io");
+        config.agent_id = None;
+        config.agent_active = true;
+
+        let error = save_profile_config(&path, &config).expect_err("active Agent requires an id");
+        assert!(error.to_string().contains("invalid public data"));
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn canonical_commitments_change_for_every_bound_field() {
         type ConfigMutation = (&'static str, Box<dyn Fn(&mut PublicProfileConfig)>);
         type RegistryMutation = (&'static str, Box<dyn Fn(&mut PublicRegistry)>);
@@ -841,6 +871,10 @@ mod tests {
             (
                 "agentId",
                 Box::new(|value| value.agent_id = Some("different-agent".to_owned())),
+            ),
+            (
+                "agentActive",
+                Box::new(|value| value.agent_active = !value.agent_active),
             ),
             (
                 "encryptionPublicKey",

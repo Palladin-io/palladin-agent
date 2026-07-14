@@ -265,6 +265,22 @@ pub enum AgentsCommand {
 pub enum SecurityCommand {
     /// Verify that this profile already uses the operating-system secure store.
     Upgrade,
+    /// Inspect legacy TypeScript state without opening identity or credential bytes.
+    LegacyStatus,
+    /// Archive legacy TypeScript state and create fresh native identities (dev/test only).
+    LegacyCutover {
+        /// Acknowledge that old local identities will not be reused.
+        #[arg(long)]
+        confirm_pre_production_reset: bool,
+    },
+    /// Delete an archived TypeScript state after all fresh Agents are enrolled (dev/test only).
+    LegacyCleanup {
+        /// Exact identifier printed by legacy-cutover.
+        cutover_id: String,
+        /// Acknowledge deletion of the archived legacy files and OS credential entries.
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

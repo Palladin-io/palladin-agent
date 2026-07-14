@@ -3,6 +3,9 @@ use std::ffi::{OsStr, OsString};
 use std::process::Command;
 
 const EXACT_DANGEROUS_NAMES: &[&str] = &[
+    "CLAW_VAULT_HOME",
+    "CLAW_VAULT_PRIVATE_KEY",
+    "CLAW_VAULT_SIGNING_KEY",
     "CURL_CA_BUNDLE",
     "NODE_EXTRA_CA_CERTS",
     "NODE_OPTIONS",
@@ -101,6 +104,8 @@ fn is_dangerous_name_with_case(name: &str, case_insensitive: bool) -> bool {
     };
 
     normalized.starts_with("DYLD_")
+        || normalized.starts_with("CLAW_VAULT_PRIVATE_KEY_")
+        || normalized.starts_with("CLAW_VAULT_SIGNING_KEY_")
         || normalized.starts_with("LD_")
         || normalized.starts_with("PALLADIN_PRIVATE_KEY_")
         || normalized.starts_with("PALLADIN_SIGNING_KEY_")
@@ -166,6 +171,9 @@ mod tests {
         assert!(is_dangerous_name("PALLADIN_SIGNING_KEY"));
         assert!(is_dangerous_name("PALLADIN_PRIVATE_KEY_BUILD_AGENT"));
         assert!(is_dangerous_name("PALLADIN_SIGNING_KEY_BUILD_AGENT"));
+        assert!(is_dangerous_name("CLAW_VAULT_HOME"));
+        assert!(is_dangerous_name("CLAW_VAULT_PRIVATE_KEY_BUILD_AGENT"));
+        assert!(is_dangerous_name("CLAW_VAULT_SIGNING_KEY_BUILD_AGENT"));
     }
 
     #[test]

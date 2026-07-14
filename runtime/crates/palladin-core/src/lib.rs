@@ -2,6 +2,7 @@
 
 pub mod environment;
 pub mod host;
+pub mod legacy_typescript;
 pub mod panic;
 pub mod profiles;
 pub mod public_store;

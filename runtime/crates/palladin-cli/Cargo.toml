@@ -39,8 +39,13 @@ tokio-util.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+blake2.workspace = true
+crypto_secretbox.workspace = true
+ed25519-dalek.workspace = true
 palladin-core = { path = "../palladin-core", features = ["local-development"] }
+salsa20.workspace = true
 tempfile.workspace = true
+x25519-dalek.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 palladin-windows-broker = { path = "../palladin-windows-broker" }

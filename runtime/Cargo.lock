@@ -1263,6 +1263,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "linux-keyutils"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83270a18e9f90d0707c41e9f35efada77b64c0e6f3f1810e71c8368a864d5590"
+dependencies = [
+ "bitflags",
+ "libc",
+]
+
+[[package]]
+name = "linux-keyutils-keyring-store"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39fbed79f71dc21eb21d3d07c0e908a3c58ff9a1fdbf5cf44230fb3deb6d994b"
+dependencies = [
+ "keyring-core",
+ "linux-keyutils",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1488,7 +1508,10 @@ name = "palladin-cli"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "blake2",
  "clap",
+ "crypto_secretbox",
+ "ed25519-dalek",
  "getrandom 0.4.3",
  "hostname",
  "nix 0.31.3",
@@ -1502,6 +1525,7 @@ dependencies = [
  "palladin-runtime",
  "palladin-windows-broker",
  "rpassword",
+ "salsa20",
  "secrecy",
  "serde",
  "serde_json",
@@ -1511,6 +1535,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -1520,6 +1545,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "fs2",
+ "getrandom 0.4.3",
  "libc",
  "nix 0.31.3",
  "secrecy",
@@ -1659,6 +1685,8 @@ dependencies = [
  "directories",
  "getrandom 0.4.3",
  "keyring",
+ "keyring-core",
+ "linux-keyutils-keyring-store",
  "nix 0.31.3",
  "rsa",
  "secrecy",

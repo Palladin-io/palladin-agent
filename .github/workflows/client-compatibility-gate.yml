@@ -1,0 +1,236 @@
+name: Client Compatibility Gate
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: "Exact source commit whose client contracts must pass"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    name: Frozen contracts and migration compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+
+      - name: Verify the exact requested source commit
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Verify frozen contract digests
+        working-directory: runtime/contracts/v1
+        run: sha256sum --check SOURCE.sha256
+
+      - name: Validate frozen contracts with .NET 10
+        run: |
+          dotnet restore --locked-mode runtime/contracts/dotnet/Palladin.ContractGate/Palladin.ContractGate.csproj
+          dotnet run --no-restore --configuration Release \
+            --project runtime/contracts/dotnet/Palladin.ContractGate/Palladin.ContractGate.csproj \
+            -- runtime/contracts/v1
+
+      - name: Validate TypeScript compatibility vectors
+        run: |
+          npm ci --ignore-scripts --workspaces=false
+          npm run build
+          npm exec -- vitest run tests/contracts
+
+      - name: Validate Rust compatibility and migration targets
+        working-directory: runtime
+        run: cargo test --workspace --locked
+
+  macos-keyring-interop:
+    name: Legacy Node to Rust keyring interop - macOS
+    needs: compatibility
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      PALLADIN_LEGACY_KEYRING_TEST_PROFILE: cvt332-${{ github.run_id }}-macos
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: Verify the exact requested source commit
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - run: npm ci --ignore-scripts --workspaces=false
+      - name: Prove Node-seeded Keychain records are deleted by Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() {
+            node packaging/npm/run-bounded.mjs 30 node \
+              packaging/npm/legacy-keyring-interop.mjs cleanup \
+              "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
+          }
+          trap cleanup EXIT
+          node packaging/npm/run-bounded.mjs 30 node \
+            packaging/npm/legacy-keyring-interop.mjs seed \
+            "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
+          node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test \
+            --manifest-path runtime/Cargo.toml --locked -p palladin-platform \
+            legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client \
+            -- --ignored --exact
+          node packaging/npm/run-bounded.mjs 30 node \
+            packaging/npm/legacy-keyring-interop.mjs assert-missing \
+            "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
+
+  windows-keyring-interop:
+    name: Legacy Node to Rust keyring interop - Windows
+    needs: compatibility
+    runs-on: windows-2025
+    timeout-minutes: 15
+    env:
+      PALLADIN_LEGACY_KEYRING_TEST_PROFILE: cvt332-${{ github.run_id }}-windows
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: Verify the exact requested source commit
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if ((git rev-parse HEAD) -cne $env:SOURCE_SHA) {
+            throw 'the checked out commit does not match source_sha'
+          }
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - run: npm ci --ignore-scripts --workspaces=false
+      - name: Prove Node-seeded Credential Manager records are deleted by Rust
+        shell: pwsh
+        run: |
+          try {
+            node packaging/npm/run-bounded.mjs 30 node `
+              packaging/npm/legacy-keyring-interop.mjs seed `
+              $env:PALLADIN_LEGACY_KEYRING_TEST_PROFILE
+            if ($LASTEXITCODE -ne 0) { throw 'legacy credential seed failed' }
+            node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test `
+              --manifest-path runtime/Cargo.toml --locked -p palladin-platform `
+              'legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client' `
+              -- --ignored --exact
+            if ($LASTEXITCODE -ne 0) { throw 'Rust legacy credential deletion failed' }
+            node packaging/npm/run-bounded.mjs 30 node `
+              packaging/npm/legacy-keyring-interop.mjs assert-missing `
+              $env:PALLADIN_LEGACY_KEYRING_TEST_PROFILE
+            if ($LASTEXITCODE -ne 0) { throw 'legacy credential deletion assertion failed' }
+          } finally {
+            node packaging/npm/run-bounded.mjs 30 node `
+              packaging/npm/legacy-keyring-interop.mjs cleanup `
+              $env:PALLADIN_LEGACY_KEYRING_TEST_PROFILE
+            if ($LASTEXITCODE -ne 0) { throw 'legacy credential cleanup failed' }
+          }
+
+  linux-keyring-interop:
+    name: Legacy Node to Rust keyring interop - Linux
+    needs: compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PALLADIN_LEGACY_KEYRING_TEST_PROFILE: cvt332-${{ github.run_id }}-linux
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: Verify the exact requested source commit
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Install the isolated Secret Service test backend
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes dbus-x11 gnome-keyring
+      - run: npm ci --ignore-scripts --workspaces=false
+      - name: Prove Node-seeded Linux keyutils records are deleted by Rust
+        shell: bash
+        env:
+          PALLADIN_LEGACY_KEYRING_TEST_BACKEND: keyutils
+        run: |
+          set -euo pipefail
+          cleanup() {
+            node packaging/npm/run-bounded.mjs 30 node \
+              packaging/npm/legacy-keyring-interop.mjs cleanup \
+              "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
+          }
+          trap cleanup EXIT
+          node packaging/npm/run-bounded.mjs 30 node \
+            packaging/npm/legacy-keyring-interop.mjs seed \
+            "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
+          node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test \
+            --manifest-path runtime/Cargo.toml --locked -p palladin-platform \
+            legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client \
+            -- --ignored --exact
+          node packaging/npm/run-bounded.mjs 30 node \
+            packaging/npm/legacy-keyring-interop.mjs assert-missing \
+            "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
+      - name: Prove Node-seeded Linux Secret Service records are deleted by Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Variables in the single-quoted script belong to the isolated D-Bus shell.
+          # shellcheck disable=SC2016
+          dbus-run-session -- bash -c '
+            set -euo pipefail
+            eval "$(printf "cvt332-ephemeral-keyring\n" | gnome-keyring-daemon --unlock --components=secrets)"
+            profile="${PALLADIN_LEGACY_KEYRING_TEST_PROFILE}-secret-service"
+            cleanup() {
+              node packaging/npm/run-bounded.mjs 30 node \
+                packaging/npm/legacy-keyring-interop.mjs cleanup "$profile"
+            }
+            trap cleanup EXIT
+            node packaging/npm/run-bounded.mjs 30 node \
+              packaging/npm/legacy-keyring-interop.mjs seed "$profile"
+            PALLADIN_LEGACY_KEYRING_TEST_PROFILE="$profile" \
+            PALLADIN_LEGACY_KEYRING_TEST_BACKEND="secret-service" \
+              node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test \
+                --manifest-path runtime/Cargo.toml --locked -p palladin-platform \
+                legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client \
+                -- --ignored --exact
+            node packaging/npm/run-bounded.mjs 30 node \
+              packaging/npm/legacy-keyring-interop.mjs assert-missing "$profile"
+          '
