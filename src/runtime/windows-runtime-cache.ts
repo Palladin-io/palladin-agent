@@ -592,7 +592,11 @@ function assertPlainDirectory(path: string): void {
 }
 
 function syncFile(path: string): void {
-  const descriptor = openSync(path, fsConstants.O_RDONLY);
+  // Windows requires a write-capable handle for FlushFileBuffers (fsync).
+  // This path is the private temporary copy and is closed before hashing and
+  // the atomic rename, so granting this handle write access does not weaken
+  // the verified executable binding.
+  const descriptor = openSync(path, fsConstants.O_RDWR);
   try {
     fsyncSync(descriptor);
   } finally {
