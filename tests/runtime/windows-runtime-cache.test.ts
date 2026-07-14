@@ -156,8 +156,12 @@ describe('Windows content-addressed runtime cache', () => {
       const nativePid = Number.parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
       expect(Number.isSafeInteger(nativePid) && nativePid > 0).toBe(true);
       expect(processIsAlive(nativePid)).toBe(true);
-      child.kill();
-      await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+      const wrapperExited = new Promise<void>((resolve, reject) => {
+        child.once('exit', () => resolve());
+        child.once('error', reject);
+      });
+      expect(child.kill()).toBe(true);
+      await wrapperExited;
       await waitUntil(() => !processIsAlive(nativePid), 10_000);
       lease.release();
     },
