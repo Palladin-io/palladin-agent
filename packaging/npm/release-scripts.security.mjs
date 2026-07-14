@@ -255,5 +255,6 @@ test('release workflows pin actions and isolate the one-time npm token exception
     assert.match(contents, /github\.actor == 'patryk-roguszewski'/);
     assert.match(contents, /test "\$GITHUB_REF" = "refs\/tags\/\$RELEASE_TAG"/);
     assert.match(contents, /git merge-base --is-ancestor/);
+    assert.match(contents, /group: palladin-npm-release/);
   }
 });

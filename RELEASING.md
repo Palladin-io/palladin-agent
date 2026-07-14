@@ -15,6 +15,7 @@ The product owner and only release approver is `@patryk-roguszewski`. A release 
 - Require Patryk to review every staged npm package and approve it interactively with npm 2FA.
 - Never place npm tokens, signing keys, notarization credentials, package contents, or runtime secrets in logs or artifacts.
 - Never move or reuse a release tag. Never reuse a version that reached npm staging or the live registry.
+- Run only one Palladin npm release train at a time. All release workflows share a global concurrency group, and a new version must not be staged while an earlier version still awaits owner approval or finalization.
 - Treat SHA-256 checksums, a release manifest, an SBOM, npm provenance, and GitHub artifact attestations as release artifacts, not optional metadata.
 
 ## One-time npm bootstrap

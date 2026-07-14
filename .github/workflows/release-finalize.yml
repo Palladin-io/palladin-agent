@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-finalize-${{ inputs.release_tag }}
+  group: palladin-npm-release
   cancel-in-progress: false
 
 jobs:
