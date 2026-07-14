@@ -14,6 +14,7 @@ fi
 
 install -d -m 0755 -o root -g root /etc/palladin /etc/palladin/agents.d
 install -d -m 0700 -o palladin-runtime -g palladin-runtime /var/lib/palladin-runtime/v1
+install -d -m 0700 -o palladin-runtime -g palladin-runtime /var/lib/palladin-runtime/v1/policy
 
 master_key=/var/lib/palladin-runtime/v1/master.key
 if [[ ! -e $master_key ]]; then

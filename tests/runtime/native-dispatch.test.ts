@@ -335,11 +335,14 @@ describe('native runtime dispatcher', () => {
     expect(fixture.spawnRuntime).toHaveBeenCalledWith(executable, [
       'get',
       'entry;$(touch attacker)',
-    ], {
+    ], expect.objectContaining({
+      env: expect.objectContaining({
+        PALLADIN_VERSION_POLICY_ENVELOPE_BASE64: 'fixture',
+      }),
       shell: false,
       stdio: 'inherit',
       windowsHide: true,
-    });
+    }));
   });
 
   it.each(['--help', '-h', '--version', '-V', 'doctor'])(
@@ -505,11 +508,14 @@ describe('native runtime dispatcher', () => {
     await vi.waitFor(() => expect(fixture.spawnRuntime).toHaveBeenCalledOnce());
     expect(hashFile.mock.calls.filter(([path]) => path === linuxExecutable)).toHaveLength(2);
     expect(hashFile.mock.calls.filter(([path]) => path === linuxWorker)).toHaveLength(2);
-    expect(fixture.spawnRuntime).toHaveBeenCalledWith(linuxExecutable, ['status'], {
+    expect(fixture.spawnRuntime).toHaveBeenCalledWith(linuxExecutable, ['status'], expect.objectContaining({
+      env: expect.objectContaining({
+        PALLADIN_VERSION_POLICY_ENVELOPE_BASE64: 'fixture',
+      }),
       shell: false,
       stdio: 'inherit',
       windowsHide: true,
-    });
+    }));
     child.emit('exit', 0, null);
     await expect(result).resolves.toBe(0);
   });

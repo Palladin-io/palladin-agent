@@ -247,7 +247,13 @@ export async function launchNativeRuntime(
       shell: false,
       stdio: 'inherit',
       windowsHide: true,
-      ...(host.platform === 'win32' ? { env: process.env } : {}),
+      env: host.platform === 'win32' ? process.env : {
+        ...process.env,
+        // Public, owner-signed policy material. The process image actually
+        // opened by the OS re-verifies this envelope and its own bytes before
+        // any identity-bearing operation, closing the parent spawn TOCTOU.
+        PALLADIN_VERSION_POLICY_ENVELOPE_BASE64: binding.envelopeBase64,
+      },
     };
     child = windowsLease === undefined
       ? host.spawnRuntime(executable, args, options)

@@ -1,20 +1,29 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::process::{ExitCode, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use palladin_core::profiles::ProfileRepository;
 use palladin_linux_broker::peer::{authenticate_peer, prepare_principal_profile_root};
 use palladin_linux_broker::protocol::{
     ClientFrame, MAX_STREAM_CHUNK_BYTES, OutputStream, PROTOCOL_VERSION, RejectionCode,
     ServerFrame, read_frame, release_identity_matches, validate_arguments, write_frame,
 };
-use palladin_linux_broker::{SOCKET_PATH, STATE_ROOT, SYSTEM_WORKER};
+use palladin_linux_broker::store::LinuxBrokerSecretStore;
+use palladin_linux_broker::{
+    SOCKET_PATH, STATE_ROOT, SYSTEM_MASTER_KEY, SYSTEM_POLICY_ROOT, SYSTEM_WORKER,
+};
+use palladin_runtime::RuntimeService;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -29,6 +38,9 @@ const MAX_CONCURRENT_SESSIONS: usize = 32;
 const MAX_SESSIONS_PER_UID: usize = 4;
 const MAX_SESSION_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
+
+type SystemPolicyService = RuntimeService<LinuxBrokerSecretStore>;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -45,6 +57,7 @@ async fn run() -> Result<(), ServiceError> {
     #[cfg(target_os = "linux")]
     nix::sys::prctl::set_dumpable(false).map_err(|_| ServiceError::Identity)?;
     let listener = create_listener(Path::new(SOCKET_PATH))?;
+    let policy = Arc::new(system_policy_service()?);
     let sessions = Arc::new(Semaphore::new(MAX_CONCURRENT_SESSIONS));
     let per_uid = Arc::new(Mutex::new(HashMap::<u32, Arc<Semaphore>>::new()));
     loop {
@@ -54,9 +67,10 @@ async fn run() -> Result<(), ServiceError> {
             continue;
         };
         let per_uid = Arc::clone(&per_uid);
+        let policy = Arc::clone(&policy);
         tokio::spawn(async move {
             let _permit = permit;
-            if let Err(error) = handle(stream, per_uid).await {
+            if let Err(error) = handle(stream, per_uid, policy).await {
                 let _ = error;
             }
         });
@@ -66,6 +80,7 @@ async fn run() -> Result<(), ServiceError> {
 async fn handle(
     mut stream: UnixStream,
     per_uid: Arc<Mutex<HashMap<u32, Arc<Semaphore>>>>,
+    policy: Arc<SystemPolicyService>,
 ) -> Result<(), ServiceError> {
     let peer = match authenticate_peer(&stream) {
         Ok(peer) => peer,
@@ -149,7 +164,7 @@ async fn handle(
             return Ok(());
         }
     };
-    let mut child = match spawn_worker(&arguments, &profile_root) {
+    let mut child = match spawn_worker(&arguments, &profile_root, &policy).await {
         Ok(child) => child,
         Err(_) => {
             reject(stream, Some(request_id), RejectionCode::Unavailable).await;
@@ -173,9 +188,23 @@ async fn handle(
     }
 }
 
-fn spawn_worker(arguments: &[String], profile_root: &Path) -> Result<Child, ServiceError> {
-    validate_root_owned_executable(Path::new(SYSTEM_WORKER))?;
-    let mut process = Command::new(SYSTEM_WORKER);
+async fn spawn_worker(
+    arguments: &[String],
+    profile_root: &Path,
+    policy: &SystemPolicyService,
+) -> Result<Child, ServiceError> {
+    let mut worker = open_system_worker(Path::new(SYSTEM_WORKER))?;
+    let worker_sha256 = sha256_open_file(&mut worker)?;
+    policy
+        .enforce_system_version_policy_for_worker_hash(env!("CARGO_PKG_VERSION"), &worker_sha256)
+        .await
+        .map_err(|_| ServiceError::WorkerPolicy)?;
+
+    // /proc/self/fd resolves the descriptor inherited by the child before
+    // O_CLOEXEC closes it. The root-owned inode cannot be rewritten by the
+    // unprivileged broker, so the verified bytes are exactly the executed bytes.
+    let executable = format!("/proc/self/fd/{}", worker.as_raw_fd());
+    let mut process = Command::new(executable);
     process
         .args(arguments)
         .env_clear()
@@ -192,7 +221,82 @@ fn spawn_worker(arguments: &[String], profile_root: &Path) -> Result<Child, Serv
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    process.spawn().map_err(|_| ServiceError::Worker)
+    let child = process.spawn().map_err(|_| ServiceError::Worker)?;
+    drop(worker);
+    Ok(child)
+}
+
+fn system_policy_service() -> Result<SystemPolicyService, ServiceError> {
+    ensure_system_policy_root(Path::new(SYSTEM_POLICY_ROOT))?;
+    let store =
+        LinuxBrokerSecretStore::new(Path::new(SYSTEM_POLICY_ROOT), Path::new(SYSTEM_MASTER_KEY))
+            .map_err(|_| ServiceError::WorkerPolicy)?;
+    let repository = ProfileRepository::new(Path::new(SYSTEM_POLICY_ROOT).to_path_buf())
+        .map_err(|_| ServiceError::WorkerPolicy)?;
+    let service = RuntimeService::new(repository, store);
+    service
+        .prepare_empty_state_for_version_policy()
+        .map_err(|_| ServiceError::WorkerPolicy)?;
+    Ok(service)
+}
+
+fn ensure_system_policy_root(path: &Path) -> Result<(), ServiceError> {
+    match fs::create_dir(path) {
+        Ok(()) => fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|_| ServiceError::WorkerPolicy)?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(ServiceError::WorkerPolicy),
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|_| ServiceError::WorkerPolicy)?;
+    if !metadata.file_type().is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != nix::unistd::geteuid().as_raw()
+        || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        return Err(ServiceError::WorkerPolicy);
+    }
+    Ok(())
+}
+
+fn open_system_worker(path: &Path) -> Result<File, ServiceError> {
+    open_attested_worker(path, 0)
+}
+
+fn open_attested_worker(path: &Path, expected_uid: u32) -> Result<File, ServiceError> {
+    validate_owned_executable(path, expected_uid)?;
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let file = options.open(path).map_err(|_| ServiceError::Installation)?;
+    let metadata = file.metadata().map_err(|_| ServiceError::Installation)?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != expected_uid
+        || metadata.permissions().mode() & 0o022 != 0
+        || metadata.permissions().mode() & 0o111 == 0
+        || metadata.nlink() != 1
+        || metadata.len() == 0
+        || metadata.len() > MAX_EXECUTABLE_BYTES
+    {
+        return Err(ServiceError::Installation);
+    }
+    Ok(file)
+}
+
+fn sha256_open_file(file: &mut File) -> Result<String, ServiceError> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| ServiceError::WorkerPolicy)?;
+    let expected = file
+        .metadata()
+        .map_err(|_| ServiceError::WorkerPolicy)?
+        .len();
+    let mut hash = Sha256::new();
+    let copied = std::io::copy(&mut file.take(MAX_EXECUTABLE_BYTES + 1), &mut hash)
+        .map_err(|_| ServiceError::WorkerPolicy)?;
+    if copied != expected || copied == 0 || copied > MAX_EXECUTABLE_BYTES {
+        return Err(ServiceError::WorkerPolicy);
+    }
+    Ok(format!("{:x}", hash.finalize()))
 }
 
 async fn proxy_worker(
@@ -410,10 +514,14 @@ fn attest_service_environment() -> Result<(), ServiceError> {
 }
 
 fn validate_root_owned_executable(path: &Path) -> Result<(), ServiceError> {
+    validate_owned_executable(path, 0)
+}
+
+fn validate_owned_executable(path: &Path, expected_uid: u32) -> Result<(), ServiceError> {
     let metadata = fs::symlink_metadata(path).map_err(|_| ServiceError::Installation)?;
     if !metadata.file_type().is_file()
         || metadata.file_type().is_symlink()
-        || metadata.uid() != 0
+        || metadata.uid() != expected_uid
         || metadata.permissions().mode() & 0o022 != 0
         || metadata.permissions().mode() & 0o111 == 0
         || metadata.nlink() != 1
@@ -470,6 +578,8 @@ enum ServiceError {
     Protocol,
     #[error("the Linux broker worker failed")]
     Worker,
+    #[error("the Linux system worker failed signed version policy verification")]
+    WorkerPolicy,
     #[error("the Linux broker output transport failed")]
     Output,
     #[error("the Linux broker session output limit was exceeded")]
@@ -484,12 +594,20 @@ enum ServiceError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use std::fs;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    #[cfg(target_os = "linux")]
+    use std::os::unix::io::AsRawFd;
     use std::process::Stdio;
 
     use palladin_linux_broker::protocol::{ClientFrame, ServerFrame, read_frame, write_frame};
     use tokio::net::UnixStream;
     use tokio::process::Command;
 
+    #[cfg(target_os = "linux")]
+    use super::{open_attested_worker, sha256_open_file};
     use super::{proxy_worker, validate_operation};
 
     fn args(values: &[&str]) -> Vec<String> {
@@ -515,6 +633,60 @@ mod tests {
     fn hardened_connect_requires_the_bounded_secret_input_mode() {
         assert!(validate_operation(&args(&["connect"])).is_err());
         assert!(validate_operation(&args(&["connect", "--api-key-stdin"])).is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn verified_worker_fd_survives_an_atomic_path_replacement() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let worker = directory.path().join("worker");
+        let replaced = directory.path().join("verified-worker");
+        let marker = directory.path().join("attacker-ran");
+        fs::copy("/usr/bin/true", &worker).expect("copy worker");
+        fs::set_permissions(&worker, fs::Permissions::from_mode(0o755)).expect("worker mode");
+
+        let mut opened = open_attested_worker(&worker, nix::unistd::geteuid().as_raw())
+            .expect("open attested worker");
+        let verified_hash = sha256_open_file(&mut opened).expect("worker hash");
+        fs::rename(&worker, &replaced).expect("replace verified path");
+        fs::write(
+            &worker,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .expect("attacker worker");
+        fs::set_permissions(&worker, fs::Permissions::from_mode(0o755)).expect("attacker mode");
+
+        let status = Command::new(format!("/proc/self/fd/{}", opened.as_raw_fd()))
+            .status()
+            .await
+            .expect("spawn verified descriptor");
+        assert!(status.success());
+        assert!(!marker.exists());
+        assert_eq!(
+            verified_hash,
+            sha256_open_file(&mut opened).expect("stable descriptor hash")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn worker_descriptor_rejects_links_and_writable_installations() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let worker = directory.path().join("worker");
+        let linked = directory.path().join("linked-worker");
+        let symlinked = directory.path().join("symlinked-worker");
+        fs::copy("/usr/bin/true", &worker).expect("copy worker");
+        fs::set_permissions(&worker, fs::Permissions::from_mode(0o775)).expect("writable mode");
+        let uid = nix::unistd::geteuid().as_raw();
+        assert!(open_attested_worker(&worker, uid).is_err());
+
+        fs::set_permissions(&worker, fs::Permissions::from_mode(0o755)).expect("worker mode");
+        fs::hard_link(&worker, &linked).expect("hard link");
+        assert!(open_attested_worker(&worker, uid).is_err());
+        fs::remove_file(&linked).expect("remove hard link");
+
+        symlink(&worker, &symlinked).expect("worker symlink");
+        assert!(open_attested_worker(&symlinked, uid).is_err());
     }
 
     #[tokio::test]

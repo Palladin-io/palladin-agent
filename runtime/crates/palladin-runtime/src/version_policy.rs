@@ -202,6 +202,19 @@ impl<S: SecretStore> RuntimeService<S> {
         &self,
         current_version: &str,
     ) -> Result<VerifiedVersionPolicy, RuntimeError> {
+        let executable_sha256 = hash_current_executable()?;
+        self.enforce_system_version_policy_for_worker_hash(current_version, &executable_sha256)
+            .await
+    }
+
+    /// Enforces the signed runtime policy against an executable already opened and
+    /// hashed by a native broker. The broker owns the anti-rollback state, so a
+    /// caller-controlled Node process cannot authorize a different system worker.
+    pub async fn enforce_system_version_policy_for_worker_hash(
+        &self,
+        current_version: &str,
+        worker_executable_sha256: &str,
+    ) -> Result<VerifiedVersionPolicy, RuntimeError> {
         let public_key = option_env!("PALLADIN_VERSION_POLICY_PUBLIC_KEY")
             .ok_or(RuntimeError::VersionPolicyNotConfigured)?;
         let source_sha =
@@ -209,6 +222,9 @@ impl<S: SecretStore> RuntimeService<S> {
         let package_name =
             runtime_package_name().ok_or(RuntimeError::VersionPolicyNotConfigured)?;
         let mut candidates = self.load_version_policy_cache()?;
+        if let Ok(Some(environment)) = environment_policy() {
+            candidates.push(environment);
+        }
         if let Ok(remote) = fetch_remote_policy().await {
             candidates.push(remote);
         }
@@ -224,7 +240,7 @@ impl<S: SecretStore> RuntimeService<S> {
             OffsetDateTime::now_utc(),
         )?;
         let artifact = policy.artifact(package_name, current_version)?;
-        if hash_current_executable()? != artifact.worker_executable_sha256 {
+        if worker_executable_sha256 != artifact.worker_executable_sha256 {
             return Err(RuntimeError::VersionPolicyViolation);
         }
         Ok(policy)
@@ -456,6 +472,25 @@ fn embedded_policy() -> Result<Option<Vec<u8>>, RuntimeError> {
         .map_err(|_| RuntimeError::VersionPolicyNotConfigured)?;
     if bytes.is_empty() || bytes.len() > MAX_POLICY_BYTES || STANDARD.encode(&bytes) != encoded {
         return Err(RuntimeError::VersionPolicyNotConfigured);
+    }
+    Ok(Some(bytes))
+}
+
+fn environment_policy() -> Result<Option<Vec<u8>>, RuntimeError> {
+    let Some(encoded) = std::env::var_os("PALLADIN_VERSION_POLICY_ENVELOPE_BASE64") else {
+        return Ok(None);
+    };
+    let encoded = encoded
+        .into_string()
+        .map_err(|_| RuntimeError::VersionPolicyViolation)?;
+    if encoded.is_empty() || encoded.len() > (MAX_POLICY_BYTES * 4 / 3) + 4 {
+        return Err(RuntimeError::VersionPolicyViolation);
+    }
+    let bytes = STANDARD
+        .decode(&encoded)
+        .map_err(|_| RuntimeError::VersionPolicyViolation)?;
+    if bytes.is_empty() || bytes.len() > MAX_POLICY_BYTES || STANDARD.encode(&bytes) != encoded {
+        return Err(RuntimeError::VersionPolicyViolation);
     }
     Ok(Some(bytes))
 }
@@ -729,6 +764,9 @@ fn runtime_package_name() -> Option<&'static str> {
 
 fn hash_current_executable() -> Result<String, RuntimeError> {
     const MAX_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
+    #[cfg(target_os = "linux")]
+    let path = PathBuf::from("/proc/self/exe");
+    #[cfg(not(target_os = "linux"))]
     let path = std::env::current_exe().map_err(|_| RuntimeError::VersionPolicyViolation)?;
     let path_metadata =
         fs::symlink_metadata(&path).map_err(|_| RuntimeError::VersionPolicyViolation)?;

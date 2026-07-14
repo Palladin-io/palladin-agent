@@ -14,6 +14,8 @@ pub const SYSTEM_WORKER: &str = "/usr/lib/palladin/runtime/palladin-worker";
 pub const INSTALL_MARKER: &str = "/etc/palladin/runtime-v1";
 pub const SOCKET_PATH: &str = "/run/palladin-runtime/broker.sock";
 pub const STATE_ROOT: &str = "/var/lib/palladin-runtime/v1";
+pub const SYSTEM_POLICY_ROOT: &str = "/var/lib/palladin-runtime/v1/policy";
+pub const SYSTEM_MASTER_KEY: &str = "/var/lib/palladin-runtime/v1/master.key";
 
 #[cfg(not(target_os = "linux"))]
 pub fn unsupported_platform() -> ! {

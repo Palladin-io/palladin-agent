@@ -326,10 +326,18 @@ jobs:
           cargo zigbuild --release --locked
           --target "${{ matrix.gnu_target }}.${GLIBC_BASELINE}"
           -p palladin-linux-broker -p palladin-linux-executor --bins
+        env:
+          PALLADIN_PRODUCTION_BUILD: "1"
+          PALLADIN_VERSION_POLICY_PUBLIC_KEY: ${{ steps.ci_policy_key.outputs.public_key }}
+          SOURCE_SHA: ${{ steps.ci_policy_key.outputs.source_sha }}
       - run: >-
           cargo zigbuild --release --locked
           --target "${{ matrix.gnu_target }}.${GLIBC_BASELINE}"
           -p palladin-linux-broker --example package_state_fixture
+        env:
+          PALLADIN_PRODUCTION_BUILD: "1"
+          PALLADIN_VERSION_POLICY_PUBLIC_KEY: ${{ steps.ci_policy_key.outputs.public_key }}
+          SOURCE_SHA: ${{ steps.ci_policy_key.outputs.source_sha }}
       - run: cargo build --release --locked --target ${{ matrix.musl_target }} -p palladin-cli
         env:
           CC: musl-gcc
@@ -339,6 +347,9 @@ jobs:
       - run: cargo build --release --locked --target ${{ matrix.musl_target }} -p palladin-linux-broker --bin palladin-linux-client
         env:
           CC: musl-gcc
+          PALLADIN_PRODUCTION_BUILD: "1"
+          PALLADIN_VERSION_POLICY_PUBLIC_KEY: ${{ steps.ci_policy_key.outputs.public_key }}
+          SOURCE_SHA: ${{ steps.ci_policy_key.outputs.source_sha }}
       - run: >-
           cargo test --workspace --locked --target ${{ matrix.musl_target }}
           --exclude palladin-windows-broker

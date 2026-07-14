@@ -106,6 +106,8 @@ For each supported Debian/Ubuntu, Fedora, and RHEL 9-family image on native x64 
 5. Verify encrypted Agent identity round-trips across update, rollback, uninstall, and reinstall. Before the first production release, the base and upgrade packages exercise packaging compatibility from the initial schema. After the first release, the base package must be the frozen previously published artifact.
 6. Revoke the principal, recycle the numeric UID, remove the socket, and corrupt one permission at a time; confirm every designated or tombstoned principal receives an error without a Convenience fallback.
 
+The broker keeps a separate encrypted, global version-policy trust state under `/var/lib/palladin-runtime/v1/policy`. Before accepting a request or reading its secret-bearing input, it verifies the signed policy and anti-rollback sequence against the root-owned system worker, hashes an open descriptor, and executes that same descriptor through `/proc/self/fd`. Per-Agent worker self-verification remains a second gate; it is not the broker's trust anchor.
+
 On a supported systemd host, a dedicated container may be the Agent workload
 inside the documented host broker boundary. A plain application container and
 an Alpine/OpenRC container are not Hardened substitutes. Never share the Agent
