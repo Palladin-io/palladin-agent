@@ -247,9 +247,16 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  compatibility:
+    name: Require client compatibility for the release source
+    needs: authorize
+    uses: ./.github/workflows/client-compatibility-gate.yml
+    with:
+      source_sha: ${{ needs.authorize.outputs.source_sha }}
+
   smoke-native:
     name: Registry smoke - ${{ matrix.platform }}
-    needs: authorize
+    needs: [authorize, compatibility]
     strategy:
       fail-fast: false
       matrix:
@@ -375,7 +382,7 @@ jobs:
 
   smoke-musl:
     name: Registry smoke - Linux musl ${{ matrix.architecture }}
-    needs: authorize
+    needs: [authorize, compatibility]
     strategy:
       fail-fast: false
       matrix:
@@ -558,7 +565,7 @@ jobs:
 
   stage-meta:
     name: Attest and stage @palladin/agent
-    needs: [authorize, smoke-native, smoke-musl, publish-policy]
+    needs: [authorize, compatibility, smoke-native, smoke-musl, publish-policy]
     runs-on: ubuntu-latest
     environment: npm-release
     timeout-minutes: 15

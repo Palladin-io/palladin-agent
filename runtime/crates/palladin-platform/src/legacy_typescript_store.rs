@@ -15,12 +15,92 @@ pub struct OsLegacyCredentialDeleter;
 
 impl LegacyCredentialDeleter for OsLegacyCredentialDeleter {
     fn delete_credential(&self, service: &str, account: &str) -> Result<(), LegacyCredentialError> {
-        let entry = keyring::Entry::new(service, account)
-            .map_err(|_| LegacyCredentialError::Unavailable)?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(_) => Err(LegacyCredentialError::Unavailable),
+        delete_os_credential(service, account)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn delete_os_credential(service: &str, account: &str) -> Result<(), LegacyCredentialError> {
+    use security_framework::item::{ItemClass, ItemSearchOptions, Limit, Reference, SearchResult};
+    use security_framework_sys::base::errSecItemNotFound;
+
+    let mut query = ItemSearchOptions::new();
+    query
+        .class(ItemClass::generic_password())
+        .service(service)
+        .account(account)
+        .load_refs(true)
+        .limit(Limit::All);
+
+    let matches = match query.search() {
+        Ok(matches) => matches,
+        Err(error) if error.code() == errSecItemNotFound => return Ok(()),
+        Err(_) => return Err(LegacyCredentialError::Unavailable),
+    };
+
+    for item in matches {
+        match item {
+            SearchResult::Ref(Reference::KeychainItem(item)) => item.delete(),
+            _ => return Err(LegacyCredentialError::Unavailable),
         }
+    }
+
+    match query.search() {
+        Err(error) if error.code() == errSecItemNotFound => Ok(()),
+        Ok(matches) if matches.is_empty() => Ok(()),
+        Ok(_) | Err(_) => Err(LegacyCredentialError::Unavailable),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn delete_os_credential(service: &str, account: &str) -> Result<(), LegacyCredentialError> {
+    use std::collections::HashMap;
+
+    use keyring_core::api::CredentialStoreApi;
+    use linux_keyutils_keyring_store::Store;
+
+    let secret_service = match keyring::Entry::new(service, account) {
+        Ok(entry) => delete_keyring_entry(&entry.inner),
+        Err(_) => CredentialDeleteState::Unavailable,
+    };
+    let keyutils = match Store::new_with_configuration(&HashMap::new())
+        .and_then(|store| store.build(service, account, None))
+    {
+        Ok(entry) => delete_keyring_entry(&entry),
+        Err(_) => CredentialDeleteState::Unavailable,
+    };
+
+    match (secret_service, keyutils) {
+        (CredentialDeleteState::Deleted, _) | (_, CredentialDeleteState::Deleted) => Ok(()),
+        (CredentialDeleteState::Missing, CredentialDeleteState::Missing) => Ok(()),
+        _ => Err(LegacyCredentialError::Unavailable),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CredentialDeleteState {
+    Deleted,
+    Missing,
+    Unavailable,
+}
+
+#[cfg(target_os = "linux")]
+fn delete_keyring_entry(entry: &keyring_core::Entry) -> CredentialDeleteState {
+    match entry.delete_credential() {
+        Ok(()) => CredentialDeleteState::Deleted,
+        Err(keyring_core::Error::NoEntry) => CredentialDeleteState::Missing,
+        Err(_) => CredentialDeleteState::Unavailable,
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn delete_os_credential(service: &str, account: &str) -> Result<(), LegacyCredentialError> {
+    let entry =
+        keyring::Entry::new(service, account).map_err(|_| LegacyCredentialError::Unavailable)?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(_) => Err(LegacyCredentialError::Unavailable),
     }
 }
 
@@ -63,10 +143,12 @@ pub enum LegacyCredentialError {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::sync::Mutex;
 
     use super::{
-        LegacyCredentialDeleter, LegacyCredentialError, delete_legacy_typescript_credentials,
+        LegacyCredentialDeleter, LegacyCredentialError, OsLegacyCredentialDeleter,
+        delete_legacy_typescript_credentials,
     };
 
     #[derive(Default)]
@@ -144,5 +226,15 @@ mod tests {
         .expect("valid legacy profile");
 
         assert_eq!(adapter.0.lock().expect("delete calls").len(), 4);
+    }
+
+    #[test]
+    #[ignore = "requires synthetic credentials seeded by the Node legacy keyring interop probe"]
+    fn os_adapter_deletes_credentials_seeded_by_the_legacy_node_client() {
+        let profile = env::var("PALLADIN_LEGACY_KEYRING_TEST_PROFILE")
+            .expect("PALLADIN_LEGACY_KEYRING_TEST_PROFILE");
+
+        delete_legacy_typescript_credentials(&OsLegacyCredentialDeleter, &profile)
+            .expect("delete Node-seeded legacy credentials");
     }
 }
