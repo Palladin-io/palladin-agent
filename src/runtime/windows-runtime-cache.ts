@@ -252,7 +252,6 @@ function verifySystemAuthenticode(path: string, binding: VerifiedArtifactBinding
   const { powershell, root: canonicalRoot, modulePath } = trustedPowerShell();
   const script = [
     "$ErrorActionPreference = 'Stop'",
-    'Import-Module -Name Microsoft.PowerShell.Security -ErrorAction Stop',
     '$signature = Get-AuthenticodeSignature -LiteralPath $env:PALLADIN_RUNTIME_PATH',
     "$actualThumbprint = $signature.SignerCertificate.Thumbprint.Replace(' ', '').ToUpperInvariant()",
     "if ($signature.Status -ne 'Valid') { exit 41 }",
@@ -468,7 +467,6 @@ public static class PalladinLockedProcess {
 }`;
   const script = [
     "$ErrorActionPreference = 'Stop'",
-    'Import-Module -Name Microsoft.PowerShell.Security -ErrorAction Stop',
     '$path = $env:PALLADIN_RUNTIME_PATH',
     '$stream = [IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)',
     'try {',
