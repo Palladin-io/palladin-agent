@@ -1953,7 +1953,8 @@ mod tests {
         let requests = requests.lock().expect("requests");
         assert_eq!(requests.len(), 11);
         for (request, method) in requests.iter().take(3).zip(["Get", "Exec", "Inject"]) {
-            assert!(request.contains("x-api-key: pl_shared_organization_fixture\r\n"));
+            let contains_key = request.contains("x-api-key: pl_shared_organization_fixture\r\n");
+            assert!(contains_key, "request omitted the organization credential");
             assert!(request.contains(&format!(r#""method":"{method}""#)));
             assert!(!request.contains("requestedMethods"));
         }
@@ -2022,7 +2023,8 @@ mod tests {
         let requests = requests.lock().expect("requests");
         assert_eq!(requests.len(), 1);
         assert!(requests[0].contains(r#""method":"Exec""#));
-        assert!(requests[0].contains("x-api-key: pl_shared_organization_fixture\r\n"));
+        let contains_key = requests[0].contains("x-api-key: pl_shared_organization_fixture\r\n");
+        assert!(contains_key, "request omitted the organization credential");
     }
 
     #[cfg(not(windows))]
@@ -2080,14 +2082,11 @@ mod tests {
         let mut byte = [0_u8; 1];
         let stdin_is_eof = std::io::stdin().read(&mut byte).expect("stdin") == 0;
         assert!(stdin_is_eof);
-        assert_eq!(
-            std::env::var("CLAW_SECRET").as_deref(),
-            Ok("fixture-password-not-production")
-        );
-        assert_eq!(
-            std::env::var("CLAW_USERNAME").as_deref(),
-            Ok("fixture-user")
-        );
+        let credential_matches =
+            std::env::var("CLAW_SECRET").as_deref() == Ok("fixture-password-not-production");
+        assert!(credential_matches, "credential environment value diverged");
+        let username_matches = std::env::var("CLAW_USERNAME").as_deref() == Ok("fixture-user");
+        assert!(username_matches, "username environment value diverged");
         assert!(std::env::var_os("PALLADIN_API_KEY").is_none());
     }
 

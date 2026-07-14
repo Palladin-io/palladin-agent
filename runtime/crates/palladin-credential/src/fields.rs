@@ -341,19 +341,18 @@ mod tests {
             br#"{"password":"primary","fields":[{"id":"a","label":"password","type":"text","value":"custom"},{"id":"b","label":"Token","type":"text","value":"one"},{"id":"c","label":"Token","type":"text","value":"two"}]}"#,
         )
         .expect("parse");
-        assert_eq!(
-            resolve_field_at(
-                &parsed,
-                &FieldSelector {
-                    field: Some("password".to_owned()),
-                    field_id: None,
-                },
-                59,
-            )
-            .expect("custom shadow")
-            .expose_for_authorized_operation(),
-            "custom"
-        );
+        let custom_matches = resolve_field_at(
+            &parsed,
+            &FieldSelector {
+                field: Some("password".to_owned()),
+                field_id: None,
+            },
+            59,
+        )
+        .expect("custom shadow")
+        .expose_for_authorized_operation()
+            == "custom";
+        assert!(custom_matches, "custom field resolution diverged");
         assert!(matches!(
             resolve_field_at(
                 &parsed,
@@ -402,7 +401,8 @@ mod tests {
         )
         .expect("TOTP");
         assert!(matches!(resolved, ResolvedField::Totp { .. }));
-        assert_eq!(resolved.expose_for_authorized_operation(), "287082");
+        let selected_code_matches = resolved.expose_for_authorized_operation() == "287082";
+        assert!(selected_code_matches, "selected TOTP code diverged");
         assert!(!format!("{resolved:?}").contains("287082"));
     }
 
@@ -412,10 +412,13 @@ mod tests {
             r#"{{"v":2,"fields":[{{"id":"a","type":"totp","value":{{"secret":"{TOTP}"}}}},{{"id":"b","type":"totp","value":{{"secret":"must-not-leak","period":0}}}}]}}"#
         );
         let redacted = redact_totp_secrets(payload.as_bytes(), 59).expect("redact");
-        assert!(!redacted.expose_secret().contains(TOTP));
-        assert!(!redacted.expose_secret().contains("must-not-leak"));
-        assert!(redacted.expose_secret().contains("287082"));
-        assert!(redacted.expose_secret().contains("withheld"));
+        let redacted_value = redacted.expose_secret();
+        let leaked = redacted_value.contains(TOTP) || redacted_value.contains("must-not-leak");
+        let has_code = redacted_value.contains("287082");
+        let has_marker = redacted_value.contains("withheld");
+        assert!(!leaked, "TOTP redaction retained secret material");
+        assert!(has_code, "TOTP redaction omitted the derived code");
+        assert!(has_marker, "TOTP redaction omitted the withheld marker");
     }
 
     #[test]
@@ -433,9 +436,13 @@ mod tests {
             59,
         )
         .expect("legacy TOTP");
-        assert_eq!(resolved.expose_for_authorized_operation(), "287082");
+        let legacy_code_matches = resolved.expose_for_authorized_operation() == "287082";
+        assert!(legacy_code_matches, "legacy TOTP code diverged");
         let redacted = redact_totp_secrets(payload.as_bytes(), 59).expect("redact");
-        assert!(!redacted.expose_secret().contains(TOTP));
-        assert!(redacted.expose_secret().contains("287082"));
+        let redacted_value = redacted.expose_secret();
+        let leaked = redacted_value.contains(TOTP);
+        let has_code = redacted_value.contains("287082");
+        assert!(!leaked, "legacy TOTP redaction retained secret material");
+        assert!(has_code, "legacy TOTP redaction omitted the derived code");
     }
 }

@@ -1,7 +1,7 @@
 {
   "name": "@palladin/agent",
   "version": "0.1.0",
-  "description": "Palladin Agent CLI and MCP server",
+  "description": "Script-free launcher for the Palladin native Agent CLI and MCP runtime",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

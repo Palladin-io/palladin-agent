@@ -14,8 +14,8 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
-  issues: write
+  pull-requests: read
+  issues: read
 
 env:
   CLAUDE_MODEL: claude-opus-4-7
@@ -32,26 +32,30 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
-          cache: npm
 
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code
 
-      - name: Resolve PR number and checkout branch
+      - name: Resolve the exact PR head
         id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number }}
         run: |
           echo "number=$INPUT_PR_NUMBER" >> "$GITHUB_OUTPUT"
-          HEAD=$(gh pr view "$INPUT_PR_NUMBER" --repo "${{ github.repository }}" --json headRefName --jq '.headRefName')
-          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+          metadata=$(gh pr view "$INPUT_PR_NUMBER" --repo "${{ github.repository }}" --json headRefName,headRefOid,isCrossRepository)
+          if [ "$(jq -r '.isCrossRepository' <<<"$metadata")" != false ]; then
+            echo 'Claude Fix cannot push to a fork-owned branch' >&2
+            exit 1
+          fi
+          echo "head=$(jq -r '.headRefName' <<<"$metadata")" >> "$GITHUB_OUTPUT"
+          echo "sha=$(jq -r '.headRefOid' <<<"$metadata")" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ steps.pr.outputs.head }}
+          ref: ${{ steps.pr.outputs.sha }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Fetch PR review data
         env:
@@ -64,21 +68,23 @@ jobs:
           gh api "repos/${REPO}/pulls/${PR}/comments" > /tmp/pr_inline_comments.json
           gh pr diff "$PR" --name-only > /tmp/pr_files.txt
           gh pr diff "$PR" > /tmp/pr_diff.patch
+          current_sha=$(gh pr view "$PR" --json headRefOid --jq '.headRefOid')
+          test "$current_sha" = '${{ steps.pr.outputs.sha }}'
 
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Install dependencies without running PR code
+        run: npm ci --ignore-scripts --workspaces=false
+
       - name: Run Claude Code fix
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           USER_CONTEXT: ${{ github.event.inputs.user_context }}
           PR: ${{ steps.pr.outputs.number }}
         run: |
-          npm ci --workspaces=false
-
           {
             echo '## Pre-fetched dane PR'
             echo ''
@@ -104,5 +110,27 @@ jobs:
             --model "$CLAUDE_MODEL" \
             --max-turns 50 \
             --dangerously-skip-permissions \
-            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(jq:*),Bash(gh pr:*),Bash(gh api:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),Bash(git restore:*),Bash(git switch:*),Bash(git fetch:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git config:*),Bash(npm ci:*),Bash(npm run build:*),Bash(npm test:*),Bash(npm run lint:*)" \
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(jq:*),Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*)" \
             < /tmp/fix_prompt.md
+
+      - name: Validate the fix without credentials
+        run: |
+          npm run lint
+          npm run build
+          npm test
+
+      - name: Push only the validated descendant
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ steps.pr.outputs.head }}
+          ORIGINAL_SHA: ${{ steps.pr.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git merge-base "$ORIGINAL_SHA" HEAD)" = "$ORIGINAL_SHA"
+          current_sha=$(gh pr view '${{ steps.pr.outputs.number }}' --repo "$GITHUB_REPOSITORY" --json headRefOid --jq '.headRefOid')
+          test "$current_sha" = "$ORIGINAL_SHA"
+          git -c core.hooksPath=/dev/null \
+            -c credential.helper= \
+            -c credential.helper='!gh auth git-credential' \
+            push --force-with-lease="refs/heads/${HEAD_BRANCH}:${ORIGINAL_SHA}" \
+            "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${HEAD_BRANCH}"

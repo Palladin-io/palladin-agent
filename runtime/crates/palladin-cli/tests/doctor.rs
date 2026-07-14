@@ -111,8 +111,9 @@ fn api_key_inside_non_utf8_argv_is_rejected_before_clap_can_echo_it() {
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout).expect("stdout");
     let stderr = String::from_utf8(output.stderr).expect("stderr");
-    assert!(!stdout.contains("pl_synthetic_non_utf8"));
-    assert!(!stderr.contains("pl_synthetic_non_utf8"));
+    let leaked_argument =
+        stdout.contains("pl_synthetic_non_utf8") || stderr.contains("pl_synthetic_non_utf8");
+    assert!(!leaked_argument, "CLI echoed a secret-shaped argument");
     assert!(stderr.contains("forbidden in argv"));
 }
 
@@ -124,8 +125,16 @@ fn connect_help_has_no_api_key_positional_argument() {
         .expect("connect help");
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout");
-    assert!(!stdout.to_ascii_lowercase().contains("<api-key>"));
-    assert!(stdout.contains("--api-key-stdin"));
+    let exposes_api_key_argument = stdout.to_ascii_lowercase().contains("<api-key>");
+    assert!(
+        !exposes_api_key_argument,
+        "connect help exposed the legacy API key argument"
+    );
+    let has_stdin_only_api_key_option = stdout.contains("--api-key-stdin");
+    assert!(
+        has_stdin_only_api_key_option,
+        "connect help omitted the stdin-only API key option"
+    );
 }
 
 #[test]

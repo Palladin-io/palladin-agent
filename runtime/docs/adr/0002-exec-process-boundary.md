@@ -66,4 +66,4 @@ Alpine/OpenRC does not provide an equivalent fresh per-request `DynamicUser`, so
 
 ## Consequences
 
-CVT-314 materially reduces accidental leakage, environment inheritance, output exfiltration through MCP, temporary-file residue on handled paths, and orphaned subprocesses. The standalone tier still does not defend against effective same-user debugging or memory reads. Windows Secure adds the AppContainer boundary described above. Linux Hardened adds the dedicated Agent UID, broker UID, and one-shot executor UID boundary described above. macOS retains its separately documented execution-boundary requirement.
+CVT-314 materially reduces accidental leakage, environment inheritance, output exfiltration through MCP, temporary-file residue on handled paths, and orphaned subprocesses. The standalone tier still does not defend against effective same-user debugging or memory reads. Windows Hardened adds the AppContainer boundary described above. Linux Hardened adds the dedicated Agent UID, broker UID, and one-shot executor UID boundary described above. macOS retains its separately documented execution-boundary requirement.

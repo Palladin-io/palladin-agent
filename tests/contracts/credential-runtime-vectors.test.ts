@@ -63,7 +63,7 @@ describe('frozen credential runtime vectors', () => {
         continue;
       }
       const parsed = parseSecret(vector.plaintext);
-      if (vector.primary !== undefined) expect(parsed.password, vector.name).toBe(vector.primary);
+      if (vector.primary !== undefined) assertSecretEqual(parsed.password, vector.primary, vector.name);
       if (vector.customFieldCount !== undefined) expect(parsed.customFields.length, vector.name).toBe(vector.customFieldCount);
       if ((vector.totpFieldId || vector.totpFieldLabel) && vector.totpCode) {
         const custom = parsed.customFields.find((candidate) => candidate.id === vector.totpFieldId);
@@ -71,15 +71,23 @@ describe('frozen credential runtime vectors', () => {
         const params = parseTotpValue(descriptor);
         expect(params, vector.name).not.toBeNull();
         if (params === null) throw new Error(`missing synthetic TOTP params: ${vector.name}`);
-        expect(generateTotp(params, credentials.totpUnixSeconds * 1000).code, vector.name).toBe(vector.totpCode);
+        assertSecretEqual(
+          generateTotp(params, credentials.totpUnixSeconds * 1000).code,
+          vector.totpCode,
+          vector.name,
+        );
       }
       if (vector.scriptRefCount !== undefined) {
         expect(parsed.script?.refs.length, vector.name).toBe(vector.scriptRefCount);
       }
       if (vector.redactionForbidden || vector.redactionContains) {
         const redacted = redactTotpSecrets(vector.plaintext);
-        if (vector.redactionForbidden) expect(redacted, vector.name).not.toContain(vector.redactionForbidden);
-        if (vector.redactionContains) expect(redacted, vector.name).toContain(vector.redactionContains);
+        if (vector.redactionForbidden) {
+          expect(!redacted.includes(vector.redactionForbidden), vector.name).toBe(true);
+        }
+        if (vector.redactionContains) {
+          expect(redacted.includes(vector.redactionContains), vector.name).toBe(true);
+        }
       }
       if (vector.selectorField || vector.selectorFieldId) {
         const selection = () => resolveField(parsed, { field: vector.selectorField, fieldId: vector.selectorFieldId });
@@ -87,7 +95,11 @@ describe('frozen credential runtime vectors', () => {
           expect(selection, vector.name).toThrow();
         } else {
           const resolved = selection();
-          expect(resolved.kind === 'value' ? resolved.value : resolved.code, vector.name).toBe(vector.expectedFieldValue);
+          assertSecretEqual(
+            resolved.kind === 'value' ? resolved.value : resolved.code,
+            vector.expectedFieldValue,
+            vector.name,
+          );
         }
       }
     }
@@ -172,6 +184,11 @@ function fixture<T>(name: string): T {
   return JSON.parse(
     readFileSync(new URL(`../../runtime/contracts/v1/${name}`, import.meta.url), 'utf8'),
   ) as T;
+}
+
+function assertSecretEqual(actual: string | undefined, expected: string | undefined, name: string): void {
+  // A failed contract assertion must identify only the vector, never render a secret-shaped value.
+  expect(actual === expected, name).toBe(true);
 }
 
 function accessState(access: string): CredentialAccess {

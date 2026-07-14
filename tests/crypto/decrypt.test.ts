@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import _sodium from 'libsodium-wrappers'
 import { decryptCredential, EncryptedCredential } from '../../src/crypto/decrypt.js'
 import { generateKeypair, Keypair } from '../../src/crypto/keypair.js'
+import { expectSensitiveEqual } from '../helpers/sensitive-assert.js'
 
 let sodium: typeof _sodium
 
@@ -36,14 +37,14 @@ describe('decryptCredential', () => {
 
     const result = await decryptCredential(envelope, kp)
 
-    expect(result).toBe('s3cr3t-db-password!')
+    expectSensitiveEqual(result, 's3cr3t-db-password!', 'decrypted credential')
   })
 
   it('handles unicode plaintext', async () => {
     const kp = await generateKeypair()
     const envelope = buildEnvelope('hasło-żółć-🔐', kp.publicKey)
 
-    expect(await decryptCredential(envelope, kp)).toBe('hasło-żółć-🔐')
+    expectSensitiveEqual(await decryptCredential(envelope, kp), 'hasło-żółć-🔐', 'unicode credential')
   })
 
   it('throws when the sealed DEK was wrapped for a different agent', async () => {

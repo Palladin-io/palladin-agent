@@ -2,21 +2,8 @@ name: Rust Runtime
 
 on:
   pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/rust-runtime.yml"
-      - ".github/workflows/macos-signed-runtime.yml"
-      - ".github/workflows/windows-signed-runtime.yml"
-      - "packaging/macos/**"
-      - "packaging/linux/**"
-      - "packaging/windows/**"
-      - "packaging/npm/**"
-      - "packages/**"
-      - "src/runtime/**"
-      - "tests/runtime/**"
-      - "package.json"
-      - "package-lock.json"
-      - "runtime/**"
+  merge_group:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,7 +15,7 @@ concurrency:
 jobs:
   apple:
     name: Build ${{ matrix.target }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -78,6 +65,7 @@ jobs:
           translated=$(sysctl -in sysctl.proc_translated 2>/dev/null || true)
           translated=${translated:-0}
           test "$translated" = 0
+      - run: cargo clippy --workspace --all-targets --locked --target ${{ matrix.target }} -- -D warnings
       - run: cargo test --workspace --locked --target ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
       - run: ./target/${{ matrix.target }}/release/palladin --version
@@ -100,7 +88,7 @@ jobs:
 
   windows:
     name: Build ${{ matrix.target }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -149,6 +137,7 @@ jobs:
           $debug = './target/${{ matrix.target }}/debug'
           New-Item -ItemType Directory -Force -Path (Join-Path $debug 'deps') | Out-Null
           Copy-Item -LiteralPath (Join-Path $debug 'palladin-executor.exe') -Destination (Join-Path $debug 'deps/palladin-executor.exe')
+      - run: cargo clippy --workspace --all-targets --locked --target ${{ matrix.target }} -- -D warnings
       - run: cargo test --workspace --locked --target ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
       - run: ./target/${{ matrix.target }}/release/palladin.exe --version
@@ -166,7 +155,7 @@ jobs:
 
   linux:
     name: Build ${{ matrix.gnu_target }} and ${{ matrix.musl_target }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -174,11 +163,9 @@ jobs:
           - runner: ubuntu-24.04
             gnu_target: x86_64-unknown-linux-gnu
             musl_target: x86_64-unknown-linux-musl
-            quality: true
           - runner: ubuntu-24.04-arm
             gnu_target: aarch64-unknown-linux-gnu
             musl_target: aarch64-unknown-linux-musl
-            quality: false
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -195,12 +182,6 @@ jobs:
           node-version: 22
       - run: sudo apt-get update && sudo apt-get install --yes gcc libxml2-utils musl-tools rpm
       - run: rustup target add ${{ matrix.gnu_target }} ${{ matrix.musl_target }}
-      - if: matrix.quality
-        run: cargo fmt --all -- --check
-      - if: matrix.quality
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - if: matrix.quality
-        run: cargo test --workspace --locked
       - name: Validate Linux packaging source
         working-directory: .
         shell: bash
@@ -210,7 +191,12 @@ jobs:
           xmllint --noout packaging/linux/polkit/io.palladin.runtime.policy
           cc -Wall -Wextra -Werror packaging/linux/tests/security-boundary-probe.c -o /tmp/palladin-security-boundary-probe
           cc -Wall -Wextra -Werror -shared -fPIC packaging/linux/tests/ld-preload-probe.c -o /tmp/palladin-ld-preload-probe.so
+      - run: cargo clippy --workspace --all-targets --locked --target ${{ matrix.gnu_target }} -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked --target ${{ matrix.musl_target }} -- -D warnings
+        env:
+          CC: musl-gcc
       - run: cargo build --release --locked --target ${{ matrix.gnu_target }} -p palladin-cli
+      - run: cargo test --workspace --locked --target ${{ matrix.gnu_target }}
       - run: cargo build --release --locked --target ${{ matrix.gnu_target }} -p palladin-linux-broker -p palladin-linux-executor --bins
       - run: cargo build --release --locked --target ${{ matrix.gnu_target }} -p palladin-linux-broker --example package_state_fixture
       - run: cargo build --release --locked --target ${{ matrix.musl_target }} -p palladin-cli
@@ -341,3 +327,20 @@ jobs:
           deb=$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)
           sudo apt-get install --yes "$deb"
           sudo packaging/linux/tests/test-hardened-boundary.sh
+
+  native-platform-gate:
+    name: Native Platform Gate
+    if: always()
+    needs: [apple, windows, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every native OS, CPU, and libc gate
+        env:
+          APPLE: ${{ needs.apple.result }}
+          WINDOWS: ${{ needs.windows.result }}
+          LINUX: ${{ needs.linux.result }}
+        run: |
+          test "$APPLE" = success
+          test "$WINDOWS" = success
+          test "$LINUX" = success

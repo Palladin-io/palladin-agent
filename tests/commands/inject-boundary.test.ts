@@ -24,7 +24,7 @@ describe('inject command browser boundary', () => {
       { from: 'user' },
     );
 
-    expect(getProfile).not.toHaveBeenCalled();
+    expect(getProfile.mock.calls.length).toBe(0);
     expect(error).toHaveBeenCalledWith(`Error: ${INJECT_UNAVAILABLE} No Agent profile was opened.`);
     expect(process.exitCode).toBe(INJECT_UNAVAILABLE_EXIT_CODE);
   });

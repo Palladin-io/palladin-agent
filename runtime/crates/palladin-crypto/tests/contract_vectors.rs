@@ -109,9 +109,9 @@ fn decrypts_the_frozen_libsodium_envelope_byte_for_byte() {
     );
 
     let plaintext = decrypt_credential(&fixture.envelope, &identity).expect("decrypt envelope");
-    assert_eq!(
-        plaintext.expose_for_authorized_operation(),
-        fixture.plaintext_utf8.as_bytes()
+    assert!(
+        plaintext.expose_for_authorized_operation() == fixture.plaintext_utf8.as_bytes(),
+        "decrypted credential payload diverged"
     );
 }
 

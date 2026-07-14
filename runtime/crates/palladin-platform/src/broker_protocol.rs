@@ -983,9 +983,13 @@ mod tests {
         let decoded: ClientFrame = read_frame(&mut bytes.as_slice()).await.expect("read");
         assert!(matches!(decoded, ClientFrame::Cancel { request_id } if request_id == [3; 16]));
         let wire = String::from_utf8(bytes).expect("UTF-8-ish frame");
-        assert!(!wire.contains("api-key"));
-        assert!(!wire.contains("private-key"));
-        assert!(!wire.contains("read-secret"));
+        let exposes_sensitive_wire_fields = wire.contains("api-key")
+            || wire.contains("private-key")
+            || wire.contains("read-secret");
+        assert!(
+            !exposes_sensitive_wire_fields,
+            "broker cancellation frame exposed sensitive fields"
+        );
     }
 
     #[test]

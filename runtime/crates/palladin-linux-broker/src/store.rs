@@ -378,18 +378,21 @@ mod tests {
         ))
         .expect("ciphertext");
         assert_eq!(&stored[..8], b"PLSBX02\0");
+        let persisted_plaintext = stored
+            .windows(17)
+            .any(|window| window == b"synthetic-api-key");
         assert!(
-            !stored
-                .windows(17)
-                .any(|window| window == b"synthetic-api-key")
+            !persisted_plaintext,
+            "broker store persisted a plaintext organization credential"
         );
-        assert_eq!(
+        assert!(
             store
                 .get(owner, SecretSlot::OrganizationApiKey)
                 .expect("get")
                 .expect("secret")
-                .expose_secret(),
-            b"synthetic-api-key"
+                .expose_secret()
+                == b"synthetic-api-key",
+            "stored organization credential diverged"
         );
     }
 
@@ -467,13 +470,14 @@ mod tests {
         store
             .set(owner, SecretSlot::Ed25519SecretKey, &maximum)
             .expect("maximum-sized secret");
-        assert_eq!(
+        assert!(
             store
                 .get(owner, SecretSlot::Ed25519SecretKey)
                 .expect("get maximum")
                 .expect("maximum secret")
-                .expose_secret(),
-            maximum
+                .expose_secret()
+                == maximum.as_slice(),
+            "maximum-sized secret diverged"
         );
         assert!(matches!(
             store.set(

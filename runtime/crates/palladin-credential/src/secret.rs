@@ -427,17 +427,24 @@ mod tests {
     #[test]
     fn parses_raw_v1_v2_and_unknown_additive_fields() {
         let raw = parse_secret(b"raw-secret-token").expect("raw");
-        assert_eq!(raw.password.expose_secret(), "raw-secret-token");
+        let raw_matches = raw.password.expose_secret() == "raw-secret-token";
+        assert!(raw_matches, "raw credential diverged");
         let v1 = parse_secret(br#"{"username":"alice","password":"hunter2"}"#).expect("v1");
-        assert_eq!(v1.username.expect("username").expose_secret(), "alice");
+        let username_matches = v1.username.expect("username").expose_secret() == "alice";
+        assert!(username_matches, "credential username diverged");
         let v2 = parse_secret(
             br#"{"v":2,"value":"key","future":"kept","fields":[{"id":"f1","label":"Recovery email","type":"text","value":"a@b.com"},{"id":"future","label":"Future","type":"date","value":"ignore"}]}"#,
         )
         .expect("v2");
         assert_eq!(v2.custom_fields.len(), 1);
         assert_eq!(v2.custom_fields[0].field_type, CustomFieldType::Text);
-        assert_eq!(v2.fields["RECOVERY_EMAIL"].expose_secret(), "a@b.com");
-        assert_eq!(v2.fields["future"].expose_secret(), "kept");
+        let custom_field_matches = v2.fields["RECOVERY_EMAIL"].expose_secret() == "a@b.com";
+        assert!(custom_field_matches, "custom credential field diverged");
+        let future_field_matches = v2.fields["future"].expose_secret() == "kept";
+        assert!(
+            future_field_matches,
+            "forward-compatible credential field diverged"
+        );
         assert!(!format!("{v2:?}").contains("a@b.com"));
     }
 

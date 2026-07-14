@@ -54,7 +54,7 @@ fn credential_blob_contract_is_consumed_byte_for_byte() {
         }
         let parsed = parsed.expect(&case.name);
         if let Some(primary) = case.primary.as_deref() {
-            assert_eq!(parsed.password.expose_secret(), primary, "{}", case.name);
+            assert_secret_equal(parsed.password.expose_secret(), primary, &case.name);
         }
         if let Some(expected) = case.custom_field_count {
             assert_eq!(parsed.custom_fields.len(), expected, "{}", case.name);
@@ -66,7 +66,11 @@ fn credential_blob_contract_is_consumed_byte_for_byte() {
             };
             let resolved = resolve_field_at(&parsed, &selector, fixture.totp_unix_seconds)
                 .expect("TOTP field");
-            assert_eq!(resolved.expose_for_authorized_operation(), expected);
+            assert_secret_equal(
+                resolved.expose_for_authorized_operation(),
+                expected,
+                &case.name,
+            );
         }
         if let Some(expected) = case.script_ref_count {
             assert_eq!(parsed.script.as_ref().expect("script").refs.len(), expected);
@@ -98,19 +102,22 @@ fn credential_blob_contract_is_consumed_byte_for_byte() {
             if case.selection_error {
                 assert!(result.is_err(), "{}", case.name);
             } else {
-                assert_eq!(
+                assert_secret_equal(
                     result
                         .expect("selected field")
                         .expose_for_authorized_operation(),
                     case.expected_field_value
                         .as_deref()
                         .expect("expected field value"),
-                    "{}",
-                    case.name
+                    &case.name,
                 );
             }
         }
     }
+}
+
+fn assert_secret_equal(actual: &str, expected: &str, case_name: &str) {
+    assert!(actual == expected, "{case_name}: secret value diverged");
 }
 
 #[derive(Deserialize)]

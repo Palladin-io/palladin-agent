@@ -1,5 +1,6 @@
 {
   "contract": "palladin-agent-mcp-tools",
+  "syntheticOnly": true,
   "version": "1.0.0",
   "status": "frozen",
   "server": {

@@ -201,7 +201,8 @@ mod tests {
             )],
         );
         let debug = format!("{request:?}");
-        assert!(!debug.contains("top-secret"));
+        let leaked = debug.contains("top-secret");
+        assert!(!leaked, "executor debug output was not redacted");
         assert!(debug.contains("[REDACTED]"));
         let encoded = request.encode().expect("encoded");
         assert!(encoded.len() < MAX_REQUEST_BYTES);

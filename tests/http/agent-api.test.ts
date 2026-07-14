@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { searchEntries, getCredential, AgentApiError } from '../../src/http/agent-api.js'
 import type { AgentConfig } from '../../src/config/config.js'
 import type { Keypair } from '../../src/crypto/keypair.js'
+import { expectSensitiveEqual } from '../helpers/sensitive-assert.js'
 
 const config: AgentConfig = { apiKey: 'test-api-key', host: 'http://localhost:5000' }
 const keypair: Keypair = {
@@ -32,7 +33,7 @@ describe('searchEntries', () => {
 
     const init = fetchSpy.mock.calls[0]![1] as RequestInit
     const headers = init.headers as Headers
-    expect(headers.get('X-Api-Key')).toBe('test-api-key')
+    expectSensitiveEqual(headers.get('X-Api-Key'), 'test-api-key', 'organization API key header')
     expect(headers.get('X-Agent-Key')).toBeTruthy()
   })
 

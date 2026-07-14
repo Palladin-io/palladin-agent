@@ -292,17 +292,17 @@ fn frozen_get_outputs_match_the_legacy_json_shape_byte_for_byte() {
         code: "123456",
         expires_in: 17,
     };
-    assert_eq!(
-        format!("{}\n", serde_json::to_string_pretty(&whole).expect("whole")),
-        snapshots.whole
+    assert!(
+        format!("{}\n", serde_json::to_string_pretty(&whole).expect("whole")) == snapshots.whole,
+        "whole credential output snapshot diverged"
     );
-    assert_eq!(
-        format!("{}\n", serde_json::to_string_pretty(&field).expect("field")),
-        snapshots.field
+    assert!(
+        format!("{}\n", serde_json::to_string_pretty(&field).expect("field")) == snapshots.field,
+        "selected credential output snapshot diverged"
     );
-    assert_eq!(
-        format!("{}\n", serde_json::to_string_pretty(&totp).expect("totp")),
-        snapshots.totp
+    assert!(
+        format!("{}\n", serde_json::to_string_pretty(&totp).expect("totp")) == snapshots.totp,
+        "TOTP output snapshot diverged"
     );
 }
 

@@ -37,7 +37,7 @@ describe('inject_credential browser boundary', () => {
       cdp: 'http://127.0.0.1:9222',
     });
 
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch.mock.calls.length).toBe(0);
     expect(result).toEqual({
       content: [{ type: 'text', text: INJECT_UNAVAILABLE }],
       isError: true,

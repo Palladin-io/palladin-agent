@@ -40,8 +40,9 @@ mod tests {
         let private_key = AgentPrivateKey::new(b"private-key-material".to_vec());
 
         let output = format!("{api_key:?} {private_key:?}");
-        assert!(!output.contains("pl_example_secret"));
-        assert!(!output.contains("private-key-material"));
+        let leaked =
+            output.contains("pl_example_secret") || output.contains("private-key-material");
+        assert!(!leaked, "secret debug output was not redacted");
         assert!(output.contains("[REDACTED]"));
     }
 }

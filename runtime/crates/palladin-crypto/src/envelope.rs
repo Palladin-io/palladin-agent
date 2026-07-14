@@ -108,6 +108,7 @@ mod tests {
         let plaintext = DecryptedCredential(b"synthetic-plaintext".to_vec().into());
         let debug = format!("{plaintext:?}");
         assert_eq!(debug, "DecryptedCredential([REDACTED])");
-        assert!(!debug.contains("synthetic-plaintext"));
+        let leaked = debug.contains("synthetic-plaintext");
+        assert!(!leaked, "credential debug output was not redacted");
     }
 }

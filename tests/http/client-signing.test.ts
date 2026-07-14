@@ -4,6 +4,7 @@ import { apiFetch, SigningContext } from '../../src/http/client.js';
 import { canonicalString, generateSigningKeypair } from '../../src/crypto/signing.js';
 import type { AgentConfig } from '../../src/config/config.js';
 import type { Keypair } from '../../src/crypto/keypair.js';
+import { expectSensitiveEqual } from '../helpers/sensitive-assert.js';
 
 const config: AgentConfig = { apiKey: 'k', host: 'http://localhost:5000' };
 const boxKeypair: Keypair = { publicKey: new Uint8Array(32).fill(1), privateKey: new Uint8Array(32).fill(2) };
@@ -23,7 +24,7 @@ describe('apiFetch request signing', () => {
     await apiFetch('/api/agent/entries?query=x', config, boxKeypair);
 
     const headers = headersFromCall(spy);
-    expect(headers.get('X-Api-Key')).toBe('k');
+    expectSensitiveEqual(headers.get('X-Api-Key'), 'k', 'organization API key header');
     expect(headers.get('X-Agent-Signature')).toBeNull();
     expect(headers.get('X-Agent-Id')).toBeNull();
   });

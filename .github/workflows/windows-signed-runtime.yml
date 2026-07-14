@@ -176,6 +176,7 @@ jobs:
           $certificate = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password -Exportable:$false | Where-Object HasPrivateKey)[0]
           if ($null -eq $certificate) { throw 'PFX does not contain a private signing key' }
           if ($certificate.Thumbprint -cne $env:EXPECTED_THUMBPRINT.Replace(' ', '').ToUpperInvariant()) { throw 'imported signer does not match protected thumbprint' }
+          Export-Certificate -Cert $certificate -FilePath (Join-Path $env:RUNNER_TEMP 'palladin-signer.cer') -Type CERT | Out-Null
       - name: Podpisz skrypty instalacyjne i wszystkie PE
         shell: pwsh
         run: |
@@ -260,6 +261,146 @@ jobs:
             ${{ runner.temp }}/bundles/Palladin.Runtime.appinstaller
             ${{ runner.temp }}/setup-x64/**
             ${{ runner.temp }}/setup-arm64/**
+            ${{ runner.temp }}/palladin-signer.cer
             ${{ runner.temp }}/*.tgz
           if-no-files-found: error
           retention-days: 7
+      - name: Remove the private signing material
+        if: always()
+        shell: pwsh
+        run: |
+          $thumbprint = $env:EXPECTED_THUMBPRINT.Replace(' ', '').ToUpperInvariant()
+          Remove-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'windows-signing.pfx') -Force -ErrorAction SilentlyContinue
+
+  signed-install-smoke:
+    name: Signed install smoke - ${{ matrix.architecture }}
+    needs: [authorize, sign-package]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            architecture: x64
+            os_architecture: X64
+          - runner: windows-11-arm
+            architecture: arm64
+            os_architecture: Arm64
+    runs-on: ${{ matrix.runner }}
+    environment: windows-signing
+    timeout-minutes: 25
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      EXPECTED_THUMBPRINT: ${{ vars.PALLADIN_WINDOWS_SIGNER_THUMBPRINT }}
+      EXPECTED_PUBLISHER: ${{ vars.PALLADIN_WINDOWS_PUBLISHER }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source and native runner architecture
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if ((git rev-parse HEAD) -cne $env:SOURCE_SHA) { throw 'unexpected checkout SHA' }
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor $env:SOURCE_SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'source SHA is not an ancestor of main' }
+          if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -cne '${{ matrix.os_architecture }}') {
+            throw 'runner architecture does not match signed artifact architecture'
+          }
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: signed-windows-runtime-${{ inputs.version }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/signed-release
+      - name: Trust and execute the exact signed installer
+        shell: pwsh
+        run: |
+          $release = Join-Path $env:RUNNER_TEMP 'signed-release'
+          $certificatePath = Join-Path $release 'palladin-signer.cer'
+          $certificate = Get-PfxCertificate -FilePath $certificatePath
+          $expectedThumbprint = $env:EXPECTED_THUMBPRINT.Replace(' ', '').ToUpperInvariant()
+          if ($certificate.Thumbprint -cne $expectedThumbprint -or $certificate.Subject -cne $env:EXPECTED_PUBLISHER) {
+            throw 'smoke-test certificate does not match protected release identity'
+          }
+          Import-Certificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
+          $setup = Join-Path $release 'setup-${{ matrix.architecture }}/palladin-runtime-setup.exe'
+          if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'signed setup executable is missing' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $setup
+          if ($signature.Status -ne 'Valid' `
+              -or $signature.SignerCertificate.Thumbprint -cne $expectedThumbprint `
+              -or $signature.SignerCertificate.Subject -cne $env:EXPECTED_PUBLISHER `
+              -or $null -eq $signature.TimeStamperCertificate) {
+            throw 'signed setup executable failed release identity verification'
+          }
+          & $setup
+          if ($LASTEXITCODE -ne 0) { throw "signed setup failed with exit code $LASTEXITCODE" }
+      - name: Verify installed packages, service boundary, and npm launcher
+        shell: pwsh
+        run: |
+          foreach ($name in 'Palladin.Runtime.Broker', 'Palladin.Runtime.Companion') {
+            $package = Get-AppxPackage -AllUsers -Name $name | Sort-Object Version -Descending | Select-Object -First 1
+            if ($null -eq $package -or [version]$package.Version -ne [version]$env:RELEASE_VERSION) {
+              throw "$name is not installed at the expected version"
+            }
+            if ($package.Architecture.ToString() -cne '${{ matrix.os_architecture }}') {
+              throw "$name architecture does not match the native runner"
+            }
+          }
+          $service = Get-CimInstance Win32_Service -Filter "Name='PalladinRuntime'"
+          if ($null -eq $service -or $service.State -ne 'Running' -or $service.StartName -notin @('NT AUTHORITY\LocalService', 'NT AUTHORITY\LOCAL SERVICE')) {
+            throw 'PalladinRuntime service state is invalid'
+          }
+          $sidType = & sc.exe qsidtype PalladinRuntime
+          if ($LASTEXITCODE -ne 0 -or ($sidType -join "`n") -notmatch 'SERVICE_SID_TYPE:\s+RESTRICTED') {
+            throw 'PalladinRuntime service SID is not restricted'
+          }
+
+          $release = Join-Path $env:RUNNER_TEMP 'signed-release'
+          $runtimePackages = @(Get-ChildItem -LiteralPath $release -Filter 'palladin-runtime-win32-${{ matrix.architecture }}-*.tgz' -File)
+          $launcherPackages = @(Get-ChildItem -LiteralPath $release -Filter 'palladin-agent-*.tgz' -File)
+          if ($runtimePackages.Count -ne 1 -or $launcherPackages.Count -ne 1) {
+            throw 'signed npm artifact set is missing or ambiguous'
+          }
+          $smoke = Join-Path $env:RUNNER_TEMP 'npm-smoke'
+          New-Item -ItemType Directory -Path $smoke | Out-Null
+          npm install --prefix $smoke --ignore-scripts --no-save $runtimePackages[0].FullName $launcherPackages[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw 'signed npm installation failed' }
+          $launcher = Join-Path $smoke 'node_modules/@palladin/agent/dist/bin/palladin.js'
+          $doctor = & node $launcher doctor 2>&1
+          if ($LASTEXITCODE -ne 0) { throw 'signed launcher doctor failed' }
+          $doctorText = $doctor -join "`n"
+          if ($doctorText -notmatch 'standalone-security-tier: Hardened' -or $doctorText -notmatch 'identity-opened: no') {
+            throw 'installed runtime did not report the Hardened service boundary'
+          }
+          $init = & node $launcher init 2>&1
+          if ($LASTEXITCODE -eq 0 -or ($init -join "`n") -notmatch 'Windows Hello is unavailable or consent was not granted') {
+            throw 'hosted runner did not fail closed at the Windows Hello boundary'
+          }
+      - name: Remove temporary trust anchor
+        if: always()
+        shell: pwsh
+        run: |
+          $thumbprint = $env:EXPECTED_THUMBPRINT.Replace(' ', '').ToUpperInvariant()
+          Remove-Item -LiteralPath "Cert:\CurrentUser\TrustedPeople\$thumbprint" -Force -ErrorAction SilentlyContinue
+
+  windows-signed-gate:
+    name: Windows Signed Release Gate
+    if: always()
+    needs: [authorize, build-native, sign-package, signed-install-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require signed native x64 and ARM64 release
+        env:
+          AUTHORIZE: ${{ needs.authorize.result }}
+          BUILD_NATIVE: ${{ needs.build-native.result }}
+          SIGN_PACKAGE: ${{ needs.sign-package.result }}
+          INSTALL_SMOKE: ${{ needs.signed-install-smoke.result }}
+        run: |
+          test "$AUTHORIZE" = success
+          test "$BUILD_NATIVE" = success
+          test "$SIGN_PACKAGE" = success
+          test "$INSTALL_SMOKE" = success

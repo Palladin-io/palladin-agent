@@ -710,8 +710,13 @@ mod tests {
 
         save_registry(&path, &registry).expect("save registry");
         let serialized = std::fs::read_to_string(&path).expect("read registry");
-        assert!(!serialized.to_ascii_lowercase().contains("apikey"));
-        assert!(!serialized.to_ascii_lowercase().contains("privatekey"));
+        let normalized = serialized.to_ascii_lowercase();
+        let contains_sensitive_field_name =
+            normalized.contains("apikey") || normalized.contains("privatekey");
+        assert!(
+            !contains_sensitive_field_name,
+            "public registry serialized a sensitive field"
+        );
         assert_eq!(load_registry(&path).expect("load registry"), registry);
 
         let replacement = PublicRegistry::default();

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { generateTotp, base32Encode, base32Decode, TotpError } from '../../src/credential/totp.js';
+import { expectSensitiveEqual } from '../helpers/sensitive-assert.js';
 
 // RFC 6238 Appendix B test seeds (ASCII), encoded to base32 as the field descriptor stores them.
 const SEED_SHA1 = base32Encode(Buffer.from('12345678901234567890', 'ascii'));
@@ -19,9 +20,9 @@ describe('generateTotp — RFC 6238 Appendix B vectors', () => {
   ];
 
   for (const { seconds, algorithm, secret, code } of cases) {
-    it(`t=${seconds}s ${algorithm} → ${code}`, () => {
+    it(`validates t=${seconds}s ${algorithm}`, () => {
       const result = generateTotp({ secret, algorithm, digits: 8, period: 30 }, seconds * 1000);
-      expect(result.code).toBe(code);
+      expectSensitiveEqual(result.code, code, 'RFC TOTP code');
     });
   }
 });
@@ -30,8 +31,8 @@ describe('generateTotp — defaults and window', () => {
   it('defaults to SHA1 / 6 digits / 30s', () => {
     const result = generateTotp({ secret: SEED_SHA1 }, 59 * 1000);
     // The 8-digit SHA1 vector is 94287082 → last 6 digits for the default 6-digit code.
-    expect(result.code).toBe('287082');
-    expect(result.code).toHaveLength(6);
+    expectSensitiveEqual(result.code, '287082', 'default TOTP code');
+    expect(result.code.length).toBe(6);
   });
 
   it('reports seconds remaining in the current window', () => {

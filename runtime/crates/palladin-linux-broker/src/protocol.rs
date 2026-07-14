@@ -263,6 +263,7 @@ mod tests {
             bytes: b"synthetic-secret".to_vec(),
         };
         // Debug renders byte values but never a plaintext string. Production has tracing disabled.
-        assert!(!format!("{frame:?}").contains("synthetic-secret"));
+        let leaked = format!("{frame:?}").contains("synthetic-secret");
+        assert!(!leaked, "broker frame debug output was not redacted");
     }
 }

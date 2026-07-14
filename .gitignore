@@ -3,3 +3,5 @@ dist/
 *.js.map
 .env
 runtime/target/
+runtime/contracts/dotnet/**/bin/
+runtime/contracts/dotnet/**/obj/

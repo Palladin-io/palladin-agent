@@ -205,12 +205,13 @@ mod tests {
             let mut params = TotpParams::new(base32_encode(seed));
             params.algorithm = algorithm;
             params.digits = 8;
-            assert_eq!(
+            assert!(
                 generate_totp_at(&params, 59)
                     .expect("TOTP")
                     .code
-                    .expose_secret(),
-                expected
+                    .expose_secret()
+                    == expected,
+                "RFC TOTP code diverged"
             );
         }
     }
@@ -219,7 +220,10 @@ mod tests {
     fn defaults_and_window_match_the_typescript_contract() {
         let params = TotpParams::new(base32_encode(b"12345678901234567890"));
         let result = generate_totp_at(&params, 59).expect("TOTP");
-        assert_eq!(result.code.expose_secret(), "287082");
+        assert!(
+            result.code.expose_secret() == "287082",
+            "default TOTP code diverged"
+        );
         assert_eq!(result.expires_in, 1);
         assert_eq!(
             generate_totp_at(&params, 30).expect("boundary").expires_in,
@@ -236,8 +240,8 @@ mod tests {
             base32_decode("!!!!").expect_err("invalid"),
             TotpError::InvalidSecret
         );
-        assert!(
-            !format!("{:?}", TotpParams::new("private-seed".to_owned())).contains("private-seed")
-        );
+        let debug = format!("{:?}", TotpParams::new("private-seed".to_owned()));
+        let leaked = debug.contains("private-seed");
+        assert!(!leaked, "TOTP debug output was not redacted");
     }
 }

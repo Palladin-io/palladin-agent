@@ -918,7 +918,11 @@ mod tests {
         };
         let block = build_environment(&[secret], profile).expect("environment");
         let rendered = String::from_utf16_lossy(&block);
-        assert!(rendered.contains("CLAW_SECRET=fixture"));
+        let contains_secret_variable = rendered.contains("CLAW_SECRET=fixture");
+        assert!(
+            contains_secret_variable,
+            "executor environment omitted the scoped credential"
+        );
         assert!(rendered.contains("LOCALAPPDATA=C:\\fixture\\profile"));
         assert!(!rendered.contains("NODE_OPTIONS"));
         assert!(!rendered.contains("PALLADIN_BROKER_ROOT"));
@@ -1089,10 +1093,10 @@ mod tests {
     fn appcontainer_script_probe_helper() {
         assert!(process_is_appcontainer());
         let script = PathBuf::from(std::env::var_os(PROBE_SCRIPT_PATH).expect("script path"));
-        assert_eq!(
-            std::fs::read(script).expect("private script is readable only inside its profile"),
-            b"fixture-script-secret"
-        );
+        let script_matches = std::fs::read(script)
+            .expect("private script is readable only inside its profile")
+            == b"fixture-script-secret";
+        assert!(script_matches, "private script payload diverged");
         assert!(std::env::var_os("PALLADIN_API_KEY").is_none());
     }
 

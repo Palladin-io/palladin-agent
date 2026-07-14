@@ -19,7 +19,7 @@ The Rust runtime is the client-side security boundary for Agent identities. It d
 secret-provider | palladin --id build connect --api-key-stdin
 ```
 
-API keys are rejected in command-line arguments and environment variables. Convenience builds use the operating-system credential store. Windows Secure runs only behind the authenticated AppContainer/LocalService broker and stores DPAPI-protected blobs under a restricted service-SID ACL. Linux Hardened runs only for a root-authorized dedicated Agent UID, stores authenticated ciphertext under a separate broker UID, and uses a one-shot systemd `DynamicUser` executor. There is no fallback to a plaintext file or environment variable.
+API keys are rejected in command-line arguments and environment variables. Convenience builds use the operating-system credential store. Windows Hardened runs only behind the authenticated AppContainer/LocalService broker and stores DPAPI-protected blobs under a restricted service-SID ACL. Linux Hardened runs only for a root-authorized dedicated Agent UID, stores authenticated ciphertext under a separate broker UID, and uses a one-shot systemd `DynamicUser` executor. There is no fallback to a plaintext file or environment variable.
 
 The standalone native build reports this as the Convenience tier. Login Keychain, Windows Credential Manager, and Linux Secret Service protect data at rest but do not provide a universal boundary against every process running as the same OS user or UID.
 

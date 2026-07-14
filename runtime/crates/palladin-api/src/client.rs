@@ -423,11 +423,15 @@ mod tests {
 
         let requests = requests.lock().expect("requests");
         assert_eq!(requests.len(), 2);
-        assert!(requests.iter().all(|request| {
+        let all_requests_contain_key = requests.iter().all(|request| {
             request
                 .to_ascii_lowercase()
                 .contains("x-api-key: pl_shared_organization_fixture")
-        }));
+        });
+        assert!(
+            all_requests_contain_key,
+            "one or more requests omitted the organization credential"
+        );
         let first_agent_key = header_value(&requests[0], "x-agent-key");
         let second_agent_key = header_value(&requests[1], "x-agent-key");
         assert_ne!(first_agent_key, second_agent_key);

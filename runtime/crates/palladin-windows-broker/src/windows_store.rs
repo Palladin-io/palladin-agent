@@ -299,7 +299,10 @@ mod tests {
             .get(organization, SecretSlot::OrganizationApiKey)
             .expect("read organization key")
             .expect("organization key exists");
-        assert_eq!(stored.expose_secret(), api_key);
+        assert!(
+            stored.expose_secret() == api_key,
+            "stored organization credential diverged"
+        );
         let files = std::fs::read_dir(root.path().join("secrets"))
             .expect("secret directory")
             .collect::<Result<Vec<_>, _>>()

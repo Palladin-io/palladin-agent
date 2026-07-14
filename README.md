@@ -19,7 +19,7 @@ A small trust state in OS secure storage commits the complete public registry. E
 
 The macOS Hardened build uses a provisioned Data Protection Keychain access group. Items are non-synchronizable and `WhenUnlockedThisDeviceOnly`; access to the shared organization credential requires user presence. Homebrew Node, an unsigned clone, and a differently signed fork do not have the entitlement. An unsigned development binary fails closed and does not fall back to Login Keychain, a file, or an environment variable.
 
-The Windows Secure tier is installed separately with the owner-signed one-UAC bootstrapper. It registers `PalladinRuntime` as packaged `LocalService`, sets a restricted service SID, and protects `C:\ProgramData\Palladin\Runtime\v1` so only SYSTEM, Administrators, and `NT SERVICE\PalladinRuntime` have access. The npm package never performs privileged installation. A source build using Windows Credential Manager outside this broker boundary reports `Convenience`, never `Hardened`.
+The Windows Hardened tier is installed separately with the owner-signed one-UAC bootstrapper. It registers `PalladinRuntime` as packaged `LocalService`, sets a restricted service SID, and protects `C:\ProgramData\Palladin\Runtime\v1` so only SYSTEM, Administrators, and `NT SERVICE\PalladinRuntime` have access. The npm package never performs privileged installation. A source build using Windows Credential Manager outside this broker boundary reports `Convenience`, never `Hardened`.
 
 Linux Secret Service is always Convenience because it cannot distinguish two processes under the same UID. Linux Hardened is an optional DEB/RPM system package: a dedicated Agent account is bound by root-owned configuration to a random immutable principal namespace, fixed profile, and approved origin. The broker owns context-bound encrypted state under a separate UID, and each credential execution uses a broker-only socket plus a one-shot systemd `DynamicUser` executor. PolKit authorizes only management of this record; it is not presented as process isolation. See [the Linux runbook](packaging/linux/README.md).
 
@@ -37,7 +37,7 @@ npm install --global @palladin/agent
 palladin doctor
 ```
 
-On Windows, install the matching signed Palladin Runtime bootstrapper once before using Secure mode. npm installation remains script-free and does not prompt for elevation. If the service or companion is unavailable or invalid, the client fails closed instead of falling back to the current-user credential store.
+On Windows, install the matching signed Palladin Runtime bootstrapper once before using Hardened mode. npm installation remains script-free and does not prompt for elevation. If the service or companion is unavailable or invalid, the client fails closed instead of falling back to the current-user credential store.
 
 On glibc Linux with systemd 252 or newer, npm alone installs the Convenience tier. Install the matching signed `palladin-runtime` DEB or RPM only for a dedicated headless Agent UID. An authorized UID fails closed when the broker, executor socket, root-owned mapping, or permissions are invalid; it never falls back to the npm worker or Secret Service. Alpine/OpenRC has no Hardened package in the MVP because it lacks an equivalent fresh per-request UID and executor sandbox.
 
@@ -62,6 +62,10 @@ cargo run -p palladin-cli -- doctor
 ```
 
 The npm dispatcher is not a fallback development runtime. It intentionally fails if its signed platform package is absent.
+
+### macOS Keychain prompt
+
+If macOS says that `node` wants to access confidential information in Keychain, stop the process. A legacy development build is running. A supported package invokes the signed `PalladinRuntime.app`; Node itself must never request Keychain access. Run `palladin doctor` from an exact-version installation and verify the reported runtime before connecting an Agent.
 
 ## Connect an Agent
 
@@ -153,11 +157,23 @@ Convenience public state lives under `~/.palladin`. Linux Hardened public state 
 
 ```bash
 npm ci --ignore-scripts --workspaces=false
+npm run lint
 npm run build
 npm test
 
 cd runtime
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+
+cd ..
+dotnet restore --locked-mode runtime/contracts/dotnet/Palladin.ContractGate/Palladin.ContractGate.csproj
+dotnet run --no-restore --project runtime/contracts/dotnet/Palladin.ContractGate/Palladin.ContractGate.csproj -- runtime/contracts/v1
 ```
 
-The repository is public under Apache-2.0. Signed release artifacts, provenance, and notarization gates are produced only by the protected release workflow.
+Every pull request runs two stable required contexts:
+
+- `CI Gate` aggregates the Node.js matrix, minimum supported npm selection tests, Rust formatting and linting, the full Rust workspace, and the frozen TypeScript/Rust/.NET contract consumers.
+- `Native Platform Gate` aggregates native Apple Silicon, Intel macOS, Windows x64, Windows ARM64, Linux glibc x64/arm64, and Linux musl x64/arm64 builds and smoke tests. A supported target cannot be skipped by a path filter.
+
+The repository is public under Apache-2.0. Signed release artifacts are not produced by public pull requests. `macOS Signed Release Gate` and `Windows Signed Release Gate` are separate owner-dispatched workflows that sign only an exact commit already reachable from `main`, then install and execute the resulting artifacts on native CPU runners. They must be green for a signed release, but are not pull-request branch-protection contexts.
