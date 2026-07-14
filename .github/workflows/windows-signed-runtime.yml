@@ -175,6 +175,7 @@ jobs:
           $password = ConvertTo-SecureString $env:CERTIFICATE_PASSWORD -AsPlainText -Force
           $certificate = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password -Exportable:$false | Where-Object HasPrivateKey)[0]
           if ($null -eq $certificate) { throw 'PFX does not contain a private signing key' }
+          "IMPORTED_SIGNER_THUMBPRINT=$($certificate.Thumbprint)" | Add-Content -LiteralPath $env:GITHUB_ENV
           if ($certificate.Thumbprint -cne $env:EXPECTED_THUMBPRINT.Replace(' ', '').ToUpperInvariant()) { throw 'imported signer does not match protected thumbprint' }
           Export-Certificate -Cert $certificate -FilePath (Join-Path $env:RUNNER_TEMP 'palladin-signer.cer') -Type CERT | Out-Null
       - name: Podpisz skrypty instalacyjne i wszystkie PE
@@ -269,8 +270,13 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $thumbprint = $env:EXPECTED_THUMBPRINT.Replace(' ', '').ToUpperInvariant()
-          Remove-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -Force -ErrorAction SilentlyContinue
+          $thumbprints = @($env:IMPORTED_SIGNER_THUMBPRINT, $env:EXPECTED_THUMBPRINT) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { $_.Replace(' ', '').ToUpperInvariant() } |
+            Sort-Object -Unique
+          foreach ($thumbprint in $thumbprints) {
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -Force -ErrorAction SilentlyContinue
+          }
           Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'windows-signing.pfx') -Force -ErrorAction SilentlyContinue
 
   signed-install-smoke:
