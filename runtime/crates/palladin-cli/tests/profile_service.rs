@@ -694,6 +694,7 @@ async fn every_public_binding_tamper_fails_before_identity_or_api_key_access() {
         "organizationCredentialId",
         "retiredOrganizationCredentialIds",
         "agentId",
+        "agentActive",
         "encryptionPublicKey",
         "signingPublicKey",
         "bindingSignature",
@@ -711,6 +712,7 @@ async fn every_public_binding_tamper_fails_before_identity_or_api_key_access() {
                 value[field] = serde_json::json!(["55555555555555555555555555555555"]);
             }
             "agentId" => value[field] = serde_json::json!("attacker-agent"),
+            "agentActive" => value[field] = serde_json::json!(false),
             "encryptionPublicKey" => {
                 value[field] = serde_json::json!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
             }
@@ -1351,6 +1353,10 @@ async fn typescript_cutover_creates_fresh_profiles_and_resumes_cleanup_without_r
     let (host, requests) = response_server(vec![
         Response::pending("fresh-default-agent"),
         Response::pending("fresh-build-agent"),
+        Response::active("fresh-default-agent"),
+        Response::deactivated("fresh-build-agent"),
+        Response::active("fresh-default-agent"),
+        Response::active("fresh-build-agent"),
     ])
     .await;
     for profile in ["default", "build"] {
@@ -1382,6 +1388,52 @@ async fn typescript_cutover_creates_fresh_profiles_and_resumes_cleanup_without_r
         Err(RuntimeError::LegacyCleanupConfirmationRequired)
     ));
     assert!(deletion_calls.lock().expect("calls").is_empty());
+
+    let pending_calls = Arc::clone(&deletion_calls);
+    assert!(matches!(
+        runtime.cleanup_legacy_typescript(true, &outcome.cutover_id, move |profile| {
+            pending_calls
+                .lock()
+                .expect("calls")
+                .push(profile.to_owned());
+            Ok(())
+        }),
+        Err(RuntimeError::LegacyProfilesNotConnected)
+    ));
+    assert!(deletion_calls.lock().expect("calls").is_empty());
+
+    runtime
+        .status(Some("default"), "fixture-host")
+        .await
+        .expect("active default status");
+    runtime
+        .status(Some("build"), "fixture-host")
+        .await
+        .expect("deactivated build status");
+    let deactivated_calls = Arc::clone(&deletion_calls);
+    assert!(matches!(
+        runtime.cleanup_legacy_typescript(true, &outcome.cutover_id, move |profile| {
+            deactivated_calls
+                .lock()
+                .expect("calls")
+                .push(profile.to_owned());
+            Ok(())
+        }),
+        Err(RuntimeError::LegacyProfilesNotConnected)
+    ));
+    assert!(deletion_calls.lock().expect("calls").is_empty());
+
+    for profile in ["default", "build"] {
+        let status = runtime
+            .status(Some(profile), "fixture-host")
+            .await
+            .expect("active status before cleanup");
+        assert!(matches!(
+            status.registration,
+            palladin_api::AgentRegistrationResult::Active { .. }
+        ));
+        assert!(status.config.agent_active);
+    }
 
     let first_calls = Arc::clone(&deletion_calls);
     assert!(
@@ -1518,6 +1570,14 @@ impl Response {
             status: 200,
             headers: Vec::new(),
             body: format!(r#"{{"agentId":"{agent_id}","name":null,"status":"active"}}"#),
+        }
+    }
+
+    fn deactivated(agent_id: &str) -> Self {
+        Self {
+            status: 200,
+            headers: Vec::new(),
+            body: format!(r#"{{"agentId":"{agent_id}","name":null,"status":"deactivated"}}"#),
         }
     }
 

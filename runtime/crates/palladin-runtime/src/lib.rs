@@ -449,6 +449,7 @@ impl<S: SecretStore> RuntimeService<S> {
             }
         };
 
+        let agent_active = matches!(&registration, AgentRegistrationResult::Active { .. });
         let agent_id = match &registration {
             AgentRegistrationResult::Pending { agent_id }
             | AgentRegistrationResult::Active { agent_id, .. }
@@ -490,6 +491,7 @@ impl<S: SecretStore> RuntimeService<S> {
                     })
                     .unwrap_or_default(),
                 agent_id,
+                agent_active,
                 encryption_public_key: Some(encryption_public_key),
                 signing_public_key: Some(signing_public_key),
                 binding_signature: STANDARD.encode([0_u8; 64]),
@@ -579,6 +581,7 @@ impl<S: SecretStore> RuntimeService<S> {
         {
             let (_, signing) = self.load_identity_verified(&agent.identity_id, Some(&config))?;
             config.agent_id = Some(agent_id.clone());
+            config.agent_active = matches!(&registration, AgentRegistrationResult::Active { .. });
             config.encryption_public_key = Some(STANDARD.encode(encryption.public_key()));
             config.signing_public_key = Some(STANDARD.encode(signing_public_key));
             let binding =
@@ -759,8 +762,9 @@ impl<S: SecretStore> RuntimeService<S> {
         })
     }
 
-    /// Deletes the frozen TypeScript credentials only after every fresh profile has a new
-    /// backend Agent identifier. The injected deleter intentionally exposes no read operation.
+    /// Deletes the frozen TypeScript credentials only after every fresh profile has a signed,
+    /// last-known active backend registration. The injected deleter intentionally exposes no
+    /// read operation.
     pub fn cleanup_legacy_typescript<F>(
         &self,
         confirmed: bool,
@@ -795,8 +799,7 @@ impl<S: SecretStore> RuntimeService<S> {
                 || state
                     .configs
                     .get(&entry.identity_id)
-                    .and_then(|config| config.agent_id.as_deref())
-                    .is_none()
+                    .is_none_or(|config| config.agent_id.is_none() || !config.agent_active)
             {
                 return Err(RuntimeError::LegacyProfilesNotConnected);
             }
@@ -916,6 +919,7 @@ impl<S: SecretStore> RuntimeService<S> {
                     retired_organization_credential_ids: legacy_config
                         .retired_organization_credential_ids,
                     agent_id: legacy_config.agent_id,
+                    agent_active: false,
                     encryption_public_key: Some(encryption_public_key),
                     signing_public_key: Some(signing_public_key),
                     binding_signature: STANDARD.encode([0_u8; 64]),
@@ -2200,6 +2204,7 @@ mod tests {
                 organization_credential_id: "22222222222222222222222222222222".to_owned(),
                 retired_organization_credential_ids: Vec::new(),
                 agent_id: None,
+                agent_active: false,
                 encryption_public_key: None,
                 signing_public_key: None,
                 binding_signature: STANDARD.encode([0_u8; 64]),
@@ -2451,6 +2456,7 @@ mod tests {
                 organization_credential_id: "22222222222222222222222222222222".to_owned(),
                 retired_organization_credential_ids: Vec::new(),
                 agent_id: None,
+                agent_active: false,
                 encryption_public_key: None,
                 signing_public_key: None,
                 binding_signature: STANDARD.encode([0_u8; 64]),

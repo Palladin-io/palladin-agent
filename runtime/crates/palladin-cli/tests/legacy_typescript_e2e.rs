@@ -460,6 +460,14 @@ async fn concurrent_cutover_and_cleanup_are_serialized_and_idempotent() {
     let api = ScriptedApi::start().await;
     api.enqueue(MockResponse::pending("agent-default-concurrent"));
     api.enqueue(MockResponse::pending("agent-build-concurrent"));
+    api.enqueue(MockResponse::active(
+        "agent-default-concurrent",
+        "Concurrent default",
+    ));
+    api.enqueue(MockResponse::active(
+        "agent-build-concurrent",
+        "Concurrent build",
+    ));
     for profile in ["default", "build"] {
         runtime
             .connect(
@@ -472,6 +480,12 @@ async fn concurrent_cutover_and_cleanup_are_serialized_and_idempotent() {
             )
             .await
             .expect("connect before concurrent cleanup");
+    }
+    for profile in ["default", "build"] {
+        runtime
+            .status(Some(profile), "e2e-host")
+            .await
+            .expect("active status before concurrent cleanup");
     }
     drop(runtime);
 
@@ -575,6 +589,11 @@ async fn injected_store_and_cleanup_failures_resume_across_process_boundaries() 
     let api = ScriptedApi::start().await;
     api.enqueue(MockResponse::pending("agent-default-resumed"));
     api.enqueue(MockResponse::pending("agent-build-resumed"));
+    api.enqueue(MockResponse::active(
+        "agent-default-resumed",
+        "Resumed default",
+    ));
+    api.enqueue(MockResponse::active("agent-build-resumed", "Resumed build"));
     for profile in ["default", "build"] {
         restarted
             .connect(
@@ -587,6 +606,12 @@ async fn injected_store_and_cleanup_failures_resume_across_process_boundaries() 
             )
             .await
             .expect("connect resumed profile");
+    }
+    for profile in ["default", "build"] {
+        restarted
+            .status(Some(profile), "e2e-host")
+            .await
+            .expect("active status before resumed cleanup");
     }
 
     let calls = Arc::new(Mutex::new(Vec::new()));

@@ -577,6 +577,7 @@ mod tests {
             organization_credential_id: "22222222222222222222222222222222".to_owned(),
             retired_organization_credential_ids: Vec::new(),
             agent_id: Some("agent-build".to_owned()),
+            agent_active: false,
             encryption_public_key: Some(STANDARD.encode([3_u8; 32])),
             signing_public_key: Some(STANDARD.encode([4_u8; 32])),
             binding_signature: STANDARD.encode([5_u8; 64]),
