@@ -53,7 +53,10 @@ describe('Windows hardened packaging contract', () => {
     expect(dispatcher).toContain('loadSystemVerifiedArtifactBinding');
     expect(dispatcher).toContain('windowsLease.verifyBeforeSpawn()');
     expect(cache).toContain('\\\\?\\\\GLOBALROOT\\\\SystemRoot');
-    expect(cache).not.toContain('process.env.SystemRoot');
+    expect(cache).toContain("sameFileIdentity(root, SYSTEM_ROOT, 'directory')");
+    expect(cache).toContain("sameFileIdentity(powershell, SYSTEM_POWERSHELL, 'file')");
+    expect(cache).toContain('candidateMetadata.dev === kernelMetadata.dev');
+    expect(cache).toContain('candidateMetadata.ino === kernelMetadata.ino');
     expect(cache).toContain("!== 'system32\\\\windowspowershell\\\\v1.0\\\\powershell.exe'");
     expect(cache).toContain("shell: false");
     expect(cache).toContain('authenticodePublisher');

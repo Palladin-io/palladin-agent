@@ -531,18 +531,56 @@ export function quoteWindowsArgument(value: string): string {
 }
 
 function trustedPowerShell(): { powershell: string; root: string } {
-  // GLOBALROOT resolves through the kernel object namespace and cannot be
-  // redirected by an inherited environment variable. Node's realpathSync
-  // does not support this namespace and incorrectly lstat()s "GLOBALROOT",
-  // so validate the compile-time path lexically and pass it to CreateProcess.
-  const powershell = SYSTEM_POWERSHELL;
-  const root = SYSTEM_ROOT;
+  const rootHint = process.env.SystemRoot;
+  if (rootHint === undefined || !windowsPath.isAbsolute(rootHint)) {
+    throw new Error('Palladin Windows system root is unavailable');
+  }
+  const root = realpathSync(rootHint);
+  if (!sameFileIdentity(root, SYSTEM_ROOT, 'directory')) {
+    throw new Error('Palladin Windows system root is invalid');
+  }
+  const powershell = realpathSync(windowsPath.join(
+    root,
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  ));
+  if (!sameFileIdentity(powershell, SYSTEM_POWERSHELL, 'file')) {
+    throw new Error('Palladin Windows signature verifier is invalid');
+  }
   const pathFromRoot = windowsPath.relative(root, powershell);
   if (pathFromRoot.toLowerCase()
     !== 'system32\\windowspowershell\\v1.0\\powershell.exe') {
     throw new Error('Palladin Windows signature verifier is invalid');
   }
   return { powershell, root };
+}
+
+function sameFileIdentity(
+  candidate: string,
+  kernelPath: string,
+  kind: 'directory' | 'file',
+): boolean {
+  const candidateDescriptor = openSync(candidate, fsConstants.O_RDONLY);
+  try {
+    const kernelDescriptor = openSync(kernelPath, fsConstants.O_RDONLY);
+    try {
+      const candidateMetadata = fstatSync(candidateDescriptor, { bigint: true });
+      const kernelMetadata = fstatSync(kernelDescriptor, { bigint: true });
+      const expectedKind = kind === 'directory'
+        ? candidateMetadata.isDirectory() && kernelMetadata.isDirectory()
+        : candidateMetadata.isFile() && kernelMetadata.isFile();
+      return expectedKind
+        && candidateMetadata.ino !== 0n
+        && candidateMetadata.dev === kernelMetadata.dev
+        && candidateMetadata.ino === kernelMetadata.ino;
+    } finally {
+      closeSync(kernelDescriptor);
+    }
+  } finally {
+    closeSync(candidateDescriptor);
+  }
 }
 
 function canonicalCacheRoot(root: string, requireWindowsAbsolute: boolean): string {
