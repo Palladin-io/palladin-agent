@@ -39,22 +39,26 @@ docker run --detach \
   --tmpfs /tmp \
   --tmpfs /run \
   --tmpfs /run/lock \
-  --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
   --volume "$root:/source:ro" \
   --volume "$(realpath "$base"):/packages/base.$extension:ro" \
   --volume "$(realpath "$upgrade"):/packages/upgrade.$extension:ro" \
   --volume "$(realpath "$state_fixture"):/state-fixture:ro" \
   "$image" >/dev/null
 
+state=initializing
 for _ in $(seq 1 30); do
-  if docker exec "$container" systemctl is-system-running --quiet 2>/dev/null \
-    || [[ $(docker exec "$container" systemctl is-system-running 2>/dev/null || true) == degraded ]]; then
+  state=$(docker exec "$container" systemctl is-system-running 2>&1 || true)
+  if [[ $state == running || $state == degraded ]]; then
     break
   fi
   sleep 1
 done
-state=$(docker exec "$container" systemctl is-system-running 2>/dev/null || true)
-[[ $state == running || $state == degraded ]]
+if [[ $state != running && $state != degraded ]]; then
+  echo "Error: $family systemd did not become ready (state: $state)" >&2
+  docker exec "$container" systemctl --failed --no-pager >&2 || true
+  docker logs "$container" >&2 || true
+  exit 1
+fi
 
 compat_agent=palladin-package-state
 compat_uid=
