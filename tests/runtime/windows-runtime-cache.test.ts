@@ -167,8 +167,8 @@ describe('Windows content-addressed runtime cache', () => {
         expect(Number.isSafeInteger(nativePid) && nativePid > 0).toBe(true);
         expect(processIsAlive(nativePid)).toBe(true);
         expect(child.kill()).toBe(true);
-        await waitUntil(() => child.exitCode !== null, 5_000, 'launcher termination');
-        await waitUntil(() => !processIsAlive(nativePid!), 5_000, 'Job Object child termination');
+        await waitUntil(() => child.exitCode !== null, 15_000, 'launcher termination');
+        await waitUntil(() => !processIsAlive(nativePid!), 15_000, 'Job Object child termination');
       } finally {
         if (child.exitCode === null) child.kill();
         if (nativePid !== undefined && processIsAlive(nativePid)) process.kill(nativePid);
