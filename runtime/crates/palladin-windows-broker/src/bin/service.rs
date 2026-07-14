@@ -589,6 +589,12 @@ mod windows_service_entry {
             () = tokio::time::sleep(session_timeout) => WorkerCompletion::TimedOut,
             () = lifecycle.wait_for_revocation() => WorkerCompletion::SessionRevoked,
         };
+        if !lifecycle.is_current() {
+            // Lock, logout and power revocation are security state changes and
+            // must dominate a simultaneous worker/output failure even when the
+            // bounded control channel was already full.
+            completion = WorkerCompletion::SessionRevoked;
+        }
         let mut exit_code = match &completion {
             WorkerCompletion::Exited(status) => status.code().unwrap_or(1),
             WorkerCompletion::Cancelled => {
@@ -626,6 +632,10 @@ mod windows_service_entry {
                 exit_code = 130;
             }
             completion = pending;
+        }
+        if !lifecycle.is_current() {
+            completion = WorkerCompletion::SessionRevoked;
+            exit_code = 1;
         }
 
         let terminal_frame = match completion {
@@ -754,12 +764,8 @@ mod windows_service_entry {
     ) -> Result<(), ServiceError> {
         let mut sequence = 0_u64;
         while let Some(item) = receiver.recv().await {
-            let frame = match item {
+            let (frame, lifecycle_bound) = match item {
                 OutboundItem::Output(mut output) => {
-                    if lifecycle.as_ref().is_some_and(|state| !state.is_current()) {
-                        let _ = control.try_send(WorkerCompletion::SessionRevoked);
-                        return Ok(());
-                    }
                     let bytes = std::mem::take(&mut output.bytes);
                     let frame = BrokerFrame::Output {
                         request_id,
@@ -770,11 +776,55 @@ mod windows_service_entry {
                     sequence = sequence
                         .checked_add(1)
                         .ok_or(ProtocolError::InvalidRequest)?;
-                    frame
+                    (frame, true)
                 }
-                OutboundItem::Frame(frame) => frame,
+                OutboundItem::Frame(frame) => {
+                    let lifecycle_bound = !matches!(
+                        frame,
+                        BrokerFrame::Rejected {
+                            code: RejectionCode::AuthenticationRequired,
+                            ..
+                        }
+                    );
+                    (frame, lifecycle_bound)
+                }
             };
-            if let Err(error) = write_broker_frame(&mut writer, &frame).await {
+            if lifecycle.as_ref().is_some_and(|state| !state.is_current()) {
+                let _ = control.try_send(WorkerCompletion::SessionRevoked);
+                // No byte of the current frame has been polled yet, so the
+                // stream is aligned and a fixed non-secret terminal frame is
+                // safe to emit. Revocation during an in-progress frame takes
+                // the close-only branch below instead.
+                let terminal = BrokerFrame::Rejected {
+                    request_id: Some(request_id),
+                    code: RejectionCode::AuthenticationRequired,
+                };
+                if let Err(error) = write_broker_frame(&mut writer, &terminal).await {
+                    let _ = control.try_send(WorkerCompletion::WriterFailed);
+                    return Err(error.into());
+                }
+                return Ok(());
+            }
+            let write_result = if lifecycle_bound && let Some(lifecycle) = lifecycle.as_ref() {
+                tokio::select! {
+                    biased;
+                    () = lifecycle.wait_for_revocation() => {
+                        let _ = control.try_send(WorkerCompletion::SessionRevoked);
+                        // write_frame may already have emitted a partial length
+                        // prefix or body. Close the pipe instead of appending a
+                        // terminal frame to a stream that can no longer be
+                        // resynchronized safely.
+                        return Ok(());
+                    }
+                    result = write_broker_frame(&mut writer, &frame) => Some(result),
+                }
+            } else {
+                Some(write_broker_frame(&mut writer, &frame).await)
+            };
+            let Some(write_result) = write_result else {
+                continue;
+            };
+            if let Err(error) = write_result {
                 let _ = control.try_send(WorkerCompletion::WriterFailed);
                 return Err(error.into());
             }
@@ -1039,11 +1089,19 @@ mod windows_service_entry {
         let mut framed = Zeroizing::new(Vec::with_capacity(message.len().saturating_add(1)));
         framed.extend_from_slice(message);
         framed.push(b'\n');
-        if !matches!(
-            tokio::time::timeout(OUTPUT_WRITE_TIMEOUT, worker_stdin.write_all(&framed)).await,
-            Ok(Ok(()))
-        ) {
-            return Err(McpGateFailure::WorkerFailed);
+        tokio::select! {
+            biased;
+            () = lifecycle.wait_for_revocation() => {
+                return Err(McpGateFailure::SessionRevoked);
+            }
+            result = tokio::time::timeout(
+                OUTPUT_WRITE_TIMEOUT,
+                worker_stdin.write_all(&framed),
+            ) => {
+                if !matches!(result, Ok(Ok(()))) {
+                    return Err(McpGateFailure::WorkerFailed);
+                }
+            }
         }
         Ok(())
     }
@@ -1089,15 +1147,17 @@ mod windows_service_entry {
 
     #[cfg(test)]
     mod tests {
+        use std::pin::Pin;
         use std::sync::Arc;
-        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::task::{Context, Poll};
         use std::time::Duration;
 
         use palladin_platform::broker_protocol::{
             BrokerFrame, ClientFrame, ConsentChallenge, ConsentSignatureVerifier,
             McpConsentResponse, OutputStream, ProtocolError, ReplayGuard, read_frame, write_frame,
         };
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
         use tokio::sync::mpsc;
 
         use super::{
@@ -1112,6 +1172,47 @@ mod windows_service_entry {
             fn verify(&self, _: &[u8], _: &[u8]) -> Result<(), ProtocolError> {
                 Ok(())
             }
+        }
+
+        struct BlockingWriter {
+            write_started: Arc<AtomicBool>,
+            completed_writes: Arc<AtomicUsize>,
+        }
+
+        impl AsyncWrite for BlockingWriter {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                bytes: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                if self.write_started.swap(true, Ordering::SeqCst) {
+                    self.completed_writes.fetch_add(1, Ordering::SeqCst);
+                    Poll::Ready(Ok(bytes.len()))
+                } else {
+                    Poll::Pending
+                }
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        async fn wait_for_blocked_write(write_started: &AtomicBool) {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !write_started.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("write entered pending state");
         }
 
         fn lifecycle(session_id: u32) -> ConnectionLifecycle {
@@ -1166,6 +1267,21 @@ mod windows_service_entry {
             tokio::time::timeout(Duration::from_secs(1), task)
                 .await
                 .expect("revocation wake")
+                .expect("waiter");
+        }
+
+        #[tokio::test]
+        async fn suspend_or_resume_power_epoch_revokes_every_active_session() {
+            let lifecycle = lifecycle(44);
+            let waiting = lifecycle.clone();
+            let task = tokio::spawn(async move { waiting.wait_for_revocation().await });
+            tokio::task::yield_now().await;
+            lifecycle.current_power_epoch.fetch_add(1, Ordering::SeqCst);
+            lifecycle.session_epochs.notify_all();
+            assert!(!lifecycle.is_current());
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .expect("power revocation wake")
                 .expect("waiter");
         }
 
@@ -1407,6 +1523,196 @@ mod windows_service_entry {
         }
 
         #[tokio::test]
+        async fn a_second_mcp_message_while_consent_is_pending_fails_closed() {
+            let session_request_id = [14; 16];
+            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_credential","arguments":{"vaultId":"vault-a","entryId":"entry-a"}}}"#;
+            let (mut service_reader, mut client_writer) = tokio::io::duplex(4096);
+            let (mut worker_writer, mut worker_reader) = tokio::io::duplex(4096);
+            let (output, mut frames) = mpsc::channel(4);
+            let lifecycle = lifecycle(90);
+            let mut guard = ReplayGuard::new(Duration::from_secs(60), Duration::from_secs(1));
+            let mut sequence = 0;
+
+            let gate = authorize_mcp_message(
+                &mut service_reader,
+                &mut worker_writer,
+                &output,
+                session_request_id,
+                "default",
+                &AcceptConsent,
+                &mut guard,
+                [15; 32],
+                &lifecycle,
+                &mut sequence,
+                message,
+            );
+            let client = async {
+                assert!(matches!(
+                    frames.recv().await,
+                    Some(OutboundItem::Frame(BrokerFrame::Challenge { .. }))
+                ));
+                write_frame(
+                    &mut client_writer,
+                    &ClientFrame::McpMessage(palladin_platform::broker_protocol::McpMessage {
+                        request_id: session_request_id,
+                        sequence: 1,
+                        bytes: message.to_vec(),
+                    }),
+                )
+                .await
+                .expect("pipelined MCP message");
+                assert!(matches!(
+                    frames.recv().await,
+                    Some(OutboundItem::Frame(BrokerFrame::Rejected { .. }))
+                ));
+            };
+            let (result, ()) = tokio::join!(gate, client);
+            assert_eq!(result, Err(super::McpGateFailure::InvalidRequest));
+            let mut probe = [0_u8; 1];
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), worker_reader.read(&mut probe))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(sequence, 0);
+        }
+
+        #[tokio::test]
+        async fn mcp_authorization_sent_before_its_broker_challenge_is_rejected() {
+            let session_request_id = [16; 16];
+            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_entries","arguments":{"query":"mail"}}}"#;
+            let (mut service_reader, mut client_writer) = tokio::io::duplex(4096);
+            let (mut worker_writer, mut worker_reader) = tokio::io::duplex(4096);
+            let (output, mut frames) = mpsc::channel(4);
+            let lifecycle = lifecycle(91);
+            let mut guard = ReplayGuard::new(Duration::from_secs(60), Duration::from_secs(1));
+            let mut sequence = 0;
+
+            write_frame(
+                &mut client_writer,
+                &ClientFrame::AuthorizeMcp(McpConsentResponse {
+                    session_request_id,
+                    consent_request_id: [0; 16],
+                    sequence: 0,
+                    consent: ConsentChallenge {
+                        nonce: [0; 32],
+                        issued_at_unix_ms: 0,
+                        expires_at_unix_ms: u64::MAX,
+                        agent_id: "default".to_owned(),
+                        operation:
+                            palladin_platform::broker_protocol::SecureOperation::McpSearchEntries,
+                        request_hash: [0; 32],
+                        signature: vec![1],
+                    },
+                }),
+            )
+            .await
+            .expect("premature authorization");
+
+            let result = authorize_mcp_message(
+                &mut service_reader,
+                &mut worker_writer,
+                &output,
+                session_request_id,
+                "default",
+                &AcceptConsent,
+                &mut guard,
+                [17; 32],
+                &lifecycle,
+                &mut sequence,
+                message,
+            )
+            .await;
+            assert_eq!(result, Err(super::McpGateFailure::InvalidRequest));
+            assert!(matches!(
+                frames.recv().await,
+                Some(OutboundItem::Frame(BrokerFrame::Challenge { .. }))
+            ));
+            assert!(matches!(
+                frames.recv().await,
+                Some(OutboundItem::Frame(BrokerFrame::Rejected { .. }))
+            ));
+            let mut probe = [0_u8; 1];
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), worker_reader.read(&mut probe))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(sequence, 0);
+        }
+
+        #[tokio::test]
+        async fn lifecycle_revocation_cancels_blocked_worker_input_release() {
+            let session_request_id = [11; 16];
+            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_credential","arguments":{"vaultId":"vault-a","entryId":"entry-a"}}}"#;
+            let (mut service_reader, mut client_writer) = tokio::io::duplex(4096);
+            let write_started = Arc::new(AtomicBool::new(false));
+            let completed_writes = Arc::new(AtomicUsize::new(0));
+            let mut worker_writer = BlockingWriter {
+                write_started: Arc::clone(&write_started),
+                completed_writes: Arc::clone(&completed_writes),
+            };
+            let (output, mut frames) = mpsc::channel(4);
+            let lifecycle = lifecycle(88);
+            let mut guard = ReplayGuard::new(Duration::from_secs(60), Duration::from_secs(1));
+            let mut sequence = 0;
+
+            let gate = authorize_mcp_message(
+                &mut service_reader,
+                &mut worker_writer,
+                &output,
+                session_request_id,
+                "default",
+                &AcceptConsent,
+                &mut guard,
+                [12; 32],
+                &lifecycle,
+                &mut sequence,
+                message,
+            );
+            let client = async {
+                let challenge = frames.recv().await.expect("challenge");
+                let OutboundItem::Frame(BrokerFrame::Challenge {
+                    request_id: consent_request_id,
+                    nonce,
+                    issued_at_unix_ms,
+                    expires_at_unix_ms,
+                    ref agent_id,
+                    operation,
+                    request_hash,
+                }) = challenge
+                else {
+                    panic!("operation challenge");
+                };
+                write_frame(
+                    &mut client_writer,
+                    &ClientFrame::AuthorizeMcp(McpConsentResponse {
+                        session_request_id,
+                        consent_request_id,
+                        sequence: 0,
+                        consent: ConsentChallenge {
+                            nonce,
+                            issued_at_unix_ms,
+                            expires_at_unix_ms,
+                            agent_id: agent_id.clone(),
+                            operation,
+                            request_hash,
+                            signature: vec![1],
+                        },
+                    }),
+                )
+                .await
+                .expect("consent response");
+                wait_for_blocked_write(&write_started).await;
+                lifecycle.session_epochs.revoke(88);
+            };
+            let (result, ()) = tokio::join!(gate, client);
+            assert_eq!(result, Err(super::McpGateFailure::SessionRevoked));
+            assert_eq!(sequence, 1);
+            assert_eq!(completed_writes.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
         async fn worker_output_is_live_ordered_and_terminal_frame_is_last() {
             let request_id = [5; 16];
             let (writer, mut reader) = tokio::io::duplex(4096);
@@ -1483,15 +1789,97 @@ mod windows_service_entry {
                 }))
                 .await
                 .expect("queued output");
+            assert!(matches!(
+                events.recv().await,
+                Some(WorkerCompletion::SessionRevoked)
+            ));
+            drop(output);
+            task.await.expect("writer task").expect("writer");
+            assert!(matches!(
+                read_frame(&mut reader).await.expect("terminal frame"),
+                BrokerFrame::Rejected {
+                    request_id: Some(id),
+                    code: palladin_platform::broker_protocol::RejectionCode::AuthenticationRequired,
+                } if id == request_id
+            ));
+        }
+
+        #[tokio::test]
+        async fn clean_revocation_replaces_a_queued_terminal_with_authentication_required() {
+            let request_id = [18; 16];
+            let (writer, mut reader) = tokio::io::duplex(4096);
+            let (output, receiver) = mpsc::channel(1);
+            let (control, mut events) = mpsc::channel(1);
+            let lifecycle = lifecycle(92);
+            lifecycle.session_epochs.revoke(92);
+            let task = tokio::spawn(write_worker_output(
+                writer,
+                request_id,
+                receiver,
+                control,
+                Some(lifecycle),
+            ));
+            output
+                .send(OutboundItem::Frame(BrokerFrame::Exited {
+                    request_id,
+                    exit_code: 0,
+                }))
+                .await
+                .expect("queued terminal");
             drop(output);
             assert!(matches!(
                 events.recv().await,
                 Some(WorkerCompletion::SessionRevoked)
             ));
             task.await.expect("writer task").expect("writer");
-            let mut leaked = Vec::new();
-            reader.read_to_end(&mut leaked).await.expect("reader");
-            assert!(leaked.is_empty());
+            assert!(matches!(
+                read_frame(&mut reader).await.expect("terminal frame"),
+                BrokerFrame::Rejected {
+                    request_id: Some(id),
+                    code: palladin_platform::broker_protocol::RejectionCode::AuthenticationRequired,
+                } if id == request_id
+            ));
+        }
+
+        #[tokio::test]
+        async fn lifecycle_revocation_cancels_a_backpressured_output_write() {
+            let request_id = [13; 16];
+            let write_started = Arc::new(AtomicBool::new(false));
+            let completed_writes = Arc::new(AtomicUsize::new(0));
+            let writer = BlockingWriter {
+                write_started: Arc::clone(&write_started),
+                completed_writes: Arc::clone(&completed_writes),
+            };
+            let (output, receiver) = mpsc::channel(1);
+            let (control, mut events) = mpsc::channel(1);
+            let lifecycle = lifecycle(89);
+            let writer_lifecycle = lifecycle.clone();
+            let task = tokio::spawn(write_worker_output(
+                writer,
+                request_id,
+                receiver,
+                control,
+                Some(writer_lifecycle),
+            ));
+            output
+                .send(OutboundItem::Output(WorkerOutput {
+                    stream: OutputStream::StandardOutput,
+                    bytes: b"must-not-finish-after-revocation".to_vec(),
+                }))
+                .await
+                .expect("queued output");
+            wait_for_blocked_write(&write_started).await;
+            lifecycle.session_epochs.revoke(89);
+            assert!(matches!(
+                events.recv().await,
+                Some(WorkerCompletion::SessionRevoked)
+            ));
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .expect("writer cancelled on revocation")
+                .expect("writer task")
+                .expect("writer result");
+            assert_eq!(completed_writes.load(Ordering::SeqCst), 0);
         }
     }
 }

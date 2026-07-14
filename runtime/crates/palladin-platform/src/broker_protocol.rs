@@ -1278,6 +1278,116 @@ mod tests {
     }
 
     #[test]
+    fn mcp_consent_is_single_use_and_cannot_cross_operation_or_service_restart() {
+        struct AcceptAll;
+        impl ConsentSignatureVerifier for AcceptAll {
+            fn verify(&self, _: &[u8], _: &[u8]) -> Result<(), ProtocolError> {
+                Ok(())
+            }
+        }
+
+        let issued = UNIX_EPOCH + Duration::from_millis(1_000);
+        let now = UNIX_EPOCH + Duration::from_millis(2_000);
+        let hash = [7; 32];
+        let mut guard = ReplayGuard::new(Duration::from_secs(30), Duration::from_secs(1));
+        let challenge = guard
+            .issue_challenge(
+                [1; 16],
+                SecureOperation::McpGetCredential,
+                "default".to_owned(),
+                hash,
+                issued,
+            )
+            .expect("MCP challenge");
+        let BrokerFrame::Challenge {
+            request_id,
+            nonce,
+            issued_at_unix_ms,
+            expires_at_unix_ms,
+            ref agent_id,
+            operation,
+            request_hash,
+        } = challenge
+        else {
+            panic!("challenge frame");
+        };
+        let consent = ConsentChallenge {
+            nonce,
+            issued_at_unix_ms,
+            expires_at_unix_ms,
+            agent_id: agent_id.clone(),
+            operation,
+            request_hash,
+            signature: vec![1],
+        };
+        let expected = ConsentExpectation {
+            request_id,
+            operation: SecureOperation::McpGetCredential,
+            agent_id: "default",
+            request_hash: hash,
+        };
+        guard
+            .verify_consent(expected, &consent, &AcceptAll, now)
+            .expect("first use");
+        assert!(matches!(
+            guard.verify_consent(expected, &consent, &AcceptAll, now),
+            Err(ProtocolError::ReplayDetected)
+        ));
+
+        let mut operation_guard = ReplayGuard::new(Duration::from_secs(30), Duration::from_secs(1));
+        let transport_challenge = operation_guard
+            .issue_challenge(
+                [2; 16],
+                SecureOperation::McpServe,
+                "default".to_owned(),
+                [8; 32],
+                issued,
+            )
+            .expect("transport challenge");
+        let BrokerFrame::Challenge {
+            request_id,
+            nonce,
+            issued_at_unix_ms,
+            expires_at_unix_ms,
+            ref agent_id,
+            operation,
+            request_hash,
+        } = transport_challenge
+        else {
+            panic!("transport challenge frame");
+        };
+        let transport_consent = ConsentChallenge {
+            nonce,
+            issued_at_unix_ms,
+            expires_at_unix_ms,
+            agent_id: agent_id.clone(),
+            operation,
+            request_hash,
+            signature: vec![1],
+        };
+        assert!(matches!(
+            operation_guard.verify_consent(
+                ConsentExpectation {
+                    request_id,
+                    operation: SecureOperation::McpGetCredential,
+                    agent_id: "default",
+                    request_hash: hash,
+                },
+                &transport_consent,
+                &AcceptAll,
+                now,
+            ),
+            Err(ProtocolError::ConsentInvalid)
+        ));
+
+        let mut restarted = ReplayGuard::new(Duration::from_secs(30), Duration::from_secs(1));
+        assert!(matches!(
+            restarted.verify_consent(expected, &consent, &AcceptAll, now),
+            Err(ProtocolError::ReplayDetected)
+        ));
+    }
+
+    #[test]
     fn inline_profile_selector_is_bound_to_consent_metadata() {
         let mut request = signed_request("get", SecureOperation::Get, 1);
         request.arguments = vec!["--id=local-profile".to_owned(), "get".to_owned()];

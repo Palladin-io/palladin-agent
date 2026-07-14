@@ -235,6 +235,46 @@ async fn execute_one_shot(
     }
 }
 
+#[derive(Default)]
+struct McpFlowControl {
+    next_sequence: u64,
+    message_in_flight: bool,
+}
+
+impl McpFlowControl {
+    const fn can_send(&self) -> bool {
+        !self.message_in_flight
+    }
+
+    fn begin_message(&mut self) -> Result<u64, CompanionError> {
+        if self.message_in_flight {
+            return Err(CompanionError::InvalidResponse);
+        }
+        self.message_in_flight = true;
+        Ok(self.next_sequence)
+    }
+
+    fn acknowledge(&mut self, sequence: u64) -> Result<(), CompanionError> {
+        if !self.message_in_flight || sequence != self.next_sequence {
+            return Err(CompanionError::InvalidResponse);
+        }
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(CompanionError::InvalidResponse)?;
+        self.message_in_flight = false;
+        Ok(())
+    }
+
+    const fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
+    const fn message_in_flight(&self) -> bool {
+        self.message_in_flight
+    }
+}
+
 async fn execute_duplex(
     pipe: NamedPipeClient,
     request_id: [u8; 16],
@@ -246,9 +286,8 @@ async fn execute_duplex(
     let mut accepted = false;
     let mut input_closed = false;
     let mut input_eof = false;
-    let mut message_in_flight = false;
+    let mut flow = McpFlowControl::default();
     let mut cancel_sent = false;
-    let mut input_sequence = 0_u64;
     let mut next_output_sequence = 0_u64;
     let mut consent_sequence = 0_u64;
     let mut latest_consent_request_id = None;
@@ -257,8 +296,9 @@ async fn execute_duplex(
     let mut pending = Zeroizing::new(Vec::new());
 
     loop {
-        if accepted && !message_in_flight && !input_closed && !cancel_sent {
+        if accepted && flow.can_send() && !input_closed && !cancel_sent {
             if let Some(mut bytes) = take_next_mcp_message(&mut pending, input_eof)? {
+                let input_sequence = flow.begin_message()?;
                 write_client_frame(
                     &mut writer,
                     &ClientFrame::McpMessage(McpMessage {
@@ -268,7 +308,6 @@ async fn execute_duplex(
                     }),
                 )
                 .await?;
-                message_in_flight = true;
                 continue;
             }
             if input_eof {
@@ -276,7 +315,7 @@ async fn execute_duplex(
                     &mut writer,
                     &ClientFrame::InputClosed {
                         request_id,
-                        sequence: input_sequence,
+                        sequence: flow.next_sequence(),
                     },
                 )
                 .await?;
@@ -312,7 +351,7 @@ async fn execute_duplex(
                         operation,
                         request_hash,
                     } if accepted
-                        && message_in_flight
+                        && flow.message_in_flight()
                         && challenge_agent_id == &agent_id
                         && matches!(
                             operation,
@@ -353,13 +392,8 @@ async fn execute_duplex(
                     BrokerFrame::McpMessageAccepted {
                         request_id: response_id,
                         sequence,
-                    } if *response_id == request_id
-                        && message_in_flight
-                        && *sequence == input_sequence => {
-                            input_sequence = input_sequence
-                                .checked_add(1)
-                                .ok_or(CompanionError::InvalidResponse)?;
-                            message_in_flight = false;
+                    } if *response_id == request_id => {
+                            flow.acknowledge(*sequence)?;
                         }
                     BrokerFrame::Exited { request_id: response_id, exit_code }
                         if *response_id == request_id && accepted => return Ok(*exit_code),
@@ -374,7 +408,7 @@ async fn execute_duplex(
             read = input.read(&mut buffer[..]), if accepted
                 && !input_closed
                 && !input_eof
-                && !message_in_flight
+                && flow.can_send()
                 && !cancel_sent => {
                 let read = read.map_err(|_| CompanionError::Transport)?;
                 if read == 0 {
@@ -771,7 +805,7 @@ mod tests {
     };
 
     use super::{
-        CompanionError, StandardInputPlan, operation_display_name, rejection_error,
+        CompanionError, McpFlowControl, StandardInputPlan, operation_display_name, rejection_error,
         response_matches_request, safe_profile_hint, standard_input_plan, take_next_mcp_message,
     };
 
@@ -878,24 +912,48 @@ mod tests {
     }
 
     #[test]
-    fn mcp_messages_are_framed_one_at_a_time_and_wait_for_ack() {
+    fn mcp_flow_withholds_the_second_message_until_the_exact_ack() {
         let mut pending = br#"{"id":1}
 {"id":2}
 "#
         .to_vec();
+        let mut flow = McpFlowControl::default();
         let first = take_next_mcp_message(&mut pending, false)
             .expect("first")
             .expect("first message");
         assert_eq!(&*first, br#"{"id":1}"#);
+        assert_eq!(flow.begin_message().expect("first sequence"), 0);
+        assert!(!flow.can_send());
         assert_eq!(
             pending,
             br#"{"id":2}
 "#
         );
+        assert!(matches!(
+            flow.begin_message(),
+            Err(CompanionError::InvalidResponse)
+        ));
+        assert!(matches!(
+            flow.acknowledge(1),
+            Err(CompanionError::InvalidResponse)
+        ));
+        assert!(!flow.can_send());
+        flow.acknowledge(0).expect("matching ACK");
+        assert!(flow.can_send());
         let second = take_next_mcp_message(&mut pending, false)
             .expect("second")
             .expect("second message");
         assert_eq!(&*second, br#"{"id":2}"#);
+        assert_eq!(flow.begin_message().expect("second sequence"), 1);
+        assert!(matches!(
+            flow.acknowledge(0),
+            Err(CompanionError::InvalidResponse)
+        ));
+        flow.acknowledge(1).expect("second matching ACK");
+        assert!(matches!(
+            flow.acknowledge(1),
+            Err(CompanionError::InvalidResponse)
+        ));
         assert!(pending.is_empty());
     }
 
