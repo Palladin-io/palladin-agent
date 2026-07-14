@@ -96,12 +96,12 @@ async fn run_hardened(
     }
 
     validate_root_owned_executable(Path::new(SYSTEM_CLIENT))?;
-    let input = prepare_input(&mut arguments).await?;
+    let input_mode = prepare_input_mode(&mut arguments, std::io::stdin().is_terminal())?;
     let stream = UnixStream::connect(SOCKET_PATH)
         .await
         .map_err(|_| ClientError::BrokerUnavailable)?;
     authenticate_broker(&stream, expected_broker_uid)?;
-    proxy(stream, arguments, input).await
+    proxy(stream, arguments, input_mode).await
 }
 
 async fn run_convenience(arguments: Vec<String>) -> Result<ExitCode, ClientError> {
@@ -140,7 +140,7 @@ async fn run_convenience(arguments: Vec<String>) -> Result<ExitCode, ClientError
 async fn proxy(
     stream: UnixStream,
     arguments: Vec<String>,
-    input: ClientInput,
+    input_mode: ClientInputMode,
 ) -> Result<ExitCode, ClientError> {
     let mut request_id = [0_u8; 16];
     getrandom::fill(&mut request_id).map_err(|_| ClientError::BrokerProtocol)?;
@@ -159,6 +159,21 @@ async fn proxy(
     .await
     .map_err(|_| ClientError::BrokerProtocol)?;
 
+    // The broker verifies its version policy and the exact worker image before
+    // sending Accepted. Do not prompt for or read secret input before this
+    // authenticated pre-secret gate succeeds.
+    match read_frame::<_, ServerFrame>(&mut reader)
+        .await
+        .map_err(|_| ClientError::BrokerProtocol)?
+    {
+        ServerFrame::Accepted {
+            request_id: received,
+        } if received == request_id => {}
+        ServerFrame::Rejected { code, .. } => return Err(ClientError::Rejected(code)),
+        _ => return Err(ClientError::BrokerProtocol),
+    }
+
+    let input = prepare_input(input_mode).await?;
     let input_task = match input {
         ClientInput::Closed => {
             send_input_closed(&mut writer, request_id, 0).await?;
@@ -213,9 +228,6 @@ async fn proxy(
             .await
             .map_err(|_| ClientError::BrokerProtocol)?;
         match &frame {
-            ServerFrame::Accepted {
-                request_id: received,
-            } if *received == request_id => {}
             ServerFrame::Output {
                 request_id: received,
                 stream,
@@ -272,42 +284,61 @@ fn abort_input_task(task: &Option<tokio::task::JoinHandle<Result<(), ClientError
     }
 }
 
-async fn prepare_input(arguments: &mut Vec<String>) -> Result<ClientInput, ClientError> {
+fn prepare_input_mode(
+    arguments: &mut Vec<String>,
+    stdin_is_terminal: bool,
+) -> Result<ClientInputMode, ClientError> {
     if arguments.first().map(String::as_str) == Some("connect") {
         let from_stdin = arguments
             .iter()
             .any(|argument| argument == "--api-key-stdin");
-        if from_stdin && std::io::stdin().is_terminal() {
+        if from_stdin && stdin_is_terminal {
             return Err(ClientError::ApiKeyInput);
         }
-        let mut bytes = if from_stdin {
+        if from_stdin {
+            return Ok(ClientInputMode::SecretFromStdin);
+        }
+        if stdin_is_terminal {
+            arguments.push("--api-key-stdin".to_owned());
+            return Ok(ClientInputMode::SecretPrompt);
+        }
+        return Err(ClientError::ApiKeyInput);
+    }
+    if arguments.len() == 2 && arguments[0] == "mcp" && arguments[1] == "serve" {
+        return Ok(ClientInputMode::Stream);
+    }
+    Ok(ClientInputMode::Closed)
+}
+
+async fn prepare_input(mode: ClientInputMode) -> Result<ClientInput, ClientError> {
+    match mode {
+        ClientInputMode::SecretFromStdin => {
             let mut input = Vec::new();
             tokio::io::stdin()
                 .take(4097)
                 .read_to_end(&mut input)
                 .await
                 .map_err(|_| ClientError::ApiKeyInput)?;
-            Zeroizing::new(input)
-        } else if std::io::stdin().is_terminal() {
+            normalize_secret_input(Zeroizing::new(input))
+        }
+        ClientInputMode::SecretPrompt => {
             let value = rpassword::prompt_password("Organization API key: ")
                 .map_err(|_| ClientError::ApiKeyInput)?;
-            arguments.push("--api-key-stdin".to_owned());
-            Zeroizing::new(value.into_bytes())
-        } else {
-            return Err(ClientError::ApiKeyInput);
-        };
-        if bytes.len() > 4096 {
-            return Err(ClientError::ApiKeyInput);
+            normalize_secret_input(Zeroizing::new(value.into_bytes()))
         }
-        if !bytes.ends_with(b"\n") {
-            bytes.push(b'\n');
-        }
-        return Ok(ClientInput::Secret(bytes));
+        ClientInputMode::Stream => Ok(ClientInput::Stream),
+        ClientInputMode::Closed => Ok(ClientInput::Closed),
     }
-    if arguments.len() == 2 && arguments[0] == "mcp" && arguments[1] == "serve" {
-        return Ok(ClientInput::Stream);
+}
+
+fn normalize_secret_input(mut bytes: Zeroizing<Vec<u8>>) -> Result<ClientInput, ClientError> {
+    if bytes.len() > 4096 {
+        return Err(ClientError::ApiKeyInput);
     }
-    Ok(ClientInput::Closed)
+    if !bytes.ends_with(b"\n") {
+        bytes.push(b'\n');
+    }
+    Ok(ClientInput::Secret(bytes))
 }
 
 fn authenticate_broker(stream: &UnixStream, expected_uid: u32) -> Result<(), ClientError> {
@@ -514,6 +545,14 @@ enum ClientInput {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClientInputMode {
+    Closed,
+    SecretFromStdin,
+    SecretPrompt,
+    Stream,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RuntimeTier {
     Convenience,
     Hardened,
@@ -556,12 +595,13 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     use super::seal_worker_image;
+    use super::{ClientInputMode, RuntimeTier, prepare_input_mode, proxy, select_tier};
     #[cfg(target_os = "linux")]
     use super::{
         POLICY_ENVELOPE_ENVIRONMENT, SAFE_CONVENIENCE_WORKER_ENVIRONMENT, selected_environment,
     };
-    use super::{RuntimeTier, select_tier};
     use crate::peer::PeerError;
+    use crate::protocol::{ClientFrame, ServerFrame, read_frame, write_frame};
     #[cfg(target_os = "linux")]
     use nix::fcntl::{FcntlArg, SealFlag, fcntl};
     #[cfg(target_os = "linux")]
@@ -608,6 +648,74 @@ mod tests {
         assert!(!names.contains(&"LD_AUDIT"));
         assert!(!names.contains(&"GLIBC_TUNABLES"));
         assert!(!names.contains(&POLICY_ENVELOPE_ENVIRONMENT));
+    }
+
+    #[test]
+    fn hardened_connect_selects_input_without_reading_it_before_acceptance() {
+        let mut piped = vec!["connect".to_owned(), "--api-key-stdin".to_owned()];
+        assert_eq!(
+            prepare_input_mode(&mut piped, false).expect("piped input mode"),
+            ClientInputMode::SecretFromStdin
+        );
+
+        let mut prompted = vec!["connect".to_owned()];
+        assert_eq!(
+            prepare_input_mode(&mut prompted, true).expect("prompt input mode"),
+            ClientInputMode::SecretPrompt
+        );
+        assert_eq!(prompted, ["connect", "--api-key-stdin"]);
+
+        let mut invalid = vec!["connect".to_owned(), "--api-key-stdin".to_owned()];
+        assert!(prepare_input_mode(&mut invalid, true).is_err());
+    }
+
+    #[tokio::test]
+    async fn hardened_proxy_sends_no_input_before_broker_acceptance() {
+        let (client, mut broker) = tokio::net::UnixStream::pair().expect("stream pair");
+        let proxy_task = tokio::spawn(proxy(
+            client,
+            vec!["doctor".to_owned()],
+            ClientInputMode::Closed,
+        ));
+
+        let start: ClientFrame = read_frame(&mut broker).await.expect("start frame");
+        let ClientFrame::Start { request_id, .. } = start else {
+            panic!("start frame required");
+        };
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(25),
+                read_frame::<_, ClientFrame>(&mut broker),
+            )
+            .await
+            .is_err(),
+            "client input must wait for broker acceptance"
+        );
+
+        write_frame(&mut broker, &ServerFrame::Accepted { request_id })
+            .await
+            .expect("accept frame");
+        let input: ClientFrame = read_frame(&mut broker).await.expect("input closed frame");
+        assert!(matches!(
+            input,
+            ClientFrame::InputClosed {
+                request_id: received,
+                sequence: 0,
+            } if received == request_id
+        ));
+        write_frame(
+            &mut broker,
+            &ServerFrame::Exited {
+                request_id,
+                code: 0,
+            },
+        )
+        .await
+        .expect("exit frame");
+        assert_eq!(
+            proxy_task.await.expect("proxy task").expect("proxy result"),
+            std::process::ExitCode::SUCCESS
+        );
     }
 
     #[cfg(target_os = "linux")]
