@@ -155,7 +155,12 @@ describe('Windows content-addressed runtime cache', () => {
       lease.bindToChild(child.pid);
       let nativePid: number | undefined;
       try {
-        await waitUntil(() => existsSync(pidPath), 15_000, 'native child startup');
+        await waitUntil(() => {
+          if (child.exitCode !== null) {
+            throw new Error(`verified launcher exited before native child startup (code ${child.exitCode})`);
+          }
+          return existsSync(pidPath);
+        }, 60_000, 'native child startup');
         nativePid = Number.parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
         expect(Number.isSafeInteger(nativePid) && nativePid > 0).toBe(true);
         expect(processIsAlive(nativePid)).toBe(true);
@@ -168,10 +173,10 @@ describe('Windows content-addressed runtime cache', () => {
         lease.release();
       }
     },
-    // A cold Windows runner can spend tens of seconds starting Windows
-    // PowerShell and validating its Authenticode chain under Defender. The
-    // actual process startup and termination phases remain bounded above.
-    120_000,
+    // A cold Windows runner can spend tens of seconds on each Authenticode
+    // validation under Defender. Launcher exit, native startup, and process
+    // termination remain independently observed and bounded above.
+    180_000,
   );
 
   it('atomically copies and re-verifies an exact signed version/hash before use', () => {
