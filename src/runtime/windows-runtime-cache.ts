@@ -35,6 +35,7 @@ const CACHE_SCHEMA = 'v1';
 const CLIENT_FILENAME = 'palladin-client.exe';
 const LEASE = /^(?:launcher|child)-(\d+)-[0-9a-f-]{36}\.lease$/;
 const MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024;
+const SYSTEM_ROOT = '\\\\?\\GLOBALROOT\\SystemRoot';
 const SYSTEM_POWERSHELL = '\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 
 export interface WindowsRuntimeSource {
@@ -530,14 +531,12 @@ export function quoteWindowsArgument(value: string): string {
 }
 
 function trustedPowerShell(): { powershell: string; root: string } {
-  const powershell = realpathSync(SYSTEM_POWERSHELL);
-  const root = windowsPath.resolve(powershell, '..', '..', '..', '..');
-  const normalized = windowsPath.normalize(root);
-  const parsed = windowsPath.parse(normalized);
-  if (windowsPath.dirname(normalized).toLowerCase() !== parsed.root.toLowerCase()
-    || windowsPath.basename(normalized).toLowerCase() !== 'windows') {
-    throw new Error('Palladin Windows system root is invalid');
-  }
+  // GLOBALROOT resolves through the kernel object namespace and cannot be
+  // redirected by an inherited environment variable. Node's realpathSync
+  // does not support this namespace and incorrectly lstat()s "GLOBALROOT",
+  // so validate the compile-time path lexically and pass it to CreateProcess.
+  const powershell = SYSTEM_POWERSHELL;
+  const root = SYSTEM_ROOT;
   const pathFromRoot = windowsPath.relative(root, powershell);
   if (pathFromRoot.toLowerCase()
     !== 'system32\\windowspowershell\\v1.0\\powershell.exe') {
