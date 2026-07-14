@@ -632,12 +632,14 @@ fn ensure_cache_directory(directory: &Path) -> Result<(), RuntimeError> {
             Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut builder = fs::DirBuilder::new();
+            let builder = fs::DirBuilder::new();
             #[cfg(unix)]
-            {
+            let builder = {
                 use std::os::unix::fs::DirBuilderExt;
+                let mut builder = builder;
                 builder.mode(0o700);
-            }
+                builder
+            };
             builder
                 .create(directory)
                 .map_err(|_| RuntimeError::VersionPolicyUnavailable)?;
@@ -647,13 +649,16 @@ fn ensure_cache_directory(directory: &Path) -> Result<(), RuntimeError> {
     }
 }
 
+#[cfg(unix)]
 fn sync_directory(directory: &Path) -> Result<(), RuntimeError> {
-    #[cfg(unix)]
-    {
-        let file = fs::File::open(directory).map_err(|_| RuntimeError::VersionPolicyUnavailable)?;
-        file.sync_all()
-            .map_err(|_| RuntimeError::VersionPolicyUnavailable)?;
-    }
+    let file = fs::File::open(directory).map_err(|_| RuntimeError::VersionPolicyUnavailable)?;
+    file.sync_all()
+        .map_err(|_| RuntimeError::VersionPolicyUnavailable)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_directory: &Path) -> Result<(), RuntimeError> {
     Ok(())
 }
 
