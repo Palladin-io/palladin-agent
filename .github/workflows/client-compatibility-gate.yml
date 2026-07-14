@@ -188,6 +188,8 @@ jobs:
       - run: npm ci --ignore-scripts --workspaces=false
       - name: Prove Node-seeded Linux keyutils records are deleted by Rust
         shell: bash
+        env:
+          PALLADIN_LEGACY_KEYRING_TEST_BACKEND: keyutils
         run: |
           set -euo pipefail
           cleanup() {
@@ -224,6 +226,7 @@ jobs:
             node packaging/npm/run-bounded.mjs 30 node \
               packaging/npm/legacy-keyring-interop.mjs seed "$profile"
             PALLADIN_LEGACY_KEYRING_TEST_PROFILE="$profile" \
+            PALLADIN_LEGACY_KEYRING_TEST_BACKEND="secret-service" \
               node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test \
                 --manifest-path runtime/Cargo.toml --locked -p palladin-platform \
                 legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client \

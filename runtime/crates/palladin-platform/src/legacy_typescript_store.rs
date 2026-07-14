@@ -54,23 +54,33 @@ fn delete_os_credential(service: &str, account: &str) -> Result<(), LegacyCreden
 
 #[cfg(target_os = "linux")]
 fn delete_os_credential(service: &str, account: &str) -> Result<(), LegacyCredentialError> {
+    let secret_service = delete_linux_secret_service_credential(service, account);
+    let keyutils = delete_linux_keyutils_credential(service, account);
+
+    linux_delete_outcome(secret_service, keyutils)
+}
+
+#[cfg(target_os = "linux")]
+fn delete_linux_secret_service_credential(service: &str, account: &str) -> CredentialDeleteState {
+    match keyring::Entry::new(service, account) {
+        Ok(entry) => delete_keyring_entry(&entry.inner),
+        Err(_) => CredentialDeleteState::Unavailable,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn delete_linux_keyutils_credential(service: &str, account: &str) -> CredentialDeleteState {
     use std::collections::HashMap;
 
     use keyring_core::api::CredentialStoreApi;
     use linux_keyutils_keyring_store::Store;
 
-    let secret_service = match keyring::Entry::new(service, account) {
-        Ok(entry) => delete_keyring_entry(&entry.inner),
-        Err(_) => CredentialDeleteState::Unavailable,
-    };
-    let keyutils = match Store::new_with_configuration(&HashMap::new())
+    match Store::new_with_configuration(&HashMap::new())
         .and_then(|store| store.build(service, account, None))
     {
         Ok(entry) => delete_keyring_entry(&entry),
         Err(_) => CredentialDeleteState::Unavailable,
-    };
-
-    linux_delete_outcome(secret_service, keyutils)
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -156,13 +166,43 @@ mod tests {
     use std::env;
     use std::sync::Mutex;
 
+    #[cfg(not(target_os = "linux"))]
+    use super::OsLegacyCredentialDeleter;
     use super::{
-        LegacyCredentialDeleter, LegacyCredentialError, OsLegacyCredentialDeleter,
-        delete_legacy_typescript_credentials,
+        LegacyCredentialDeleter, LegacyCredentialError, delete_legacy_typescript_credentials,
     };
 
     #[derive(Default)]
     struct RecordingDeleteOnlyAdapter(Mutex<Vec<(String, String)>>);
+
+    #[cfg(target_os = "linux")]
+    enum LinuxInteropBackend {
+        Keyutils,
+        SecretService,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl LegacyCredentialDeleter for LinuxInteropBackend {
+        fn delete_credential(
+            &self,
+            service: &str,
+            account: &str,
+        ) -> Result<(), LegacyCredentialError> {
+            use super::{
+                CredentialDeleteState, delete_linux_keyutils_credential,
+                delete_linux_secret_service_credential,
+            };
+
+            let state = match self {
+                Self::Keyutils => delete_linux_keyutils_credential(service, account),
+                Self::SecretService => delete_linux_secret_service_credential(service, account),
+            };
+            match state {
+                CredentialDeleteState::Deleted | CredentialDeleteState::Missing => Ok(()),
+                CredentialDeleteState::Unavailable => Err(LegacyCredentialError::Unavailable),
+            }
+        }
+    }
 
     impl LegacyCredentialDeleter for RecordingDeleteOnlyAdapter {
         fn delete_credential(
@@ -285,6 +325,21 @@ mod tests {
         let profile = env::var("PALLADIN_LEGACY_KEYRING_TEST_PROFILE")
             .expect("PALLADIN_LEGACY_KEYRING_TEST_PROFILE");
 
+        #[cfg(target_os = "linux")]
+        {
+            let backend = match env::var("PALLADIN_LEGACY_KEYRING_TEST_BACKEND")
+                .expect("PALLADIN_LEGACY_KEYRING_TEST_BACKEND")
+                .as_str()
+            {
+                "keyutils" => LinuxInteropBackend::Keyutils,
+                "secret-service" => LinuxInteropBackend::SecretService,
+                value => panic!("unsupported Linux legacy keyring test backend: {value}"),
+            };
+            delete_legacy_typescript_credentials(&backend, &profile)
+                .expect("delete Node-seeded legacy credentials");
+        }
+
+        #[cfg(not(target_os = "linux"))]
         delete_legacy_typescript_credentials(&OsLegacyCredentialDeleter, &profile)
             .expect("delete Node-seeded legacy credentials");
     }

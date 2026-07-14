@@ -301,6 +301,7 @@ jobs:
         shell: bash
         env:
           PALLADIN_LEGACY_KEYRING_TEST_PROFILE: cvt332-${{ github.run_id }}-${{ matrix.gnu_target }}
+          PALLADIN_LEGACY_KEYRING_TEST_BACKEND: keyutils
         run: |
           set -euo pipefail
           cleanup() {
