@@ -38,6 +38,17 @@ if (!equal(manifest.files, expectedFiles)) fail('unexpected files allowlist');
 if (!equal(manifest.publishConfig, { access: 'public', provenance: true })) {
   fail('public provenance configuration is required');
 }
+const windowsWorkerBinding = manifest.palladinRuntime;
+if (values.get('os') === 'win32') {
+  if (windowsWorkerBinding === null || typeof windowsWorkerBinding !== 'object'
+    || Array.isArray(windowsWorkerBinding)
+    || Object.keys(windowsWorkerBinding).join('\0') !== 'workerExecutableSha256'
+    || !/^[0-9a-f]{64}$/.test(windowsWorkerBinding.workerExecutableSha256)) {
+    fail('Windows package requires the exact signed worker hash binding');
+  }
+} else if (windowsWorkerBinding !== undefined) {
+  fail('non-Windows package must not declare a Windows worker binding');
+}
 for (const field of ['scripts', 'dependencies', 'optionalDependencies']) {
   if (Object.hasOwn(manifest, field)) fail(`platform package must not contain ${field}`);
 }

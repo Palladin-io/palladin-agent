@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
@@ -287,6 +288,35 @@ impl ProfileRepository {
         Ok(())
     }
 
+    /// Validates every public path that a full purge is allowed to remove.
+    ///
+    /// This preflight must run before any secure-store deletion. It accepts only the
+    /// identity directories already committed in the authenticated registry and only
+    /// their known public config file. The same validation is repeated while replaying
+    /// the authenticated purge journal so a crash cannot bypass the ordering invariant.
+    pub fn preflight_public_purge(&self, identity_ids: &[String]) -> Result<(), ProfileError> {
+        let expected = identity_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        if expected.len() != identity_ids.len()
+            || expected
+                .iter()
+                .any(|identity_id| !is_opaque_id(identity_id))
+        {
+            return Err(ProfileError::InvalidIdentityId);
+        }
+        match fs::symlink_metadata(&self.root) {
+            Ok(metadata) => {
+                validate_private_directory(&metadata, "profile root")?;
+                validate_public_root_before_purge(&self.root, &expected)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
     pub fn load_cleanup_journal(&self) -> Result<CleanupJournal, ProfileError> {
         let path = self.cleanup_journal_path();
         match fs::symlink_metadata(&path) {
@@ -451,6 +481,31 @@ pub fn delete_profile(
     Ok((updated, entry))
 }
 
+/// Removes one profile for an explicit local identity purge.
+///
+/// Unlike ordinary profile deletion, this operation may remove the default or last
+/// profile. When another profile remains, it becomes the default deterministically.
+pub fn purge_profile(
+    registry: &PublicRegistry,
+    name: &ProfileName,
+) -> Result<(PublicRegistry, PublicAgentEntry), ProfileError> {
+    let entry = registry
+        .agents
+        .iter()
+        .find(|agent| agent.name == name.as_str())
+        .cloned()
+        .ok_or(ProfileError::NotFound)?;
+    let mut updated = registry.clone();
+    updated.agents.retain(|agent| agent.name != name.as_str());
+    if updated.default == name.as_str() {
+        updated.default = updated
+            .agents
+            .first()
+            .map_or_else(|| "default".to_owned(), |agent| agent.name.clone());
+    }
+    Ok((updated, entry))
+}
+
 pub fn set_default(
     registry: &PublicRegistry,
     name: &ProfileName,
@@ -584,6 +639,48 @@ fn validate_public_root_contents(root: &Path) -> Result<(), std::io::Error> {
                     return Err(private_path_error(
                         "identities directory is not empty during public purge",
                     ));
+                }
+            }
+            _ => {
+                return Err(private_path_error(
+                    "profile root contains an unexpected artifact",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_public_root_before_purge(
+    root: &Path,
+    expected_identity_ids: &BTreeSet<&str>,
+) -> Result<(), std::io::Error> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let metadata = fs::symlink_metadata(entry.path())?;
+        match name.to_str() {
+            Some("registry.json") => validate_private_file(&metadata, "public registry")?,
+            Some("cleanup-journal.json") => validate_private_file(&metadata, "cleanup journal")?,
+            Some("integrity-journal.json") => {
+                validate_private_file(&metadata, "integrity journal")?
+            }
+            Some("identities") => {
+                validate_private_directory(&metadata, "identities directory")?;
+                for identity_entry in fs::read_dir(entry.path())? {
+                    let identity_entry = identity_entry?;
+                    let identity_name = identity_entry
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| private_path_error("identity directory name is invalid"))?;
+                    if !expected_identity_ids.contains(identity_name.as_str()) {
+                        return Err(private_path_error(
+                            "identities directory contains an unexpected identity",
+                        ));
+                    }
+                    let identity_metadata = fs::symlink_metadata(identity_entry.path())?;
+                    validate_private_directory(&identity_metadata, "identity directory")?;
+                    validate_identity_directory_contents(&identity_entry.path())?;
                 }
             }
             _ => {
@@ -907,6 +1004,32 @@ mod tests {
             std::fs::read(&unexpected).expect("unexpected artifact"),
             b"do not delete"
         );
+    }
+
+    #[test]
+    fn public_purge_preflight_accepts_only_committed_identity_directories() {
+        let root = private_tempdir();
+        let repository = ProfileRepository::new(root.path().to_path_buf()).expect("repository");
+        let identity = identity_directory(root.path());
+        write_private_file(&identity.join("config.json"), b"{}");
+        write_private_file(&root.path().join("registry.json"), b"{}");
+
+        repository
+            .preflight_public_purge(&[IDENTITY_ID.to_owned()])
+            .expect("known public layout");
+
+        let unexpected_identity = root
+            .path()
+            .join("identities")
+            .join("22222222222222222222222222222222");
+        make_private_directory(&unexpected_identity);
+        assert!(
+            repository
+                .preflight_public_purge(&[IDENTITY_ID.to_owned()])
+                .is_err()
+        );
+        assert!(identity.join("config.json").exists());
+        assert!(unexpected_identity.exists());
     }
 
     #[test]

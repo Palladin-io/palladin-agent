@@ -19,6 +19,7 @@ zeroize.workspace = true
 windows = { workspace = true, features = [
     "Foundation",
     "Security_Credentials",
+    "Security_Credentials_UI",
     "Security_Cryptography",
     "Security_Cryptography_Core",
     "Storage_Streams",

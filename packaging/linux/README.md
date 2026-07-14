@@ -23,7 +23,7 @@ Linux Hardened protects against ordinary processes under other UIDs. It does not
 
 ## Build packages
 
-Build the four glibc binaries for the native target and stage the CLI as `palladin-worker`:
+Build the glibc runtime binaries for the native target and stage the CLI as `palladin-worker`:
 
 ```bash
 cd runtime
@@ -64,7 +64,14 @@ sudo -u palladin-agent-prod sh -c \
 
 The first `connect` form uses a masked prompt in the trusted native system client. The second is the headless pipe form. Do not place the API key in argv, an environment variable, a unit file, or a shell history. For unattended provisioning, deliver it once through a root-controlled systemd credential or an anonymous pipe and remove the source immediately.
 
-`authorize` refuses login-capable or password-enabled accounts and requires the explicit `--dedicated` acknowledgement. In Hardened mode, profile creation, rename, deletion, default switching, force-init, and purge are blocked because they could rebind the root-owned principal. Revoke through the administrative helper before replacing an Agent account.
+`authorize` refuses login-capable or password-enabled accounts and requires the explicit `--dedicated` acknowledgement. In Hardened mode, profile creation, rename, deletion, default switching, force-init, and workload-initiated purge are blocked because they could rebind the root-owned principal. Ordinary `revoke USER` stops access but preserves encrypted state for recovery. Permanent deletion is a separate root-owned operation:
+
+```bash
+pkexec /usr/lib/palladin/runtime/palladin-manage-agent-uid \
+  revoke-purge palladin-agent-prod --confirm-purge
+```
+
+The helper first publishes and retains the revoked UID tombstone, restarts the broker to terminate authenticated sessions, removes group access, atomically detaches the immutable principal namespace, and deletes only preflighted broker-owned files. It never runs from npm install, update, or uninstall.
 
 Run the MCP server under the same dedicated UID:
 
@@ -98,6 +105,8 @@ For each supported Debian/Ubuntu, Fedora, and RHEL 9-family image on native x64 
 4. Set `kernel.yama.ptrace_scope=0`, drop `CAP_SYS_PTRACE`, and run `tests/test-hardened-boundary.sh` as root.
 5. Verify encrypted Agent identity round-trips across update, rollback, uninstall, and reinstall. Before the first production release, the base and upgrade packages exercise packaging compatibility from the initial schema. After the first release, the base package must be the frozen previously published artifact.
 6. Revoke the principal, recycle the numeric UID, remove the socket, and corrupt one permission at a time; confirm every designated or tombstoned principal receives an error without a Convenience fallback.
+
+The broker keeps a separate encrypted, global version-policy trust state under `/var/lib/palladin-runtime/v1/policy`. Before accepting a request or reading its secret-bearing input, it verifies the signed policy and anti-rollback sequence against the root-owned system worker, hashes an open descriptor, and executes that same descriptor through `/proc/self/fd`. Per-Agent worker self-verification remains a second gate; it is not the broker's trust anchor.
 
 On a supported systemd host, a dedicated container may be the Agent workload
 inside the documented host broker boundary. A plain application container and

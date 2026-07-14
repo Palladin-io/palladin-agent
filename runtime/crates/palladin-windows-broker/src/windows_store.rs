@@ -39,6 +39,7 @@ impl BrokerSecretStore {
         }
         let suffix = match slot {
             SecretSlot::IntegrityTrustStateV1 => "integrity-trust-state-v1",
+            SecretSlot::VersionPolicyTrustStateV1 => "version-policy-trust-state-v1",
             SecretSlot::OrganizationApiKey => "organization-api-key-v3",
             SecretSlot::X25519PrivateKey => "x25519-private-key-v3",
             SecretSlot::Ed25519SecretKey => "ed25519-secret-key-v3",

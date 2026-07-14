@@ -88,6 +88,9 @@ jobs:
     timeout-minutes: 25
     env:
       PALLADIN_KEYCHAIN_ACCESS_GROUP: ${{ vars.PALLADIN_MACOS_KEYCHAIN_ACCESS_GROUP }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      PALLADIN_PRODUCTION_BUILD: "1"
+      PALLADIN_VERSION_POLICY_PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
     steps:
       - name: Sprawdź konfigurację access group
         run: |
@@ -308,7 +311,6 @@ jobs:
             npm pack "$RUNNER_TEMP/runtime-darwin-$architecture-package" \
               --pack-destination "$RUNNER_TEMP" >/dev/null
           done
-          npm pack --pack-destination "$RUNNER_TEMP" >/dev/null
           for architecture in arm64 x64; do
             runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$architecture-${{ inputs.marketing_version }}.tgz"
             test -f "$runtime_tgz"
@@ -321,24 +323,22 @@ jobs:
           done
           runtime_arch=$(node -p 'process.arch')
           runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$runtime_arch-${{ inputs.marketing_version }}.tgz"
-          launcher_tgz="$RUNNER_TEMP/palladin-agent-${{ inputs.marketing_version }}.tgz"
           test -f "$runtime_tgz"
-          test -f "$launcher_tgz"
 
           smoke="$RUNNER_TEMP/npm-smoke"
           mkdir -p "$smoke"
-          npm install --prefix "$smoke" --ignore-scripts "$runtime_tgz" "$launcher_tgz"
+          npm install --prefix "$smoke" --ignore-scripts "$runtime_tgz"
           installed_app="$smoke/node_modules/@palladin/runtime-darwin-$runtime_arch/PalladinRuntime.app"
           packaging/macos/scripts/verify-bundle.sh \
             --app "$installed_app" --architecture universal
-          doctor=$("$smoke/node_modules/.bin/palladin" doctor)
+          doctor=$("$installed_app/Contents/MacOS/palladin" doctor)
           grep -F 'platform: macos/aarch64' <<<"$doctor"
           grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
           grep -F 'identity-opened: no' <<<"$doctor"
-          cp "$launcher_tgz" "$RUNNER_TEMP/palladin-agent.tgz"
           echo "PALLADIN_NPM_RUNTIME_ARCH=$runtime_arch" >>"$GITHUB_ENV"
 
       - name: Przetestuj granicę Keychain na podpisanym runtime
+        if: inputs.release_pipeline != true
         env:
           PALLADIN_SECURITY_TEST_CONFIRM: ephemeral-runner
           SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_IDENTITY }}
@@ -359,7 +359,6 @@ jobs:
             ${{ runner.temp }}/palladin-runtime-darwin-universal.zip
             ${{ runner.temp }}/palladin-runtime-darwin-arm64-*.tgz
             ${{ runner.temp }}/palladin-runtime-darwin-x64-*.tgz
-            ${{ runner.temp }}/palladin-agent.tgz
           if-no-files-found: error
           retention-days: 7
 
@@ -412,26 +411,25 @@ jobs:
           release="$RUNNER_TEMP/signed-release"
           shopt -s nullglob
           runtime_matches=("$release"/palladin-runtime-darwin-x64-*.tgz)
-          launcher_matches=("$release"/palladin-agent.tgz)
           test "${#runtime_matches[@]}" -eq 1
-          test "${#launcher_matches[@]}" -eq 1
           smoke="$RUNNER_TEMP/npm-smoke-intel"
           mkdir -p "$smoke"
-          npm install --prefix "$smoke" --ignore-scripts \
-            "${runtime_matches[0]}" "${launcher_matches[0]}"
+          npm install --prefix "$smoke" --ignore-scripts "${runtime_matches[0]}"
           app="$smoke/node_modules/@palladin/runtime-darwin-x64/PalladinRuntime.app"
           packaging/macos/scripts/verify-bundle.sh --app "$app" --architecture universal
-          doctor=$("$smoke/node_modules/.bin/palladin" doctor)
+          binary="$app/Contents/MacOS/palladin"
+          doctor=$("$binary" doctor)
           grep -F 'platform: macos/x86_64' <<<"$doctor"
           grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
           grep -F 'identity-opened: no' <<<"$doctor"
-          binary="$app/Contents/MacOS/palladin"
-          cleanup() { "$binary" purge --confirm >/dev/null 2>&1 || true; }
-          trap cleanup EXIT
-          "$binary" purge --confirm >/dev/null 2>&1 || true
-          "$binary" init >/dev/null
-          "$binary" --id default security upgrade >/dev/null
-          "$binary" --id default security upgrade >/dev/null
+          if [[ '${{ inputs.release_pipeline }}' != true ]]; then
+            cleanup() { "$binary" purge --confirm >/dev/null 2>&1 || true; }
+            trap cleanup EXIT
+            "$binary" purge --confirm >/dev/null 2>&1 || true
+            "$binary" init >/dev/null
+            "$binary" --id default security upgrade >/dev/null
+            "$binary" --id default security upgrade >/dev/null
+          fi
 
   macos-signed-gate:
     name: macOS Signed Release Gate

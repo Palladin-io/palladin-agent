@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import {
-  mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
+  mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
+import {
+  canonicalizeVersionPolicyEnvelope,
+  canonicalizeVersionPolicyPayload,
+  parseAndVerifyVersionPolicy,
+} from '../../dist/runtime/version-policy.js';
 import { PLATFORM_PACKAGE_NAMES, PUBLIC_PACKAGE_NAMES } from './release-policy.mjs';
 
 const scripts = resolve('packaging/npm');
@@ -27,6 +33,38 @@ function writeJson(path, value) {
 
 function fixture() {
   return mkdtempSync(join(tmpdir(), 'palladin-release-script-'));
+}
+
+function signedPolicyFixture() {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const issued = new Date(Math.floor(Date.now() / 1000) * 1000);
+  const payload = {
+    artifacts: [{
+      executableSha256: '11'.repeat(32),
+      packageName: '@palladin/runtime-linux-x64-gnu',
+      sourceSha: sha,
+      version: '1.2.2',
+      workerExecutableSha256: '22'.repeat(32),
+    }],
+    blockedVersions: [],
+    expiresAt: new Date(issued.getTime() + 24 * 60 * 60 * 1000).toISOString().replace('.000Z', 'Z'),
+    issuedAt: issued.toISOString().replace('.000Z', 'Z'),
+    minimumVersion: '1.2.2',
+    recommendedVersion: '1.2.2',
+    schemaVersion: 1,
+    sequence: 7,
+    source: 'https://releases.palladin.io/agent/version-policy.json',
+  };
+  const signature = sign(
+    null,
+    Buffer.from(canonicalizeVersionPolicyPayload(payload)),
+    privateKey,
+  ).toString('base64');
+  const envelope = canonicalizeVersionPolicyEnvelope({ signed: payload, signature });
+  return {
+    envelope,
+    publicKey: publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64'),
+  };
 }
 
 function metaManifest(overrides = {}) {
@@ -205,7 +243,13 @@ test('accepts only one exact, inert tarball for every supported platform package
   try {
     for (const name of PLATFORM_PACKAGE_NAMES) {
       const filename = `${name.slice('@palladin/'.length)}-1.2.3.tgz`;
-      writePackageArchive(join(root, filename), { name, version: '1.2.3' });
+      writePackageArchive(join(root, filename), {
+        name,
+        version: '1.2.3',
+        ...(name.includes('/runtime-win32-') ? {
+          palladinRuntime: { workerExecutableSha256: '33'.repeat(32) },
+        } : {}),
+      });
     }
     writeFileSync(join(root, 'palladin-runtime-setup-x64-1.2.3.zip'), 'signed ancillary installer');
     run('verify-platform-release-set.mjs', ['--directory', root, '--version', '1.2.3']);
@@ -256,5 +300,249 @@ test('release workflows pin actions and isolate the one-time npm token exception
     assert.match(contents, /test "\$GITHUB_REF" = "refs\/tags\/\$RELEASE_TAG"/);
     assert.match(contents, /git merge-base --is-ancestor/);
     assert.match(contents, /group: palladin-npm-release/);
+  }
+});
+
+test('signed version policy release is owner-only, KMS-backed, and published after smoke', () => {
+  const workflowDirectory = resolve('.github/workflows');
+  const platform = readFileSync(join(workflowDirectory, 'release-platforms.yml'), 'utf8');
+  const meta = readFileSync(join(workflowDirectory, 'release-meta.yml'), 'utf8');
+  const maintenance = readFileSync(
+    join(workflowDirectory, 'version-policy-maintenance.yml'),
+    'utf8',
+  );
+  const verify = readFileSync(join(workflowDirectory, 'version-policy-verify.yml'), 'utf8');
+
+  for (const workflow of [platform, meta, maintenance]) {
+    assert.match(workflow, /environment: version-policy-signing/);
+    assert.match(workflow, /google-github-actions\/auth@[0-9a-f]{40}/);
+    assert.match(workflow, /google-github-actions\/setup-gcloud@[0-9a-f]{40}/);
+    assert.match(workflow, /version: 561\.0\.0/);
+    assert.match(workflow, /PALLADIN_VERSION_POLICY_PUBLIC_KEY/);
+    assert.doesNotMatch(workflow, /credentials_json|PALLADIN_VERSION_POLICY_PRIVATE|NPM_TOKEN/);
+  }
+
+  assert.match(platform, /PALLADIN_PRODUCTION_BUILD: "1"/);
+  assert.match(platform, /verify-kms-public-key\.mjs/);
+  assert.match(meta, /bootstrap_policy:/);
+  assert.match(meta, /npm install --prefix "\$root" --force --ignore-scripts --save-exact/);
+  assert.match(meta, /npm audit signatures --prefix "\$root"/);
+  assert.match(meta, /gh attestation verify "\$asset"/);
+  assert.match(meta, /cmp --silent "\$asset" "\$registry_tarball"/);
+  assert.match(meta, /verify-release-policy --policy/);
+  assert.ok(meta.indexOf('verify-release-policy --policy') < meta.indexOf('name: Publish the policy only after all native smokes pass'));
+  assert.match(meta, /Exercise the live dynamic policy before the meta-package can be staged/);
+  assert.doesNotMatch(meta, /tar --extract|curl[^\n]*\|\|/);
+  assert.match(meta, /needs: \[authorize, smoke-native, smoke-musl\]/);
+  assert.match(meta, /name: Publish the policy only after all native smokes pass/);
+  assert.match(meta, /group: palladin-npm-release/);
+  assert.match(maintenance, /github\.actor == 'patryk-roguszewski'/);
+  assert.match(maintenance, /github\.ref == 'refs\/heads\/main'/);
+  assert.match(maintenance, /inputs\.confirmation == 'SIGN POLICY'/);
+  assert.match(maintenance, /group: palladin-npm-release/);
+  for (const workflow of [meta, maintenance]) {
+    assert.match(workflow, /--if-generation-match=0/);
+    assert.match(workflow, /version-policy\/\$object/);
+    assert.match(workflow, /--if-generation-match="\$(?:OBSERVED_GENERATION|observed_generation)"/);
+  }
+  assert.doesNotMatch(maintenance, /npm deprecate|npm dist-tag add/);
+  assert.match(verify, /schedule:/);
+  assert.doesNotMatch(verify, /claude|anthropic|id-token: write/);
+});
+
+test('signed policy object names are immutable and incident latest moves only the meta-package', () => {
+  const root = fixture();
+  try {
+    const { envelope, publicKey } = signedPolicyFixture();
+    const current = join(root, 'current.json');
+    writeFileSync(current, envelope);
+    const digest = createHash('sha256').update(envelope).digest('hex');
+    assert.equal(run('version-policy-object-name.mjs', [
+      '--bundle', current,
+      '--public-key', publicKey,
+    ]), `7-${digest}.json`);
+
+    const output = join(root, 'incident');
+    run('create-version-policy-incident-plan.mjs', [
+      '--current', current,
+      '--block-version', '1.2.3',
+      '--safe-version', '1.2.2',
+      '--output-dir', output,
+      '--public-key', publicKey,
+      '--issued-at', new Date(Math.floor(Date.now() / 1000) * 1000)
+        .toISOString().replace('.000Z', 'Z'),
+    ]);
+    const plan = readFileSync(join(output, 'npm-incident-plan.txt'), 'utf8');
+    assert.match(plan, /npm deprecate '@palladin\/agent'@'1\.2\.3'/);
+    assert.match(plan, /npm deprecate '@palladin\/runtime-linux-x64-gnu'@'1\.2\.3'/);
+    assert.equal((plan.match(/npm dist-tag add/g) ?? []).length, 1);
+    assert.match(plan, /npm dist-tag add '@palladin\/agent'@'1\.2\.2' latest/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('CI policy fixture signs exact staged Linux bytes with an ephemeral matching key', () => {
+  const root = fixture();
+  try {
+    const packages = ['@palladin/runtime-linux-x64-gnu', '@palladin/runtime-linux-x64-musl'];
+    const packageRoots = packages.map((name) => {
+      const packageRoot = join(root, name.split('/').at(-1));
+      mkdirSync(join(packageRoot, 'bin'), { recursive: true });
+      writeJson(join(packageRoot, 'package.json'), { name, version: '1.2.3' });
+      writeFileSync(join(packageRoot, 'bin/palladin-linux-client'), `client: ${name}`);
+      writeFileSync(join(packageRoot, 'bin/palladin-worker'), `worker: ${name}`);
+      return packageRoot;
+    });
+    const bundle = join(root, 'policy.json');
+    const privateKey = join(root, 'policy-private.pem');
+    const publicKey = join(root, 'policy.pub');
+    run('generate-version-policy-ci-key.mjs', [
+      '--output-private-key', privateKey,
+      '--output-public-key', publicKey,
+    ]);
+    run('generate-version-policy-ci-fixture.mjs', [
+      '--package-root', packageRoots[0],
+      '--package-root', packageRoots[1],
+      '--version', '1.2.3',
+      '--source-sha', sha,
+      '--private-key', privateKey,
+      '--public-key', publicKey,
+      '--output-bundle', bundle,
+    ]);
+    rmSync(privateKey);
+    const policy = parseAndVerifyVersionPolicy(readFileSync(bundle), {
+      publicKeyBase64: readFileSync(publicKey, 'utf8'),
+      source: 'https://releases.palladin.io/agent/version-policy.json',
+    }).signed;
+    assert.deepEqual(policy.artifacts.map((artifact) => artifact.packageName), packages);
+    for (const artifact of policy.artifacts) {
+      const packageRoot = packageRoots[packages.indexOf(artifact.packageName)];
+      assert.equal(
+        artifact.executableSha256,
+        createHash('sha256').update(readFileSync(join(packageRoot, 'bin/palladin-linux-client')))
+          .digest('hex'),
+      );
+      assert.equal(
+        artifact.workerExecutableSha256,
+        createHash('sha256').update(readFileSync(join(packageRoot, 'bin/palladin-worker')))
+          .digest('hex'),
+      );
+    }
+    assert.deepEqual(readdirSync(root).sort(), [
+      'policy.json', 'policy.pub', 'runtime-linux-x64-gnu', 'runtime-linux-x64-musl',
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('configured policy constants stay typed as strings for production compilation', () => {
+  const root = fixture();
+  try {
+    const { envelope, publicKey } = signedPolicyFixture();
+    const bundle = join(root, 'policy.json');
+    mkdirSync(join(root, 'src/runtime'), { recursive: true });
+    writeFileSync(bundle, envelope);
+    run('configure-version-policy-build.mjs', [
+      '--public-key', publicKey,
+      '--source-sha', sha,
+      '--bundle', bundle,
+    ], { cwd: root });
+    const generated = readFileSync(join(root, 'src/runtime/version-policy-build.ts'), 'utf8');
+    for (const name of [
+      'VERSION_POLICY_SOURCE', 'VERSION_POLICY_PUBLIC_KEY_BASE64',
+      'RUNTIME_SOURCE_SHA', 'VERSION_POLICY_BUNDLE_BASE64',
+    ]) {
+      assert.match(generated, new RegExp(`export const ${name}: string =`));
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('release policy generator binds all exact executables and rejects a symlink', () => {
+  const root = fixture();
+  try {
+    const policyKeys = generateKeyPairSync('ed25519');
+    const policyPublicKey = policyKeys.publicKey.export({ format: 'der', type: 'spki' })
+      .subarray(-32).toString('base64');
+    const modules = join(root, 'node_modules');
+    const current = join(root, 'current.json');
+    const output = join(root, 'payload.json');
+    writeFileSync(current, '');
+    const executables = new Map([
+      ['@palladin/runtime-darwin-arm64', 'PalladinRuntime.app/Contents/MacOS/palladin'],
+      ['@palladin/runtime-darwin-x64', 'PalladinRuntime.app/Contents/MacOS/palladin'],
+      ['@palladin/runtime-linux-arm64-gnu', 'bin/palladin-linux-client'],
+      ['@palladin/runtime-linux-arm64-musl', 'bin/palladin-linux-client'],
+      ['@palladin/runtime-linux-x64-gnu', 'bin/palladin-linux-client'],
+      ['@palladin/runtime-linux-x64-musl', 'bin/palladin-linux-client'],
+      ['@palladin/runtime-win32-arm64', 'bin/palladin-client.exe'],
+      ['@palladin/runtime-win32-x64', 'bin/palladin-client.exe'],
+    ]);
+    for (const [name, executable] of executables) {
+      const packageRoot = join(modules, ...name.split('/'));
+      mkdirSync(join(packageRoot, executable, '..'), { recursive: true });
+      writeJson(join(packageRoot, 'package.json'), {
+        name,
+        version: '1.2.3',
+        ...(name.includes('/runtime-win32-') ? {
+          palladinRuntime: { workerExecutableSha256: '33'.repeat(32) },
+        } : {}),
+      });
+      writeFileSync(join(packageRoot, executable), `signed fixture: ${name}`);
+      if (name.includes('/runtime-linux-')) {
+        writeFileSync(join(packageRoot, 'bin/palladin-worker'), `signed worker fixture: ${name}`);
+      }
+    }
+    const args = [
+      '--node-modules', modules,
+      '--version', '1.2.3',
+      '--source-sha', sha,
+      '--current', current,
+      '--public-key', policyPublicKey,
+      '--issued-at', '2026-07-14T12:00:00Z',
+      '--windows-publisher', 'CN=Palladin Test',
+      '--windows-thumbprint', 'A'.repeat(40),
+      '--output', output,
+    ];
+    run('generate-version-policy-release.mjs', args);
+    const payload = JSON.parse(readFileSync(output, 'utf8'));
+    assert.equal(payload.sequence, 1);
+    assert.equal(payload.minimumVersion, '1.2.3');
+    assert.equal(payload.recommendedVersion, '1.2.3');
+    assert.equal(payload.expiresAt, '2026-08-13T12:00:00Z');
+    assert.equal(payload.artifacts.length, 8);
+    assert.ok(payload.artifacts.every((artifact) => /^[0-9a-f]{64}$/.test(
+      artifact.workerExecutableSha256,
+    )));
+
+    const currentSignature = sign(
+      null,
+      Buffer.from(canonicalizeVersionPolicyPayload(payload)),
+      policyKeys.privateKey,
+    ).toString('base64');
+    writeFileSync(current, canonicalizeVersionPolicyEnvelope({
+      signed: payload,
+      signature: currentSignature,
+    }));
+    const retryOutput = join(root, 'retry-payload.json');
+    const retryArgs = [...args];
+    retryArgs[retryArgs.indexOf('--issued-at') + 1] = '2026-07-15T12:00:00Z';
+    retryArgs[retryArgs.indexOf('--output') + 1] = retryOutput;
+    run('generate-version-policy-release.mjs', retryArgs);
+    assert.deepEqual(JSON.parse(readFileSync(retryOutput, 'utf8')), payload);
+
+    const linked = join(
+      modules,
+      '@palladin/runtime-linux-x64-gnu/bin/palladin-linux-client',
+    );
+    unlinkSync(linked);
+    symlinkSync(join(modules, '@palladin/runtime-linux-x64-musl/bin/palladin-linux-client'), linked);
+    const rejected = failing('generate-version-policy-release.mjs', args);
+    assert.notEqual(rejected.status, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

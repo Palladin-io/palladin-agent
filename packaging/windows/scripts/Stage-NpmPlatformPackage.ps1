@@ -2,6 +2,7 @@
 param(
   [Parameter(Mandatory)][ValidateSet('x64', 'arm64')][string] $Architecture,
   [Parameter(Mandatory)][string] $ClientBinary,
+  [Parameter(Mandatory)][string] $WorkerBinary,
   [Parameter(Mandatory)][string] $OutputDirectory,
   [Parameter(Mandatory)][string] $Publisher,
   [Parameter(Mandatory)][string] $SignerThumbprint
@@ -13,7 +14,9 @@ Import-Module (Join-Path $PSScriptRoot 'Palladin.Release.psm1') -Force
 
 if (Test-Path -LiteralPath $OutputDirectory) { throw "output directory already exists: $OutputDirectory" }
 Assert-PalladinArchitecture -Path $ClientBinary -Architecture $Architecture
+Assert-PalladinArchitecture -Path $WorkerBinary -Architecture $Architecture
 Assert-PalladinSignature -Path $ClientBinary -Publisher $Publisher -Thumbprint $SignerThumbprint -RequireTimestamp
+Assert-PalladinSignature -Path $WorkerBinary -Publisher $Publisher -Thumbprint $SignerThumbprint -RequireTimestamp
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 $source = Join-Path $root "packages/runtime-win32-$Architecture"
@@ -31,6 +34,10 @@ Copy-Item -LiteralPath $ClientBinary -Destination (Join-Path $OutputDirectory 'b
 $manifest.PSObject.Properties.Remove('private')
 $manifest | Add-Member -NotePropertyName os -NotePropertyValue @('win32')
 $manifest | Add-Member -NotePropertyName cpu -NotePropertyValue @($Architecture)
+$workerHash = (Get-FileHash -LiteralPath $WorkerBinary -Algorithm SHA256).Hash.ToLowerInvariant()
+$manifest | Add-Member -NotePropertyName palladinRuntime -NotePropertyValue ([pscustomobject]@{
+  workerExecutableSha256 = $workerHash
+})
 $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'package.json') -Encoding utf8NoBOM
 & node (Join-Path $root 'packaging/npm/verify-platform-package.mjs') `
   --package $OutputDirectory `

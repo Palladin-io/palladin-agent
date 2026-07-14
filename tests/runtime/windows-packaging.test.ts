@@ -36,12 +36,44 @@ describe('Windows hardened packaging contract', () => {
     const stage = read('packaging/windows/scripts/Stage-NpmPlatformPackage.ps1');
     expect(stage).toContain('Assert-PalladinSignature');
     expect(stage).toContain('-RequireTimestamp');
+    expect(stage).toContain('[Parameter(Mandatory)][string] $WorkerBinary');
+    expect(stage).toContain('workerExecutableSha256 = $workerHash');
     expect(stage).toContain("foreach ($field in 'scripts', 'dependencies', 'optionalDependencies')");
     expect(stage).toContain('packaging/npm/verify-platform-package.mjs');
     expect(stage).toContain('--name "@palladin/runtime-win32-$Architecture"');
     expect(stage).toContain('--os win32');
     expect(stage).toContain('--cpu $Architecture');
     expect(stage).toContain('--libc none');
+  });
+
+  it('uses a signed-policy-bound content cache without an environment-selected verifier', () => {
+    const dispatcher = read('src/runtime/native-dispatch.ts');
+    const cache = read('src/runtime/windows-runtime-cache.ts');
+    const workflow = read('.github/workflows/windows-signed-runtime.yml');
+    expect(dispatcher).toContain('loadSystemVerifiedArtifactBinding');
+    expect(dispatcher).toContain('windowsLease.verifyBeforeSpawn()');
+    expect(cache).toContain('\\\\?\\\\GLOBALROOT\\\\SystemRoot');
+    expect(cache).toContain("sameFileIdentity(root, SYSTEM_ROOT, 'directory')");
+    expect(cache).toContain("sameFileIdentity(powershell, SYSTEM_POWERSHELL, 'file')");
+    expect(cache).toContain("sameFileIdentity(modulePath, `${SYSTEM_ROOT}\\\\System32");
+    expect(cache).toContain("PSModulePath: ''");
+    expect(cache).toContain("WinPSModulePath: ''");
+    expect(cache).toContain('$env:PSModulePath = $env:PALLADIN_TRUSTED_MODULE_PATH');
+    expect(cache).toContain('PALLADIN_CHILD_PSMODULEPATH_PRESENT');
+    expect(cache).toContain('candidateMetadata.dev === kernelMetadata.dev');
+    expect(cache).toContain('candidateMetadata.ino === kernelMetadata.ino');
+    expect(cache).toContain("!== 'system32\\\\windowspowershell\\\\v1.0\\\\powershell.exe'");
+    expect(cache).toContain("shell: false");
+    expect(cache).toContain('authenticodePublisher');
+    expect(cache).toContain('authenticodeThumbprint');
+    expect(cache).toContain('bindToChild');
+    expect(cache).toContain('spawnLockedSystemRuntime');
+    expect(cache).toContain('[IO.FileShare]::Read');
+    expect(cache).toContain('JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE');
+    expect(cache).toContain('CREATE_SUSPENDED');
+    expect(cache.indexOf('AssignProcessToJobObject')).toBeLessThan(cache.indexOf('ResumeThread(process.hThread)'));
+    expect(cache).toContain('process.kill(processId, 0)');
+    expect(workflow).toContain('tests/runtime/windows-runtime-cache.test.ts');
   });
 
   it('builds a one-UAC administrator bootstrapper with embedded installer components', () => {

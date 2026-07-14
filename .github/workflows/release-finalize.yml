@@ -85,9 +85,16 @@ jobs:
           done
           echo "source_sha=$source_sha" >>"$GITHUB_OUTPUT"
 
+  compatibility:
+    name: Require client compatibility for the release source
+    needs: authorize
+    uses: ./.github/workflows/client-compatibility-gate.yml
+    with:
+      source_sha: ${{ needs.authorize.outputs.source_sha }}
+
   smoke-native:
     name: Public meta smoke - ${{ matrix.platform }}
-    needs: authorize
+    needs: [authorize, compatibility]
     strategy:
       fail-fast: false
       matrix:
@@ -136,7 +143,7 @@ jobs:
 
   smoke-musl:
     name: Public meta smoke - Linux musl ${{ matrix.architecture }}
-    needs: authorize
+    needs: [authorize, compatibility]
     strategy:
       fail-fast: false
       matrix:
@@ -166,7 +173,7 @@ jobs:
 
   finalize:
     name: Verify assets and publish the draft release
-    needs: [authorize, smoke-native, smoke-musl]
+    needs: [authorize, compatibility, smoke-native, smoke-musl]
     runs-on: ubuntu-latest
     environment: release-finalize
     timeout-minutes: 15

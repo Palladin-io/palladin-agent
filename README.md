@@ -7,7 +7,7 @@ Public npm launcher and native CLI/MCP runtime for Palladin Agent.
 
 ## Security boundary
 
-The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed universal executable from the exact x64 or arm64 npm package. On Windows it starts only the Authenticode-signed `palladin-client.exe` from the exact x64 or arm64 package; that client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. On Linux it reads only the `PT_INTERP` header of its own Node executable and selects the exact x64 or arm64 glibc or musl package; unknown libc loaders fail before package resolution. There is no TypeScript, `PATH`, download, cross-libc, or plaintext fallback.
+The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed universal executable from the exact x64 or arm64 npm package. On Windows it verifies the exact Authenticode-signed `palladin-client.exe` against signed release policy, copies only that public executable into a version-and-hash-specific per-user cache, opens and re-verifies the cached file under a non-write/non-delete handle, and keeps that handle until the child exits. The child is started without a shell. This avoids locking `node_modules` while an MCP session remains active. The client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. On Linux the dispatcher reads only the `PT_INTERP` header of its own Node executable and selects the exact x64 or arm64 glibc or musl package; unknown libc loaders fail before package resolution. There is no TypeScript credential implementation, `PATH`, runtime download, cross-libc, or plaintext fallback.
 
 The native runtime keeps these concepts separate:
 
@@ -39,7 +39,7 @@ palladin doctor
 
 On Windows, install the matching signed Palladin Runtime bootstrapper once before using Hardened mode. npm installation remains script-free and does not prompt for elevation. If the service or companion is unavailable or invalid, the client fails closed instead of falling back to the current-user credential store.
 
-On glibc Linux with systemd 252 or newer, npm alone installs the Convenience tier. Install the matching signed `palladin-runtime` DEB or RPM only for a dedicated headless Agent UID. An authorized UID fails closed when the broker, executor socket, root-owned mapping, or permissions are invalid; it never falls back to the npm worker or Secret Service. Alpine/OpenRC has no Hardened package in the MVP because it lacks an equivalent fresh per-request UID and executor sandbox.
+On glibc Linux with systemd 252 or newer, npm alone installs the Convenience tier. Install the matching signed `palladin-runtime` DEB or RPM only for a dedicated headless Agent UID. An authorized UID fails closed when the broker, executor socket, root-owned mapping, or permissions are invalid; it never falls back to the npm worker or Secret Service. Workload purge is blocked; permanent deletion requires the root-owned `palladin-manage-agent-uid revoke-purge USER --confirm-purge` operation, which retains the UID-reuse tombstone. Alpine/OpenRC has no Hardened package in the MVP because it lacks an equivalent fresh per-request UID and executor sandbox.
 
 No package uses `preinstall`, `install`, `postinstall`, `preprepare`, `prepare`, or `postprepare`. npm installs the matching prebuilt platform package; it does not download or compile a binary during installation.
 
@@ -51,6 +51,8 @@ No package uses `preinstall`, `install`, `postinstall`, `preprepare`, `prepare`,
 - `--omit=optional` is unsupported because the native runtime is an optional platform dependency. Offline installs require the launcher and its matching platform tarball to exist in the configured npm cache or proxy.
 
 All three modes run the same script-free launcher and exact platform package. They do not change where native public state or OS-protected secrets live.
+
+An active MCP process keeps the native version it started with. Updating npm changes only subsequent launches; the next launch requires the exact new platform package and its signed, unexpired version policy. The public launcher forwards that owner-signed envelope to the native process, which binds the image actually opened by the OS before opening identity. Linux measures `/proc/self/exe`; macOS additionally requires the running code's exact Developer ID, identifier, and Data Protection Keychain entitlements. Linux Hardened independently verifies the root-owned system worker with broker-owned anti-rollback state, hashes an open descriptor, and executes that same descriptor. On Windows the public runtime cache may outlive npm uninstall so a loaded process is not interrupted. It contains no identity, API key, private key, profile, or credential. A signed policy can block a bad version before any identity-bearing command starts. Exact `doctor`, help, and version diagnostics remain available during a dynamic policy outage because they do not open identity, but they still require the release-bundled signed artifact binding, exact hash, and Windows Authenticode checks. Adding any other argument restores the current policy requirement.
 
 Node.js 20.5 or newer and npm 9.7.1 or newer are required. Older npm versions do not reliably enforce the Linux `libc` package filter and are unsupported because they may install both glibc and musl optional packages. npm 9.7.0 is excluded because that release shipped an invalid executable manifest.
 
@@ -108,13 +110,41 @@ API keys in argv or environment variables are rejected. Connecting a second prof
 | `palladin agents create <name>` | Create another local Agent identity. |
 | `palladin agents rename <old> <new>` | Rename an alias without moving secret slots. |
 | `palladin agents delete <name>` | Delete an identity; retain a shared organization credential while another Agent references it. |
+| `palladin --id <name> disconnect --purge --confirm` | Explicitly remove one Agent identity and retain its shared organization credential while another Agent references it. |
 | `palladin search <query>` | Search metadata visible to the Agent. |
 | `palladin get <vaultId> <entryId>` | Intentionally return a granted credential to the operator. |
 | `palladin exec <vaultId> <entryId> -- <program>` | Run an allowlisted program with delivered values in a sanitized child environment. |
 | `palladin inject ...` | Fail closed until an authenticated browser boundary exists. |
 | `palladin mcp serve` | Serve Palladin tools over MCP stdio. |
 | `palladin security upgrade` | Explicitly migrate pre-production schema v2 state and secret slots to integrity-bound schema v3. |
-| `palladin purge --confirm` | Explicitly remove native profiles and their known secret slots. |
+| `palladin security legacy-status` | Inspect legacy TypeScript state without opening config or private-key contents. |
+| `palladin security legacy-cutover --confirm-pre-production-reset` | In a dev build, archive legacy TypeScript profiles and generate fresh native X25519/Ed25519 identities. |
+| `palladin security legacy-cleanup <cutoverId> --confirm` | In a dev build, delete the archived TypeScript files and exact legacy OS credential entries after every fresh Agent is enrolled. |
+| `palladin purge --confirm` | Explicitly remove native profiles and their known secret slots in standalone tiers; Linux Hardened requires the root-owned administrative purge. |
+
+## Pre-production TypeScript cutover
+
+Legacy TypeScript builds stored an organization API key in plaintext `config.json` and could store exportable Agent keys in Login Keychain, Credential Manager, Secret Service, environment variables, or `0600` files. Treat every identity and organization key used by those builds as potentially exposed.
+
+The native cutover does not import any old private key, API key, `agentId`, host, grant, or config value. It reads only bounded registry metadata and filesystem metadata, atomically archives `.palladin` or the earlier `.claw-vault` root, and creates a fresh X25519/Ed25519 identity for every validated profile alias. Unknown files, links, unsafe permissions, ambiguous roots, malformed registries, and alias collisions fail before cleanup.
+
+This workflow is intentionally available only in pre-production/dev builds:
+
+```bash
+palladin doctor
+palladin security legacy-status
+palladin security legacy-cutover --confirm-pre-production-reset
+
+# Create one new organization API key in the existing Palladin panel, then repeat for every profile.
+new-key-provider | palladin --id <profile> connect --api-key-stdin --host https://api.palladin.io
+
+# After every fresh Agent is approved, use the exact ID printed by legacy-cutover.
+palladin security legacy-cleanup <cutoverId> --confirm
+```
+
+Cleanup uses a deletion-only OS credential adapter for the historical `palladin` and `claw-vault` services. It has no API that can read secret bytes. If deletion is interrupted, the archive remains and the same command resumes idempotently. Cleanup is refused until every planned fresh profile has a new backend `agentId`.
+
+Finally, revoke the old shared organization API key and deactivate the old Agents in the existing panel. Local deletion cannot revoke backend Agents or guarantee erasure from SSD snapshots, backups, or a parent shell. Legacy environment-variable names are reported by `doctor`; their values are never read or printed, and the operator must unset them manually. No migration or cleanup runs from npm installation, update, uninstall, or any lifecycle hook.
 
 ## MCP configuration
 

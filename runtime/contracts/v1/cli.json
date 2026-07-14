@@ -9,6 +9,7 @@
     "connect-id-after-subcommand-is-rejected-use-name-for-display-or-place-profile-id-before-connect",
     "init-force-in-place-identity-rotation-is-rejected-use-a-new-profile",
     "security-upgrade-performs-an-explicit-downgrade-safe-v2-to-v3-migration-or-verifies-v3",
+    "legacy-typescript-cutover-generates-fresh-identities-and-never-imports-old-private-keys",
     "human-readable-long-identifiers-use-prefix-and-suffix",
     "inject-external-cdp-is-rejected-before-profile-open-because-cdp-cannot-attest-browser-origin"
   ],
@@ -23,6 +24,7 @@
     { "argv": ["connect", "--api-key-stdin"], "name": "connect", "secretOutput": false },
     { "argv": ["--id", "build", "connect", "--name", "Build Agent"], "name": "connect", "secretOutput": false },
     { "argv": ["status"], "name": "status", "secretOutput": false },
+    { "argv": ["--id", "build", "disconnect", "--purge", "--confirm"], "name": "disconnect", "secretOutput": false },
     { "argv": ["search", "fixture"], "name": "search", "secretOutput": false },
     { "argv": ["get", "vault-fixture", "entry-fixture", "--no-wait"], "name": "get", "secretOutput": true },
     { "argv": ["get", "vault-fixture", "entry-fixture", "--field", "password", "--field-id", "field-fixture", "--wait", "30s", "--no-wait"], "name": "get", "secretOutput": true },
@@ -34,6 +36,9 @@
     { "argv": ["mcp", "serve"], "name": "mcp", "secretOutput": false },
     { "argv": ["agents", "list"], "name": "agents", "secretOutput": false },
     { "argv": ["security", "upgrade"], "name": "security", "secretOutput": false },
+    { "argv": ["security", "legacy-status"], "name": "security", "secretOutput": false },
+    { "argv": ["security", "legacy-cutover", "--confirm-pre-production-reset"], "name": "security", "secretOutput": false },
+    { "argv": ["security", "legacy-cleanup", "11111111111111111111111111111111", "--confirm"], "name": "security", "secretOutput": false },
     { "argv": ["purge", "--confirm"], "name": "purge", "secretOutput": false }
   ],
   "processCases": [
@@ -103,6 +108,8 @@
     { "name": "agents-list", "exitCode": 0, "stdout": "* build\n  second\n", "stderr": "" },
     { "name": "agents-created", "exitCode": 0, "stdout": "Agent profile created: build\nEncryption key: ABCDEFGH…UVWXYZ\nSigning key: 12345678…567890\nSecurity: OS secure storage\nNext: palladin --id build connect\n", "stderr": "" },
     { "name": "security-upgrade", "exitCode": 0, "stdout": "Profile: build\nSecurity: OS secure storage\nUpgrade: not required - schema v3 integrity binding is already active.\n", "stderr": "" },
+    { "name": "legacy-cutover", "exitCode": 0, "stdout": "Legacy TypeScript cutover: prepared\nFresh profiles: 2\nNew identities created: 2\nCutover ID: 11111111111111111111111111111111\nNext:\n1. Create a new organization API key in the Palladin panel.\n2. palladin --id default connect --api-key-stdin\n2. palladin --id build connect --api-key-stdin\n3. Approve every fresh Agent in the Palladin panel.\n4. palladin security legacy-cleanup 11111111111111111111111111111111 --confirm\n5. Revoke the old shared organization API key and deactivate the old Agents in the panel.\n", "stderr": "" },
+    { "name": "legacy-cleanup", "exitCode": 0, "stdout": "Legacy TypeScript cleanup: completed\nProfiles cleaned: 2\nRequired: revoke the old shared organization API key and deactivate the old Agents in the Palladin panel.\nNote: local deletion cannot erase copies retained by SSD snapshots, backups, or parent-shell environment variables.\n", "stderr": "" },
     { "name": "search-human", "exitCode": 0, "stdout": "entry-12…abcdef  Fixture�Entry  vault=vault-12…abcdef\n  domain: example.test\n  description: metadata�spoof\n  Region: eu-central-1\nNext cursor: cursor-1…abcdef\n", "stderr": "" },
     { "name": "report-stale", "exitCode": 0, "stdout": "Reported credential as not working - the vault owners have been notified to rotate it.\n", "stderr": "" }
   ],

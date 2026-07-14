@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo 'Usage: palladin-manage-agent-uid <authorize USER PROFILE HOST --dedicated|revoke USER>' >&2
+  echo 'Usage: palladin-manage-agent-uid <authorize USER PROFILE HOST --dedicated|revoke USER|revoke-purge USER --confirm-purge>' >&2
   exit 64
 }
 
@@ -84,6 +84,14 @@ restart_broker() {
   fail_account 'the broker did not become ready after the authorization boundary changed'
 }
 
+stop_broker() {
+  systemctl stop palladin-runtime.service
+  ! systemctl is-active --quiet palladin-runtime.service \
+    || fail_account 'the broker remained active during principal purge'
+  [[ ! -S /run/palladin-runtime/broker.sock ]] \
+    || fail_account 'the broker socket remained available during principal purge'
+}
+
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo 'Error: run this root-owned helper through pkexec or sudo' >&2
   exit 77
@@ -157,30 +165,56 @@ case "$action" in
     group_added=false
     trap - EXIT
     ;;
-  revoke)
-    [[ $# -eq 2 ]] || usage
+  revoke|revoke-purge)
+    if [[ $action == revoke ]]; then
+      [[ $# -eq 2 ]] || usage
+    else
+      [[ $# -eq 3 && $3 == --confirm-purge ]] || usage
+    fi
     [[ -f $mapping && ! -L $mapping ]] || fail_account 'the active Agent principal record is missing'
     mapfile -t record < "$mapping"
     [[ ${#record[@]} -eq 7 \
       && ${record[0]} == version=1 \
-      && ${record[1]} == status=active \
+      && ${record[1]} =~ ^status=(active|revoked)$ \
       && ${record[2]} == "uid=$uid" \
       && ${record[3]} == "account=$user" \
       && ${record[4]} =~ ^principal=[0-9a-f]{32}$ \
       && ${record[5]} =~ ^profile=[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$ \
       && ${record[6]} == host=* ]] || fail_account 'the active Agent principal record is invalid'
     valid_host "${record[6]#host=}" || fail_account 'the active Agent principal host is invalid'
-    temporary=$(mktemp /etc/palladin/agents.d/.agent.XXXXXX)
-    trap 'rm -f "$temporary"' EXIT
-    record[1]=status=revoked
-    printf '%s\n' "${record[@]}" > "$temporary"
-    chown root:root "$temporary"
-    chmod 0644 "$temporary"
-    mv -T "$temporary" "$mapping"
-    trap - EXIT
-    # Kill sessions authenticated under the active record before changing group metadata.
-    restart_broker
-    remove_runtime_membership
+    if [[ ${record[1]} == status=active ]]; then
+      temporary=$(mktemp /etc/palladin/agents.d/.agent.XXXXXX)
+      trap 'rm -f "$temporary"' EXIT
+      record[1]=status=revoked
+      printf '%s\n' "${record[@]}" > "$temporary"
+      chown root:root "$temporary"
+      chmod 0644 "$temporary"
+      mv -T "$temporary" "$mapping"
+      trap - EXIT
+    elif [[ $action == revoke ]]; then
+      fail_account 'the Agent principal is already revoked'
+    fi
+    if [[ $action == revoke-purge ]]; then
+      # Keep the broker stopped while root inspects and deletes its state tree.
+      # This closes authenticated sessions and prevents a broker write from
+      # racing the fail-closed filesystem preflight.
+      stop_broker
+      trap 'systemctl start palladin-runtime.service >/dev/null 2>&1 || true' EXIT
+      remove_runtime_membership
+      principal=${record[4]#principal=}
+      /usr/lib/palladin/runtime/palladin-linux-admin-purge \
+        "$principal" --confirm-purge \
+        || fail_account 'the revoked Agent principal state could not be purged'
+      grep -Fxq 'status=revoked' "$mapping" \
+        || fail_account 'the durable UID-reuse tombstone was not preserved'
+      restart_broker
+      trap - EXIT
+    else
+      # Kill sessions authenticated under the active record before changing
+      # the supplementary group metadata.
+      restart_broker
+      remove_runtime_membership
+    fi
     ;;
   *) usage ;;
 esac

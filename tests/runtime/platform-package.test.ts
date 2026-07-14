@@ -17,6 +17,7 @@ interface PackageManifest {
   libc?: string[];
   publishConfig?: { access?: string; provenance?: boolean };
   engines?: { node?: string; npm?: string };
+  palladinRuntime?: { workerExecutableSha256: string };
 }
 
 function manifest(path: string): PackageManifest {
@@ -84,6 +85,18 @@ describe('public npm package boundary', () => {
       'dist/runtime/native-dispatch.d.ts.map',
       'dist/runtime/native-dispatch.js',
       'dist/runtime/native-dispatch.js.map',
+      'dist/runtime/version-policy-build.d.ts',
+      'dist/runtime/version-policy-build.d.ts.map',
+      'dist/runtime/version-policy-build.js',
+      'dist/runtime/version-policy-build.js.map',
+      'dist/runtime/version-policy.d.ts',
+      'dist/runtime/version-policy.d.ts.map',
+      'dist/runtime/version-policy.js',
+      'dist/runtime/version-policy.js.map',
+      'dist/runtime/windows-runtime-cache.d.ts',
+      'dist/runtime/windows-runtime-cache.d.ts.map',
+      'dist/runtime/windows-runtime-cache.js',
+      'dist/runtime/windows-runtime-cache.js.map',
       'package.json',
     ]);
   });
@@ -162,6 +175,9 @@ describe('public npm package boundary', () => {
         os: [os],
         cpu: [cpu],
         ...(libc === 'none' ? {} : { libc: [libc] }),
+        ...(os === 'win32' ? {
+          palladinRuntime: { workerExecutableSha256: 'ab'.repeat(32) },
+        } : {}),
         publishConfig: { access: 'public', provenance: true },
       }, null, 2)}\n`);
       execFileSync(process.execPath, [

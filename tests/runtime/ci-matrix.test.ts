@@ -184,4 +184,28 @@ describe('cross-platform CI gates', () => {
     expect(claudeFixStep).not.toContain('Bash(gh ');
     expect(claudeFixStep).not.toContain('Bash(git push:');
   });
+
+  it('binds every production native build to the protected source commit', () => {
+    const macos = read('.github/workflows/macos-signed-runtime.yml');
+    const windows = read('.github/workflows/windows-signed-runtime.yml');
+    const platforms = read('.github/workflows/release-platforms.yml');
+    const pullRequestRuntime = read('.github/workflows/rust-runtime.yml');
+
+    expect(macos).toContain('SOURCE_SHA: ${{ inputs.source_sha }}');
+    expect(windows).toContain('SOURCE_SHA: ${{ inputs.source_sha }}');
+    expect(platforms).toContain('SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}');
+    expect(pullRequestRuntime.match(
+      /PALLADIN_VERSION_POLICY_PUBLIC_KEY: \$\{\{ steps\.ci_policy_key\.outputs\.public_key \}\}/g,
+    )).toHaveLength(5);
+    expect(pullRequestRuntime.match(
+      /SOURCE_SHA: \$\{\{ steps\.ci_policy_key\.outputs\.source_sha \}\}/g,
+    )).toHaveLength(5);
+    for (const protocol of [
+      read('runtime/crates/palladin-linux-broker/src/protocol.rs'),
+      read('runtime/crates/palladin-platform/src/broker_protocol.rs'),
+    ]) {
+      expect(protocol).toContain('option_env!("SOURCE_SHA")');
+      expect(protocol).toContain('env!("CARGO_PKG_VERSION")');
+    }
+  });
 });

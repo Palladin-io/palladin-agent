@@ -31,7 +31,8 @@ sed -e "s/@VERSION@/$version/g" -e "s/@ARCHITECTURE@/$deb_arch/g" "$root/deb/con
 install -m 0755 "$root/deb/postinst" "$root/deb/prerm" "$root/deb/postrm" "$stage/DEBIAN/"
 install -m 0755 \
   "$binaries/palladin-linux-client" "$binaries/palladin-linux-service" \
-  "$binaries/palladin-linux-executor" "$binaries/palladin-worker" \
+  "$binaries/palladin-linux-executor" "$binaries/palladin-linux-admin-purge" \
+  "$binaries/palladin-worker" \
   "$stage/usr/lib/palladin/runtime/"
 install -m 0755 "$root/scripts/configure-package.sh" "$stage/usr/lib/palladin/runtime/configure-package"
 install -m 0755 "$root/scripts/manage-agent-uid.sh" "$stage/usr/lib/palladin/runtime/palladin-manage-agent-uid"

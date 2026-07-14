@@ -4,7 +4,7 @@ set -euo pipefail
 fail() { echo "Error: $*" >&2; exit 1; }
 [[ $(id -u) -eq 0 ]] || fail 'verification must run as root'
 
-for binary in palladin-linux-client palladin-linux-service palladin-linux-executor palladin-worker; do
+for binary in palladin-linux-client palladin-linux-service palladin-linux-executor palladin-linux-admin-purge palladin-worker; do
   path=/usr/lib/palladin/runtime/$binary
   [[ -f $path && ! -L $path && -x $path ]] || fail "$path is missing or not executable"
   [[ $(stat -c '%U:%G:%a:%h' "$path") == 'root:root:755:1' ]] || fail "$path permissions are invalid"
@@ -12,6 +12,7 @@ done
 
 [[ $(stat -c '%U:%G:%a:%h' /etc/palladin/runtime-v1) == 'root:root:644:1' ]] || fail 'install marker permissions are invalid'
 [[ $(stat -c '%U:%G:%a:%h:%s' /var/lib/palladin-runtime/v1/master.key) == 'palladin-runtime:palladin-runtime:400:1:32' ]] || fail 'master key permissions are invalid'
+[[ $(stat -c '%U:%G:%a' /var/lib/palladin-runtime/v1/policy) == 'palladin-runtime:palladin-runtime:700' ]] || fail 'system policy state permissions are invalid'
 executor_record=$(getent group palladin-executor) || fail 'executor group is unavailable'
 IFS=: read -r executor_name _ executor_gid executor_members <<< "$executor_record"
 [[ $executor_name == palladin-executor && $executor_gid =~ ^[1-9][0-9]*$ && -z $executor_members ]] || fail 'executor group membership is invalid'

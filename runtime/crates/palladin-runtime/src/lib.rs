@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 mod integrity;
+pub mod version_policy;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_api::{
@@ -10,9 +11,10 @@ use palladin_api::{
     EntrySearchResult, GetCredentialOptions, ReportCredentialStaleInput,
 };
 use palladin_core::host::ApiHost;
+use palladin_core::legacy_typescript::{LegacyTypeScriptError, LegacyTypeScriptRepository};
 use palladin_core::profiles::{
-    ProfileError, ProfileName, ProfileRepository, add_profile, delete_profile, rename_profile,
-    set_default, set_profile_type,
+    ProfileError, ProfileName, ProfileRepository, add_profile, delete_profile, purge_profile,
+    rename_profile, set_default, set_profile_type,
 };
 use palladin_core::public_store::{
     PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicProfileConfig, PublicRegistry,
@@ -137,9 +139,33 @@ impl<S: SecretStore> RuntimeService<S> {
         name: &str,
         agent_type: Option<String>,
     ) -> Result<CreatedProfile, RuntimeError> {
+        self.create_profile_locked_with_identity_id(name, agent_type, generate_opaque_id()?)
+    }
+
+    fn create_profile_locked_with_identity_id(
+        &self,
+        name: &str,
+        agent_type: Option<String>,
+        identity_id: String,
+    ) -> Result<CreatedProfile, RuntimeError> {
         let name = ProfileName::parse(name)?;
         let state = self.verified_state_locked()?;
-        let identity_id = generate_opaque_id()?;
+        if state
+            .registry
+            .agents
+            .iter()
+            .any(|entry| entry.name == name.as_str())
+        {
+            return Err(ProfileError::AlreadyExists.into());
+        }
+        if state
+            .registry
+            .agents
+            .iter()
+            .any(|entry| entry.identity_id == identity_id)
+        {
+            return Err(ProfileError::InvalidIdentityId.into());
+        }
         let encryption = X25519Identity::generate()?;
         let signing = Ed25519Identity::generate()?;
 
@@ -222,6 +248,33 @@ impl<S: SecretStore> RuntimeService<S> {
         let name = ProfileName::parse(name)?;
         let state = self.verified_state_locked()?;
         let (updated, deleted) = delete_profile(&state.registry, &name)?;
+        self.commit_profile_removal(&state, updated, deleted)
+    }
+
+    /// Deliberately removes the selected local Agent identity.
+    ///
+    /// This is the native implementation behind `disconnect --purge --confirm`.
+    /// An organization credential survives while any remaining Agent config references
+    /// it; the selected Agent's X25519 and Ed25519 slots are always removed.
+    pub fn purge_profile(
+        &self,
+        explicit_name: Option<&str>,
+    ) -> Result<PublicAgentEntry, RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let state = self.verified_state_locked()?;
+        let name = ProfileName::parse(explicit_name.unwrap_or(&state.registry.default))?;
+        let (updated, deleted) = purge_profile(&state.registry, &name)?;
+        self.commit_profile_removal(&state, updated, deleted.clone())?;
+        Ok(deleted)
+    }
+
+    fn commit_profile_removal(
+        &self,
+        state: &VerifiedState,
+        updated: PublicRegistry,
+        deleted: PublicAgentEntry,
+    ) -> Result<(), RuntimeError> {
         let organization_ids = state
             .configs
             .get(&deleted.identity_id)
@@ -249,7 +302,7 @@ impl<S: SecretStore> RuntimeService<S> {
             }
         }
         self.commit_transition(
-            &state,
+            state,
             updated,
             Vec::new(),
             vec![deleted.identity_id],
@@ -262,6 +315,19 @@ impl<S: SecretStore> RuntimeService<S> {
     pub fn purge(&self) -> Result<(), RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
+        if self
+            .repository
+            .root()
+            .file_name()
+            .and_then(|value| value.to_str())
+            == Some(".palladin")
+            && !matches!(
+                LegacyTypeScriptRepository::new(self.repository.root())?.status()?,
+                palladin_core::legacy_typescript::LegacyTypeScriptStatus::Clear
+            )
+        {
+            return Err(RuntimeError::LegacyMigrationRequired);
+        }
         if self.repository.legacy_artifacts_present() {
             return Err(RuntimeError::LegacyMigrationRequired);
         }
@@ -275,6 +341,7 @@ impl<S: SecretStore> RuntimeService<S> {
                 organizations.extend(config.retired_organization_credential_ids.iter().cloned());
             }
         }
+        self.repository.preflight_public_purge(&identities)?;
         let mut deletions = identities
             .iter()
             .cloned()
@@ -382,6 +449,7 @@ impl<S: SecretStore> RuntimeService<S> {
             }
         };
 
+        let agent_active = matches!(&registration, AgentRegistrationResult::Active { .. });
         let agent_id = match &registration {
             AgentRegistrationResult::Pending { agent_id }
             | AgentRegistrationResult::Active { agent_id, .. }
@@ -423,6 +491,7 @@ impl<S: SecretStore> RuntimeService<S> {
                     })
                     .unwrap_or_default(),
                 agent_id,
+                agent_active,
                 encryption_public_key: Some(encryption_public_key),
                 signing_public_key: Some(signing_public_key),
                 binding_signature: STANDARD.encode([0_u8; 64]),
@@ -512,6 +581,7 @@ impl<S: SecretStore> RuntimeService<S> {
         {
             let (_, signing) = self.load_identity_verified(&agent.identity_id, Some(&config))?;
             config.agent_id = Some(agent_id.clone());
+            config.agent_active = matches!(&registration, AgentRegistrationResult::Active { .. });
             config.encryption_public_key = Some(STANDARD.encode(encryption.public_key()));
             config.signing_public_key = Some(STANDARD.encode(signing_public_key));
             let binding =
@@ -596,6 +666,152 @@ impl<S: SecretStore> RuntimeService<S> {
             state.configs.get(&profile.identity_id),
         )?;
         Ok(profile)
+    }
+
+    /// Replaces exportable TypeScript identities with fresh native identities.
+    ///
+    /// This operation never opens a legacy config or private-key slot. The old filesystem is
+    /// frozen by `LegacyTypeScriptRepository` and remains available only for an explicit,
+    /// separately confirmed cleanup after every new Agent has completed enrollment.
+    pub fn cutover_legacy_typescript(
+        &self,
+        confirmed: bool,
+    ) -> Result<LegacyCutoverOutcome, RuntimeError> {
+        if !confirmed {
+            return Err(RuntimeError::LegacyCutoverConfirmationRequired);
+        }
+        let _lock = self.repository.acquire_transaction_lock()?;
+        let legacy_repository = LegacyTypeScriptRepository::new(self.repository.root())?;
+        let pending = legacy_repository.pending_manifest()?;
+        if pending.is_none()
+            && matches!(
+                legacy_repository.status()?,
+                palladin_core::legacy_typescript::LegacyTypeScriptStatus::Detected {
+                    source_directory,
+                    ..
+                } if source_directory == ".palladin"
+            )
+            && self.read_trust_state()?.is_some()
+        {
+            return Err(RuntimeError::IntegrityViolation);
+        }
+
+        let cutover_id = pending
+            .as_ref()
+            .map(|manifest| manifest.cutover_id.clone())
+            .unwrap_or(generate_opaque_id()?);
+        let manifest = legacy_repository.begin_cutover(cutover_id.clone())?;
+
+        if self.read_trust_state()?.is_some() {
+            self.recover_pending_operations_locked()?;
+        } else {
+            self.bootstrap_integrity_root()?;
+        }
+        legacy_repository.ensure_cleanup_marker(&manifest)?;
+
+        let mut created = 0_usize;
+        for planned in &manifest.profiles {
+            let state = self.verified_state_locked()?;
+            if let Some(existing) = state
+                .registry
+                .agents
+                .iter()
+                .find(|entry| entry.name == planned.native_name)
+            {
+                if existing.identity_id != planned.identity_id {
+                    return Err(RuntimeError::LegacyProfileConflict);
+                }
+                self.load_identity_verified(
+                    &existing.identity_id,
+                    state.configs.get(&existing.identity_id),
+                )?;
+                continue;
+            }
+            if state
+                .registry
+                .agents
+                .iter()
+                .any(|entry| entry.identity_id == planned.identity_id)
+            {
+                return Err(RuntimeError::LegacyProfileConflict);
+            }
+            self.create_profile_locked_with_identity_id(
+                &planned.native_name,
+                planned.agent_type.clone(),
+                planned.identity_id.clone(),
+            )?;
+            created += 1;
+        }
+
+        let state = self.verified_state_locked()?;
+        if state.registry.default != manifest.default {
+            let default = ProfileName::parse(&manifest.default)?;
+            let updated = set_default(&state.registry, &default)?;
+            self.commit_transition(&state, updated, Vec::new(), Vec::new(), Vec::new(), false)?;
+        }
+
+        Ok(LegacyCutoverOutcome {
+            cutover_id,
+            created,
+            profiles: manifest.profiles.len(),
+            profile_names: manifest
+                .profiles
+                .iter()
+                .map(|profile| profile.native_name.clone())
+                .collect(),
+        })
+    }
+
+    /// Deletes the frozen TypeScript credentials only after every fresh profile has a signed,
+    /// last-known active backend registration. The injected deleter intentionally exposes no
+    /// read operation.
+    pub fn cleanup_legacy_typescript<F>(
+        &self,
+        confirmed: bool,
+        cutover_id: &str,
+        mut delete_legacy_credentials: F,
+    ) -> Result<LegacyCleanupOutcome, RuntimeError>
+    where
+        F: FnMut(&str) -> Result<(), StoreError>,
+    {
+        if !confirmed {
+            return Err(RuntimeError::LegacyCleanupConfirmationRequired);
+        }
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let legacy_repository = LegacyTypeScriptRepository::new(self.repository.root())?;
+        let manifest = legacy_repository
+            .pending_manifest()?
+            .ok_or(RuntimeError::LegacyCutoverNotPending)?;
+        if manifest.cutover_id != cutover_id {
+            return Err(RuntimeError::LegacyCutoverIdMismatch);
+        }
+
+        let state = self.verified_state_locked()?;
+        for planned in &manifest.profiles {
+            let entry = state
+                .registry
+                .agents
+                .iter()
+                .find(|entry| entry.name == planned.native_name)
+                .ok_or(RuntimeError::LegacyProfilesNotConnected)?;
+            if entry.identity_id != planned.identity_id
+                || state
+                    .configs
+                    .get(&entry.identity_id)
+                    .is_none_or(|config| config.agent_id.is_none() || !config.agent_active)
+            {
+                return Err(RuntimeError::LegacyProfilesNotConnected);
+            }
+        }
+
+        for planned in &manifest.profiles {
+            delete_legacy_credentials(&planned.legacy_name)?;
+        }
+        legacy_repository.cleanup_archive(cutover_id)?;
+        Ok(LegacyCleanupOutcome {
+            profiles: manifest.profiles.len(),
+        })
     }
 
     pub fn upgrade_security(
@@ -703,6 +919,7 @@ impl<S: SecretStore> RuntimeService<S> {
                     retired_organization_credential_ids: legacy_config
                         .retired_organization_credential_ids,
                     agent_id: legacy_config.agent_id,
+                    agent_active: false,
                     encryption_public_key: Some(encryption_public_key),
                     signing_public_key: Some(signing_public_key),
                     binding_signature: STANDARD.encode([0_u8; 64]),
@@ -945,6 +1162,28 @@ impl<S: SecretStore> RuntimeService<S> {
     pub fn recover_pending_operations(&self) -> Result<(), RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()
+    }
+
+    /// Creates only the authenticated empty-state root needed before release-policy
+    /// enforcement can persist its protected anti-rollback metadata.
+    ///
+    /// No Agent identity or organization credential is created or opened here. Existing
+    /// and legacy repositories are deliberately left untouched so their normal integrity
+    /// and migration checks still decide whether an identity operation may proceed.
+    pub fn prepare_empty_state_for_version_policy(&self) -> Result<(), RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        if self.read_trust_state()?.is_some() {
+            return Ok(());
+        }
+        let root_is_empty = match std::fs::read_dir(self.repository.root()) {
+            Ok(mut entries) => entries.next().transpose()?.is_none(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => return Err(error.into()),
+        };
+        if root_is_empty {
+            self.bootstrap_integrity_root()?;
+        }
+        Ok(())
     }
 
     fn recover_pending_operations_locked(&self) -> Result<(), RuntimeError> {
@@ -1198,6 +1437,9 @@ impl<S: SecretStore> RuntimeService<S> {
 
     fn finish_purge(&self) -> Result<(), RuntimeError> {
         self.repository.purge_public_data()?;
+        version_policy::purge_version_policy_cache(self.repository.root())?;
+        self.secrets
+            .delete(TRUST_OWNER_ID, SecretSlot::VersionPolicyTrustStateV1)?;
         self.secrets
             .delete(TRUST_OWNER_ID, SecretSlot::IntegrityTrustStateV1)?;
         Ok(())
@@ -1205,6 +1447,10 @@ impl<S: SecretStore> RuntimeService<S> {
 
     fn apply_journal(&self, journal: &IntegrityJournal) -> Result<(), RuntimeError> {
         journal.validate()?;
+        if journal.purge_public_root {
+            self.repository
+                .preflight_public_purge(&journal.remove_identity_directories)?;
+        }
         for copy in &journal.secret_copies {
             match copy {
                 SecretCopy::LegacyIdentity { identity_id } => {
@@ -1380,6 +1626,19 @@ pub struct StatusOutcome {
 pub struct SecurityUpgradeOutcome {
     pub profile: PublicAgentEntry,
     pub migrated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegacyCutoverOutcome {
+    pub cutover_id: String,
+    pub created: usize,
+    pub profiles: usize,
+    pub profile_names: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegacyCleanupOutcome {
+    pub profiles: usize,
 }
 
 pub struct RuntimeSession {
@@ -1718,6 +1977,16 @@ impl std::fmt::Debug for DeliveredCredential {
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
+    #[error("signed runtime version policy is not configured; no identity was opened")]
+    VersionPolicyNotConfigured,
+    #[error("signed runtime version policy is unavailable; no identity was opened")]
+    VersionPolicyUnavailable,
+    #[error("signed runtime version policy verification failed; no identity was opened")]
+    VersionPolicyViolation,
+    #[error("this runtime version is blocked by signed policy; no identity was opened")]
+    VersionPolicyBlocked,
+    #[error("signed runtime version policy rollback was rejected; no identity was opened")]
+    VersionPolicyRollback,
     #[error("profile operation failed: {0}")]
     Profile(#[from] ProfileError),
     #[error("runtime filesystem operation failed")]
@@ -1742,8 +2011,26 @@ pub enum RuntimeError {
     InvalidStoredSecret,
     #[error("public profile configuration is invalid")]
     InvalidPublicConfig,
-    #[error("legacy Agent data requires: palladin security upgrade")]
+    #[error(
+        "legacy Agent data requires an explicit migration - use palladin security legacy-status for TypeScript state or palladin security upgrade for native schema v2"
+    )]
     LegacyMigrationRequired,
+    #[error("legacy cutover is destructive and requires --confirm-pre-production-reset")]
+    LegacyCutoverConfirmationRequired,
+    #[error("legacy cleanup requires --confirm and the exact cutover identifier")]
+    LegacyCleanupConfirmationRequired,
+    #[error("a legacy TypeScript cutover is not pending")]
+    LegacyCutoverNotPending,
+    #[error("legacy cutover identifier does not match the pending archive")]
+    LegacyCutoverIdMismatch,
+    #[error("a planned legacy profile conflicts with an existing native profile")]
+    LegacyProfileConflict,
+    #[error(
+        "fresh Agents are not all enrolled; connect and approve every cutover profile before cleanup"
+    )]
+    LegacyProfilesNotConnected,
+    #[error("legacy TypeScript cutover failed: {0}")]
+    LegacyTypeScript(#[from] LegacyTypeScriptError),
     #[error(
         "legacy cleanup is still pending; recover it with the previous runtime before upgrading"
     )]
@@ -1917,6 +2204,7 @@ mod tests {
                 organization_credential_id: "22222222222222222222222222222222".to_owned(),
                 retired_organization_credential_ids: Vec::new(),
                 agent_id: None,
+                agent_active: false,
                 encryption_public_key: None,
                 signing_public_key: None,
                 binding_signature: STANDARD.encode([0_u8; 64]),
@@ -2168,6 +2456,7 @@ mod tests {
                 organization_credential_id: "22222222222222222222222222222222".to_owned(),
                 retired_organization_credential_ids: Vec::new(),
                 agent_id: None,
+                agent_active: false,
                 encryption_public_key: None,
                 signing_public_key: None,
                 binding_signature: STANDARD.encode([0_u8; 64]),

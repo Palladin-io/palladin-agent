@@ -21,7 +21,7 @@ internal static partial class ContractGate
     private static readonly IReadOnlyDictionary<string, string> PinnedDigests =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["cli.json"] = "5930da5ef9fda13a09898f99d38a53065c3704b9d3d11f24b5b037be94a390a9",
+            ["cli.json"] = "7109b1f6a8df18477ff34e427fa1d5aafc8d5cd7e6006a60e6b255c272d89ada",
             ["credential-blobs.json"] = "af7424d14ff869b6a35fedeea6e3795dad5c831a50d81f2d52fecb15cd9a3ca7",
             ["encrypted-envelope.json"] = "98f288511c590e1bc983a0c299748f2ae2f183d056f3b7b182fe6338d97481ee",
             ["grant-access.json"] = "825efb7d3d34b05f6d32b1f4166c0606acf105cd550eef393e1f435fc3e0122f",

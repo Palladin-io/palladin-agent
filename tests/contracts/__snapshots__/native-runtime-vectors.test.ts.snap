@@ -1,0 +1,331 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`frozen native runtime vectors in TypeScript > pins the exact public MCP definitions without snapshotting secret vectors 1`] = `
+{
+  "compatibility": {
+    "contentType": "text",
+    "fieldSelectorPrecedence": "fieldId",
+    "mcpWaitDefault": "one-shot",
+    "operatorOutput": "stderr",
+    "stdout": "json-rpc-only",
+    "toolResultJson": "pretty",
+  },
+  "contract": "palladin-agent-mcp-tools",
+  "server": {
+    "name": "Palladin Agents",
+    "title": "Palladin Agent Runtime",
+  },
+  "status": "frozen",
+  "supportedProtocolVersions": [
+    "2024-11-05",
+    "2025-03-26",
+    "2025-06-18",
+    "2025-11-25",
+  ],
+  "syntheticOnly": true,
+  "tools": [
+    {
+      "description": "Search vault entries by name, URL, or description across the Agent's organization. Returns metadata only: entryId, vaultId, label, urlDomain, description, and Agent-visible fields. Pick one result and call exec_with_credential, or get_credential only when plaintext must enter the model context. Browser injection is currently unavailable.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Cursor returned by an earlier search.",
+            "maxLength": 4096,
+            "type": "string",
+          },
+          "pageSize": {
+            "description": "Maximum number of results requested from the API.",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer",
+          },
+          "query": {
+            "description": "Search term matched against entry label, URL, and description.",
+            "maxLength": 512,
+            "minLength": 2,
+            "type": "string",
+          },
+        },
+        "required": [
+          "query",
+        ],
+        "type": "object",
+      },
+      "name": "search_entries",
+      "requiredMethod": null,
+    },
+    {
+      "description": "Get a credential as PLAINTEXT. WARNING: this places the secret in your context and a hosted model may send it off the user's machine. Prefer exec_with_credential or inject_credential when the secret only needs to authenticate another operation. A pending grant is returned as a normal tool result; retry later or opt in to wait.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "entryId": {
+            "description": "Entry ID.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string",
+          },
+          "field": {
+            "description": "Return one field by label. A TOTP field returns only its current code.",
+            "maxLength": 2048,
+            "type": "string",
+          },
+          "fieldId": {
+            "description": "Return one custom field by its public ID. Takes precedence over field.",
+            "maxLength": 256,
+            "type": "string",
+          },
+          "noWait": {
+            "description": "Return immediately when approval is pending. Takes precedence over wait.",
+            "type": "boolean",
+          },
+          "pollInterval": {
+            "description": "Approval polling interval, with a five-second minimum.",
+            "maxLength": 32,
+            "type": "string",
+          },
+          "progress": {
+            "description": "Approval heartbeat format. Heartbeats never use protocol stdout.",
+            "enum": [
+              "plain",
+              "json",
+              "none",
+            ],
+            "type": "string",
+          },
+          "reason": {
+            "description": "Justification shown to the approving user.",
+            "maxLength": 4096,
+            "type": "string",
+          },
+          "vaultId": {
+            "description": "Vault ID.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string",
+          },
+          "wait": {
+            "description": "Opt-in approval wait budget, for example 30s or 2m, with a five-minute maximum. Omitted means one-shot.",
+            "maxLength": 32,
+            "type": "string",
+          },
+        },
+        "required": [
+          "vaultId",
+          "entryId",
+        ],
+        "type": "object",
+      },
+      "name": "get_credential",
+      "requiredMethod": "Get",
+    },
+    {
+      "description": "Run a command with the credential injected as environment variables. The secret and command output are withheld from the model; only an exit code and status note are returned. No shell is implied. For a Script entry, omit command so the stored allowlisted interpreter can run after every reference is authorized.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "description": "Executable and arguments. Omit for a Script entry.",
+            "items": {
+              "maxLength": 8192,
+              "type": "string",
+            },
+            "maxItems": 128,
+            "type": "array",
+          },
+          "entryId": {
+            "description": "Entry ID.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string",
+          },
+          "noWait": {
+            "description": "Return immediately when approval is pending. Takes precedence over wait.",
+            "type": "boolean",
+          },
+          "pollInterval": {
+            "description": "Approval polling interval, with a five-second minimum.",
+            "maxLength": 32,
+            "type": "string",
+          },
+          "progress": {
+            "description": "Approval heartbeat format. Heartbeats never use protocol stdout.",
+            "enum": [
+              "plain",
+              "json",
+              "none",
+            ],
+            "type": "string",
+          },
+          "reason": {
+            "description": "Justification shown to the approving user.",
+            "maxLength": 4096,
+            "type": "string",
+          },
+          "vaultId": {
+            "description": "Vault ID.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string",
+          },
+          "wait": {
+            "description": "Opt-in approval wait budget with a five-minute maximum. Omitted means one-shot.",
+            "maxLength": 32,
+            "type": "string",
+          },
+        },
+        "required": [
+          "vaultId",
+          "entryId",
+        ],
+        "type": "object",
+      },
+      "name": "exec_with_credential",
+      "requiredMethod": "Exec",
+    },
+    {
+      "description": "Fail closed without requesting or decrypting a credential. External CDP cannot attest the browser or page origin, so browser injection remains unavailable until a reviewed authenticated browser boundary is installed.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cdp": {
+            "description": "Deprecated unauthenticated CDP endpoint. It is accepted only to return a deterministic fail-closed error and is never contacted.",
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string",
+          },
+          "entryId": {
+            "description": "Entry ID.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string",
+          },
+          "field": {
+            "description": "Fill one field by label instead of the primary password. TOTP yields only the current code.",
+            "maxLength": 2048,
+            "type": "string",
+          },
+          "fieldId": {
+            "description": "Fill one custom field by public ID. Takes precedence over field.",
+            "maxLength": 256,
+            "type": "string",
+          },
+          "fillOnly": {
+            "description": "Disable detection and fill only explicit selectors.",
+            "type": "boolean",
+          },
+          "noSubmit": {
+            "description": "Never click a submit control. Takes precedence over submitSelector.",
+            "type": "boolean",
+          },
+          "noWait": {
+            "description": "Return immediately when approval is pending. Takes precedence over wait.",
+            "type": "boolean",
+          },
+          "pageUrl": {
+            "description": "Select an open page by exact parsed URL prefix; no match fails closed.",
+            "maxLength": 4096,
+            "type": "string",
+          },
+          "passwordSelector": {
+            "description": "CSS selector override for the password or selected field.",
+            "maxLength": 2048,
+            "type": "string",
+          },
+          "pollInterval": {
+            "description": "Approval polling interval, with a five-second minimum.",
+            "maxLength": 32,
+            "type": "string",
+          },
+          "progress": {
+            "description": "Approval heartbeat format. Heartbeats never use protocol stdout.",
+            "enum": [
+              "plain",
+              "json",
+              "none",
+            ],
+            "type": "string",
+          },
+          "reason": {
+            "description": "Justification shown to the approving user.",
+            "maxLength": 4096,
+            "type": "string",
+          },
+          "submitSelector": {
+            "description": "CSS selector override for the submit control.",
+            "maxLength": 2048,
+            "type": "string",
+          },
+          "usernameSelector": {
+            "description": "CSS selector override for the username field.",
+            "maxLength": 2048,
+            "type": "string",
+          },
+          "vaultId": {
+            "description": "Vault ID.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string",
+          },
+          "wait": {
+            "description": "Opt-in approval wait budget with a five-minute maximum. Omitted means one-shot.",
+            "maxLength": 32,
+            "type": "string",
+          },
+        },
+        "required": [
+          "vaultId",
+          "entryId",
+          "cdp",
+        ],
+        "type": "object",
+      },
+      "name": "inject_credential",
+      "requiredMethod": null,
+    },
+    {
+      "description": "Report that a stored credential did not work so vault owners can rotate it. Send no secret and no typed values - only the entry reference, a machine-readable reason code, and an optional short note.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "Cause. Defaults to manual.",
+            "enum": [
+              "login_rejected",
+              "auth_failed",
+              "manual",
+            ],
+            "type": "string",
+          },
+          "entryId": {
+            "description": "Entry ID.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string",
+          },
+          "note": {
+            "description": "Short secret-free note for the owner.",
+            "maxLength": 4096,
+            "type": "string",
+          },
+          "vaultId": {
+            "description": "Vault ID.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string",
+          },
+        },
+        "required": [
+          "vaultId",
+          "entryId",
+        ],
+        "type": "object",
+      },
+      "name": "report_credential_stale",
+      "requiredMethod": null,
+    },
+  ],
+  "version": "1.0.0",
+}
+`;

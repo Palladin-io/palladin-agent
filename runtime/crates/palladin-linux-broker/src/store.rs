@@ -153,6 +153,7 @@ impl SecretStore for LinuxBrokerSecretStore {
 fn slot_context(slot: SecretSlot) -> (&'static str, u8) {
     match slot {
         SecretSlot::IntegrityTrustStateV1 => ("integrity-trust-state-v1", 1),
+        SecretSlot::VersionPolicyTrustStateV1 => ("version-policy-trust-state-v1", 8),
         SecretSlot::OrganizationApiKey => ("organization-api-key-v3", 2),
         SecretSlot::X25519PrivateKey => ("x25519-private-key-v3", 3),
         SecretSlot::Ed25519SecretKey => ("ed25519-secret-key-v3", 4),

@@ -5,7 +5,12 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::Zeroize;
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
+pub const RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const SOURCE_SHA: &str = match option_env!("SOURCE_SHA") {
+    Some(value) => value,
+    None => "development",
+};
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_ARGUMENTS: usize = 256;
@@ -16,6 +21,8 @@ const MAX_ARGUMENT_BYTES: usize = 32 * 1024;
 pub enum ClientFrame {
     Start {
         version: u16,
+        release_version: String,
+        source_sha: String,
         request_id: [u8; 16],
         arguments: Vec<String>,
         interactive: bool,
@@ -47,12 +54,16 @@ impl std::fmt::Debug for ClientFrame {
         match self {
             Self::Start {
                 version,
+                release_version,
+                source_sha,
                 request_id,
                 arguments,
                 interactive,
             } => formatter
                 .debug_struct("Start")
                 .field("version", version)
+                .field("release_version", release_version)
+                .field("source_sha", source_sha)
                 .field("request_id", request_id)
                 .field("arguments", arguments)
                 .field("interactive", interactive)
@@ -158,6 +169,7 @@ pub enum OutputStream {
 pub enum RejectionCode {
     InvalidRequest,
     UnsupportedVersion,
+    ReleaseMismatch,
     UnauthorizedPeer,
     UserAuthorizationDenied,
     Busy,
@@ -191,6 +203,11 @@ pub fn validate_arguments(arguments: &[String]) -> Result<(), ProtocolError> {
         return Err(ProtocolError::InvalidRequest);
     }
     Ok(())
+}
+
+#[must_use]
+pub fn release_identity_matches(release_version: &str, source_sha: &str) -> bool {
+    release_version == RELEASE_VERSION && source_sha == SOURCE_SHA
 }
 
 pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
@@ -239,7 +256,10 @@ pub enum ProtocolError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientFrame, ProtocolError, validate_arguments};
+    use super::{
+        ClientFrame, ProtocolError, RELEASE_VERSION, SOURCE_SHA, release_identity_matches,
+        validate_arguments,
+    };
 
     #[test]
     fn arguments_reject_raw_api_keys_hosts_and_controls() {
@@ -265,5 +285,15 @@ mod tests {
         // Debug renders byte values but never a plaintext string. Production has tracing disabled.
         let leaked = format!("{frame:?}").contains("synthetic-secret");
         assert!(!leaked, "broker frame debug output was not redacted");
+    }
+
+    #[test]
+    fn broker_rejects_client_from_a_different_release_set() {
+        assert!(release_identity_matches(RELEASE_VERSION, SOURCE_SHA));
+        assert!(!release_identity_matches("9.9.9", SOURCE_SHA));
+        assert!(!release_identity_matches(
+            RELEASE_VERSION,
+            "different-source"
+        ));
     }
 }

@@ -116,6 +116,9 @@ jobs:
     env:
       PALLADIN_WINDOWS_PACKAGE_FAMILY_NAME: ${{ vars.PALLADIN_WINDOWS_COMPANION_PFN }}
       PALLADIN_WINDOWS_PUBLISHER: ${{ vars.PALLADIN_WINDOWS_PUBLISHER }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      PALLADIN_PRODUCTION_BUILD: "1"
+      PALLADIN_VERSION_POLICY_PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -253,7 +256,7 @@ jobs:
             $packages = Get-ChildItem -LiteralPath $msix -Filter '*.msix' | ForEach-Object FullName
             packaging/windows/scripts/Sign-Release.ps1 -Artifacts $packages -CertificateThumbprint $env:EXPECTED_THUMBPRINT -TimestampUrl $env:TIMESTAMP_URL -Publisher $env:PUBLISHER
             $npm = Join-Path $env:RUNNER_TEMP "npm-$architecture"
-            packaging/windows/scripts/Stage-NpmPlatformPackage.ps1 -Architecture $architecture -ClientBinary (Join-Path $native 'palladin-client.exe') -OutputDirectory $npm -Publisher $env:PUBLISHER -SignerThumbprint $env:EXPECTED_THUMBPRINT
+            packaging/windows/scripts/Stage-NpmPlatformPackage.ps1 -Architecture $architecture -ClientBinary (Join-Path $native 'palladin-client.exe') -WorkerBinary (Join-Path $native 'palladin-worker.exe') -OutputDirectory $npm -Publisher $env:PUBLISHER -SignerThumbprint $env:EXPECTED_THUMBPRINT
             $broker = Get-ChildItem -LiteralPath $msix -Filter '*Broker*.msix' | Select-Object -ExpandProperty FullName
             $companion = Get-ChildItem -LiteralPath $msix -Filter '*Companion*.msix' | Select-Object -ExpandProperty FullName
             packaging/windows/scripts/Verify-Release.ps1 -Architecture $architecture -Version $env:RELEASE_VERSION -Publisher $env:PUBLISHER -SignerThumbprint $env:EXPECTED_THUMBPRINT -ClientBinary (Join-Path $native 'palladin-client.exe') -BrokerPackage $broker -CompanionPackage $companion -StagedNpmDirectory $npm
@@ -289,11 +292,10 @@ jobs:
           packaging/windows/scripts/Test-RollbackPolicy.ps1
           npm ci --ignore-scripts --workspaces=false
           npm run build
-          npm test -- --run tests/runtime/native-dispatch.test.ts tests/runtime/platform-package.test.ts tests/runtime/windows-packaging.test.ts
+          npm test -- --run tests/runtime/native-dispatch.test.ts tests/runtime/windows-runtime-cache.test.ts tests/runtime/platform-package.test.ts tests/runtime/windows-packaging.test.ts
           foreach ($architecture in 'x64', 'arm64') {
             npm pack "$env:RUNNER_TEMP/npm-$architecture" --pack-destination $env:RUNNER_TEMP
           }
-          npm pack --pack-destination $env:RUNNER_TEMP
           Import-Module (Resolve-Path './packaging/windows/scripts/Palladin.Release.psm1') -Force
           foreach ($architecture in 'x64', 'arm64') {
             $runtimePackages = @(Get-ChildItem -LiteralPath $env:RUNNER_TEMP -Filter "palladin-runtime-win32-$architecture-*.tgz" -File)
@@ -395,7 +397,9 @@ jobs:
           }
           & $setup
           if ($LASTEXITCODE -ne 0) { throw "signed setup failed with exit code $LASTEXITCODE" }
-      - name: Verify installed packages, service boundary, and npm launcher
+      - name: Verify installed packages, service boundary, and native npm artifact
+        env:
+          RELEASE_PIPELINE: ${{ inputs.release_pipeline }}
         shell: pwsh
         run: |
           foreach ($name in 'Palladin.Runtime.Broker', 'Palladin.Runtime.Companion') {
@@ -418,24 +422,23 @@ jobs:
 
           $release = Join-Path $env:RUNNER_TEMP 'signed-release'
           $runtimePackages = @(Get-ChildItem -LiteralPath $release -Filter 'palladin-runtime-win32-${{ matrix.architecture }}-*.tgz' -File)
-          $launcherPackages = @(Get-ChildItem -LiteralPath $release -Filter 'palladin-agent-*.tgz' -File)
-          if ($runtimePackages.Count -ne 1 -or $launcherPackages.Count -ne 1) {
-            throw 'signed npm artifact set is missing or ambiguous'
-          }
+          if ($runtimePackages.Count -ne 1) { throw 'signed npm artifact is missing or ambiguous' }
           $smoke = Join-Path $env:RUNNER_TEMP 'npm-smoke'
           New-Item -ItemType Directory -Path $smoke | Out-Null
-          npm install --prefix $smoke --ignore-scripts --no-save $runtimePackages[0].FullName $launcherPackages[0].FullName
+          npm install --prefix $smoke --ignore-scripts --no-save $runtimePackages[0].FullName
           if ($LASTEXITCODE -ne 0) { throw 'signed npm installation failed' }
-          $launcher = Join-Path $smoke 'node_modules/@palladin/agent/dist/bin/palladin.js'
-          $doctor = & node $launcher doctor 2>&1
-          if ($LASTEXITCODE -ne 0) { throw 'signed launcher doctor failed' }
+          $client = Join-Path $smoke 'node_modules/@palladin/runtime-win32-${{ matrix.architecture }}/bin/palladin-client.exe'
+          $doctor = & $client doctor 2>&1
+          if ($LASTEXITCODE -ne 0) { throw 'signed native doctor failed' }
           $doctorText = $doctor -join "`n"
           if ($doctorText -notmatch 'standalone-security-tier: Hardened' -or $doctorText -notmatch 'identity-opened: no') {
             throw 'installed runtime did not report the Hardened service boundary'
           }
-          $init = & node $launcher init 2>&1
-          if ($LASTEXITCODE -eq 0 -or ($init -join "`n") -notmatch 'Windows Hello is unavailable or consent was not granted') {
-            throw 'hosted runner did not fail closed at the Windows Hello boundary'
+          if ($env:RELEASE_PIPELINE -ne 'true') {
+            $init = & $client init 2>&1
+            if ($LASTEXITCODE -eq 0 -or ($init -join "`n") -notmatch 'Windows Hello is unavailable or consent was not granted') {
+              throw 'hosted runner did not fail closed at the Windows Hello boundary'
+            }
           }
       - name: Remove temporary trust anchor
         if: always()

@@ -18,14 +18,21 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::{Zeroize, Zeroizing};
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 4;
+pub const RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const SOURCE_SHA: &str = match option_env!("SOURCE_SHA") {
+    Some(value) => value,
+    None => "development",
+};
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_STREAM_CHUNK_BYTES: usize = 64 * 1024;
+pub const MAX_MCP_MESSAGE_BYTES: usize = MAX_FRAME_BYTES - (16 * 1024);
 const MAX_ARGUMENTS: usize = 256;
 const MAX_ARGUMENT_BYTES: usize = 32 * 1024;
 const MAX_AGENT_ID_BYTES: usize = 256;
 const MAX_CONSENT_PUBLIC_KEY_BYTES: usize = 8 * 1024;
-const CONSENT_DOMAIN: &[u8] = b"palladin.windows.secure-consent.v2\0";
+const CONSENT_DOMAIN: &[u8] = b"palladin.windows.secure-consent.v4\0";
+const MCP_CONSENT_DOMAIN: &[u8] = b"palladin.windows.mcp-operation.v1\0";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -34,10 +41,15 @@ pub enum SecureOperation {
     Doctor,
     Connect,
     Status,
+    Disconnect,
     Search,
     Get,
     ReportStale,
     McpServe,
+    McpSearchEntries,
+    McpGetCredential,
+    McpExecWithCredential,
+    McpReportCredentialStale,
     Agents,
     Security,
     Purge,
@@ -51,6 +63,7 @@ impl SecureOperation {
             "doctor" => Some(Self::Doctor),
             "connect" => Some(Self::Connect),
             "status" => Some(Self::Status),
+            "disconnect" => Some(Self::Disconnect),
             "search" => Some(Self::Search),
             "get" => Some(Self::Get),
             "report-stale" => Some(Self::ReportStale),
@@ -184,6 +197,66 @@ pub struct InputChunk {
     pub bytes: Vec<u8>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpMessage {
+    pub request_id: [u8; 16],
+    pub sequence: u64,
+    pub bytes: Vec<u8>,
+}
+
+impl Drop for McpMessage {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
+}
+
+impl std::fmt::Debug for McpMessage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpMessage")
+            .field("request_id", &self.request_id)
+            .field("sequence", &self.sequence)
+            .field("bytes", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct McpSecretOperation {
+    pub operation: SecureOperation,
+    pub item_index: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ConsentExpectation<'a> {
+    pub request_id: [u8; 16],
+    pub operation: SecureOperation,
+    pub agent_id: &'a str,
+    pub request_hash: [u8; 32],
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpConsentResponse {
+    pub session_request_id: [u8; 16],
+    pub consent_request_id: [u8; 16],
+    pub sequence: u64,
+    pub consent: ConsentChallenge,
+}
+
+impl std::fmt::Debug for McpConsentResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpConsentResponse")
+            .field("session_request_id", &self.session_request_id)
+            .field("consent_request_id", &self.consent_request_id)
+            .field("sequence", &self.sequence)
+            .field("consent", &self.consent)
+            .finish()
+    }
+}
+
 impl Drop for InputChunk {
     fn drop(&mut self) {
         self.bytes.zeroize();
@@ -236,6 +309,8 @@ pub enum ClientFrame {
         public_key_spki_der: Vec<u8>,
     },
     Execute(ExecuteRequest),
+    AuthorizeMcp(McpConsentResponse),
+    McpMessage(McpMessage),
     Input(InputChunk),
     InputClosed {
         request_id: [u8; 16],
@@ -267,6 +342,10 @@ pub enum BrokerFrame {
     },
     Accepted {
         request_id: [u8; 16],
+    },
+    McpMessageAccepted {
+        request_id: [u8; 16],
+        sequence: u64,
     },
     Output {
         request_id: [u8; 16],
@@ -307,6 +386,14 @@ impl std::fmt::Debug for BrokerFrame {
             Self::Accepted { request_id } => formatter
                 .debug_struct("Accepted")
                 .field("request_id", request_id)
+                .finish(),
+            Self::McpMessageAccepted {
+                request_id,
+                sequence,
+            } => formatter
+                .debug_struct("McpMessageAccepted")
+                .field("request_id", request_id)
+                .field("sequence", sequence)
                 .finish(),
             Self::Output {
                 request_id,
@@ -366,6 +453,8 @@ pub enum ProtocolError {
     MalformedFrame,
     #[error("broker protocol version is unsupported")]
     UnsupportedVersion,
+    #[error("broker and client release identities do not match")]
+    ReleaseMismatch,
     #[error("broker request is invalid")]
     InvalidRequest,
     #[error("secure operation is not permitted")]
@@ -502,10 +591,40 @@ impl ReplayGuard {
         now: SystemTime,
     ) -> Result<(), ProtocolError> {
         validate_request(request)?;
+        let expected_hash = request_hash(
+            request.operation,
+            &request.arguments,
+            &request.standard_input,
+        )?;
+        self.verify_consent(
+            ConsentExpectation {
+                request_id: request.request_id,
+                operation: request.operation,
+                agent_id: &request.consent.agent_id,
+                request_hash: expected_hash,
+            },
+            &request.consent,
+            verifier,
+            now,
+        )
+    }
+
+    pub fn verify_consent(
+        &mut self,
+        expected: ConsentExpectation<'_>,
+        consent: &ConsentChallenge,
+        verifier: &dyn ConsentSignatureVerifier,
+        now: SystemTime,
+    ) -> Result<(), ProtocolError> {
+        if expected.agent_id.is_empty()
+            || expected.agent_id.len() > MAX_AGENT_ID_BYTES
+            || consent.signature.is_empty()
+        {
+            return Err(ProtocolError::InvalidRequest);
+        }
         let now_ms = unix_millis(now)?;
         let skew_ms = duration_millis(self.clock_skew)?;
         let max_lifetime_ms = duration_millis(self.max_lifetime)?;
-        let consent = &request.consent;
         // Consume before validation: invalid signatures and expired responses
         // cannot be retried, and a service restart forgets every challenge.
         let pending = self
@@ -519,25 +638,114 @@ impl ReplayGuard {
         {
             return Err(ProtocolError::ConsentExpired);
         }
-        let expected_hash = request_hash(
-            request.operation,
-            &request.arguments,
-            &request.standard_input,
-        )?;
-        if pending.request_id != request.request_id
+        if pending.request_id != expected.request_id
             || pending.issued_at_unix_ms != consent.issued_at_unix_ms
             || pending.expires_at_unix_ms != consent.expires_at_unix_ms
             || pending.agent_id != consent.agent_id
             || pending.operation != consent.operation
             || pending.request_hash != consent.request_hash
-            || consent.operation != request.operation
-            || consent.request_hash != expected_hash
+            || consent.agent_id != expected.agent_id
+            || consent.operation != expected.operation
+            || consent.request_hash != expected.request_hash
         {
             return Err(ProtocolError::ConsentInvalid);
         }
         verifier.verify(&consent_payload(consent)?, &consent.signature)?;
         Ok(())
     }
+}
+
+pub fn mcp_secret_operations(message: &[u8]) -> Result<Vec<McpSecretOperation>, ProtocolError> {
+    let value = serde_json::from_slice::<serde_json::Value>(message)
+        .map_err(|_| ProtocolError::InvalidRequest)?;
+    let items = match &value {
+        serde_json::Value::Array(items) => items.as_slice(),
+        serde_json::Value::Object(_) => std::slice::from_ref(&value),
+        _ => return Err(ProtocolError::InvalidRequest),
+    };
+    let mut operations = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        match item.get("method").and_then(serde_json::Value::as_str) {
+            None
+            | Some("initialize")
+            | Some("ping")
+            | Some("tools/list")
+            | Some("notifications/initialized")
+            | Some("notifications/cancelled") => continue,
+            Some("tools/call") => {}
+            Some(_) => return Err(ProtocolError::OperationForbidden),
+        }
+        let operation = match item
+            .pointer("/params/name")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("search_entries") => SecureOperation::McpSearchEntries,
+            Some("get_credential") => SecureOperation::McpGetCredential,
+            Some("exec_with_credential") => SecureOperation::McpExecWithCredential,
+            Some("report_credential_stale") => SecureOperation::McpReportCredentialStale,
+            // The frozen MCP contract advertises inject_credential, but the
+            // version-matched worker always returns INJECT_UNAVAILABLE before
+            // opening identity or requesting a credential. Forward that
+            // fail-closed response without terminating the MCP transport.
+            Some("inject_credential") => continue,
+            Some(_) | None => return Err(ProtocolError::OperationForbidden),
+        };
+        let item_index = u32::try_from(index).map_err(|_| ProtocolError::InvalidRequest)?;
+        operations.push(McpSecretOperation {
+            operation,
+            item_index,
+        });
+    }
+    Ok(operations)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn mcp_operation_hash(
+    session_request_id: [u8; 16],
+    connection_nonce: [u8; 32],
+    windows_session_id: u32,
+    session_epoch: u64,
+    sequence: u64,
+    item_index: u32,
+    operation: SecureOperation,
+    agent_id: &str,
+    message: &[u8],
+) -> Result<[u8; 32], ProtocolError> {
+    if agent_id.is_empty()
+        || agent_id.len() > MAX_AGENT_ID_BYTES
+        || message.is_empty()
+        || message.len() > MAX_FRAME_BYTES
+        || !matches!(
+            operation,
+            SecureOperation::McpSearchEntries
+                | SecureOperation::McpGetCredential
+                | SecureOperation::McpExecWithCredential
+                | SecureOperation::McpReportCredentialStale
+        )
+    {
+        return Err(ProtocolError::InvalidRequest);
+    }
+    let canonical = Zeroizing::new(
+        serde_json::to_vec(&(
+            PROTOCOL_VERSION,
+            RELEASE_VERSION,
+            SOURCE_SHA,
+            session_request_id,
+            connection_nonce,
+            windows_session_id,
+            session_epoch,
+            sequence,
+            item_index,
+            operation,
+            agent_id,
+            message,
+        ))
+        .map_err(|_| ProtocolError::InvalidRequest)?,
+    );
+    let mut hasher = Sha256::new();
+    hasher.update(MCP_CONSENT_DOMAIN);
+    hasher.update(&*canonical);
+    Ok(hasher.finalize().into())
 }
 
 pub fn validate_request(request: &ExecuteRequest) -> Result<(), ProtocolError> {
@@ -582,8 +790,15 @@ pub fn request_hash(
     standard_input: &[u8],
 ) -> Result<[u8; 32], ProtocolError> {
     let canonical = Zeroizing::new(
-        serde_json::to_vec(&(PROTOCOL_VERSION, operation, arguments, standard_input))
-            .map_err(|_| ProtocolError::InvalidRequest)?,
+        serde_json::to_vec(&(
+            PROTOCOL_VERSION,
+            RELEASE_VERSION,
+            SOURCE_SHA,
+            operation,
+            arguments,
+            standard_input,
+        ))
+        .map_err(|_| ProtocolError::InvalidRequest)?,
     );
     Ok(Sha256::digest(&*canonical).into())
 }
@@ -591,6 +806,8 @@ pub fn request_hash(
 pub fn consent_payload(consent: &ConsentChallenge) -> Result<Vec<u8>, ProtocolError> {
     let body = serde_json::to_vec(&(
         PROTOCOL_VERSION,
+        RELEASE_VERSION,
+        SOURCE_SHA,
         &consent.nonce,
         consent.issued_at_unix_ms,
         consent.expires_at_unix_ms,
@@ -612,10 +829,14 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
     #[derive(Serialize)]
     struct Envelope<'a, T> {
         protocol_version: u16,
+        release_version: &'a str,
+        source_sha: &'a str,
         payload: &'a T,
     }
     let mut body = serde_json::to_vec(&Envelope {
         protocol_version: PROTOCOL_VERSION,
+        release_version: RELEASE_VERSION,
+        source_sha: SOURCE_SHA,
         payload: frame,
     })
     .map_err(|_| ProtocolError::MalformedFrame)?;
@@ -650,15 +871,22 @@ pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     #[serde(deny_unknown_fields)]
     struct Envelope<T> {
         protocol_version: u16,
+        release_version: String,
+        source_sha: String,
         payload: T,
     }
     let result = serde_json::from_slice::<Envelope<T>>(&body)
         .map_err(|_| ProtocolError::MalformedFrame)
         .and_then(|envelope| {
-            if envelope.protocol_version == PROTOCOL_VERSION {
+            if envelope.protocol_version == PROTOCOL_VERSION
+                && envelope.release_version == RELEASE_VERSION
+                && envelope.source_sha == SOURCE_SHA
+            {
                 Ok(envelope.payload)
-            } else {
+            } else if envelope.protocol_version != PROTOCOL_VERSION {
                 Err(ProtocolError::UnsupportedVersion)
+            } else {
+                Err(ProtocolError::ReleaseMismatch)
             }
         });
     body.zeroize();
@@ -906,6 +1134,282 @@ mod tests {
     }
 
     #[test]
+    fn mcp_classifier_gates_every_agent_identity_operation_and_denies_unknown_tools() {
+        let message = br#"[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_entries","arguments":{}}},{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_credential","arguments":{}}},{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"exec_with_credential","arguments":{}}},{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"report_credential_stale","arguments":{}}}]"#;
+        let operations = mcp_secret_operations(message).expect("classified operations");
+        assert_eq!(
+            operations,
+            vec![
+                McpSecretOperation {
+                    operation: SecureOperation::McpSearchEntries,
+                    item_index: 0,
+                },
+                McpSecretOperation {
+                    operation: SecureOperation::McpGetCredential,
+                    item_index: 1,
+                },
+                McpSecretOperation {
+                    operation: SecureOperation::McpExecWithCredential,
+                    item_index: 2,
+                },
+                McpSecretOperation {
+                    operation: SecureOperation::McpReportCredentialStale,
+                    item_index: 3,
+                },
+            ]
+        );
+        assert!(matches!(
+            mcp_secret_operations(
+                br#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"future_secret_tool","arguments":{}}}"#
+            ),
+            Err(ProtocolError::OperationForbidden)
+        ));
+        assert!(matches!(
+            mcp_secret_operations(
+                br#"{"jsonrpc":"2.0","id":6,"method":"future/identity-method","params":{}}"#
+            ),
+            Err(ProtocolError::OperationForbidden)
+        ));
+        assert_eq!(
+            mcp_secret_operations(
+                br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"inject_credential","arguments":{"vaultId":"vault-a","entryId":"entry-a"}}}"#
+            )
+            .expect("known fail-closed inject tool"),
+            Vec::<McpSecretOperation>::new()
+        );
+        let mixed = mcp_secret_operations(
+            br#"[{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"inject_credential","arguments":{}}},{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"get_credential","arguments":{}}}]"#,
+        )
+        .expect("mixed batch");
+        assert_eq!(
+            mixed,
+            vec![McpSecretOperation {
+                operation: SecureOperation::McpGetCredential,
+                item_index: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn mcp_operation_hash_is_bound_to_connection_session_sequence_and_exact_message() {
+        let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_credential","arguments":{"vaultId":"vault-a","entryId":"entry-a"}}}"#;
+        let baseline = mcp_operation_hash(
+            [1; 16],
+            [2; 32],
+            3,
+            4,
+            5,
+            0,
+            SecureOperation::McpGetCredential,
+            "default",
+            message,
+        )
+        .expect("baseline");
+        for changed in [
+            mcp_operation_hash(
+                [9; 16],
+                [2; 32],
+                3,
+                4,
+                5,
+                0,
+                SecureOperation::McpGetCredential,
+                "default",
+                message,
+            ),
+            mcp_operation_hash(
+                [1; 16],
+                [9; 32],
+                3,
+                4,
+                5,
+                0,
+                SecureOperation::McpGetCredential,
+                "default",
+                message,
+            ),
+            mcp_operation_hash(
+                [1; 16],
+                [2; 32],
+                9,
+                4,
+                5,
+                0,
+                SecureOperation::McpGetCredential,
+                "default",
+                message,
+            ),
+            mcp_operation_hash(
+                [1; 16],
+                [2; 32],
+                3,
+                9,
+                5,
+                0,
+                SecureOperation::McpGetCredential,
+                "default",
+                message,
+            ),
+            mcp_operation_hash(
+                [1; 16],
+                [2; 32],
+                3,
+                4,
+                9,
+                0,
+                SecureOperation::McpGetCredential,
+                "default",
+                message,
+            ),
+            mcp_operation_hash(
+                [1; 16],
+                [2; 32],
+                3,
+                4,
+                5,
+                0,
+                SecureOperation::McpExecWithCredential,
+                "default",
+                message,
+            ),
+            mcp_operation_hash(
+                [1; 16],
+                [2; 32],
+                3,
+                4,
+                5,
+                0,
+                SecureOperation::McpGetCredential,
+                "other",
+                message,
+            ),
+            mcp_operation_hash(
+                [1; 16],
+                [2; 32],
+                3,
+                4,
+                5,
+                0,
+                SecureOperation::McpGetCredential,
+                "default",
+                b"{}",
+            ),
+        ] {
+            assert_ne!(baseline, changed.expect("changed hash"));
+        }
+    }
+
+    #[test]
+    fn mcp_consent_is_single_use_and_cannot_cross_operation_or_service_restart() {
+        struct AcceptAll;
+        impl ConsentSignatureVerifier for AcceptAll {
+            fn verify(&self, _: &[u8], _: &[u8]) -> Result<(), ProtocolError> {
+                Ok(())
+            }
+        }
+
+        let issued = UNIX_EPOCH + Duration::from_millis(1_000);
+        let now = UNIX_EPOCH + Duration::from_millis(2_000);
+        let hash = [7; 32];
+        let mut guard = ReplayGuard::new(Duration::from_secs(30), Duration::from_secs(1));
+        let challenge = guard
+            .issue_challenge(
+                [1; 16],
+                SecureOperation::McpGetCredential,
+                "default".to_owned(),
+                hash,
+                issued,
+            )
+            .expect("MCP challenge");
+        let BrokerFrame::Challenge {
+            request_id,
+            nonce,
+            issued_at_unix_ms,
+            expires_at_unix_ms,
+            ref agent_id,
+            operation,
+            request_hash,
+        } = challenge
+        else {
+            panic!("challenge frame");
+        };
+        let consent = ConsentChallenge {
+            nonce,
+            issued_at_unix_ms,
+            expires_at_unix_ms,
+            agent_id: agent_id.clone(),
+            operation,
+            request_hash,
+            signature: vec![1],
+        };
+        let expected = ConsentExpectation {
+            request_id,
+            operation: SecureOperation::McpGetCredential,
+            agent_id: "default",
+            request_hash: hash,
+        };
+        guard
+            .verify_consent(expected, &consent, &AcceptAll, now)
+            .expect("first use");
+        assert!(matches!(
+            guard.verify_consent(expected, &consent, &AcceptAll, now),
+            Err(ProtocolError::ReplayDetected)
+        ));
+
+        let mut operation_guard = ReplayGuard::new(Duration::from_secs(30), Duration::from_secs(1));
+        let transport_challenge = operation_guard
+            .issue_challenge(
+                [2; 16],
+                SecureOperation::McpServe,
+                "default".to_owned(),
+                [8; 32],
+                issued,
+            )
+            .expect("transport challenge");
+        let BrokerFrame::Challenge {
+            request_id,
+            nonce,
+            issued_at_unix_ms,
+            expires_at_unix_ms,
+            ref agent_id,
+            operation,
+            request_hash,
+        } = transport_challenge
+        else {
+            panic!("transport challenge frame");
+        };
+        let transport_consent = ConsentChallenge {
+            nonce,
+            issued_at_unix_ms,
+            expires_at_unix_ms,
+            agent_id: agent_id.clone(),
+            operation,
+            request_hash,
+            signature: vec![1],
+        };
+        assert!(matches!(
+            operation_guard.verify_consent(
+                ConsentExpectation {
+                    request_id,
+                    operation: SecureOperation::McpGetCredential,
+                    agent_id: "default",
+                    request_hash: hash,
+                },
+                &transport_consent,
+                &AcceptAll,
+                now,
+            ),
+            Err(ProtocolError::ConsentInvalid)
+        ));
+
+        let mut restarted = ReplayGuard::new(Duration::from_secs(30), Duration::from_secs(1));
+        assert!(matches!(
+            restarted.verify_consent(expected, &consent, &AcceptAll, now),
+            Err(ProtocolError::ReplayDetected)
+        ));
+    }
+
+    #[test]
     fn inline_profile_selector_is_bound_to_consent_metadata() {
         let mut request = signed_request("get", SecureOperation::Get, 1);
         request.arguments = vec!["--id=local-profile".to_owned(), "get".to_owned()];
@@ -973,6 +1477,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn explicit_disconnect_purge_is_a_distinct_consent_bound_operation() {
+        assert_eq!(
+            operation_and_profile(&[
+                "--id".to_owned(),
+                "build".to_owned(),
+                "disconnect".to_owned(),
+                "--purge".to_owned(),
+                "--confirm".to_owned(),
+            ])
+            .expect("disconnect purge"),
+            (SecureOperation::Disconnect, "build".to_owned())
+        );
+    }
+
     #[tokio::test]
     async fn length_prefixed_frame_round_trips_without_secret_verbs() {
         let frame = ClientFrame::Cancel {
@@ -982,7 +1501,7 @@ mod tests {
         write_frame(&mut bytes, &frame).await.expect("write");
         let decoded: ClientFrame = read_frame(&mut bytes.as_slice()).await.expect("read");
         assert!(matches!(decoded, ClientFrame::Cancel { request_id } if request_id == [3; 16]));
-        let wire = String::from_utf8(bytes).expect("UTF-8-ish frame");
+        let wire = String::from_utf8(bytes[4..].to_vec()).expect("JSON frame");
         let exposes_sensitive_wire_fields = wire.contains("api-key")
             || wire.contains("private-key")
             || wire.contains("read-secret");
@@ -1005,8 +1524,14 @@ mod tests {
             stream: OutputStream::StandardOutput,
             bytes: b"pl_stream_output_canary".to_vec(),
         };
+        let message = McpMessage {
+            request_id: [1; 16],
+            sequence: 0,
+            bytes: b"pl_mcp_request_canary".to_vec(),
+        };
         assert!(!format!("{input:?}").contains("canary"));
         assert!(!format!("{output:?}").contains("canary"));
+        assert!(!format!("{message:?}").contains("canary"));
     }
 
     #[tokio::test]
@@ -1019,10 +1544,21 @@ mod tests {
 
     #[tokio::test]
     async fn unsupported_protocol_version_is_rejected() {
-        let body = br#"{"protocol_version":3,"payload":{"type":"cancel","request_id":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}}"#;
+        let body = br#"{"protocol_version":5,"release_version":"0.1.0","source_sha":"development","payload":{"type":"cancel","request_id":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}}"#;
         let mut frame = Vec::from((body.len() as u32).to_be_bytes());
         frame.extend_from_slice(body);
         let result = read_frame::<_, ClientFrame>(&mut frame.as_slice()).await;
         assert!(matches!(result, Err(ProtocolError::UnsupportedVersion)));
+    }
+
+    #[tokio::test]
+    async fn mixed_release_identity_is_rejected() {
+        let body = format!(
+            "{{\"protocol_version\":{PROTOCOL_VERSION},\"release_version\":\"{RELEASE_VERSION}\",\"source_sha\":\"different-source\",\"payload\":{{\"type\":\"cancel\",\"request_id\":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}}}}"
+        );
+        let mut frame = Vec::from((body.len() as u32).to_be_bytes());
+        frame.extend_from_slice(body.as_bytes());
+        let result = read_frame::<_, ClientFrame>(&mut frame.as_slice()).await;
+        assert!(matches!(result, Err(ProtocolError::ReleaseMismatch)));
     }
 }

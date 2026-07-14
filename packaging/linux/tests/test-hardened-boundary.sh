@@ -96,7 +96,9 @@ python3 - "$attacker_uid" <<'PY'
 import json, os, socket, struct, subprocess, sys
 uid = int(sys.argv[1])
 payload = json.dumps({
-    "type": "start", "version": 2, "request_id": [1] * 16,
+    "type": "start", "version": 3,
+    "release_version": "0.1.0", "source_sha": "development",
+    "request_id": [1] * 16,
     "arguments": ["doctor"], "interactive": False,
 }, separators=(",", ":")).encode()
 code = subprocess.run([
@@ -188,5 +190,10 @@ recycled_principal=$(sed -n 's/^principal=//p' "/etc/palladin/agents.d/$recycled
 [[ $recycled_principal =~ ^[0-9a-f]{32}$ && $recycled_principal != "$principal" ]]
 runuser -u "$agent" -- /usr/lib/palladin/runtime/palladin-linux-client doctor \
   | grep -F 'standalone-security-tier: Hardened'
-/usr/lib/palladin/runtime/palladin-manage-agent-uid revoke "$agent"
-echo 'revoked-principal=tombstoned live-uid-reuse=denied new-principal=isolated'
+recycled_state=/var/lib/palladin-runtime/v1/agents/$recycled_principal
+[[ -d $recycled_state ]]
+/usr/lib/palladin/runtime/palladin-manage-agent-uid \
+  revoke-purge "$agent" --confirm-purge
+grep -Fxq 'status=revoked' "/etc/palladin/agents.d/$recycled_uid"
+[[ ! -e $recycled_state ]]
+echo 'revoked-principal=tombstoned live-uid-reuse=denied new-principal=isolated explicit-purge=removed-state'

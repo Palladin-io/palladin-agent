@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(name = "palladin", version, about = "Palladin native Agent runtime")]
@@ -12,6 +13,13 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    /// Release-only verification of a signed policy against this native executable.
+    #[command(name = "verify-release-policy", hide = true)]
+    VerifyReleasePolicy {
+        /// Candidate signed policy file supplied by the protected release workflow.
+        #[arg(long)]
+        policy: PathBuf,
+    },
     /// Create the default Agent profile when it does not exist.
     Init {
         /// In-place identity rotation is intentionally unsupported.
@@ -24,6 +32,15 @@ pub enum Commands {
     Connect(ConnectArgs),
     /// Show registration status for an Agent profile.
     Status,
+    /// Disconnect and deliberately remove one local Agent identity.
+    Disconnect {
+        /// Remove the selected profile's native identity and unreferenced organization key.
+        #[arg(long)]
+        purge: bool,
+        /// Required acknowledgement; disconnect never runs from npm lifecycle hooks.
+        #[arg(long, requires = "purge")]
+        confirm: bool,
+    },
     /// Search metadata visible to the active Agent.
     Search(SearchArgs),
     /// Intentionally retrieve a credential granted to this Agent.
@@ -248,6 +265,22 @@ pub enum AgentsCommand {
 pub enum SecurityCommand {
     /// Verify that this profile already uses the operating-system secure store.
     Upgrade,
+    /// Inspect legacy TypeScript state without opening identity or credential bytes.
+    LegacyStatus,
+    /// Archive legacy TypeScript state and create fresh native identities (dev/test only).
+    LegacyCutover {
+        /// Acknowledge that old local identities will not be reused.
+        #[arg(long)]
+        confirm_pre_production_reset: bool,
+    },
+    /// Delete an archived TypeScript state after all fresh Agents are enrolled (dev/test only).
+    LegacyCleanup {
+        /// Exact identifier printed by legacy-cutover.
+        cutover_id: String,
+        /// Acknowledge deletion of the archived legacy files and OS credential entries.
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

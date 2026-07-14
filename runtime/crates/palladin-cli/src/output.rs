@@ -5,7 +5,7 @@ use palladin_core::public_store::PublicRegistry;
 use palladin_core::terminal::{safe_terminal_text, shorten_identifier};
 use serde::Serialize;
 
-use crate::CreatedProfile;
+use crate::{CreatedProfile, LegacyCleanupOutcome, LegacyCutoverOutcome};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RenderedOutput {
@@ -194,6 +194,46 @@ pub fn render_security_upgrade(profile: &str, security: &str, migrated: bool) ->
         output
             .stdout_line("Upgrade: not required - schema v3 integrity binding is already active.");
     }
+    output
+}
+
+#[must_use]
+pub fn render_legacy_cutover(outcome: &LegacyCutoverOutcome) -> RenderedOutput {
+    let mut output = RenderedOutput::default();
+    output.stdout_line("Legacy TypeScript cutover: prepared");
+    output.stdout_line(format_args!("Fresh profiles: {}", outcome.profiles));
+    output.stdout_line(format_args!("New identities created: {}", outcome.created));
+    output.stdout_line(format_args!("Cutover ID: {}", outcome.cutover_id));
+    output.stdout_line("Next:");
+    output.stdout_line("1. Create a new organization API key in the Palladin panel.");
+    for profile in &outcome.profile_names {
+        output.stdout_line(format_args!(
+            "2. palladin --id {} connect --api-key-stdin",
+            safe_terminal_text(profile)
+        ));
+    }
+    output.stdout_line("3. Approve every fresh Agent in the Palladin panel.");
+    output.stdout_line(format_args!(
+        "4. palladin security legacy-cleanup {} --confirm",
+        outcome.cutover_id
+    ));
+    output.stdout_line(
+        "5. Revoke the old shared organization API key and deactivate the old Agents in the panel.",
+    );
+    output
+}
+
+#[must_use]
+pub fn render_legacy_cleanup(outcome: &LegacyCleanupOutcome) -> RenderedOutput {
+    let mut output = RenderedOutput::default();
+    output.stdout_line("Legacy TypeScript cleanup: completed");
+    output.stdout_line(format_args!("Profiles cleaned: {}", outcome.profiles));
+    output.stdout_line(
+        "Required: revoke the old shared organization API key and deactivate the old Agents in the Palladin panel.",
+    );
+    output.stdout_line(
+        "Note: local deletion cannot erase copies retained by SSD snapshots, backups, or parent-shell environment variables.",
+    );
     output
 }
 

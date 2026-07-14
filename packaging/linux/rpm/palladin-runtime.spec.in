@@ -11,6 +11,11 @@ Requires: polkit
 Requires: shadow-utils
 Requires: util-linux
 
+# The signed runtime policy binds the exact prebuilt worker bytes. RPM build-root
+# post-processing must never strip or otherwise rewrite those attested binaries.
+%global debug_package %{nil}
+%global __os_install_post %{nil}
+
 %description
 Optional Linux Hardened broker and one-shot executor boundary for Palladin.
 The public npm package remains unprivileged and has no install lifecycle hook.
