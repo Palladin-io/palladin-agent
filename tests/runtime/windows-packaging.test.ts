@@ -57,6 +57,7 @@ describe('Windows hardened packaging contract', () => {
     expect(cache).toContain("sameFileIdentity(powershell, SYSTEM_POWERSHELL, 'file')");
     expect(cache).toContain("sameFileIdentity(modulePath, `${SYSTEM_ROOT}\\\\System32");
     expect(cache).toContain('PSModulePath: modulePath');
+    expect(cache).toContain('WinPSModulePath: modulePath');
     expect(cache).toContain('candidateMetadata.dev === kernelMetadata.dev');
     expect(cache).toContain('candidateMetadata.ino === kernelMetadata.ino');
     expect(cache).toContain("!== 'system32\\\\windowspowershell\\\\v1.0\\\\powershell.exe'");

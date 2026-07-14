@@ -275,6 +275,7 @@ function verifySystemAuthenticode(path: string, binding: VerifiedArtifactBinding
       env: {
         SystemRoot: canonicalRoot,
         PSModulePath: modulePath,
+        WinPSModulePath: modulePath,
         PALLADIN_RUNTIME_PATH: path,
         PALLADIN_EXPECTED_PUBLISHER: publisher,
         PALLADIN_EXPECTED_THUMBPRINT: thumbprint,
@@ -501,6 +502,7 @@ public static class PalladinLockedProcess {
       ...(spawnOptions.env ?? process.env),
       SystemRoot: root,
       PSModulePath: modulePath,
+      WinPSModulePath: modulePath,
       PALLADIN_RUNTIME_PATH: path,
       PALLADIN_RUNTIME_COMMAND_LINE: Buffer.from(commandLine, 'utf8').toString('base64'),
       PALLADIN_EXPECTED_SHA256: expectedHash,
