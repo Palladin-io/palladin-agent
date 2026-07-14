@@ -2,6 +2,7 @@
   "name": "@palladin/agent",
   "version": "0.1.0",
   "description": "Script-free launcher for the Palladin native Agent CLI and MCP runtime",
+  "private": true,
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -34,7 +35,8 @@
     "dev": "tsc --watch",
     "start": "node dist/bin/palladin.js",
     "lint": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:release",
+    "test:release": "node --test packaging/npm/release-scripts.security.mjs",
     "test:watch": "vitest"
   },
   "devDependencies": {

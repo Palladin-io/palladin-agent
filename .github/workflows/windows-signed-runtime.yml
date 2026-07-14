@@ -1,6 +1,33 @@
 name: Windows Signed Runtime
 
 on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: "Full trusted commit SHA to sign"
+        required: true
+        type: string
+      version:
+        description: "Four-part MSIX version, for example 0.2.0.0"
+        required: true
+        type: string
+      package_version:
+        description: "Atomic npm and Rust version, for example 0.2.0"
+        required: true
+        type: string
+      security_floor:
+        description: "Minimum allowed security version"
+        required: true
+        type: string
+      release_base_uri:
+        description: "HTTPS directory for signed artifacts without a trailing slash"
+        required: true
+        type: string
+      release_pipeline:
+        description: "Require a protected version tag invocation from the release pipeline"
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       source_sha:
@@ -34,26 +61,39 @@ concurrency:
 jobs:
   authorize:
     name: Autoryzacja właściciela
-    if: github.actor == 'patryk-roguszewski'
+    if: github.actor == 'patryk-roguszewski' && (inputs.release_pipeline != true || github.ref_type == 'tag')
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
       - name: Potwierdź ręczne uruchomienie i format wejścia
         env:
+          ACTOR: ${{ github.actor }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_PIPELINE: ${{ inputs.release_pipeline }}
           SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG_SHA: ${{ github.sha }}
           VERSION: ${{ inputs.version }}
           PACKAGE_VERSION: ${{ inputs.package_version }}
           SECURITY_FLOOR: ${{ inputs.security_floor }}
           RELEASE_BASE_URI: ${{ inputs.release_base_uri }}
         run: |
           set -euo pipefail
-          test "$GITHUB_EVENT_NAME" = workflow_dispatch
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "$VERSION" = "$PACKAGE_VERSION.0"
           [[ "$SECURITY_FLOOR" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$RELEASE_BASE_URI" =~ ^https://[^[:space:]]+$ ]]
+          if [[ "$RELEASE_PIPELINE" == "true" ]]; then
+            test "$REF_TYPE" = "tag"
+            test "$REF_NAME" = "v$PACKAGE_VERSION"
+            test "$SOURCE_SHA" = "$TAG_SHA"
+          else
+            test "$EVENT_NAME" = workflow_dispatch
+            test "$ACTOR" = "patryk-roguszewski"
+          fi
 
   build-native:
     name: Natywny build ${{ matrix.architecture }}
@@ -254,6 +294,18 @@ jobs:
             npm pack "$env:RUNNER_TEMP/npm-$architecture" --pack-destination $env:RUNNER_TEMP
           }
           npm pack --pack-destination $env:RUNNER_TEMP
+          Import-Module (Resolve-Path './packaging/windows/scripts/Palladin.Release.psm1') -Force
+          foreach ($architecture in 'x64', 'arm64') {
+            $runtimePackages = @(Get-ChildItem -LiteralPath $env:RUNNER_TEMP -Filter "palladin-runtime-win32-$architecture-*.tgz" -File)
+            if ($runtimePackages.Count -ne 1) { throw "expected one packed $architecture npm runtime" }
+            $unpacked = Join-Path $env:RUNNER_TEMP "packed-runtime-win32-$architecture"
+            New-Item -ItemType Directory -Path $unpacked | Out-Null
+            & tar.exe -xzf $runtimePackages[0].FullName -C $unpacked
+            if ($LASTEXITCODE -ne 0) { throw "failed to unpack the $architecture npm runtime" }
+            $client = Join-Path $unpacked 'package/bin/palladin-client.exe'
+            Assert-PalladinArchitecture -Path $client -Architecture $architecture
+            Assert-PalladinSignature -Path $client -Publisher $env:PUBLISHER -Thumbprint $env:EXPECTED_THUMBPRINT -RequireTimestamp
+          }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: signed-windows-runtime-${{ inputs.version }}-${{ inputs.source_sha }}

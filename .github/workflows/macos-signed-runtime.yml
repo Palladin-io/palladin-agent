@@ -1,6 +1,25 @@
 name: macOS Signed Runtime
 
 on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: "Full trusted commit SHA to sign"
+        required: true
+        type: string
+      marketing_version:
+        description: "Product version, for example 0.2.0"
+        required: true
+        type: string
+      bundle_version:
+        description: "Numeric build version, for example 42"
+        required: true
+        type: string
+      release_pipeline:
+        description: "Require a protected version tag invocation from the release pipeline"
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       source_sha:
@@ -26,17 +45,31 @@ concurrency:
 jobs:
   authorize:
     name: Autoryzacja właściciela
-    if: github.actor == 'patryk-roguszewski'
+    if: github.actor == 'patryk-roguszewski' && (inputs.release_pipeline != true || github.ref_type == 'tag')
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Potwierdź ręczne uruchomienie i niezmienny SHA
         env:
+          ACTOR: ${{ github.actor }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_PIPELINE: ${{ inputs.release_pipeline }}
           SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG_SHA: ${{ github.sha }}
+          MARKETING_VERSION: ${{ inputs.marketing_version }}
         run: |
           set -euo pipefail
-          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$RELEASE_PIPELINE" == "true" ]]; then
+            test "$REF_TYPE" = "tag"
+            test "$REF_NAME" = "v$MARKETING_VERSION"
+            test "$SOURCE_SHA" = "$TAG_SHA"
+          else
+            test "$EVENT_NAME" = "workflow_dispatch"
+            test "$ACTOR" = "patryk-roguszewski"
+          fi
 
   build-native:
     name: Zbuduj ${{ matrix.architecture }}
@@ -276,13 +309,21 @@ jobs:
               --pack-destination "$RUNNER_TEMP" >/dev/null
           done
           npm pack --pack-destination "$RUNNER_TEMP" >/dev/null
+          for architecture in arm64 x64; do
+            runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$architecture-${{ inputs.marketing_version }}.tgz"
+            test -f "$runtime_tgz"
+            packaged_runtime="$RUNNER_TEMP/packed-runtime-darwin-$architecture"
+            mkdir -p "$packaged_runtime"
+            tar -xzf "$runtime_tgz" -C "$packaged_runtime"
+            packaging/macos/scripts/verify-bundle.sh \
+              --app "$packaged_runtime/package/PalladinRuntime.app" \
+              --architecture universal
+          done
           runtime_arch=$(node -p 'process.arch')
-          runtime_tgz=$(find "$RUNNER_TEMP" -maxdepth 1 -type f \
-            -name "palladin-runtime-darwin-$runtime_arch-*.tgz" -print -quit)
-          launcher_tgz=$(find "$RUNNER_TEMP" -maxdepth 1 -type f \
-            -name 'palladin-agent-*.tgz' -print -quit)
-          test -n "$runtime_tgz"
-          test -n "$launcher_tgz"
+          runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$runtime_arch-${{ inputs.marketing_version }}.tgz"
+          launcher_tgz="$RUNNER_TEMP/palladin-agent-${{ inputs.marketing_version }}.tgz"
+          test -f "$runtime_tgz"
+          test -f "$launcher_tgz"
 
           smoke="$RUNNER_TEMP/npm-smoke"
           mkdir -p "$smoke"

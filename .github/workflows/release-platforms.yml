@@ -1,0 +1,425 @@
+name: Release Platform Candidates
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Protected immutable tag, for example v0.2.0"
+        required: true
+        type: string
+      version:
+        description: "Atomic npm and Rust version, for example 0.2.0"
+        required: true
+        type: string
+      bundle_version:
+        description: "Numeric Apple bundle version"
+        required: true
+        type: string
+      security_floor:
+        description: "Four-part Windows downgrade floor"
+        required: true
+        type: string
+      windows_release_base_uri:
+        description: "HTTPS directory reserved for the signed Windows release"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-platforms-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Resolve the protected release source
+    if: github.actor == 'patryk-roguszewski'
+    runs-on: ubuntu-latest
+    environment: release-prepare
+    timeout-minutes: 5
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: source
+        name: Verify tag, source ancestry, and atomic versions
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          VERSION: ${{ inputs.version }}
+          BUNDLE_VERSION: ${{ inputs.bundle_version }}
+          SECURITY_FLOOR: ${{ inputs.security_floor }}
+          WINDOWS_RELEASE_BASE_URI: ${{ inputs.windows_release_base_uri }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$RELEASE_TAG" = "v$VERSION"
+          [[ "$BUNDLE_VERSION" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SECURITY_FLOOR" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$WINDOWS_RELEASE_BASE_URI" =~ ^https://[^[:space:]]+$ ]]
+
+          source_sha=$(git rev-parse HEAD)
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          test "$GITHUB_SHA" = "$source_sha"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$source_sha"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$source_sha" origin/main
+
+          test "$(node -p 'require("./package.json").version')" = "$VERSION"
+          for manifest in packages/*/package.json; do
+            test "$(node -p 'require(process.argv[1]).version' "$manifest")" = "$VERSION"
+          done
+          cargo_versions=$(cargo metadata --manifest-path runtime/Cargo.toml \
+            --format-version 1 --no-deps | jq -r '.packages[].version' | sort -u)
+          test "$cargo_versions" = "$VERSION"
+          echo "source_sha=$source_sha" >>"$GITHUB_OUTPUT"
+
+  macos:
+    name: Build, sign, notarize, and smoke macOS
+    needs: authorize
+    uses: ./.github/workflows/macos-signed-runtime.yml
+    with:
+      source_sha: ${{ needs.authorize.outputs.source_sha }}
+      marketing_version: ${{ inputs.version }}
+      bundle_version: ${{ inputs.bundle_version }}
+      release_pipeline: true
+
+  windows:
+    name: Build, sign, and smoke Windows
+    needs: authorize
+    uses: ./.github/workflows/windows-signed-runtime.yml
+    with:
+      source_sha: ${{ needs.authorize.outputs.source_sha }}
+      version: ${{ inputs.version }}.0
+      package_version: ${{ inputs.version }}
+      security_floor: ${{ inputs.security_floor }}
+      release_base_uri: ${{ inputs.windows_release_base_uri }}
+      release_pipeline: true
+
+  linux:
+    name: Build and verify Linux ${{ matrix.architecture }}
+    needs: authorize
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            musl_target: x86_64-unknown-linux-musl
+            architecture: x64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            musl_target: aarch64-unknown-linux-musl
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      GLIBC_BASELINE: "2.34"
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the trusted source commit
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+          cache-key: release-${{ matrix.target }}
+
+      - name: Install pinned packaging toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools rpm
+          cargo install --locked --version 0.23.0 cargo-zigbuild
+          rustup target add "${{ matrix.target }}" "${{ matrix.musl_target }}"
+
+      - name: Build GNU runtime against the release baseline
+        working-directory: runtime
+        run: |
+          set -euo pipefail
+          cargo zigbuild --release --locked \
+            --target "${{ matrix.target }}.${GLIBC_BASELINE}" -p palladin-cli
+          cargo zigbuild --release --locked \
+            --target "${{ matrix.target }}.${GLIBC_BASELINE}" \
+            -p palladin-linux-broker -p palladin-linux-executor --bins
+          native="target/${{ matrix.target }}/release"
+          cp "$native/palladin" "$native/palladin-worker"
+          for binary in palladin-linux-client palladin-linux-service palladin-linux-executor palladin-worker; do
+            maximum=$(readelf --version-info "$native/$binary" |
+              sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' | sort -V | tail -n 1)
+            if [[ -z $maximum ]] ||
+              [[ $(printf '%s\n' "$maximum" "$GLIBC_BASELINE" | sort -V | tail -n 1) != "$GLIBC_BASELINE" ]]; then
+              echo "$binary exceeds the glibc $GLIBC_BASELINE release baseline" >&2
+              exit 1
+            fi
+          done
+
+      - name: Build static musl runtime
+        working-directory: runtime
+        env:
+          CC: musl-gcc
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target "${{ matrix.musl_target }}" -p palladin-cli
+          cargo build --release --locked --target "${{ matrix.musl_target }}" \
+            -p palladin-linux-broker --bin palladin-linux-client
+          native="target/${{ matrix.musl_target }}/release"
+          cp "$native/palladin" "$native/palladin-worker"
+          for binary in palladin-linux-client palladin-worker; do
+            if readelf --program-headers "$native/$binary" | grep -Fq ' INTERP '; then
+              echo "$binary unexpectedly contains a dynamic interpreter" >&2
+              exit 1
+            fi
+            if readelf --dynamic "$native/$binary" | grep -Fq '(NEEDED)'; then
+              echo "$binary unexpectedly contains a dynamic dependency" >&2
+              exit 1
+            fi
+          done
+
+      - name: Package npm, DEB, and RPM artifacts
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/release-linux-${{ matrix.architecture }}"
+          mkdir -p "$release"
+          gnu="runtime/target/${{ matrix.target }}/release"
+          musl="runtime/target/${{ matrix.musl_target }}/release"
+          packaging/linux/scripts/stage-npm-platform-package.sh \
+            --architecture "${{ matrix.architecture }}" --libc glibc \
+            --binaries "$gnu" --output "$RUNNER_TEMP/npm-gnu"
+          packaging/linux/scripts/stage-npm-platform-package.sh \
+            --architecture "${{ matrix.architecture }}" --libc musl \
+            --binaries "$musl" --output "$RUNNER_TEMP/npm-musl"
+          npm pack "$RUNNER_TEMP/npm-gnu" --pack-destination "$release" >/dev/null
+          npm pack "$RUNNER_TEMP/npm-musl" --pack-destination "$release" >/dev/null
+          packaging/linux/deb/build-deb.sh --version "$VERSION" \
+            --architecture "${{ matrix.architecture }}" --binaries "$gnu" --output "$release"
+          packaging/linux/rpm/build-rpm.sh --version "$VERSION" \
+            --architecture "${{ matrix.architecture }}" --binaries "$gnu" --output "$release"
+
+      - name: Generate the Linux release SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: ${{ runner.temp }}/release-linux-${{ matrix.architecture }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/release-linux-${{ matrix.architecture }}/sbom-linux-${{ matrix.architecture }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+
+      - name: Generate and verify checksums and release manifest
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/release-linux-${{ matrix.architecture }}"
+          node packaging/npm/generate-release-manifest.mjs \
+            --artifacts "$release" --version "$VERSION" --source-sha "$SOURCE_SHA" \
+            --sbom "$release/sbom-linux-${{ matrix.architecture }}.spdx.json" \
+            --manifest "$release/release-manifest.json" \
+            --checksums "$release/SHA256SUMS"
+          node packaging/npm/verify-release-manifest.mjs \
+            --artifacts "$release" --version "$VERSION" --source-sha "$SOURCE_SHA" \
+            --sbom "$release/sbom-linux-${{ matrix.architecture }}.spdx.json" \
+            --manifest "$release/release-manifest.json" \
+            --checksums "$release/SHA256SUMS"
+
+      - name: Attest the Linux artifact set
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/release-linux-${{ matrix.architecture }}/*
+
+      - name: Attest the Linux SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: ${{ runner.temp }}/release-linux-${{ matrix.architecture }}/*
+          sbom-path: ${{ runner.temp }}/release-linux-${{ matrix.architecture }}/sbom-linux-${{ matrix.architecture }}.spdx.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-linux-${{ matrix.architecture }}-${{ needs.authorize.outputs.source_sha }}
+          path: ${{ runner.temp }}/release-linux-${{ matrix.architecture }}/*
+          if-no-files-found: error
+          retention-days: 7
+
+  stage-platforms:
+    name: Attest and stage the platform release set
+    needs: [authorize, macos, windows, linux]
+    runs-on: ubuntu-latest
+    environment: npm-release
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm install --global npm@11.18.0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: palladin-runtime-darwin
+          path: ${{ runner.temp }}/input-macos
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: signed-windows-runtime-${{ inputs.version }}.0-${{ needs.authorize.outputs.source_sha }}
+          path: ${{ runner.temp }}/input-windows
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-linux-x64-${{ needs.authorize.outputs.source_sha }}
+          path: ${{ runner.temp }}/input-linux-x64
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-linux-arm64-${{ needs.authorize.outputs.source_sha }}
+          path: ${{ runner.temp }}/input-linux-arm64
+
+      - name: Assemble a flat, collision-free platform release set
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/release-set"
+          mkdir -p "$release"
+          copy_flat() {
+            while IFS= read -r -d '' source; do
+              name=$(basename "$source")
+              case "$name" in
+                palladin-agent*.tgz|release-manifest.json|SHA256SUMS) continue ;;
+              esac
+              test ! -e "$release/$name"
+              cp "$source" "$release/$name"
+            done
+          }
+          copy_flat < <(find "$RUNNER_TEMP/input-macos" -type f -print0)
+          copy_flat < <(find "$RUNNER_TEMP/input-windows" -type f \
+            ! -path '*/setup-x64/*' ! -path '*/setup-arm64/*' -print0)
+          copy_flat < <(find "$RUNNER_TEMP/input-linux-x64" -type f -print0)
+          copy_flat < <(find "$RUNNER_TEMP/input-linux-arm64" -type f -print0)
+          for architecture in x64 arm64; do
+            setup="$RUNNER_TEMP/input-windows/setup-$architecture"
+            test -d "$setup"
+            (cd "$setup" && zip -q -r \
+              "$release/palladin-runtime-setup-$architecture-$VERSION.zip" .)
+          done
+          test "$(find "$release" -maxdepth 1 -type f \
+            -name 'palladin-agent*.tgz' | wc -l | tr -d ' ')" = 0
+
+      - name: Verify the exact platform package boundary
+        run: >-
+          node packaging/npm/verify-platform-release-set.mjs
+          --directory "$RUNNER_TEMP/release-set" --version "${{ inputs.version }}"
+
+      - name: Generate the complete release SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: ${{ runner.temp }}/release-set
+          format: spdx-json
+          output-file: ${{ runner.temp }}/release-set/sbom-release.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+
+      - name: Generate the immutable release manifest
+        run: |
+          set -euo pipefail
+          node packaging/npm/generate-release-manifest.mjs \
+            --artifacts "$RUNNER_TEMP/release-set" \
+            --version "${{ inputs.version }}" \
+            --source-sha "${{ needs.authorize.outputs.source_sha }}" \
+            --sbom "$RUNNER_TEMP/release-set/sbom-release.spdx.json" \
+            --manifest "$RUNNER_TEMP/release-set/release-manifest.json" \
+            --checksums "$RUNNER_TEMP/release-set/SHA256SUMS"
+          node packaging/npm/verify-release-manifest.mjs \
+            --artifacts "$RUNNER_TEMP/release-set" \
+            --version "${{ inputs.version }}" \
+            --source-sha "${{ needs.authorize.outputs.source_sha }}" \
+            --sbom "$RUNNER_TEMP/release-set/sbom-release.spdx.json" \
+            --manifest "$RUNNER_TEMP/release-set/release-manifest.json" \
+            --checksums "$RUNNER_TEMP/release-set/SHA256SUMS"
+
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/release-set/*
+
+      - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: ${{ runner.temp }}/release-set/*
+          sbom-path: ${{ runner.temp }}/release-set/sbom-release.spdx.json
+
+      - name: Stage all eight platform packages under candidate
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(find "$RUNNER_TEMP/release-set" -type f \
+            -name 'palladin-runtime-*.tgz' -print | sort)
+          test "${#packages[@]}" -eq 8
+          for package in "${packages[@]}"; do
+            npm stage publish "$package" --tag candidate --provenance --ignore-scripts
+          done
+
+      - name: Create the owner-reviewable draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find "$RUNNER_TEMP/release-set" -type f -print | sort)
+          gh release create "${{ inputs.release_tag }}" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            --title "Palladin Agent ${{ inputs.version }}" \
+            --notes "Platform candidates are staged for owner approval. The meta-package is not staged by this workflow."
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-set-${{ inputs.version }}-${{ needs.authorize.outputs.source_sha }}
+          path: ${{ runner.temp }}/release-set/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Record the manual npm approval boundary
+        run: |
+          cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          All eight platform versions were staged with the immutable `candidate` tag.
+
+          Patryk must inspect and approve every staged package with npm 2FA. Do not run `release-meta.yml` until all eight exact versions are public and the native registry smoke matrix can consume them.
+          SUMMARY
