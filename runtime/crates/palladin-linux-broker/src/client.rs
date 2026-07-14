@@ -36,6 +36,30 @@ use crate::protocol::{
 };
 use crate::{INSTALL_MARKER, SOCKET_PATH, SYSTEM_CLIENT};
 
+const SAFE_CLIENT_ENVIRONMENT: &[&str] = &[
+    "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ",
+];
+#[cfg(target_os = "linux")]
+const SAFE_CONVENIENCE_WORKER_ENVIRONMENT: &[&str] = &[
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "PATH",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "COLORTERM",
+    "TZ",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+];
+#[cfg(target_os = "linux")]
+const POLICY_ENVELOPE_ENVIRONMENT: &str = "PALLADIN_VERSION_POLICY_ENVELOPE_BASE64";
+
 pub async fn run(arguments: Vec<String>) -> Result<ExitCode, ClientError> {
     validate_arguments(&arguments).map_err(|_| ClientError::InvalidArguments)?;
     let current = current_executable()?;
@@ -95,9 +119,14 @@ async fn run_convenience(arguments: Vec<String>) -> Result<ExitCode, ClientError
             &worker_sha256,
         )
         .map_err(|_| ClientError::ConvenienceUnavailable)?;
+        let policy_envelope = std::env::var(POLICY_ENVELOPE_ENVIRONMENT)
+            .map_err(|_| ClientError::ConvenienceUnavailable)?;
         let executable = format!("/proc/self/fd/{}", sealed_worker.as_raw_fd());
         let status = Command::new(executable)
             .args(arguments)
+            .env_clear()
+            .envs(safe_convenience_worker_environment())
+            .env(POLICY_ENVELOPE_ENVIRONMENT, policy_envelope)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -450,16 +479,24 @@ fn validate_root_owned_executable(path: &Path) -> Result<(), ClientError> {
 }
 
 fn safe_client_environment() -> Vec<(String, String)> {
-    [
-        "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ",
-    ]
-    .into_iter()
-    .filter_map(|name| {
+    selected_environment(SAFE_CLIENT_ENVIRONMENT, |name| std::env::var(name))
+}
+
+#[cfg(target_os = "linux")]
+fn safe_convenience_worker_environment() -> Vec<(String, String)> {
+    selected_environment(SAFE_CONVENIENCE_WORKER_ENVIRONMENT, |name| {
         std::env::var(name)
-            .ok()
-            .map(|value| (name.to_owned(), value))
     })
-    .collect()
+}
+
+fn selected_environment(
+    allowed: &[&str],
+    mut value: impl FnMut(&str) -> Result<String, std::env::VarError>,
+) -> Vec<(String, String)> {
+    allowed
+        .iter()
+        .filter_map(|name| value(name).ok().map(|value| ((*name).to_owned(), value)))
+        .collect()
 }
 
 fn current_uid() -> u32 {
@@ -519,6 +556,10 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     use super::seal_worker_image;
+    #[cfg(target_os = "linux")]
+    use super::{
+        POLICY_ENVELOPE_ENVIRONMENT, SAFE_CONVENIENCE_WORKER_ENVIRONMENT, selected_environment,
+    };
     use super::{RuntimeTier, select_tier};
     use crate::peer::PeerError;
     #[cfg(target_os = "linux")]
@@ -547,6 +588,26 @@ mod tests {
             select_tier(false, &mapping, false),
             RuntimeTier::Convenience
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn convenience_worker_environment_is_a_positive_allowlist() {
+        let selected = selected_environment(SAFE_CONVENIENCE_WORKER_ENVIRONMENT, |name| {
+            Ok(format!("fixture-{name}"))
+        });
+        let names = selected
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"PATH"));
+        assert!(names.contains(&"XDG_RUNTIME_DIR"));
+        assert!(names.contains(&"DBUS_SESSION_BUS_ADDRESS"));
+        assert!(!names.contains(&"LD_PRELOAD"));
+        assert!(!names.contains(&"LD_LIBRARY_PATH"));
+        assert!(!names.contains(&"LD_AUDIT"));
+        assert!(!names.contains(&"GLIBC_TUNABLES"));
+        assert!(!names.contains(&POLICY_ENVELOPE_ENVIRONMENT));
     }
 
     #[cfg(target_os = "linux")]
