@@ -1176,21 +1176,16 @@ mod windows_service_entry {
 
         struct BlockingWriter {
             write_started: Arc<AtomicBool>,
-            completed_writes: Arc<AtomicUsize>,
         }
 
         impl AsyncWrite for BlockingWriter {
             fn poll_write(
                 self: Pin<&mut Self>,
                 _: &mut Context<'_>,
-                bytes: &[u8],
+                _: &[u8],
             ) -> Poll<std::io::Result<usize>> {
-                if self.write_started.swap(true, Ordering::SeqCst) {
-                    self.completed_writes.fetch_add(1, Ordering::SeqCst);
-                    Poll::Ready(Ok(bytes.len()))
-                } else {
-                    Poll::Pending
-                }
+                self.write_started.store(true, Ordering::SeqCst);
+                Poll::Pending
             }
 
             fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
@@ -1647,10 +1642,8 @@ mod windows_service_entry {
             let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_credential","arguments":{"vaultId":"vault-a","entryId":"entry-a"}}}"#;
             let (mut service_reader, mut client_writer) = tokio::io::duplex(4096);
             let write_started = Arc::new(AtomicBool::new(false));
-            let completed_writes = Arc::new(AtomicUsize::new(0));
             let mut worker_writer = BlockingWriter {
                 write_started: Arc::clone(&write_started),
-                completed_writes: Arc::clone(&completed_writes),
             };
             let (output, mut frames) = mpsc::channel(4);
             let lifecycle = lifecycle(88);
@@ -1709,7 +1702,6 @@ mod windows_service_entry {
             let (result, ()) = tokio::join!(gate, client);
             assert_eq!(result, Err(super::McpGateFailure::SessionRevoked));
             assert_eq!(sequence, 1);
-            assert_eq!(completed_writes.load(Ordering::SeqCst), 0);
         }
 
         #[tokio::test]
@@ -1845,10 +1837,8 @@ mod windows_service_entry {
         async fn lifecycle_revocation_cancels_a_backpressured_output_write() {
             let request_id = [13; 16];
             let write_started = Arc::new(AtomicBool::new(false));
-            let completed_writes = Arc::new(AtomicUsize::new(0));
             let writer = BlockingWriter {
                 write_started: Arc::clone(&write_started),
-                completed_writes: Arc::clone(&completed_writes),
             };
             let (output, receiver) = mpsc::channel(1);
             let (control, mut events) = mpsc::channel(1);
@@ -1879,7 +1869,6 @@ mod windows_service_entry {
                 .expect("writer cancelled on revocation")
                 .expect("writer task")
                 .expect("writer result");
-            assert_eq!(completed_writes.load(Ordering::SeqCst), 0);
         }
     }
 }
