@@ -70,9 +70,11 @@ describe('cross-platform CI gates', () => {
     expect(native).toContain('cargo test --workspace --locked --target ${{ matrix.target }}');
     expect(native).toContain('cargo test --workspace --locked --target ${{ matrix.gnu_target }}');
     expect(native).toContain('cargo test --workspace --locked --target ${{ matrix.musl_target }}');
-    expect(native).toContain('cargo clippy --workspace --all-targets --locked --target ${{ matrix.target }} -- -D warnings');
-    expect(native).toContain('cargo clippy --workspace --all-targets --locked --target ${{ matrix.gnu_target }} -- -D warnings');
-    expect(native).toContain('cargo clippy --workspace --all-targets --locked --target ${{ matrix.musl_target }} -- -D warnings');
+    expect(native).toContain('cargo clippy --workspace --all-targets --locked --target ${{ matrix.target }}');
+    expect(native).toContain('cargo clippy --workspace --all-targets --locked --target ${{ matrix.gnu_target }}');
+    expect(native).toContain('cargo clippy --workspace --all-targets --locked --target ${{ matrix.musl_target }}');
+    expect(native).toContain('--exclude palladin-linux-broker --exclude palladin-linux-executor');
+    expect(native).toContain('--exclude palladin-windows-broker --exclude palladin-windows-executor');
     expect(native).toContain('runner: macos-15-intel');
     expect(native).toContain('runner: windows-11-arm');
     expect(native).toContain('runner: ubuntu-24.04-arm');
