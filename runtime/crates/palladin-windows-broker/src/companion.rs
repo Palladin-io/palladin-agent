@@ -2,14 +2,17 @@ use std::io::{self, BufRead, IsTerminal, Read};
 use std::time::Duration;
 
 use palladin_platform::broker_protocol::{
-    BrokerFrame, ClientFrame, ConsentChallenge, ExecuteRequest, InputChunk, MAX_STREAM_CHUNK_BYTES,
-    OutputStream, ProtocolError, SecureOperation, consent_payload, operation_and_profile,
-    read_frame, request_hash, write_frame,
+    BrokerFrame, ClientFrame, ConsentChallenge, ExecuteRequest, MAX_MCP_MESSAGE_BYTES,
+    MAX_STREAM_CHUNK_BYTES, McpConsentResponse, McpMessage, OutputStream, ProtocolError,
+    SecureOperation, consent_payload, operation_and_profile, read_frame, request_hash, write_frame,
 };
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 use tokio::sync::mpsc;
+use windows::Security::Credentials::UI::{
+    UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
+};
 use windows::Security::Credentials::{
     KeyCredential, KeyCredentialCreationOption, KeyCredentialManager, KeyCredentialStatus,
 };
@@ -159,12 +162,13 @@ async fn execute(
         nonce,
         issued_at_unix_ms,
         expires_at_unix_ms,
-        agent_id,
+        agent_id: agent_id.clone(),
         operation,
         request_hash: expected_request_hash,
         signature: Vec::new(),
     };
     let mut payload = consent_payload(&consent).map_err(|_| CompanionError::InvalidResponse)?;
+    verify_user_context(operation, &agent_id)?;
     consent.signature = hello_sign(&credential, &payload)?;
     payload.zeroize();
     let request = ExecuteRequest {
@@ -177,7 +181,7 @@ async fn execute(
     write_client_frame(&mut pipe, &ClientFrame::Execute(request)).await?;
 
     if operation == SecureOperation::McpServe {
-        return execute_duplex(pipe, request_id).await;
+        return execute_duplex(pipe, request_id, credential, agent_id).await;
     }
 
     execute_one_shot(pipe, request_id).await
@@ -231,21 +235,94 @@ async fn execute_one_shot(
     }
 }
 
+#[derive(Default)]
+struct McpFlowControl {
+    next_sequence: u64,
+    message_in_flight: bool,
+}
+
+impl McpFlowControl {
+    const fn can_send(&self) -> bool {
+        !self.message_in_flight
+    }
+
+    fn begin_message(&mut self) -> Result<u64, CompanionError> {
+        if self.message_in_flight {
+            return Err(CompanionError::InvalidResponse);
+        }
+        self.message_in_flight = true;
+        Ok(self.next_sequence)
+    }
+
+    fn acknowledge(&mut self, sequence: u64) -> Result<(), CompanionError> {
+        if !self.message_in_flight || sequence != self.next_sequence {
+            return Err(CompanionError::InvalidResponse);
+        }
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(CompanionError::InvalidResponse)?;
+        self.message_in_flight = false;
+        Ok(())
+    }
+
+    const fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
+    const fn message_in_flight(&self) -> bool {
+        self.message_in_flight
+    }
+}
+
 async fn execute_duplex(
     pipe: NamedPipeClient,
     request_id: [u8; 16],
+    credential: KeyCredential,
+    agent_id: String,
 ) -> Result<i32, CompanionError> {
     let (reader, mut writer) = tokio::io::split(pipe);
     let (mut frames, _reader_task) = broker_frame_reader(reader);
     let mut accepted = false;
     let mut input_closed = false;
+    let mut input_eof = false;
+    let mut flow = McpFlowControl::default();
     let mut cancel_sent = false;
-    let mut input_sequence = 0_u64;
     let mut next_output_sequence = 0_u64;
+    let mut consent_sequence = 0_u64;
+    let mut latest_consent_request_id = None;
     let mut input = tokio::io::stdin();
     let mut buffer = Zeroizing::new([0_u8; MAX_STREAM_CHUNK_BYTES]);
+    let mut pending = Zeroizing::new(Vec::new());
 
     loop {
+        if accepted && flow.can_send() && !input_closed && !cancel_sent {
+            if let Some(mut bytes) = take_next_mcp_message(&mut pending, input_eof)? {
+                let input_sequence = flow.begin_message()?;
+                write_client_frame(
+                    &mut writer,
+                    &ClientFrame::McpMessage(McpMessage {
+                        request_id,
+                        sequence: input_sequence,
+                        bytes: std::mem::take(&mut *bytes),
+                    }),
+                )
+                .await?;
+                continue;
+            }
+            if input_eof {
+                write_client_frame(
+                    &mut writer,
+                    &ClientFrame::InputClosed {
+                        request_id,
+                        sequence: flow.next_sequence(),
+                    },
+                )
+                .await?;
+                input_closed = true;
+                continue;
+            }
+        }
         tokio::select! {
             frame = frames.recv() => {
                 let frame = frame.ok_or(CompanionError::Transport)??;
@@ -265,37 +342,81 @@ async fn execute_duplex(
                                 .ok_or(CompanionError::InvalidResponse)?;
                             relay_output(*stream, bytes).await?;
                         }
+                    BrokerFrame::Challenge {
+                        request_id: consent_request_id,
+                        nonce,
+                        issued_at_unix_ms,
+                        expires_at_unix_ms,
+                        agent_id: challenge_agent_id,
+                        operation,
+                        request_hash,
+                    } if accepted
+                        && flow.message_in_flight()
+                        && challenge_agent_id == &agent_id
+                        && matches!(
+                            operation,
+                            SecureOperation::McpSearchEntries
+                                | SecureOperation::McpGetCredential
+                                | SecureOperation::McpExecWithCredential
+                                | SecureOperation::McpReportCredentialStale
+                        ) => {
+                            let mut consent = ConsentChallenge {
+                                nonce: *nonce,
+                                issued_at_unix_ms: *issued_at_unix_ms,
+                                expires_at_unix_ms: *expires_at_unix_ms,
+                                agent_id: challenge_agent_id.clone(),
+                                operation: *operation,
+                                request_hash: *request_hash,
+                                signature: Vec::new(),
+                            };
+                            let mut payload = consent_payload(&consent)
+                                .map_err(|_| CompanionError::InvalidResponse)?;
+                            verify_user_context(*operation, challenge_agent_id)?;
+                            consent.signature = hello_sign(&credential, &payload)?;
+                            payload.zeroize();
+                            write_client_frame(
+                                &mut writer,
+                                &ClientFrame::AuthorizeMcp(McpConsentResponse {
+                                    session_request_id: request_id,
+                                    consent_request_id: *consent_request_id,
+                                    sequence: consent_sequence,
+                                    consent,
+                                }),
+                            )
+                            .await?;
+                            latest_consent_request_id = Some(*consent_request_id);
+                            consent_sequence = consent_sequence
+                                .checked_add(1)
+                                .ok_or(CompanionError::InvalidResponse)?;
+                        }
+                    BrokerFrame::McpMessageAccepted {
+                        request_id: response_id,
+                        sequence,
+                    } if *response_id == request_id => {
+                            flow.acknowledge(*sequence)?;
+                        }
                     BrokerFrame::Exited { request_id: response_id, exit_code }
                         if *response_id == request_id && accepted => return Ok(*exit_code),
                     BrokerFrame::Rejected { request_id: response_id, code }
-                        if response_matches_request(*response_id, request_id) => {
+                        if response_matches_request(*response_id, request_id)
+                            || *response_id == latest_consent_request_id => {
                             return Err(rejection_error(*code));
                         }
                     _ => return Err(CompanionError::InvalidResponse),
                 }
             }
-            read = input.read(&mut buffer[..]), if accepted && !input_closed && !cancel_sent => {
+            read = input.read(&mut buffer[..]), if accepted
+                && !input_closed
+                && !input_eof
+                && flow.can_send()
+                && !cancel_sent => {
                 let read = read.map_err(|_| CompanionError::Transport)?;
                 if read == 0 {
-                    write_client_frame(
-                        &mut writer,
-                        &ClientFrame::InputClosed { request_id, sequence: input_sequence },
-                    ).await?;
-                    input_closed = true;
+                    input_eof = true;
                 } else {
-                    let bytes = buffer[..read].to_vec();
+                    pending.extend_from_slice(&buffer[..read]);
                     buffer[..read].zeroize();
-                    write_client_frame(
-                        &mut writer,
-                        &ClientFrame::Input(InputChunk {
-                            request_id,
-                            sequence: input_sequence,
-                            bytes,
-                        }),
-                    ).await?;
-                    input_sequence = input_sequence
-                        .checked_add(1)
-                        .ok_or(CompanionError::Transport)?;
+                    validate_pending_mcp_message(&pending)?;
                 }
             }
             result = tokio::signal::ctrl_c(), if !cancel_sent => {
@@ -304,6 +425,35 @@ async fn execute_duplex(
                 cancel_sent = true;
             }
         }
+    }
+}
+
+fn take_next_mcp_message(
+    pending: &mut Vec<u8>,
+    input_eof: bool,
+) -> Result<Option<Zeroizing<Vec<u8>>>, CompanionError> {
+    if let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+        if newline == 0 || newline > MAX_MCP_MESSAGE_BYTES {
+            return Err(CompanionError::InputTooLarge);
+        }
+        let mut bytes = Zeroizing::new(pending.drain(..=newline).collect::<Vec<_>>());
+        if bytes.pop() != Some(b'\n') {
+            return Err(CompanionError::InvalidResponse);
+        }
+        return Ok(Some(bytes));
+    }
+    validate_pending_mcp_message(pending)?;
+    if input_eof && !pending.is_empty() {
+        return Ok(Some(Zeroizing::new(std::mem::take(pending))));
+    }
+    Ok(None)
+}
+
+fn validate_pending_mcp_message(pending: &[u8]) -> Result<(), CompanionError> {
+    match pending.iter().position(|byte| *byte == b'\n') {
+        Some(newline) if newline > MAX_MCP_MESSAGE_BYTES => Err(CompanionError::InputTooLarge),
+        None if pending.len() > MAX_MCP_MESSAGE_BYTES => Err(CompanionError::InputTooLarge),
+        _ => Ok(()),
     }
 }
 
@@ -567,6 +717,64 @@ fn hello_sign(credential: &KeyCredential, payload: &[u8]) -> Result<Vec<u8>, Com
     )
 }
 
+fn verify_user_context(operation: SecureOperation, agent_id: &str) -> Result<(), CompanionError> {
+    let availability = UserConsentVerifier::CheckAvailabilityAsync()
+        .and_then(|operation| operation.join())
+        .map_err(|_| CompanionError::HelloUnavailable)?;
+    if availability != UserConsentVerifierAvailability::Available {
+        return Err(CompanionError::HelloUnavailable);
+    }
+    let message = HSTRING::from(format!(
+        "Palladin: authorize {} for profile {}",
+        operation_display_name(operation),
+        safe_profile_hint(agent_id),
+    ));
+    let result = UserConsentVerifier::RequestVerificationAsync(&message)
+        .and_then(|operation| operation.join())
+        .map_err(|_| CompanionError::HelloUnavailable)?;
+    if result != UserConsentVerificationResult::Verified {
+        return Err(CompanionError::HelloUnavailable);
+    }
+    Ok(())
+}
+
+const fn operation_display_name(operation: SecureOperation) -> &'static str {
+    match operation {
+        SecureOperation::Init => "initialize Agent identity",
+        SecureOperation::Doctor => "inspect runtime diagnostics",
+        SecureOperation::Connect => "connect organization credential",
+        SecureOperation::Status => "read Agent status",
+        SecureOperation::Disconnect => "disconnect Agent profile",
+        SecureOperation::Search => "search vault metadata",
+        SecureOperation::Get => "release credential",
+        SecureOperation::ReportStale => "report stale credential",
+        SecureOperation::McpServe => "open MCP transport",
+        SecureOperation::McpSearchEntries => "search vault metadata through MCP",
+        SecureOperation::McpGetCredential => "release credential through MCP",
+        SecureOperation::McpExecWithCredential => "execute with credential through MCP",
+        SecureOperation::McpReportCredentialStale => "report stale credential through MCP",
+        SecureOperation::Agents => "manage Agent profiles",
+        SecureOperation::Security => "manage runtime security",
+        SecureOperation::Purge => "purge Agent profile",
+    }
+}
+
+fn safe_profile_hint(agent_id: &str) -> String {
+    let sanitized = agent_id
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        return "selected".to_owned();
+    }
+    if sanitized.len() <= 32 {
+        return sanitized;
+    }
+    format!("{}…{}", &sanitized[..16], &sanitized[sanitized.len() - 8..])
+}
+
 fn buffer_to_vec(buffer: &windows::Storage::Streams::IBuffer) -> Result<Vec<u8>, CompanionError> {
     let mut output = Array::<u8>::new();
     CryptographicBuffer::CopyToByteArray(buffer, &mut output)
@@ -592,10 +800,13 @@ impl Drop for WinRtApartment {
 
 #[cfg(test)]
 mod tests {
-    use palladin_platform::broker_protocol::{RejectionCode, SecureOperation};
+    use palladin_platform::broker_protocol::{
+        MAX_MCP_MESSAGE_BYTES, RejectionCode, SecureOperation,
+    };
 
     use super::{
-        StandardInputPlan, rejection_error, response_matches_request, standard_input_plan,
+        CompanionError, McpFlowControl, StandardInputPlan, operation_display_name, rejection_error,
+        response_matches_request, safe_profile_hint, standard_input_plan, take_next_mcp_message,
     };
 
     #[test]
@@ -698,5 +909,94 @@ mod tests {
             frame,
             BrokerFrame::Accepted { request_id } if request_id == [4; 16]
         ));
+    }
+
+    #[test]
+    fn mcp_flow_withholds_the_second_message_until_the_exact_ack() {
+        let mut pending = br#"{"id":1}
+{"id":2}
+"#
+        .to_vec();
+        let mut flow = McpFlowControl::default();
+        let first = take_next_mcp_message(&mut pending, false)
+            .expect("first")
+            .expect("first message");
+        assert_eq!(&*first, br#"{"id":1}"#);
+        assert_eq!(flow.begin_message().expect("first sequence"), 0);
+        assert!(!flow.can_send());
+        assert_eq!(
+            pending,
+            br#"{"id":2}
+"#
+        );
+        assert!(matches!(
+            flow.begin_message(),
+            Err(CompanionError::InvalidResponse)
+        ));
+        assert!(matches!(
+            flow.acknowledge(1),
+            Err(CompanionError::InvalidResponse)
+        ));
+        assert!(!flow.can_send());
+        flow.acknowledge(0).expect("matching ACK");
+        assert!(flow.can_send());
+        let second = take_next_mcp_message(&mut pending, false)
+            .expect("second")
+            .expect("second message");
+        assert_eq!(&*second, br#"{"id":2}"#);
+        assert_eq!(flow.begin_message().expect("second sequence"), 1);
+        assert!(matches!(
+            flow.acknowledge(0),
+            Err(CompanionError::InvalidResponse)
+        ));
+        flow.acknowledge(1).expect("second matching ACK");
+        assert!(matches!(
+            flow.acknowledge(1),
+            Err(CompanionError::InvalidResponse)
+        ));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn final_mcp_message_without_newline_is_released_only_after_eof() {
+        let mut pending = br#"{"id":1}"#.to_vec();
+        assert!(
+            take_next_mcp_message(&mut pending, false)
+                .expect("pending")
+                .is_none()
+        );
+        let message = take_next_mcp_message(&mut pending, true)
+            .expect("eof")
+            .expect("message");
+        assert_eq!(&*message, br#"{"id":1}"#);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn oversized_or_empty_mcp_lines_fail_closed() {
+        let mut oversized = vec![b'a'; MAX_MCP_MESSAGE_BYTES + 1];
+        assert!(matches!(
+            take_next_mcp_message(&mut oversized, false),
+            Err(CompanionError::InputTooLarge)
+        ));
+        let mut empty = b"\n".to_vec();
+        assert!(matches!(
+            take_next_mcp_message(&mut empty, false),
+            Err(CompanionError::InputTooLarge)
+        ));
+    }
+
+    #[test]
+    fn consent_context_is_fixed_and_never_renders_control_text() {
+        assert_eq!(
+            operation_display_name(SecureOperation::McpGetCredential),
+            "release credential through MCP"
+        );
+        assert_eq!(
+            safe_profile_hint("build\n\u{202e}attacker"),
+            "buildattacker"
+        );
+        let long = safe_profile_hint("abcdefghijklmnopqrstuvwxyz0123456789");
+        assert_eq!(long, "abcdefghijklmnop…23456789");
     }
 }

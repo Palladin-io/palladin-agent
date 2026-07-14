@@ -106,9 +106,16 @@ jobs:
           node packaging/npm/verify-kms-public-key.mjs \
             --pem "$RUNNER_TEMP/version-policy-public.pem" --expected "$PUBLIC_KEY"
 
+  compatibility:
+    name: Require client compatibility for the release source
+    needs: authorize
+    uses: ./.github/workflows/client-compatibility-gate.yml
+    with:
+      source_sha: ${{ needs.authorize.outputs.source_sha }}
+
   macos:
     name: Build, sign, notarize, and smoke macOS
-    needs: authorize
+    needs: [authorize, compatibility]
     uses: ./.github/workflows/macos-signed-runtime.yml
     with:
       source_sha: ${{ needs.authorize.outputs.source_sha }}
@@ -118,7 +125,7 @@ jobs:
 
   windows:
     name: Build, sign, and smoke Windows
-    needs: authorize
+    needs: [authorize, compatibility]
     uses: ./.github/workflows/windows-signed-runtime.yml
     with:
       source_sha: ${{ needs.authorize.outputs.source_sha }}
@@ -130,7 +137,7 @@ jobs:
 
   linux:
     name: Build and verify Linux ${{ matrix.architecture }}
-    needs: authorize
+    needs: [authorize, compatibility]
     strategy:
       fail-fast: false
       matrix:
@@ -305,7 +312,7 @@ jobs:
 
   stage-platforms:
     name: Attest and stage the platform release set
-    needs: [authorize, macos, windows, linux]
+    needs: [authorize, compatibility, macos, windows, linux]
     runs-on: ubuntu-latest
     environment: npm-release
     timeout-minutes: 20
