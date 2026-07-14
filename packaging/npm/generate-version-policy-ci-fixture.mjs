@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import {
   lstatSync, readFileSync, realpathSync, writeFileSync,
 } from 'node:fs';
@@ -18,7 +18,7 @@ for (let index = 2; index < process.argv.length; index += 2) {
   const name = key.slice(2);
   if (name === 'package-root') {
     packageRoots.push(value);
-  } else if (['version', 'source-sha', 'output-bundle', 'output-public-key'].includes(name)
+  } else if (['version', 'source-sha', 'private-key', 'public-key', 'output-bundle'].includes(name)
     && !values.has(name)) {
     values.set(name, value);
   } else {
@@ -65,20 +65,25 @@ const payload = {
   sequence: 1,
   source: 'https://releases.palladin.io/agent/version-policy.json',
 };
-const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+const privateKey = createPrivateKey(readBoundedKey(required('private-key')));
+const publicKeyBase64 = readBoundedKey(required('public-key')).toString('utf8');
+const derivedPublicKey = createPublicKey(privateKey).export({ format: 'der', type: 'spki' })
+  .subarray(-32)
+  .toString('base64');
+if (derivedPublicKey !== publicKeyBase64) fail();
 const signature = sign(
   null,
   Buffer.from(canonicalizeVersionPolicyPayload(payload)),
   privateKey,
 ).toString('base64');
 const envelope = canonicalizeVersionPolicyEnvelope({ signed: payload, signature });
-const publicKeyBase64 = publicKey.export({ format: 'der', type: 'spki' })
-  .subarray(-32)
-  .toString('base64');
 writeFileSync(resolve(required('output-bundle')), envelope, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-writeFileSync(resolve(required('output-public-key')), publicKeyBase64, {
-  encoding: 'utf8', flag: 'wx', mode: 0o600,
-});
+
+function readBoundedKey(path) {
+  const metadata = lstatSync(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size <= 0 || metadata.size > 16 * 1024) fail();
+  return readFileSync(realpathSync(path));
+}
 
 function readRegularFile(root, path, maximum = 256 * 1024 * 1024) {
   const candidate = join(root, path);

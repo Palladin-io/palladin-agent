@@ -382,7 +382,7 @@ test('signed policy object names are immutable and incident latest moves only th
   }
 });
 
-test('CI policy fixture signs exact staged Linux bytes without persisting a private key', () => {
+test('CI policy fixture signs exact staged Linux bytes with an ephemeral matching key', () => {
   const root = fixture();
   try {
     const packages = ['@palladin/runtime-linux-x64-gnu', '@palladin/runtime-linux-x64-musl'];
@@ -395,15 +395,22 @@ test('CI policy fixture signs exact staged Linux bytes without persisting a priv
       return packageRoot;
     });
     const bundle = join(root, 'policy.json');
+    const privateKey = join(root, 'policy-private.pem');
     const publicKey = join(root, 'policy.pub');
+    run('generate-version-policy-ci-key.mjs', [
+      '--output-private-key', privateKey,
+      '--output-public-key', publicKey,
+    ]);
     run('generate-version-policy-ci-fixture.mjs', [
       '--package-root', packageRoots[0],
       '--package-root', packageRoots[1],
       '--version', '1.2.3',
       '--source-sha', sha,
+      '--private-key', privateKey,
+      '--public-key', publicKey,
       '--output-bundle', bundle,
-      '--output-public-key', publicKey,
     ]);
+    rmSync(privateKey);
     const policy = parseAndVerifyVersionPolicy(readFileSync(bundle), {
       publicKeyBase64: readFileSync(publicKey, 'utf8'),
       source: 'https://releases.palladin.io/agent/version-policy.json',
