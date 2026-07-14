@@ -16,6 +16,7 @@ const windowsPackageJson = 'C:\\fixture\\node_modules\\@palladin\\runtime-win32-
 const windowsExecutable = 'C:\\fixture\\node_modules\\@palladin\\runtime-win32-x64\\bin\\palladin-client.exe';
 const linuxPackageJson = '/fixture/node_modules/@palladin/runtime-linux-x64-gnu/package.json';
 const linuxExecutable = '/fixture/node_modules/@palladin/runtime-linux-x64-gnu/bin/palladin-linux-client';
+const linuxWorker = '/fixture/node_modules/@palladin/runtime-linux-x64-gnu/bin/palladin-worker';
 
 function elfWithInterpreter(interpreter: string): Buffer {
   const bytes = Buffer.alloc(512);
@@ -183,6 +184,9 @@ describe('native runtime dispatcher', () => {
     expect(resolveNativeRuntime(fixture)).toBe(client);
     expect(fixture.resolvePackageJson).toHaveBeenCalledWith(specifier);
     expect(fixture.assertExecutable).toHaveBeenCalledWith(client);
+    expect(fixture.assertExecutable).toHaveBeenCalledWith(
+      client.replace(/palladin-linux-client$/, 'palladin-worker'),
+    );
   });
 
   it.each([
@@ -275,6 +279,34 @@ describe('native runtime dispatcher', () => {
     });
     expect(() => resolveNativeRuntime(fixture)).toThrow('resolved outside');
     expect(fixture.assertExecutable).not.toHaveBeenCalled();
+  });
+
+  it('rejects a Linux worker that is missing or resolves outside its platform package', () => {
+    const escaped = host({
+      platform: 'linux',
+      architecture: 'x64',
+      linuxLibc: 'glibc',
+      resolvePackageJson: vi.fn(() => linuxPackageJson),
+      realpath: vi.fn((path: string) => path.endsWith('/palladin-worker')
+        ? '/tmp/attacker-worker'
+        : path),
+    });
+    expect(() => resolveNativeRuntime(escaped)).toThrow('resolved outside');
+    expect(escaped.loadVerifiedArtifactBinding).not.toHaveBeenCalled();
+    expect(escaped.spawnRuntime).not.toHaveBeenCalled();
+
+    const missing = host({
+      platform: 'linux',
+      architecture: 'x64',
+      linuxLibc: 'glibc',
+      resolvePackageJson: vi.fn(() => linuxPackageJson),
+      assertExecutable: vi.fn((path: string) => {
+        if (path === linuxWorker) throw new Error('missing');
+      }),
+    });
+    expect(() => resolveNativeRuntime(missing)).toThrow('missing');
+    expect(missing.loadVerifiedArtifactBinding).not.toHaveBeenCalled();
+    expect(missing.spawnRuntime).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -425,6 +457,77 @@ describe('native runtime dispatcher', () => {
     await expect(launchNativeRuntime(['status'], fixture)).resolves.toBe(1);
     expect(fixture.spawnRuntime).not.toHaveBeenCalled();
     expect(write).toHaveBeenCalledWith(expect.stringContaining('integrity verification'));
+    write.mockRestore();
+  });
+
+  it('verifies the Linux worker binding before dispatch and again immediately before spawn', async () => {
+    let workerHashes = 0;
+    const hashFile = vi.fn((path: string) => {
+      if (path === linuxWorker) {
+        workerHashes += 1;
+        return workerHashes === 1 ? 'c'.repeat(64) : 'b'.repeat(64);
+      }
+      return 'a'.repeat(64);
+    });
+    const fixture = host({
+      platform: 'linux',
+      architecture: 'x64',
+      linuxLibc: 'glibc',
+      resolvePackageJson: vi.fn(() => linuxPackageJson),
+      hashFile,
+    });
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await expect(launchNativeRuntime(['status'], fixture)).resolves.toBe(1);
+    expect(hashFile).toHaveBeenCalledWith(linuxExecutable);
+    expect(hashFile).toHaveBeenCalledWith(linuxWorker);
+    expect(fixture.loadVerifiedArtifactBinding).toHaveBeenCalledOnce();
+    expect(fixture.spawnRuntime).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('integrity verification'));
+    write.mockRestore();
+  });
+
+  it('dispatches the Linux client only after both signed executables remain unchanged', async () => {
+    const child = childProcess();
+    const hashFile = vi.fn((path: string) => path === linuxWorker
+      ? 'c'.repeat(64)
+      : 'a'.repeat(64));
+    const fixture = host({
+      platform: 'linux',
+      architecture: 'x64',
+      linuxLibc: 'glibc',
+      resolvePackageJson: vi.fn(() => linuxPackageJson),
+      hashFile,
+      spawnRuntime: vi.fn(() => child),
+    });
+
+    const result = launchNativeRuntime(['status'], fixture);
+    await vi.waitFor(() => expect(fixture.spawnRuntime).toHaveBeenCalledOnce());
+    expect(hashFile.mock.calls.filter(([path]) => path === linuxExecutable)).toHaveLength(2);
+    expect(hashFile.mock.calls.filter(([path]) => path === linuxWorker)).toHaveLength(2);
+    expect(fixture.spawnRuntime).toHaveBeenCalledWith(linuxExecutable, ['status'], {
+      shell: false,
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    child.emit('exit', 0, null);
+    await expect(result).resolves.toBe(0);
+  });
+
+  it('rejects a Linux worker that does not match the signed policy before dispatch', async () => {
+    const fixture = host({
+      platform: 'linux',
+      architecture: 'x64',
+      linuxLibc: 'glibc',
+      resolvePackageJson: vi.fn(() => linuxPackageJson),
+      hashFile: vi.fn((path: string) => path === linuxWorker ? 'b'.repeat(64) : 'a'.repeat(64)),
+    });
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await expect(launchNativeRuntime(['status'], fixture)).resolves.toBe(1);
+    expect(fixture.loadVerifiedArtifactBinding).toHaveBeenCalledOnce();
+    expect(fixture.spawnRuntime).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('signed version policy'));
     write.mockRestore();
   });
 

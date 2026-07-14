@@ -46,6 +46,7 @@ const LINUX_RUNTIME_PACKAGES = {
   },
 } as const;
 const LINUX_CLIENT_EXECUTABLE = ['bin', 'palladin-linux-client'] as const;
+const LINUX_WORKER_EXECUTABLE = ['bin', 'palladin-worker'] as const;
 const FORWARDED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 const ELF_PREFIX_LIMIT = 1024 * 1024;
 const ELF64_PROGRAM_HEADER_BYTES = 56;
@@ -77,6 +78,7 @@ export type LinuxLibc = 'glibc' | 'musl' | 'unsupported';
 interface ResolvedNativeRuntime {
   packageName: string;
   executable: string;
+  workerExecutable?: string;
 }
 
 export function resolveNativeRuntime(host: NativeDispatchHost): string {
@@ -124,6 +126,7 @@ function resolveNativeRuntimeSource(host: NativeDispatchHost): ResolvedNativeRun
       LINUX_RUNTIME_PACKAGES[host.linuxLibc][host.architecture],
       LINUX_CLIENT_EXECUTABLE,
       darwinPath,
+      LINUX_WORKER_EXECUTABLE,
     );
   }
 
@@ -135,6 +138,7 @@ function resolvePackageExecutable(
   packageName: string,
   executableSegments: readonly string[],
   pathApi: typeof darwinPath,
+  workerExecutableSegments?: readonly string[],
 ): ResolvedNativeRuntime {
   let resolvedPackageJson: string;
   try {
@@ -146,19 +150,26 @@ function resolvePackageExecutable(
   }
   const packageJson = host.realpath(resolvedPackageJson);
   const packageRoot = pathApi.dirname(packageJson);
-  const executable = host.realpath(pathApi.join(packageRoot, ...executableSegments));
-  const pathFromPackage = pathApi.relative(packageRoot, executable);
-  if (
-    pathFromPackage === ''
-    || pathFromPackage === '..'
-    || pathFromPackage.startsWith(`..${pathApi.sep}`)
-    || pathApi.isAbsolute(pathFromPackage)
-  ) {
-    throw new Error('Palladin native runtime resolved outside its platform package');
-  }
-  host.assertExecutable(executable);
+  const resolveContainedExecutable = (segments: readonly string[]): string => {
+    const candidate = host.realpath(pathApi.join(packageRoot, ...segments));
+    const pathFromPackage = pathApi.relative(packageRoot, candidate);
+    if (
+      pathFromPackage === ''
+      || pathFromPackage === '..'
+      || pathFromPackage.startsWith(`..${pathApi.sep}`)
+      || pathApi.isAbsolute(pathFromPackage)
+    ) {
+      throw new Error('Palladin native runtime resolved outside its platform package');
+    }
+    host.assertExecutable(candidate);
+    return candidate;
+  };
+  const executable = resolveContainedExecutable(executableSegments);
+  const workerExecutable = workerExecutableSegments === undefined
+    ? undefined
+    : resolveContainedExecutable(workerExecutableSegments);
   validatePackageManifest(host.readPackageManifest(packageJson), packageName, host);
-  return { packageName, executable };
+  return { packageName, executable, workerExecutable };
 }
 
 export async function launchNativeRuntime(
@@ -177,6 +188,9 @@ export async function launchNativeRuntime(
   let binding: VerifiedArtifactBinding;
   try {
     const executableSha256 = host.hashFile(runtime.executable);
+    const workerExecutableSha256 = runtime.workerExecutable === undefined
+      ? undefined
+      : host.hashFile(runtime.workerExecutable);
     const request = {
       packageName: runtime.packageName,
       version: NATIVE_RUNTIME_VERSION,
@@ -194,6 +208,7 @@ export async function launchNativeRuntime(
       executableSha256,
       binding,
       !policyIndependentDiagnostic,
+      workerExecutableSha256,
     );
   } catch {
     process.stderr.write('Error: Palladin native runtime failed signed version policy verification\n');
@@ -211,8 +226,14 @@ export async function launchNativeRuntime(
       }, binding);
       windowsLease.verifyBeforeSpawn();
       executable = windowsLease.executable;
-    } else if (host.hashFile(runtime.executable) !== binding.executableSha256) {
-      throw new Error('runtime changed after policy verification');
+    } else {
+      if (host.hashFile(runtime.executable) !== binding.executableSha256) {
+        throw new Error('runtime changed after policy verification');
+      }
+      if (runtime.workerExecutable !== undefined
+        && host.hashFile(runtime.workerExecutable) !== binding.workerExecutableSha256) {
+        throw new Error('runtime worker changed after policy verification');
+      }
     }
   } catch {
     windowsLease?.release();
@@ -322,9 +343,12 @@ function assertExactBinding(
   executableSha256: string,
   binding: VerifiedArtifactBinding,
   requireAllowed: boolean,
+  workerExecutableSha256?: string,
 ): void {
   if (binding.packageName !== packageName || binding.version !== NATIVE_RUNTIME_VERSION
     || binding.executableSha256 !== executableSha256
+    || (workerExecutableSha256 !== undefined
+      && binding.workerExecutableSha256 !== workerExecutableSha256)
     || binding.sourceSha !== RUNTIME_SOURCE_SHA
     || (requireAllowed && !binding.runtimeAllowed)) {
     throw new Error('Palladin native runtime binding is invalid');
