@@ -70,19 +70,29 @@ fn delete_os_credential(service: &str, account: &str) -> Result<(), LegacyCreden
         Err(_) => CredentialDeleteState::Unavailable,
     };
 
-    match (secret_service, keyutils) {
-        (CredentialDeleteState::Deleted, _) | (_, CredentialDeleteState::Deleted) => Ok(()),
-        (CredentialDeleteState::Missing, CredentialDeleteState::Missing) => Ok(()),
-        _ => Err(LegacyCredentialError::Unavailable),
-    }
+    linux_delete_outcome(secret_service, keyutils)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CredentialDeleteState {
     Deleted,
     Missing,
     Unavailable,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_delete_outcome(
+    secret_service: CredentialDeleteState,
+    keyutils: CredentialDeleteState,
+) -> Result<(), LegacyCredentialError> {
+    match (secret_service, keyutils) {
+        (
+            CredentialDeleteState::Deleted | CredentialDeleteState::Missing,
+            CredentialDeleteState::Deleted | CredentialDeleteState::Missing,
+        ) => Ok(()),
+        _ => Err(LegacyCredentialError::Unavailable),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -226,6 +236,47 @@ mod tests {
         .expect("valid legacy profile");
 
         assert_eq!(adapter.0.lock().expect("delete calls").len(), 4);
+    }
+
+    #[test]
+    fn linux_cleanup_fails_closed_when_either_backend_is_unavailable() {
+        use super::{CredentialDeleteState, linux_delete_outcome};
+
+        for available in [
+            CredentialDeleteState::Deleted,
+            CredentialDeleteState::Missing,
+        ] {
+            assert_eq!(
+                linux_delete_outcome(available, CredentialDeleteState::Unavailable),
+                Err(LegacyCredentialError::Unavailable)
+            );
+            assert_eq!(
+                linux_delete_outcome(CredentialDeleteState::Unavailable, available),
+                Err(LegacyCredentialError::Unavailable)
+            );
+            assert_eq!(linux_delete_outcome(available, available), Ok(()));
+        }
+        assert_eq!(
+            linux_delete_outcome(
+                CredentialDeleteState::Deleted,
+                CredentialDeleteState::Missing,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            linux_delete_outcome(
+                CredentialDeleteState::Missing,
+                CredentialDeleteState::Deleted,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            linux_delete_outcome(
+                CredentialDeleteState::Unavailable,
+                CredentialDeleteState::Unavailable,
+            ),
+            Err(LegacyCredentialError::Unavailable)
+        );
     }
 
     #[test]
