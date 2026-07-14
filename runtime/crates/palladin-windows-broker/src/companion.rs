@@ -10,6 +10,9 @@ use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 use tokio::sync::mpsc;
+use windows::Security::Credentials::UI::{
+    UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
+};
 use windows::Security::Credentials::{
     KeyCredential, KeyCredentialCreationOption, KeyCredentialManager, KeyCredentialStatus,
 };
@@ -165,6 +168,7 @@ async fn execute(
         signature: Vec::new(),
     };
     let mut payload = consent_payload(&consent).map_err(|_| CompanionError::InvalidResponse)?;
+    verify_user_context(operation, &agent_id)?;
     consent.signature = hello_sign(&credential, &payload)?;
     payload.zeroize();
     let request = ExecuteRequest {
@@ -328,6 +332,7 @@ async fn execute_duplex(
                             };
                             let mut payload = consent_payload(&consent)
                                 .map_err(|_| CompanionError::InvalidResponse)?;
+                            verify_user_context(*operation, challenge_agent_id)?;
                             consent.signature = hello_sign(&credential, &payload)?;
                             payload.zeroize();
                             write_client_frame(
@@ -678,6 +683,64 @@ fn hello_sign(credential: &KeyCredential, payload: &[u8]) -> Result<Vec<u8>, Com
     )
 }
 
+fn verify_user_context(operation: SecureOperation, agent_id: &str) -> Result<(), CompanionError> {
+    let availability = UserConsentVerifier::CheckAvailabilityAsync()
+        .and_then(|operation| operation.join())
+        .map_err(|_| CompanionError::HelloUnavailable)?;
+    if availability != UserConsentVerifierAvailability::Available {
+        return Err(CompanionError::HelloUnavailable);
+    }
+    let message = HSTRING::from(format!(
+        "Palladin: authorize {} for profile {}",
+        operation_display_name(operation),
+        safe_profile_hint(agent_id),
+    ));
+    let result = UserConsentVerifier::RequestVerificationAsync(&message)
+        .and_then(|operation| operation.join())
+        .map_err(|_| CompanionError::HelloUnavailable)?;
+    if result != UserConsentVerificationResult::Verified {
+        return Err(CompanionError::HelloUnavailable);
+    }
+    Ok(())
+}
+
+const fn operation_display_name(operation: SecureOperation) -> &'static str {
+    match operation {
+        SecureOperation::Init => "initialize Agent identity",
+        SecureOperation::Doctor => "inspect runtime diagnostics",
+        SecureOperation::Connect => "connect organization credential",
+        SecureOperation::Status => "read Agent status",
+        SecureOperation::Disconnect => "disconnect Agent profile",
+        SecureOperation::Search => "search vault metadata",
+        SecureOperation::Get => "release credential",
+        SecureOperation::ReportStale => "report stale credential",
+        SecureOperation::McpServe => "open MCP transport",
+        SecureOperation::McpSearchEntries => "search vault metadata through MCP",
+        SecureOperation::McpGetCredential => "release credential through MCP",
+        SecureOperation::McpExecWithCredential => "execute with credential through MCP",
+        SecureOperation::McpReportCredentialStale => "report stale credential through MCP",
+        SecureOperation::Agents => "manage Agent profiles",
+        SecureOperation::Security => "manage runtime security",
+        SecureOperation::Purge => "purge Agent profile",
+    }
+}
+
+fn safe_profile_hint(agent_id: &str) -> String {
+    let sanitized = agent_id
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        return "selected".to_owned();
+    }
+    if sanitized.len() <= 32 {
+        return sanitized;
+    }
+    format!("{}…{}", &sanitized[..16], &sanitized[sanitized.len() - 8..])
+}
+
 fn buffer_to_vec(buffer: &windows::Storage::Streams::IBuffer) -> Result<Vec<u8>, CompanionError> {
     let mut output = Array::<u8>::new();
     CryptographicBuffer::CopyToByteArray(buffer, &mut output)
@@ -708,8 +771,8 @@ mod tests {
     };
 
     use super::{
-        CompanionError, StandardInputPlan, rejection_error, response_matches_request,
-        standard_input_plan, take_next_mcp_message,
+        CompanionError, StandardInputPlan, operation_display_name, rejection_error,
+        response_matches_request, safe_profile_hint, standard_input_plan, take_next_mcp_message,
     };
 
     #[test]
@@ -863,5 +926,19 @@ mod tests {
             take_next_mcp_message(&mut empty, false),
             Err(CompanionError::InputTooLarge)
         ));
+    }
+
+    #[test]
+    fn consent_context_is_fixed_and_never_renders_control_text() {
+        assert_eq!(
+            operation_display_name(SecureOperation::McpGetCredential),
+            "release credential through MCP"
+        );
+        assert_eq!(
+            safe_profile_hint("build\n\u{202e}attacker"),
+            "buildattacker"
+        );
+        let long = safe_profile_hint("abcdefghijklmnopqrstuvwxyz0123456789");
+        assert_eq!(long, "abcdefghijklmnop…23456789");
     }
 }
