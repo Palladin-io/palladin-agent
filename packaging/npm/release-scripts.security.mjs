@@ -12,6 +12,7 @@ import { gzipSync } from 'node:zlib';
 import {
   canonicalizeVersionPolicyEnvelope,
   canonicalizeVersionPolicyPayload,
+  parseAndVerifyVersionPolicy,
 } from '../../dist/runtime/version-policy.js';
 import { PLATFORM_PACKAGE_NAMES, PUBLIC_PACKAGE_NAMES } from './release-policy.mjs';
 
@@ -376,6 +377,54 @@ test('signed policy object names are immutable and incident latest moves only th
     assert.match(plan, /npm deprecate '@palladin\/runtime-linux-x64-gnu'@'1\.2\.3'/);
     assert.equal((plan.match(/npm dist-tag add/g) ?? []).length, 1);
     assert.match(plan, /npm dist-tag add '@palladin\/agent'@'1\.2\.2' latest/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('CI policy fixture signs exact staged Linux bytes without persisting a private key', () => {
+  const root = fixture();
+  try {
+    const packages = ['@palladin/runtime-linux-x64-gnu', '@palladin/runtime-linux-x64-musl'];
+    const packageRoots = packages.map((name) => {
+      const packageRoot = join(root, name.split('/').at(-1));
+      mkdirSync(join(packageRoot, 'bin'), { recursive: true });
+      writeJson(join(packageRoot, 'package.json'), { name, version: '1.2.3' });
+      writeFileSync(join(packageRoot, 'bin/palladin-linux-client'), `client: ${name}`);
+      writeFileSync(join(packageRoot, 'bin/palladin-worker'), `worker: ${name}`);
+      return packageRoot;
+    });
+    const bundle = join(root, 'policy.json');
+    const publicKey = join(root, 'policy.pub');
+    run('generate-version-policy-ci-fixture.mjs', [
+      '--package-root', packageRoots[0],
+      '--package-root', packageRoots[1],
+      '--version', '1.2.3',
+      '--source-sha', sha,
+      '--output-bundle', bundle,
+      '--output-public-key', publicKey,
+    ]);
+    const policy = parseAndVerifyVersionPolicy(readFileSync(bundle), {
+      publicKeyBase64: readFileSync(publicKey, 'utf8'),
+      source: 'https://releases.palladin.io/agent/version-policy.json',
+    }).signed;
+    assert.deepEqual(policy.artifacts.map((artifact) => artifact.packageName), packages);
+    for (const artifact of policy.artifacts) {
+      const packageRoot = packageRoots[packages.indexOf(artifact.packageName)];
+      assert.equal(
+        artifact.executableSha256,
+        createHash('sha256').update(readFileSync(join(packageRoot, 'bin/palladin-linux-client')))
+          .digest('hex'),
+      );
+      assert.equal(
+        artifact.workerExecutableSha256,
+        createHash('sha256').update(readFileSync(join(packageRoot, 'bin/palladin-worker')))
+          .digest('hex'),
+      );
+    }
+    assert.deepEqual(readdirSync(root).sort(), [
+      'policy.json', 'policy.pub', 'runtime-linux-x64-gnu', 'runtime-linux-x64-musl',
+    ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

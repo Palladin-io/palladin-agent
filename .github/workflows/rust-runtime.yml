@@ -316,6 +316,16 @@ jobs:
           done
           npm ci --ignore-scripts --workspaces=false
           npm run build
+          source_sha=$(git rev-parse HEAD)
+          policy="$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
+          public_key="$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.pub"
+          node packaging/npm/generate-version-policy-ci-fixture.mjs \
+            --package-root "$RUNNER_TEMP/npm-linux-$ARCHITECTURE" \
+            --package-root "$stage" --version 0.1.0 --source-sha "$source_sha" \
+            --output-bundle "$policy" --output-public-key "$public_key"
+          node packaging/npm/configure-version-policy-build.mjs \
+            --public-key "$(cat "$public_key")" --source-sha "$source_sha" --bundle "$policy"
+          npm run build
           launcher="$RUNNER_TEMP/alpine-launcher"
           install -d "$launcher/node_modules/@palladin"
           cp -R dist package.json "$launcher/"
