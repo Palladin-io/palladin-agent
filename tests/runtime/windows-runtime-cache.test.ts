@@ -151,10 +151,7 @@ describe('Windows content-addressed runtime cache', () => {
         windowsHide: true,
         env: { ...process.env, PALLADIN_TEST_PID_PATH: pidPath },
       });
-      await new Promise<void>((resolve, reject) => {
-        child.once('spawn', resolve);
-        child.once('error', reject);
-      });
+      expect(child.pid).toBeDefined();
       lease.bindToChild(child.pid);
       let nativePid: number | undefined;
       try {
