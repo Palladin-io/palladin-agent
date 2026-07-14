@@ -147,7 +147,9 @@ describe('Windows content-addressed runtime cache', () => {
         '$PID | Set-Content -LiteralPath $env:PALLADIN_TEST_PID_PATH; Start-Sleep -Seconds 30',
       ], {
         shell: false,
-        stdio: 'ignore',
+        // Match the real CLI launch path. The native Job Object launcher
+        // intentionally forwards valid inherited standard handles.
+        stdio: 'inherit',
         windowsHide: true,
         env: { ...process.env, PALLADIN_TEST_PID_PATH: pidPath },
       });
