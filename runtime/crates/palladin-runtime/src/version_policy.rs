@@ -47,12 +47,56 @@ pub fn verify_release_policy_file(path: &Path, current_version: &str) -> Result<
     )
 }
 
+/// Verifies the public policy forwarded by the npm dispatcher against worker
+/// bytes that a native launcher has already copied into an immutable image.
+/// This gate does not open profile or secret state.
+pub fn verify_environment_policy_for_worker_hash(
+    current_version: &str,
+    worker_executable_sha256: &str,
+) -> Result<(), RuntimeError> {
+    let bytes = environment_policy()?.ok_or(RuntimeError::VersionPolicyUnavailable)?;
+    let public_key = option_env!("PALLADIN_VERSION_POLICY_PUBLIC_KEY")
+        .ok_or(RuntimeError::VersionPolicyNotConfigured)?;
+    let source_sha = option_env!("SOURCE_SHA").ok_or(RuntimeError::VersionPolicyNotConfigured)?;
+    let package_name = runtime_package_name().ok_or(RuntimeError::VersionPolicyNotConfigured)?;
+    verify_release_policy_candidate_for_worker_hash(
+        &bytes,
+        public_key,
+        current_version,
+        package_name,
+        source_sha,
+        worker_executable_sha256,
+        OffsetDateTime::now_utc(),
+    )
+}
+
 fn verify_release_policy_candidate(
     bytes: &[u8],
     public_key: &str,
     current_version: &str,
     package_name: &str,
     source_sha: &str,
+    now: OffsetDateTime,
+) -> Result<(), RuntimeError> {
+    let worker_executable_sha256 = hash_current_executable()?;
+    verify_release_policy_candidate_for_worker_hash(
+        bytes,
+        public_key,
+        current_version,
+        package_name,
+        source_sha,
+        &worker_executable_sha256,
+        now,
+    )
+}
+
+fn verify_release_policy_candidate_for_worker_hash(
+    bytes: &[u8],
+    public_key: &str,
+    current_version: &str,
+    package_name: &str,
+    source_sha: &str,
+    worker_executable_sha256: &str,
     now: OffsetDateTime,
 ) -> Result<(), RuntimeError> {
     let policy = verify_policy(bytes, public_key, now)?;
@@ -68,7 +112,7 @@ fn verify_release_policy_candidate(
     }
     let artifact = policy.artifact(package_name, current_version)?;
     if artifact.source_sha != source_sha
-        || hash_current_executable()? != artifact.worker_executable_sha256
+        || worker_executable_sha256 != artifact.worker_executable_sha256
     {
         return Err(RuntimeError::VersionPolicyViolation);
     }
@@ -1046,6 +1090,19 @@ mod tests {
     fn release_candidate_binds_the_exact_running_worker_without_secret_state() {
         let fixture = fixture();
         let mut candidate = payload(7);
+        let expected_worker_hash = candidate.artifacts[0].worker_executable_sha256.clone();
+        let explicit_bytes = sign_policy(candidate.clone(), &fixture.signing);
+        verify_release_policy_candidate_for_worker_hash(
+            &explicit_bytes,
+            &fixture.public_key,
+            "0.1.2",
+            PACKAGE,
+            SOURCE_SHA,
+            &expected_worker_hash,
+            now(),
+        )
+        .expect("explicit worker hash");
+
         candidate.artifacts[0].worker_executable_sha256 =
             hash_current_executable().expect("test executable hash");
         let bytes = sign_policy(candidate.clone(), &fixture.signing);

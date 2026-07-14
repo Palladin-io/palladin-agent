@@ -1,14 +1,33 @@
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::fs::{File, OpenOptions};
 use std::io::IsTerminal;
+#[cfg(target_os = "linux")]
+use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
 
+#[cfg(target_os = "linux")]
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::process::Command;
 use zeroize::Zeroizing;
+
+#[cfg(target_os = "linux")]
+use nix::errno::Errno;
+#[cfg(target_os = "linux")]
+use nix::fcntl::{FcntlArg, SealFlag, fcntl};
+#[cfg(target_os = "linux")]
+use nix::sys::memfd::{MFdFlags, memfd_create};
+#[cfg(target_os = "linux")]
+use nix::sys::stat::{Mode, fchmod};
 
 use crate::peer::{PeerError, load_authorized_principal};
 use crate::protocol::{
@@ -62,16 +81,31 @@ async fn run_hardened(
 }
 
 async fn run_convenience(arguments: Vec<String>) -> Result<ExitCode, ClientError> {
-    let executable = convenience_worker()?;
-    let status = Command::new(executable)
-        .args(arguments)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .await
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = arguments;
+        Err(ClientError::ConvenienceUnavailable)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let worker = convenience_worker()?;
+        let (sealed_worker, worker_sha256) = seal_worker_image(&worker)?;
+        palladin_runtime::version_policy::verify_environment_policy_for_worker_hash(
+            env!("CARGO_PKG_VERSION"),
+            &worker_sha256,
+        )
         .map_err(|_| ClientError::ConvenienceUnavailable)?;
-    Ok(exit_code(status.code()))
+        let executable = format!("/proc/self/fd/{}", sealed_worker.as_raw_fd());
+        let status = Command::new(executable)
+            .args(arguments)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .await
+            .map_err(|_| ClientError::ConvenienceUnavailable)?;
+        Ok(exit_code(status.code()))
+    }
 }
 
 async fn proxy(
@@ -322,20 +356,83 @@ fn select_tier<T>(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn convenience_worker() -> Result<PathBuf, ClientError> {
     let executable = current_executable()?;
     let parent = executable.parent().ok_or(ClientError::Installation)?;
-    let worker = fs::canonicalize(parent.join("palladin-worker"))
+    Ok(parent.join("palladin-worker"))
+}
+
+#[cfg(target_os = "linux")]
+fn seal_worker_image(path: &Path) -> Result<(File, String), ClientError> {
+    const MAX_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
+    const MFD_EXEC: u32 = 0x0010;
+
+    let mut source_options = OpenOptions::new();
+    source_options
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let mut source = source_options
+        .open(path)
         .map_err(|_| ClientError::ConvenienceUnavailable)?;
-    if worker.parent() != Some(parent) {
+    let source_metadata = source
+        .metadata()
+        .map_err(|_| ClientError::ConvenienceUnavailable)?;
+    if !source_metadata.file_type().is_file()
+        || source_metadata.permissions().mode() & 0o022 != 0
+        || source_metadata.permissions().mode() & 0o111 == 0
+        || source_metadata.nlink() != 1
+        || source_metadata.len() == 0
+        || source_metadata.len() > MAX_EXECUTABLE_BYTES
+    {
         return Err(ClientError::ConvenienceUnavailable);
     }
-    let metadata =
-        fs::symlink_metadata(&worker).map_err(|_| ClientError::ConvenienceUnavailable)?;
-    if !metadata.file_type().is_file() || metadata.permissions().mode() & 0o111 == 0 {
+
+    let base_flags = MFdFlags::MFD_CLOEXEC | MFdFlags::MFD_ALLOW_SEALING;
+    // Linux 6.3+ can require MFD_EXEC. Older kernels reject the flag and keep
+    // executable memfds as their default, so retry only on EINVAL.
+    let exec_flags = base_flags | MFdFlags::from_bits_retain(MFD_EXEC);
+    let descriptor = match memfd_create("palladin-worker", exec_flags) {
+        Err(Errno::EINVAL) => memfd_create("palladin-worker", base_flags),
+        result => result,
+    }
+    .map_err(|_| ClientError::ConvenienceUnavailable)?;
+    let mut sealed = File::from(descriptor);
+
+    let mut hasher = Sha256::new();
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = source
+            .read(&mut buffer)
+            .map_err(|_| ClientError::ConvenienceUnavailable)?;
+        if read == 0 {
+            break;
+        }
+        copied = copied
+            .checked_add(read as u64)
+            .filter(|total| *total <= MAX_EXECUTABLE_BYTES)
+            .ok_or(ClientError::ConvenienceUnavailable)?;
+        hasher.update(&buffer[..read]);
+        sealed
+            .write_all(&buffer[..read])
+            .map_err(|_| ClientError::ConvenienceUnavailable)?;
+    }
+    if copied != source_metadata.len() {
         return Err(ClientError::ConvenienceUnavailable);
     }
-    Ok(worker)
+    fchmod(&sealed, Mode::S_IRUSR | Mode::S_IXUSR)
+        .map_err(|_| ClientError::ConvenienceUnavailable)?;
+    let seals = SealFlag::F_SEAL_SEAL
+        | SealFlag::F_SEAL_SHRINK
+        | SealFlag::F_SEAL_GROW
+        | SealFlag::F_SEAL_WRITE;
+    fcntl(&sealed, FcntlArg::F_ADD_SEALS(seals))
+        .map_err(|_| ClientError::ConvenienceUnavailable)?;
+    sealed
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| ClientError::ConvenienceUnavailable)?;
+    Ok((sealed, format!("{:x}", hasher.finalize())))
 }
 
 fn validate_root_owned_executable(path: &Path) -> Result<(), ClientError> {
@@ -413,8 +510,21 @@ pub enum ClientError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use std::fs;
+    #[cfg(target_os = "linux")]
+    use std::os::fd::AsRawFd;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(target_os = "linux")]
+    use super::seal_worker_image;
     use super::{RuntimeTier, select_tier};
     use crate::peer::PeerError;
+    #[cfg(target_os = "linux")]
+    use nix::fcntl::{FcntlArg, SealFlag, fcntl};
+    #[cfg(target_os = "linux")]
+    use tokio::process::Command;
 
     #[test]
     fn system_client_never_downgrades_when_mapping_is_missing() {
@@ -437,5 +547,45 @@ mod tests {
             select_tier(false, &mapping, false),
             RuntimeTier::Convenience
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn convenience_exec_uses_an_immutable_verified_worker_image() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let worker = directory.path().join("palladin-worker");
+        let marker = directory.path().join("attacker-ran");
+        fs::copy("/usr/bin/true", &worker).expect("copy worker");
+        fs::set_permissions(&worker, fs::Permissions::from_mode(0o755)).expect("worker mode");
+
+        let (sealed, hash) = seal_worker_image(&worker).expect("sealed worker");
+        assert_eq!(hash.len(), 64);
+        let active_seals =
+            SealFlag::from_bits_retain(fcntl(&sealed, FcntlArg::F_GET_SEALS).expect("read seals"));
+        assert_eq!(
+            active_seals
+                & (SealFlag::F_SEAL_SEAL
+                    | SealFlag::F_SEAL_SHRINK
+                    | SealFlag::F_SEAL_GROW
+                    | SealFlag::F_SEAL_WRITE),
+            SealFlag::F_SEAL_SEAL
+                | SealFlag::F_SEAL_SHRINK
+                | SealFlag::F_SEAL_GROW
+                | SealFlag::F_SEAL_WRITE
+        );
+
+        fs::write(
+            &worker,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .expect("replace source bytes in place");
+        fs::set_permissions(&worker, fs::Permissions::from_mode(0o755)).expect("attacker mode");
+
+        let status = Command::new(format!("/proc/self/fd/{}", sealed.as_raw_fd()))
+            .status()
+            .await
+            .expect("execute sealed worker");
+        assert!(status.success());
+        assert!(!marker.exists());
     }
 }
