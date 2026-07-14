@@ -252,6 +252,8 @@ function verifySystemAuthenticode(path: string, binding: VerifiedArtifactBinding
   const { powershell, root: canonicalRoot, modulePath } = trustedPowerShell();
   const script = [
     "$ErrorActionPreference = 'Stop'",
+    '$env:PSModulePath = $env:PALLADIN_TRUSTED_MODULE_PATH',
+    '$env:WinPSModulePath = $env:PALLADIN_TRUSTED_MODULE_PATH',
     '$signature = Get-AuthenticodeSignature -LiteralPath $env:PALLADIN_RUNTIME_PATH',
     "$actualThumbprint = $signature.SignerCertificate.Thumbprint.Replace(' ', '').ToUpperInvariant()",
     "if ($signature.Status -ne 'Valid') { exit 41 }",
@@ -274,8 +276,9 @@ function verifySystemAuthenticode(path: string, binding: VerifiedArtifactBinding
       windowsHide: true,
       env: {
         SystemRoot: canonicalRoot,
-        PSModulePath: modulePath,
-        WinPSModulePath: modulePath,
+        PSModulePath: '',
+        WinPSModulePath: '',
+        PALLADIN_TRUSTED_MODULE_PATH: modulePath,
         PALLADIN_RUNTIME_PATH: path,
         PALLADIN_EXPECTED_PUBLISHER: publisher,
         PALLADIN_EXPECTED_THUMBPRINT: thumbprint,
@@ -299,6 +302,13 @@ function spawnLockedSystemRuntime(
     throw new Error('Palladin Windows runtime Authenticode binding is missing');
   }
   const { powershell, root, modulePath } = trustedPowerShell();
+  const childEnvironment = spawnOptions.env ?? process.env;
+  const childPsModulePath = environmentValue(childEnvironment, 'PSModulePath');
+  const childWinPsModulePath = environmentValue(childEnvironment, 'WinPSModulePath');
+  const wrapperEnvironment = withoutEnvironmentKeys(
+    childEnvironment,
+    new Set(['psmodulepath', 'winpsmodulepath']),
+  );
   const commandLine = [path, ...args].map(quoteWindowsArgument).join(' ');
   const lockedProcessSource = String.raw`
 using System;
@@ -468,6 +478,8 @@ public static class PalladinLockedProcess {
 }`;
   const script = [
     "$ErrorActionPreference = 'Stop'",
+    '$env:PSModulePath = $env:PALLADIN_TRUSTED_MODULE_PATH',
+    '$env:WinPSModulePath = $env:PALLADIN_TRUSTED_MODULE_PATH',
     '$path = $env:PALLADIN_RUNTIME_PATH',
     '$stream = [IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)',
     'try {',
@@ -483,7 +495,9 @@ public static class PalladinLockedProcess {
     `  $source = @'\n${lockedProcessSource}\n'@`,
     '  Add-Type -TypeDefinition $source -Language CSharp',
     '  $commandLine = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:PALLADIN_RUNTIME_COMMAND_LINE))',
-    "  foreach ($name in @('PALLADIN_RUNTIME_PATH', 'PALLADIN_RUNTIME_COMMAND_LINE', 'PALLADIN_EXPECTED_SHA256', 'PALLADIN_EXPECTED_PUBLISHER', 'PALLADIN_EXPECTED_THUMBPRINT')) { Remove-Item -LiteralPath \"Env:$name\" -ErrorAction SilentlyContinue }",
+    "  if ($env:PALLADIN_CHILD_PSMODULEPATH_PRESENT -ceq '1') { $env:PSModulePath = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:PALLADIN_CHILD_PSMODULEPATH)) } else { Remove-Item -LiteralPath 'Env:PSModulePath' -ErrorAction SilentlyContinue }",
+    "  if ($env:PALLADIN_CHILD_WINPSMODULEPATH_PRESENT -ceq '1') { $env:WinPSModulePath = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:PALLADIN_CHILD_WINPSMODULEPATH)) } else { Remove-Item -LiteralPath 'Env:WinPSModulePath' -ErrorAction SilentlyContinue }",
+    "  foreach ($name in @('PALLADIN_TRUSTED_MODULE_PATH', 'PALLADIN_CHILD_PSMODULEPATH', 'PALLADIN_CHILD_PSMODULEPATH_PRESENT', 'PALLADIN_CHILD_WINPSMODULEPATH', 'PALLADIN_CHILD_WINPSMODULEPATH_PRESENT', 'PALLADIN_RUNTIME_PATH', 'PALLADIN_RUNTIME_COMMAND_LINE', 'PALLADIN_EXPECTED_SHA256', 'PALLADIN_EXPECTED_PUBLISHER', 'PALLADIN_EXPECTED_THUMBPRINT')) { Remove-Item -LiteralPath \"Env:$name\" -ErrorAction SilentlyContinue }",
     '  exit [PalladinLockedProcess]::Run($path, $commandLine)',
     '} finally { $stream.Dispose() }',
   ].join('\n');
@@ -499,10 +513,15 @@ public static class PalladinLockedProcess {
     shell: false,
     windowsHide: true,
     env: {
-      ...(spawnOptions.env ?? process.env),
+      ...wrapperEnvironment,
       SystemRoot: root,
-      PSModulePath: modulePath,
-      WinPSModulePath: modulePath,
+      PSModulePath: '',
+      WinPSModulePath: '',
+      PALLADIN_TRUSTED_MODULE_PATH: modulePath,
+      PALLADIN_CHILD_PSMODULEPATH: encodeEnvironmentValue(childPsModulePath),
+      PALLADIN_CHILD_PSMODULEPATH_PRESENT: childPsModulePath === undefined ? '0' : '1',
+      PALLADIN_CHILD_WINPSMODULEPATH: encodeEnvironmentValue(childWinPsModulePath),
+      PALLADIN_CHILD_WINPSMODULEPATH_PRESENT: childWinPsModulePath === undefined ? '0' : '1',
       PALLADIN_RUNTIME_PATH: path,
       PALLADIN_RUNTIME_COMMAND_LINE: Buffer.from(commandLine, 'utf8').toString('base64'),
       PALLADIN_EXPECTED_SHA256: expectedHash,
@@ -510,6 +529,27 @@ public static class PalladinLockedProcess {
       PALLADIN_EXPECTED_THUMBPRINT: thumbprint,
     },
   });
+}
+
+function environmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
+  const normalized = name.toLowerCase();
+  for (const [key, value] of Object.entries(environment)) {
+    if (key.toLowerCase() === normalized) return value;
+  }
+  return undefined;
+}
+
+function withoutEnvironmentKeys(
+  environment: NodeJS.ProcessEnv,
+  names: ReadonlySet<string>,
+): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(environment).filter(([key]) => !names.has(key.toLowerCase())),
+  );
+}
+
+function encodeEnvironmentValue(value: string | undefined): string {
+  return Buffer.from(value ?? '', 'utf8').toString('base64');
 }
 
 export function quoteWindowsArgument(value: string): string {
