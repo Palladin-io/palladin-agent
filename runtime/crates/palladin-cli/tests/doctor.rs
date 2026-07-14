@@ -65,6 +65,31 @@ fn doctor_reports_only_the_name_of_a_dangerous_variable() {
 }
 
 #[test]
+fn doctor_reports_legacy_environment_names_without_values() {
+    let synthetic = "pl_legacy_value_must_never_appear";
+    let output = runtime()
+        .env("CLAW_VAULT_PRIVATE_KEY_BUILD", synthetic)
+        .env("PALLADIN_SIGNING_KEY", synthetic)
+        .arg("doctor")
+        .output()
+        .expect("run legacy environment doctor");
+
+    assert_eq!(output.status.code(), Some(78));
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(stdout.contains(
+        "legacy-environment: detected - unset names: CLAW_VAULT_PRIVATE_KEY_BUILD, PALLADIN_SIGNING_KEY"
+    ));
+    assert!(
+        stdout.contains(
+            "dangerous-variable-names: CLAW_VAULT_PRIVATE_KEY_BUILD,PALLADIN_SIGNING_KEY"
+        )
+    );
+    assert!(!stdout.contains(synthetic));
+    assert!(!stderr.contains(synthetic));
+}
+
+#[test]
 fn mcp_startup_failure_never_writes_plain_text_to_protocol_stdout() {
     let synthetic_value = "synthetic-value-must-not-appear";
     let output = runtime()

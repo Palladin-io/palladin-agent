@@ -11,8 +11,9 @@ use palladin_cli::args::{
 };
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
-    render_agent_list, render_connect, render_init, render_profile_created, render_report_stale,
-    render_search_human, render_security_upgrade, render_status,
+    render_agent_list, render_connect, render_init, render_legacy_cleanup, render_legacy_cutover,
+    render_profile_created, render_report_stale, render_search_human, render_security_upgrade,
+    render_status,
 };
 use palladin_cli::{
     CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
@@ -20,6 +21,7 @@ use palladin_cli::{
 };
 use palladin_core::environment::{EnvironmentReport, EnvironmentRequirement, enforce_environment};
 use palladin_core::host::ApiHost;
+use palladin_core::legacy_typescript::{LegacyTypeScriptRepository, LegacyTypeScriptStatus};
 use palladin_core::panic::install_redacted_panic_hook;
 use palladin_core::profiles::ProfileRepository;
 use palladin_core::secret::OrganizationApiKey;
@@ -32,6 +34,9 @@ use palladin_credential::wait::{
 };
 #[cfg(target_os = "linux")]
 use palladin_linux_broker::store::LinuxBrokerSecretStore;
+use palladin_platform::legacy_typescript_store::{
+    LegacyCredentialError, OsLegacyCredentialDeleter, delete_legacy_typescript_credentials,
+};
 use palladin_platform::secure_store::{
     NativeSecretStore, SecretSlot, SecretStore, StoreError, storage_tier_description,
 };
@@ -117,7 +122,14 @@ async fn main() -> ExitCode {
 
     if !matches!(
         &cli.command,
-        Commands::Doctor | Commands::Disconnect { .. } | Commands::Purge { .. }
+        Commands::Doctor
+            | Commands::Disconnect { .. }
+            | Commands::Purge { .. }
+            | Commands::Security {
+                command: SecurityCommand::LegacyStatus
+                    | SecurityCommand::LegacyCutover { .. }
+                    | SecurityCommand::LegacyCleanup { .. }
+            }
     ) {
         if palladin_runtime::version_policy::system_version_policy_configured() {
             if let Err(error) = service.prepare_empty_state_for_version_policy() {
@@ -137,7 +149,12 @@ async fn main() -> ExitCode {
     match cli.command {
         Commands::Init { force } => init(&service, cli.id.as_deref(), force, runtime_storage_tier),
         Commands::VerifyReleasePolicy { .. } => unreachable!("release verification exits early"),
-        Commands::Doctor => doctor(&environment, &service, runtime_storage_tier),
+        Commands::Doctor => doctor(
+            &environment,
+            &service,
+            runtime_storage_tier,
+            hardened_runtime,
+        ),
         Commands::Connect(args) => {
             connect(&service, cli.id.as_deref(), args, runtime_storage_tier).await
         }
@@ -156,9 +173,13 @@ async fn main() -> ExitCode {
         Commands::ReportStale(args) => report_stale(&service, cli.id.as_deref(), args).await,
         Commands::Mcp { command } => mcp(&service, cli.id.as_deref(), command).await,
         Commands::Agents { command } => agents(&service, command, runtime_storage_tier),
-        Commands::Security { command } => {
-            security(&service, cli.id.as_deref(), command, runtime_storage_tier)
-        }
+        Commands::Security { command } => security(
+            &service,
+            cli.id.as_deref(),
+            command,
+            runtime_storage_tier,
+            hardened_runtime,
+        ),
         Commands::Purge { confirm } => purge(&service, confirm, hardened_runtime),
     }
 }
@@ -365,9 +386,11 @@ fn hardened_linux_worker_root() -> Result<Option<std::path::PathBuf>, String> {
 
 const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
     match command {
-        Commands::Doctor | Commands::VerifyReleasePolicy { .. } => {
-            EnvironmentRequirement::DiagnosticOnly
-        }
+        Commands::Doctor
+        | Commands::VerifyReleasePolicy { .. }
+        | Commands::Security {
+            command: SecurityCommand::LegacyStatus,
+        } => EnvironmentRequirement::DiagnosticOnly,
         Commands::Init { .. }
         | Commands::Connect(_)
         | Commands::Status
@@ -379,7 +402,12 @@ const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
         | Commands::ReportStale(_)
         | Commands::Mcp { .. }
         | Commands::Agents { .. }
-        | Commands::Security { .. }
+        | Commands::Security {
+            command:
+                SecurityCommand::Upgrade
+                | SecurityCommand::LegacyCutover { .. }
+                | SecurityCommand::LegacyCleanup { .. },
+        }
         | Commands::Purge { .. } => EnvironmentRequirement::Clean,
     }
 }
@@ -461,6 +489,7 @@ fn doctor(
     environment: &EnvironmentReport,
     service: &RuntimeService<RuntimeSecretStore>,
     runtime_storage_tier: &str,
+    hardened_runtime: bool,
 ) -> ExitCode {
     let platform = palladin_platform::current();
     println!("Palladin Runtime Doctor");
@@ -482,14 +511,66 @@ fn doctor(
     println!("identity-opened: no");
     println!("project-runtime-dependencies: disabled");
     println!("palladin-home-override: rejected");
-    println!(
-        "legacy-artifacts: {}",
-        if service.repository().legacy_artifacts_present() {
-            "detected - run the explicit pre-production migration workflow"
-        } else {
-            "not-detected"
+    let legacy_status = if hardened_runtime {
+        None
+    } else {
+        Some(
+            LegacyTypeScriptRepository::new(service.repository().root())
+                .and_then(|repository| repository.status()),
+        )
+    };
+    match legacy_status {
+        None => println!(
+            "legacy-typescript: unavailable in hardened worker - inspect the OS-account convenience runtime"
+        ),
+        Some(Ok(LegacyTypeScriptStatus::Clear)) => println!("legacy-typescript: not-detected"),
+        Some(Ok(LegacyTypeScriptStatus::Detected {
+            source_directory,
+            profiles,
+            file_fallback,
+        })) => {
+            println!(
+                "legacy-typescript: detected - root={source_directory}, profiles={profiles}, file-fallback={file_fallback}"
+            );
+            println!(
+                "legacy-keychain: candidate records detected from exact profile metadata - secret bytes were not opened"
+            );
+            println!(
+                "legacy-next: palladin security legacy-cutover --confirm-pre-production-reset"
+            );
         }
-    );
+        Some(Ok(LegacyTypeScriptStatus::CutoverPending(manifest))) => {
+            println!(
+                "legacy-typescript: cutover-pending - profiles={}, cutover-id={}",
+                manifest.profiles.len(),
+                manifest.cutover_id
+            );
+            println!("legacy-next: connect and approve every fresh Agent, then run cleanup");
+        }
+        Some(Err(error)) => {
+            println!("legacy-typescript: indeterminate - {error}");
+        }
+    }
+    let legacy_environment_names = environment
+        .dangerous_names()
+        .iter()
+        .filter(|name| {
+            name.starts_with("PALLADIN_PRIVATE_KEY")
+                || name.starts_with("PALLADIN_SIGNING_KEY")
+                || name.starts_with("CLAW_VAULT_PRIVATE_KEY")
+                || name.starts_with("CLAW_VAULT_SIGNING_KEY")
+                || matches!(name.as_str(), "PALLADIN_HOME" | "CLAW_VAULT_HOME")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if legacy_environment_names.is_empty() {
+        println!("legacy-environment: not-detected");
+    } else {
+        println!(
+            "legacy-environment: detected - unset names: {}",
+            legacy_environment_names.join(", ")
+        );
+    }
     println!(
         "cleanup-recovery: {}",
         if service.repository().cleanup_pending() {
@@ -858,6 +939,7 @@ fn security(
     profile: Option<&str>,
     command: SecurityCommand,
     runtime_storage_tier: &str,
+    hardened_runtime: bool,
 ) -> ExitCode {
     match command {
         SecurityCommand::Upgrade => match service.upgrade_security(profile) {
@@ -868,6 +950,87 @@ fn security(
             )),
             Err(error) => fail(&error.to_string()),
         },
+        SecurityCommand::LegacyStatus => legacy_status(service, hardened_runtime),
+        SecurityCommand::LegacyCutover {
+            confirm_pre_production_reset,
+        } => {
+            if hardened_runtime {
+                return fail(
+                    "legacy cutover must run in the OS-account convenience runtime before hardened broker enrollment",
+                );
+            }
+            if !cfg!(debug_assertions) {
+                return fail("legacy cutover is available only in pre-production/dev builds");
+            }
+            match service.cutover_legacy_typescript(confirm_pre_production_reset) {
+                Ok(outcome) => emit_output(render_legacy_cutover(&outcome)),
+                Err(error) => fail(&error.to_string()),
+            }
+        }
+        SecurityCommand::LegacyCleanup {
+            cutover_id,
+            confirm,
+        } => {
+            if hardened_runtime {
+                return fail(
+                    "legacy cleanup must run in the OS-account convenience runtime before hardened broker enrollment",
+                );
+            }
+            if !cfg!(debug_assertions) {
+                return fail("legacy cleanup is available only in pre-production/dev builds");
+            }
+            let deleter = OsLegacyCredentialDeleter;
+            match service.cleanup_legacy_typescript(confirm, &cutover_id, |profile| {
+                delete_legacy_typescript_credentials(&deleter, profile).map_err(|error| match error
+                {
+                    LegacyCredentialError::InvalidProfile => StoreError::InvalidOwner,
+                    LegacyCredentialError::Unavailable => StoreError::Unavailable,
+                })
+            }) {
+                Ok(outcome) => emit_output(render_legacy_cleanup(&outcome)),
+                Err(error) => fail(&error.to_string()),
+            }
+        }
+    }
+}
+
+fn legacy_status(service: &RuntimeService<RuntimeSecretStore>, hardened_runtime: bool) -> ExitCode {
+    if hardened_runtime {
+        return fail(
+            "inspect legacy TypeScript state in the OS-account convenience runtime before hardened broker enrollment",
+        );
+    }
+    let repository = match LegacyTypeScriptRepository::new(service.repository().root()) {
+        Ok(repository) => repository,
+        Err(error) => return fail(&error.to_string()),
+    };
+    match repository.status() {
+        Ok(LegacyTypeScriptStatus::Clear) => {
+            println!("Legacy TypeScript state: not detected");
+            ExitCode::SUCCESS
+        }
+        Ok(LegacyTypeScriptStatus::Detected {
+            source_directory,
+            profiles,
+            file_fallback,
+        }) => {
+            println!("Legacy TypeScript state: detected");
+            println!("Root: {source_directory}");
+            println!("Profiles: {profiles}");
+            println!("Plaintext key fallback: {file_fallback}");
+            println!("Next: palladin security legacy-cutover --confirm-pre-production-reset");
+            ExitCode::SUCCESS
+        }
+        Ok(LegacyTypeScriptStatus::CutoverPending(manifest)) => {
+            println!("Legacy TypeScript state: cutover pending");
+            println!("Profiles: {}", manifest.profiles.len());
+            println!("Cutover ID: {}", manifest.cutover_id);
+            println!("Next: connect and approve every fresh Agent, then run cleanup.");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(&format!(
+            "legacy TypeScript state is indeterminate: {error}"
+        )),
     }
 }
 
@@ -935,6 +1098,19 @@ fn purge(
     }
     if let Err(error) = ensure_workload_purge_allowed(hardened_runtime) {
         return fail(error);
+    }
+    if !hardened_runtime {
+        let legacy_status = LegacyTypeScriptRepository::new(service.repository().root())
+            .and_then(|repository| repository.status());
+        match legacy_status {
+            Ok(LegacyTypeScriptStatus::Clear) => {}
+            Ok(_) => {
+                return fail(
+                    "complete or clean up the legacy TypeScript cutover before purging native profiles",
+                );
+            }
+            Err(error) => return fail(&error.to_string()),
+        }
     }
     match service.purge() {
         Ok(()) => {

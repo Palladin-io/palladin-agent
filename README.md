@@ -117,7 +117,34 @@ API keys in argv or environment variables are rejected. Connecting a second prof
 | `palladin inject ...` | Fail closed until an authenticated browser boundary exists. |
 | `palladin mcp serve` | Serve Palladin tools over MCP stdio. |
 | `palladin security upgrade` | Explicitly migrate pre-production schema v2 state and secret slots to integrity-bound schema v3. |
+| `palladin security legacy-status` | Inspect legacy TypeScript state without opening config or private-key contents. |
+| `palladin security legacy-cutover --confirm-pre-production-reset` | In a dev build, archive legacy TypeScript profiles and generate fresh native X25519/Ed25519 identities. |
+| `palladin security legacy-cleanup <cutoverId> --confirm` | In a dev build, delete the archived TypeScript files and exact legacy OS credential entries after every fresh Agent is enrolled. |
 | `palladin purge --confirm` | Explicitly remove native profiles and their known secret slots in standalone tiers; Linux Hardened requires the root-owned administrative purge. |
+
+## Pre-production TypeScript cutover
+
+Legacy TypeScript builds stored an organization API key in plaintext `config.json` and could store exportable Agent keys in Login Keychain, Credential Manager, Secret Service, environment variables, or `0600` files. Treat every identity and organization key used by those builds as potentially exposed.
+
+The native cutover does not import any old private key, API key, `agentId`, host, grant, or config value. It reads only bounded registry metadata and filesystem metadata, atomically archives `.palladin` or the earlier `.claw-vault` root, and creates a fresh X25519/Ed25519 identity for every validated profile alias. Unknown files, links, unsafe permissions, ambiguous roots, malformed registries, and alias collisions fail before cleanup.
+
+This workflow is intentionally available only in pre-production/dev builds:
+
+```bash
+palladin doctor
+palladin security legacy-status
+palladin security legacy-cutover --confirm-pre-production-reset
+
+# Create one new organization API key in the existing Palladin panel, then repeat for every profile.
+new-key-provider | palladin --id <profile> connect --api-key-stdin --host https://api.palladin.io
+
+# After every fresh Agent is approved, use the exact ID printed by legacy-cutover.
+palladin security legacy-cleanup <cutoverId> --confirm
+```
+
+Cleanup uses a deletion-only OS credential adapter for the historical `palladin` and `claw-vault` services. It has no API that can read secret bytes. If deletion is interrupted, the archive remains and the same command resumes idempotently. Cleanup is refused until every planned fresh profile has a new backend `agentId`.
+
+Finally, revoke the old shared organization API key and deactivate the old Agents in the existing panel. Local deletion cannot revoke backend Agents or guarantee erasure from SSD snapshots, backups, or a parent shell. Legacy environment-variable names are reported by `doctor`; their values are never read or printed, and the operator must unset them manually. No migration or cleanup runs from npm installation, update, uninstall, or any lifecycle hook.
 
 ## MCP configuration
 

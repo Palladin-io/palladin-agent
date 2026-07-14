@@ -1262,6 +1262,197 @@ fn purge_detects_nested_keychain_only_legacy_profile() {
     assert!(legacy.exists());
 }
 
+#[tokio::test]
+async fn typescript_cutover_creates_fresh_profiles_and_resumes_cleanup_without_reading_legacy_secrets()
+ {
+    let home = tempfile::tempdir().expect("home");
+    make_private_directory(home.path());
+    let root = home.path().join(".palladin");
+    make_private_directory(&root);
+    let agents = root.join("agents");
+    make_private_directory(&agents);
+    for name in ["Default", "build"] {
+        let profile = agents.join(name);
+        make_private_directory(&profile);
+        write_private_fixture(
+            &profile.join("config.json"),
+            b"pl_old_plaintext_must_never_be_parsed",
+        );
+        write_private_fixture(&profile.join("agent.key"), b"old-x25519-private-key");
+        write_private_fixture(&profile.join("signing.key"), b"old-ed25519-private-key");
+    }
+    write_private_fixture(
+        &root.join("registry.json"),
+        br#"{"default":"Default","agents":[{"name":"Default","createdAt":"2026-01-01T00:00:00Z"},{"name":"build","createdAt":"2026-01-01T00:00:00Z","type":"ci"}]}"#,
+    );
+
+    let store = MemoryStore::default();
+    let runtime = service(&root, store.clone());
+    assert!(matches!(
+        runtime.cutover_legacy_typescript(false),
+        Err(RuntimeError::LegacyCutoverConfirmationRequired)
+    ));
+    assert!(root.join("registry.json").is_file());
+
+    let outcome = runtime
+        .cutover_legacy_typescript(true)
+        .expect("fresh cutover");
+    assert_eq!(outcome.profiles, 2);
+    assert_eq!(outcome.created, 2);
+    assert_eq!(outcome.profile_names, ["default", "build"]);
+    let archive = home.path().join(".palladin-typescript-legacy");
+    assert!(archive.join("agents/Default/config.json").is_file());
+    assert_eq!(runtime.registry().expect("registry").default, "default");
+    assert_eq!(store.count_slot(SecretSlot::X25519PrivateKey), 2);
+    assert_eq!(store.count_slot(SecretSlot::Ed25519SecretKey), 2);
+    assert_eq!(store.count_slot(SecretSlot::OrganizationApiKey), 0);
+    assert!(store.operations().iter().all(|operation| !matches!(
+        operation,
+        StoreOperation::Get(
+            _,
+            SecretSlot::LegacyX25519PrivateKeyV2
+                | SecretSlot::LegacyEd25519SecretKeyV2
+                | SecretSlot::LegacyOrganizationApiKeyV2
+        )
+    )));
+    {
+        let state = store.state.lock().expect("store");
+        assert!(state.secrets.iter().all(|((_, slot), value)| {
+            !matches!(
+                slot,
+                SecretSlot::X25519PrivateKey | SecretSlot::Ed25519SecretKey
+            ) || (value.as_slice() != b"old-x25519-private-key"
+                && value.as_slice() != b"old-ed25519-private-key")
+        }));
+    }
+
+    let resumed = runtime
+        .cutover_legacy_typescript(true)
+        .expect("resume cutover");
+    assert_eq!(resumed.cutover_id, outcome.cutover_id);
+    assert_eq!(resumed.created, 0);
+
+    let called_before_connect = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&called_before_connect);
+    assert!(matches!(
+        runtime.cleanup_legacy_typescript(true, "ffffffffffffffffffffffffffffffff", |_| Ok(())),
+        Err(RuntimeError::LegacyCutoverIdMismatch)
+    ));
+    assert!(matches!(
+        runtime.cleanup_legacy_typescript(true, &outcome.cutover_id, move |profile| {
+            captured.lock().expect("calls").push(profile.to_owned());
+            Ok(())
+        }),
+        Err(RuntimeError::LegacyProfilesNotConnected)
+    ));
+    assert!(called_before_connect.lock().expect("calls").is_empty());
+    assert!(archive.is_dir());
+
+    let (host, requests) = response_server(vec![
+        Response::pending("fresh-default-agent"),
+        Response::pending("fresh-build-agent"),
+    ])
+    .await;
+    for profile in ["default", "build"] {
+        runtime
+            .connect(
+                Some(profile),
+                OrganizationApiKey::new("pl_new_shared_organization_key".to_owned()),
+                ApiHost::parse(&host).expect("host"),
+                None,
+                None,
+                "fixture-host",
+            )
+            .await
+            .expect("connect fresh Agent");
+    }
+    assert_eq!(requests.lock().expect("requests").len(), 2);
+    assert_eq!(store.count_slot(SecretSlot::OrganizationApiKey), 1);
+
+    let deletion_calls = Arc::new(Mutex::new(Vec::new()));
+    let no_confirmation_calls = Arc::clone(&deletion_calls);
+    assert!(matches!(
+        runtime.cleanup_legacy_typescript(false, &outcome.cutover_id, move |profile| {
+            no_confirmation_calls
+                .lock()
+                .expect("calls")
+                .push(profile.to_owned());
+            Ok(())
+        }),
+        Err(RuntimeError::LegacyCleanupConfirmationRequired)
+    ));
+    assert!(deletion_calls.lock().expect("calls").is_empty());
+
+    let first_calls = Arc::clone(&deletion_calls);
+    assert!(
+        runtime
+            .cleanup_legacy_typescript(true, &outcome.cutover_id, move |profile| {
+                first_calls.lock().expect("calls").push(profile.to_owned());
+                if profile == "build" {
+                    Err(StoreError::Unavailable)
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err()
+    );
+    assert!(archive.is_dir(), "failed cleanup must preserve the archive");
+
+    let resumed_service = service(&root, store.clone());
+    let retry_calls = Arc::clone(&deletion_calls);
+    let cleaned = resumed_service
+        .cleanup_legacy_typescript(true, &outcome.cutover_id, move |profile| {
+            retry_calls.lock().expect("calls").push(profile.to_owned());
+            Ok(())
+        })
+        .expect("resume cleanup");
+    assert_eq!(cleaned.profiles, 2);
+    assert!(!archive.exists());
+    assert_eq!(
+        *deletion_calls.lock().expect("calls"),
+        ["Default", "build", "Default", "build"]
+    );
+}
+
+#[test]
+fn interrupted_typescript_cutover_restarts_with_the_same_plan_and_fresh_identity() {
+    let home = tempfile::tempdir().expect("home");
+    make_private_directory(home.path());
+    let root = home.path().join(".palladin");
+    make_private_directory(&root);
+    write_private_fixture(&root.join("config.json"), b"pl_old_must_not_be_read");
+    write_private_fixture(&root.join("agent.key"), b"old-private-key");
+
+    let store = MemoryStore::default();
+    store.fail_set(SecretSlot::Ed25519SecretKey);
+    let first = service(&root, store.clone());
+    assert!(first.cutover_legacy_typescript(true).is_err());
+    let archive = home.path().join(".palladin-typescript-legacy");
+    assert!(archive.join("config.json").is_file());
+    assert_eq!(store.count_slot(SecretSlot::X25519PrivateKey), 0);
+    assert_eq!(store.count_slot(SecretSlot::Ed25519SecretKey), 0);
+
+    store.clear_failure();
+    let restarted = service(&root, store.clone());
+    let outcome = restarted
+        .cutover_legacy_typescript(true)
+        .expect("resume cutover");
+    assert_eq!(outcome.profiles, 1);
+    assert_eq!(outcome.created, 1);
+    assert_eq!(outcome.profile_names, ["default"]);
+    assert_eq!(store.count_slot(SecretSlot::X25519PrivateKey), 1);
+    assert_eq!(store.count_slot(SecretSlot::Ed25519SecretKey), 1);
+    assert!(store.operations().iter().all(|operation| !matches!(
+        operation,
+        StoreOperation::Get(
+            _,
+            SecretSlot::LegacyX25519PrivateKeyV2
+                | SecretSlot::LegacyEd25519SecretKeyV2
+                | SecretSlot::LegacyOrganizationApiKeyV2
+        )
+    )));
+}
+
 fn service(path: &std::path::Path, store: MemoryStore) -> RuntimeService<MemoryStore> {
     #[cfg(unix)]
     {
@@ -1294,6 +1485,16 @@ fn write_private_fixture(path: &std::path::Path, bytes: &[u8]) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .expect("private fixture");
+    }
+}
+
+fn make_private_directory(path: &std::path::Path) {
+    std::fs::create_dir_all(path).expect("create private directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("private directory permissions");
     }
 }
 
