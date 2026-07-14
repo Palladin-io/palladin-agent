@@ -69,7 +69,7 @@ compat_master_hash=
 compat_state_hash=
 
 seed_compatible_state() {
-  local broker_gid broker_uid policy_cache policy_digest
+  local agents_root broker_gid broker_uid policy_cache policy_digest
   docker exec "$container" useradd --system --no-create-home --shell /usr/sbin/nologin "$compat_agent"
   docker exec "$container" /usr/lib/palladin/runtime/palladin-manage-agent-uid \
     authorize "$compat_agent" package-state https://api.stage.palladin.io --dedicated
@@ -78,7 +78,9 @@ seed_compatible_state() {
   [[ $compat_principal =~ ^[0-9a-f]{32}$ ]]
   policy_digest=$(docker exec "$container" sha256sum /version-policy.json | cut -d' ' -f1)
   [[ $policy_digest =~ ^[0-9a-f]{64}$ ]]
-  policy_cache="/var/lib/palladin-runtime/v1/agents/.$compat_principal.palladin-policy-cache-v1"
+  agents_root=/var/lib/palladin-runtime/v1/agents
+  docker exec "$container" install -d -m 0700 -o palladin-runtime -g palladin-runtime "$agents_root"
+  policy_cache="$agents_root/.$compat_principal.palladin-policy-cache-v1"
   docker exec "$container" install -d -m 0700 -o palladin-runtime -g palladin-runtime "$policy_cache"
   docker exec "$container" install -m 0600 -o palladin-runtime -g palladin-runtime \
     /version-policy.json "$policy_cache/1-$policy_digest.json"
