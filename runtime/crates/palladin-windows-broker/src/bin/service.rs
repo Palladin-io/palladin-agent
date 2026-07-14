@@ -501,6 +501,7 @@ mod windows_service_entry {
     fn has_deferred_connect_input_grant(arguments: &[String]) -> bool {
         arguments
             .iter()
+            .take_while(|argument| argument.as_str() != "--")
             .any(|argument| argument == "--api-key-stdin")
     }
 
@@ -1263,6 +1264,11 @@ mod windows_service_entry {
             assert!(!has_deferred_connect_input_grant(&[
                 "connect".to_owned(),
                 "--api-key-stdin=pl_forbidden".to_owned(),
+            ]));
+            assert!(!has_deferred_connect_input_grant(&[
+                "connect".to_owned(),
+                "--".to_owned(),
+                "--api-key-stdin".to_owned(),
             ]));
         }
 
