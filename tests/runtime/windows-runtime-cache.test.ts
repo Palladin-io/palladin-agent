@@ -168,7 +168,10 @@ describe('Windows content-addressed runtime cache', () => {
         lease.release();
       }
     },
-    45_000,
+    // A cold Windows runner can spend tens of seconds starting Windows
+    // PowerShell and validating its Authenticode chain under Defender. The
+    // actual process startup and termination phases remain bounded above.
+    120_000,
   );
 
   it('atomically copies and re-verifies an exact signed version/hash before use', () => {
