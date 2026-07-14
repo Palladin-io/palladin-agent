@@ -425,6 +425,17 @@ mod windows_service_entry {
             .await?;
             return Ok(());
         }
+        if request.operation == SecureOperation::Connect
+            && !has_deferred_connect_input_grant(&request.arguments)
+        {
+            reject(
+                &mut pipe,
+                Some(request_id),
+                RejectionCode::OperationForbidden,
+            )
+            .await?;
+            return Ok(());
+        }
         write_broker_frame(
             &mut pipe,
             &BrokerFrame::Accepted {
@@ -485,6 +496,12 @@ mod windows_service_entry {
             lifecycle,
         )
         .await
+    }
+
+    fn has_deferred_connect_input_grant(arguments: &[String]) -> bool {
+        arguments
+            .iter()
+            .any(|argument| argument == "--api-key-stdin")
     }
 
     async fn read_deferred_connect_input<R: AsyncRead + Unpin>(
@@ -1224,8 +1241,8 @@ mod windows_service_entry {
         use super::{
             ConnectionLifecycle, MAX_WORKER_OUTPUT_BYTES, MCP_SESSION_TIMEOUT,
             ONE_SHOT_SESSION_TIMEOUT, OutboundItem, SessionEpochs, WorkerCompletion, WorkerOutput,
-            authorize_mcp_message, output_budget_exceeded, read_client_input,
-            read_deferred_connect_input, write_worker_output,
+            authorize_mcp_message, has_deferred_connect_input_grant, output_budget_exceeded,
+            read_client_input, read_deferred_connect_input, write_worker_output,
         };
 
         struct AcceptConsent;
@@ -1234,6 +1251,19 @@ mod windows_service_entry {
             fn verify(&self, _: &[u8], _: &[u8]) -> Result<(), ProtocolError> {
                 Ok(())
             }
+        }
+
+        #[test]
+        fn deferred_connect_input_requires_an_explicit_signed_grant() {
+            assert!(has_deferred_connect_input_grant(&[
+                "connect".to_owned(),
+                "--api-key-stdin".to_owned(),
+            ]));
+            assert!(!has_deferred_connect_input_grant(&["connect".to_owned(),]));
+            assert!(!has_deferred_connect_input_grant(&[
+                "connect".to_owned(),
+                "--api-key-stdin=pl_forbidden".to_owned(),
+            ]));
         }
 
         #[tokio::test]
