@@ -895,11 +895,11 @@ fn make_private_directory(path: &Path) {
     }
 }
 
-fn make_private_file(path: &Path) {
+fn make_private_file(_path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o600))
             .expect("private file permissions");
     }
 }
