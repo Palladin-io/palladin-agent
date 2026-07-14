@@ -4,7 +4,7 @@ set -euo pipefail
 fail() { echo "Error: $*" >&2; exit 1; }
 [[ $(id -u) -eq 0 ]] || fail 'verification must run as root'
 
-for binary in palladin-linux-client palladin-linux-service palladin-linux-executor palladin-worker; do
+for binary in palladin-linux-client palladin-linux-service palladin-linux-executor palladin-linux-admin-purge palladin-worker; do
   path=/usr/lib/palladin/runtime/$binary
   [[ -f $path && ! -L $path && -x $path ]] || fail "$path is missing or not executable"
   [[ $(stat -c '%U:%G:%a:%h' "$path") == 'root:root:755:1' ]] || fail "$path permissions are invalid"

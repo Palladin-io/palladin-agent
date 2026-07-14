@@ -4,11 +4,26 @@ import {
   accessSync,
   closeSync,
   openSync,
+  readFileSync,
   readSync,
   realpathSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { posix as darwinPath, win32 as windowsPath } from 'node:path';
+
+import {
+  loadBundledVerifiedArtifactBinding,
+  loadSystemVerifiedArtifactBinding,
+  type VerifiedArtifactBinding,
+  type VersionPolicyRequest,
+} from './version-policy.js';
+import { RUNTIME_SOURCE_SHA } from './version-policy-build.js';
+import {
+  prepareWindowsRuntimeCache,
+  sha256File,
+  type WindowsRuntimeLease,
+  type WindowsRuntimeSource,
+} from './windows-runtime-cache.js';
 
 const DARWIN_RUNTIME_PACKAGES = {
   arm64: '@palladin/runtime-darwin-arm64',
@@ -44,6 +59,14 @@ export interface NativeDispatchHost {
   resolvePackageJson(specifier: string): string;
   realpath(path: string): string;
   assertExecutable(path: string): void;
+  readPackageManifest(path: string): unknown;
+  hashFile(path: string): string;
+  loadVerifiedArtifactBinding(request: VersionPolicyRequest): Promise<VerifiedArtifactBinding>;
+  loadBundledArtifactBinding(request: VersionPolicyRequest): Promise<VerifiedArtifactBinding>;
+  prepareWindowsRuntime(
+    source: WindowsRuntimeSource,
+    binding: VerifiedArtifactBinding,
+  ): WindowsRuntimeLease;
   spawnRuntime(path: string, args: readonly string[], options: SpawnOptions): ChildProcess;
   addSignalHandler(signal: NodeJS.Signals, handler: () => void): void;
   removeSignalHandler(signal: NodeJS.Signals, handler: () => void): void;
@@ -51,7 +74,16 @@ export interface NativeDispatchHost {
 
 export type LinuxLibc = 'glibc' | 'musl' | 'unsupported';
 
+interface ResolvedNativeRuntime {
+  packageName: string;
+  executable: string;
+}
+
 export function resolveNativeRuntime(host: NativeDispatchHost): string {
+  return resolveNativeRuntimeSource(host).executable;
+}
+
+function resolveNativeRuntimeSource(host: NativeDispatchHost): ResolvedNativeRuntime {
   if (host.platform === 'darwin') {
     if (host.architecture !== 'arm64' && host.architecture !== 'x64') {
       throw new Error(`Palladin native runtime does not support darwin/${host.architecture}`);
@@ -103,7 +135,7 @@ function resolvePackageExecutable(
   packageName: string,
   executableSegments: readonly string[],
   pathApi: typeof darwinPath,
-): string {
+): ResolvedNativeRuntime {
   let resolvedPackageJson: string;
   try {
     resolvedPackageJson = host.resolvePackageJson(`${packageName}/package.json`);
@@ -125,29 +157,83 @@ function resolvePackageExecutable(
     throw new Error('Palladin native runtime resolved outside its platform package');
   }
   host.assertExecutable(executable);
-  return executable;
+  validatePackageManifest(host.readPackageManifest(packageJson), packageName, host);
+  return { packageName, executable };
 }
 
 export async function launchNativeRuntime(
   args: readonly string[],
   host: NativeDispatchHost = systemHost(),
 ): Promise<number> {
-  let executable: string;
+  let runtime: ResolvedNativeRuntime;
   try {
-    executable = resolveNativeRuntime(host);
+    runtime = resolveNativeRuntimeSource(host);
   } catch (error) {
     process.stderr.write(`Error: ${safeError(error)}\n`);
     return 1;
   }
 
+  const policyIndependentDiagnostic = isPolicyIndependentDiagnostic(args);
+  let binding: VerifiedArtifactBinding;
+  try {
+    const executableSha256 = host.hashFile(runtime.executable);
+    const request = {
+      packageName: runtime.packageName,
+      version: NATIVE_RUNTIME_VERSION,
+      executableSha256,
+      sourceSha: RUNTIME_SOURCE_SHA,
+    };
+    // Exact identity-free diagnostics may bypass a dynamic policy outage or
+    // revocation, but never artifact integrity. Their offline path still
+    // verifies the release-bundled signed binding and exact source hash.
+    binding = policyIndependentDiagnostic
+      ? await host.loadBundledArtifactBinding(request)
+      : await host.loadVerifiedArtifactBinding(request);
+    assertExactBinding(
+      runtime.packageName,
+      executableSha256,
+      binding,
+      !policyIndependentDiagnostic,
+    );
+  } catch {
+    process.stderr.write('Error: Palladin native runtime failed signed version policy verification\n');
+    return 1;
+  }
+
+  let executable = runtime.executable;
+  let windowsLease: WindowsRuntimeLease | undefined;
+  try {
+    if (host.platform === 'win32') {
+      windowsLease = host.prepareWindowsRuntime({
+        packageName: runtime.packageName,
+        version: NATIVE_RUNTIME_VERSION,
+        executable: runtime.executable,
+      }, binding);
+      windowsLease.verifyBeforeSpawn();
+      executable = windowsLease.executable;
+    } else if (host.hashFile(runtime.executable) !== binding.executableSha256) {
+      throw new Error('runtime changed after policy verification');
+    }
+  } catch {
+    windowsLease?.release();
+    process.stderr.write('Error: Palladin native runtime failed integrity verification\n');
+    return 1;
+  }
+
   let child: ChildProcess;
   try {
-    child = host.spawnRuntime(executable, args, {
+    const options: SpawnOptions = {
       shell: false,
       stdio: 'inherit',
       windowsHide: true,
-    });
+      ...(host.platform === 'win32' ? { env: process.env } : {}),
+    };
+    child = windowsLease === undefined
+      ? host.spawnRuntime(executable, args, options)
+      : windowsLease.spawnLocked(args, options);
+    windowsLease?.bindToChild(child.pid);
   } catch {
+    windowsLease?.release();
     process.stderr.write('Error: Palladin native runtime could not be started\n');
     return 1;
   }
@@ -164,6 +250,7 @@ export async function launchNativeRuntime(
   return await new Promise<number>((resolve) => {
     const cleanup = (): void => {
       for (const [signal, handler] of handlers) host.removeSignalHandler(signal, handler);
+      windowsLease?.release();
     };
     child.once('error', () => {
       cleanup();
@@ -182,6 +269,12 @@ export async function launchNativeRuntime(
   });
 }
 
+function isPolicyIndependentDiagnostic(args: readonly string[]): boolean {
+  return args.length === 1
+    && (args[0] === '--help' || args[0] === '-h' || args[0] === '--version'
+      || args[0] === '-V' || args[0] === 'doctor');
+}
+
 function systemHost(): NativeDispatchHost {
   const require = createRequire(import.meta.url);
   return {
@@ -191,10 +284,59 @@ function systemHost(): NativeDispatchHost {
     resolvePackageJson: (specifier) => require.resolve(specifier),
     realpath: realpathSync,
     assertExecutable: (path) => accessSync(path, fsConstants.X_OK),
+    readPackageManifest: (path) => JSON.parse(readFileSync(path, 'utf8')) as unknown,
+    hashFile: sha256File,
+    loadVerifiedArtifactBinding: (request) => loadSystemVerifiedArtifactBinding(request),
+    loadBundledArtifactBinding: async (request) => loadBundledVerifiedArtifactBinding(request),
+    prepareWindowsRuntime: (source, binding) => prepareWindowsRuntimeCache(source, binding),
     spawnRuntime: (path, args, options) => spawn(path, [...args], options),
     addSignalHandler: (signal, handler) => process.on(signal, handler),
     removeSignalHandler: (signal, handler) => process.off(signal, handler),
   };
+}
+
+function validatePackageManifest(
+  value: unknown,
+  packageName: string,
+  host: NativeDispatchHost,
+): void {
+  if (!isRecord(value) || value.name !== packageName || value.version !== NATIVE_RUNTIME_VERSION
+    || !exactStringArray(value.os, host.platform)
+    || !exactStringArray(value.cpu, host.architecture)
+    || Object.hasOwn(value, 'scripts') || Object.hasOwn(value, 'dependencies')
+    || Object.hasOwn(value, 'optionalDependencies')) {
+    throw new Error('Palladin native runtime package manifest is invalid');
+  }
+  if (host.platform === 'linux') {
+    if (host.linuxLibc === undefined || host.linuxLibc === 'unsupported'
+      || !exactStringArray(value.libc, host.linuxLibc)) {
+      throw new Error('Palladin native runtime package manifest is invalid');
+    }
+  } else if (Object.hasOwn(value, 'libc')) {
+    throw new Error('Palladin native runtime package manifest is invalid');
+  }
+}
+
+function assertExactBinding(
+  packageName: string,
+  executableSha256: string,
+  binding: VerifiedArtifactBinding,
+  requireAllowed: boolean,
+): void {
+  if (binding.packageName !== packageName || binding.version !== NATIVE_RUNTIME_VERSION
+    || binding.executableSha256 !== executableSha256
+    || binding.sourceSha !== RUNTIME_SOURCE_SHA
+    || (requireAllowed && !binding.runtimeAllowed)) {
+    throw new Error('Palladin native runtime binding is invalid');
+  }
+}
+
+function exactStringArray(value: unknown, expected: string): boolean {
+  return Array.isArray(value) && value.length === 1 && value[0] === expected;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function detectSystemLinuxLibc(): LinuxLibc {

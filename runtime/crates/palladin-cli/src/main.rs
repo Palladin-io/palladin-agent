@@ -56,11 +56,6 @@ async fn main() -> ExitCode {
         Ok(root) => root,
         Err(error) => return fail(&error),
     };
-    let secret_store = match runtime_secret_store(hardened_worker_root.as_deref()) {
-        Ok(store) => store,
-        Err(error) => return fail(&error.to_string()),
-    };
-    let runtime_storage_tier = hardened_tier_description(hardened_worker_root.is_some());
     if argv_contains_api_key() {
         return fail(
             "API keys are forbidden in argv; use a masked prompt or connect --api-key-stdin",
@@ -87,6 +82,26 @@ async fn main() -> ExitCode {
         return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
     }
 
+    if let Commands::VerifyReleasePolicy { policy } = &cli.command {
+        return match palladin_runtime::version_policy::verify_release_policy_file(
+            policy,
+            env!("CARGO_PKG_VERSION"),
+        ) {
+            Ok(()) => {
+                println!("Release policy verified.");
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail(&error.to_string()),
+        };
+    }
+
+    let hardened_runtime = hardened_worker_root.is_some();
+    let secret_store = match runtime_secret_store(hardened_worker_root.as_deref()) {
+        Ok(store) => store,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let runtime_storage_tier = hardened_tier_description(hardened_worker_root.is_some());
+
     let root = match hardened_worker_root {
         Some(root) => root,
         None => match palladin_platform::palladin_root() {
@@ -100,13 +115,37 @@ async fn main() -> ExitCode {
     };
     let service = RuntimeService::new(repository, secret_store);
 
+    if !matches!(
+        &cli.command,
+        Commands::Doctor | Commands::Disconnect { .. } | Commands::Purge { .. }
+    ) {
+        if palladin_runtime::version_policy::system_version_policy_configured() {
+            if let Err(error) = service
+                .enforce_system_version_policy(env!("CARGO_PKG_VERSION"))
+                .await
+            {
+                return fail(&error.to_string());
+            }
+        } else if !cfg!(debug_assertions) {
+            return fail(&RuntimeError::VersionPolicyNotConfigured.to_string());
+        }
+    }
+
     match cli.command {
         Commands::Init { force } => init(&service, cli.id.as_deref(), force, runtime_storage_tier),
+        Commands::VerifyReleasePolicy { .. } => unreachable!("release verification exits early"),
         Commands::Doctor => doctor(&environment, &service, runtime_storage_tier),
         Commands::Connect(args) => {
             connect(&service, cli.id.as_deref(), args, runtime_storage_tier).await
         }
         Commands::Status => status(&service, cli.id.as_deref(), runtime_storage_tier).await,
+        Commands::Disconnect { purge, confirm } => disconnect(
+            &service,
+            cli.id.as_deref(),
+            purge,
+            confirm,
+            hardened_runtime,
+        ),
         Commands::Search(args) => search(&service, cli.id.as_deref(), args).await,
         Commands::Get(args) => get(&service, cli.id.as_deref(), args).await,
         Commands::Exec(args) => exec(&service, cli.id.as_deref(), args).await,
@@ -117,7 +156,7 @@ async fn main() -> ExitCode {
         Commands::Security { command } => {
             security(&service, cli.id.as_deref(), command, runtime_storage_tier)
         }
-        Commands::Purge { confirm } => purge(&service, confirm),
+        Commands::Purge { confirm } => purge(&service, confirm, hardened_runtime),
     }
 }
 
@@ -323,10 +362,13 @@ fn hardened_linux_worker_root() -> Result<Option<std::path::PathBuf>, String> {
 
 const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
     match command {
-        Commands::Doctor => EnvironmentRequirement::DiagnosticOnly,
+        Commands::Doctor | Commands::VerifyReleasePolicy { .. } => {
+            EnvironmentRequirement::DiagnosticOnly
+        }
         Commands::Init { .. }
         | Commands::Connect(_)
         | Commands::Status
+        | Commands::Disconnect { .. }
         | Commands::Search(_)
         | Commands::Get(_)
         | Commands::Exec(_)
@@ -858,9 +900,38 @@ fn agents_result(
     }
 }
 
-fn purge(service: &RuntimeService<RuntimeSecretStore>, confirm: bool) -> ExitCode {
+fn disconnect(
+    service: &RuntimeService<RuntimeSecretStore>,
+    profile: Option<&str>,
+    purge: bool,
+    confirm: bool,
+    hardened_runtime: bool,
+) -> ExitCode {
+    if !purge || !confirm {
+        return fail("disconnect requires --purge --confirm and is never run automatically");
+    }
+    if let Err(error) = ensure_workload_purge_allowed(hardened_runtime) {
+        return fail(error);
+    }
+    match service.purge_profile(profile) {
+        Ok(removed) => {
+            println!("Local Palladin Agent identity '{}' purged.", removed.name);
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(&error.to_string()),
+    }
+}
+
+fn purge(
+    service: &RuntimeService<RuntimeSecretStore>,
+    confirm: bool,
+    hardened_runtime: bool,
+) -> ExitCode {
     if !confirm {
         return fail("purge requires --confirm and is never run automatically");
+    }
+    if let Err(error) = ensure_workload_purge_allowed(hardened_runtime) {
+        return fail(error);
     }
     match service.purge() {
         Ok(()) => {
@@ -869,6 +940,18 @@ fn purge(service: &RuntimeService<RuntimeSecretStore>, confirm: bool) -> ExitCod
         }
         Err(error) => fail(&error.to_string()),
     }
+}
+
+fn ensure_workload_purge_allowed(hardened_runtime: bool) -> Result<(), &'static str> {
+    #[cfg(target_os = "linux")]
+    if hardened_runtime {
+        return Err(
+            "purge is unavailable from a Linux Hardened workload; revoke the dedicated Agent UID through the root-owned administrative helper",
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = hardened_runtime;
+    Ok(())
 }
 
 fn read_api_key(from_stdin: bool) -> Result<OrganizationApiKey, String> {

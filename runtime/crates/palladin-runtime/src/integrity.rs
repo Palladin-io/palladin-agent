@@ -12,7 +12,12 @@ use sha2::{Digest, Sha256};
 use crate::RuntimeError;
 
 pub(crate) const TRUST_OWNER_ID: &str = "00000000000000000000000000000000";
-const TRUST_SCHEMA_VERSION: u32 = 1;
+// Secure trust metadata follows an N/N-1 reader contract. Version 2 is the first
+// production-ready contract; version 1 is accepted only as its immediate predecessor.
+// Every write normalizes to N. A previous runtime that supports only version 1 rejects
+// version 2 before it can authorize a journal or touch identity slots.
+const TRUST_SCHEMA_VERSION: u32 = 2;
+const MIN_READABLE_TRUST_SCHEMA_VERSION: u32 = TRUST_SCHEMA_VERSION - 1;
 const JOURNAL_SCHEMA_VERSION: u32 = 1;
 const JOURNAL_DOMAIN: &[u8] = b"palladin.integrity-journal.v1\0";
 
@@ -101,6 +106,10 @@ impl TrustState {
     }
 
     pub(crate) fn validate(&self) -> Result<(), RuntimeError> {
+        self.validate_for_max_schema(TRUST_SCHEMA_VERSION)
+    }
+
+    fn validate_for_max_schema(&self, max_schema_version: u32) -> Result<(), RuntimeError> {
         let (trust_schema, public_schema, generation_ok, digests) = match self {
             Self::Committed {
                 trust_schema_version,
@@ -158,7 +167,8 @@ impl TrustState {
                 )
             }
         };
-        if trust_schema != TRUST_SCHEMA_VERSION
+        if !(MIN_READABLE_TRUST_SCHEMA_VERSION..=max_schema_version).contains(&trust_schema)
+            || max_schema_version > TRUST_SCHEMA_VERSION
             || public_schema != PUBLIC_SCHEMA_VERSION
             || !generation_ok
             || digests.into_iter().any(|value| !is_digest(value))
@@ -166,6 +176,28 @@ impl TrustState {
             return Err(RuntimeError::IntegrityViolation);
         }
         Ok(())
+    }
+
+    fn normalize_for_write(&mut self) {
+        let trust_schema_version = match self {
+            Self::Committed {
+                trust_schema_version,
+                ..
+            }
+            | Self::PurgeCommitted {
+                trust_schema_version,
+                ..
+            }
+            | Self::Transition {
+                trust_schema_version,
+                ..
+            }
+            | Self::Allocating {
+                trust_schema_version,
+                ..
+            } => trust_schema_version,
+        };
+        *trust_schema_version = TRUST_SCHEMA_VERSION;
     }
 }
 
@@ -341,13 +373,23 @@ impl IntegrityJournal {
 
 pub(crate) fn encode_trust_state(state: &TrustState) -> Result<Vec<u8>, RuntimeError> {
     state.validate()?;
-    serde_json::to_vec(state).map_err(|_| RuntimeError::IntegrityViolation)
+    let mut current = state.clone();
+    current.normalize_for_write();
+    current.validate()?;
+    serde_json::to_vec(&current).map_err(|_| RuntimeError::IntegrityViolation)
 }
 
 pub(crate) fn decode_trust_state(bytes: &[u8]) -> Result<TrustState, RuntimeError> {
+    decode_trust_state_for_max_schema(bytes, TRUST_SCHEMA_VERSION)
+}
+
+fn decode_trust_state_for_max_schema(
+    bytes: &[u8],
+    max_schema_version: u32,
+) -> Result<TrustState, RuntimeError> {
     let state: TrustState =
         serde_json::from_slice(bytes).map_err(|_| RuntimeError::IntegrityViolation)?;
-    state.validate()?;
+    state.validate_for_max_schema(max_schema_version)?;
     Ok(state)
 }
 
@@ -523,7 +565,8 @@ mod tests {
 
     use super::{
         ConfigWrite, IntegrityJournal, SecretAllocation, SecretCopy, SecretDeletion, TrustState,
-        decode_trust_state, encode_trust_state, load_journal, remove_journal, save_journal,
+        decode_trust_state, decode_trust_state_for_max_schema, encode_trust_state, load_journal,
+        remove_journal, save_journal,
     };
 
     fn fixture() -> (PublicRegistry, ConfigWrite) {
@@ -565,6 +608,25 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON");
         value["unexpected"] = serde_json::json!(true);
         assert!(decode_trust_state(&serde_json::to_vec(&value).expect("JSON")).is_err());
+
+        let mut previous: serde_json::Value =
+            serde_json::from_slice(&encoded).expect("current JSON");
+        previous["trust_schema_version"] = serde_json::json!(1);
+        let previous_bytes = serde_json::to_vec(&previous).expect("previous JSON");
+        let decoded_previous = decode_trust_state(&previous_bytes).expect("read N-1");
+        let normalized: serde_json::Value = serde_json::from_slice(
+            &encode_trust_state(&decoded_previous).expect("write current N"),
+        )
+        .expect("normalized JSON");
+        assert_eq!(normalized["trust_schema_version"], serde_json::json!(2));
+
+        assert!(
+            decode_trust_state_for_max_schema(&encoded, 1).is_err(),
+            "an N-1 runtime must reject newer secure metadata before mutation"
+        );
+        let mut future: serde_json::Value = serde_json::from_slice(&encoded).expect("current JSON");
+        future["trust_schema_version"] = serde_json::json!(3);
+        assert!(decode_trust_state(&serde_json::to_vec(&future).expect("future JSON")).is_err());
 
         let invalid = TrustState::transition(1, "a".repeat(64), 3, "b".repeat(64), "c".repeat(64));
         assert!(encode_trust_state(&invalid).is_err());

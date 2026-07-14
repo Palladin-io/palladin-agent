@@ -18,14 +18,19 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::{Zeroize, Zeroizing};
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
+pub const RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const SOURCE_SHA: &str = match option_env!("SOURCE_SHA") {
+    Some(value) => value,
+    None => "development",
+};
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_ARGUMENTS: usize = 256;
 const MAX_ARGUMENT_BYTES: usize = 32 * 1024;
 const MAX_AGENT_ID_BYTES: usize = 256;
 const MAX_CONSENT_PUBLIC_KEY_BYTES: usize = 8 * 1024;
-const CONSENT_DOMAIN: &[u8] = b"palladin.windows.secure-consent.v2\0";
+const CONSENT_DOMAIN: &[u8] = b"palladin.windows.secure-consent.v3\0";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -34,6 +39,7 @@ pub enum SecureOperation {
     Doctor,
     Connect,
     Status,
+    Disconnect,
     Search,
     Get,
     ReportStale,
@@ -51,6 +57,7 @@ impl SecureOperation {
             "doctor" => Some(Self::Doctor),
             "connect" => Some(Self::Connect),
             "status" => Some(Self::Status),
+            "disconnect" => Some(Self::Disconnect),
             "search" => Some(Self::Search),
             "get" => Some(Self::Get),
             "report-stale" => Some(Self::ReportStale),
@@ -366,6 +373,8 @@ pub enum ProtocolError {
     MalformedFrame,
     #[error("broker protocol version is unsupported")]
     UnsupportedVersion,
+    #[error("broker and client release identities do not match")]
+    ReleaseMismatch,
     #[error("broker request is invalid")]
     InvalidRequest,
     #[error("secure operation is not permitted")]
@@ -582,8 +591,15 @@ pub fn request_hash(
     standard_input: &[u8],
 ) -> Result<[u8; 32], ProtocolError> {
     let canonical = Zeroizing::new(
-        serde_json::to_vec(&(PROTOCOL_VERSION, operation, arguments, standard_input))
-            .map_err(|_| ProtocolError::InvalidRequest)?,
+        serde_json::to_vec(&(
+            PROTOCOL_VERSION,
+            RELEASE_VERSION,
+            SOURCE_SHA,
+            operation,
+            arguments,
+            standard_input,
+        ))
+        .map_err(|_| ProtocolError::InvalidRequest)?,
     );
     Ok(Sha256::digest(&*canonical).into())
 }
@@ -591,6 +607,8 @@ pub fn request_hash(
 pub fn consent_payload(consent: &ConsentChallenge) -> Result<Vec<u8>, ProtocolError> {
     let body = serde_json::to_vec(&(
         PROTOCOL_VERSION,
+        RELEASE_VERSION,
+        SOURCE_SHA,
         &consent.nonce,
         consent.issued_at_unix_ms,
         consent.expires_at_unix_ms,
@@ -612,10 +630,14 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
     #[derive(Serialize)]
     struct Envelope<'a, T> {
         protocol_version: u16,
+        release_version: &'a str,
+        source_sha: &'a str,
         payload: &'a T,
     }
     let mut body = serde_json::to_vec(&Envelope {
         protocol_version: PROTOCOL_VERSION,
+        release_version: RELEASE_VERSION,
+        source_sha: SOURCE_SHA,
         payload: frame,
     })
     .map_err(|_| ProtocolError::MalformedFrame)?;
@@ -650,15 +672,22 @@ pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     #[serde(deny_unknown_fields)]
     struct Envelope<T> {
         protocol_version: u16,
+        release_version: String,
+        source_sha: String,
         payload: T,
     }
     let result = serde_json::from_slice::<Envelope<T>>(&body)
         .map_err(|_| ProtocolError::MalformedFrame)
         .and_then(|envelope| {
-            if envelope.protocol_version == PROTOCOL_VERSION {
+            if envelope.protocol_version == PROTOCOL_VERSION
+                && envelope.release_version == RELEASE_VERSION
+                && envelope.source_sha == SOURCE_SHA
+            {
                 Ok(envelope.payload)
-            } else {
+            } else if envelope.protocol_version != PROTOCOL_VERSION {
                 Err(ProtocolError::UnsupportedVersion)
+            } else {
+                Err(ProtocolError::ReleaseMismatch)
             }
         });
     body.zeroize();
@@ -973,6 +1002,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn explicit_disconnect_purge_is_a_distinct_consent_bound_operation() {
+        assert_eq!(
+            operation_and_profile(&[
+                "--id".to_owned(),
+                "build".to_owned(),
+                "disconnect".to_owned(),
+                "--purge".to_owned(),
+                "--confirm".to_owned(),
+            ])
+            .expect("disconnect purge"),
+            (SecureOperation::Disconnect, "build".to_owned())
+        );
+    }
+
     #[tokio::test]
     async fn length_prefixed_frame_round_trips_without_secret_verbs() {
         let frame = ClientFrame::Cancel {
@@ -982,7 +1026,7 @@ mod tests {
         write_frame(&mut bytes, &frame).await.expect("write");
         let decoded: ClientFrame = read_frame(&mut bytes.as_slice()).await.expect("read");
         assert!(matches!(decoded, ClientFrame::Cancel { request_id } if request_id == [3; 16]));
-        let wire = String::from_utf8(bytes).expect("UTF-8-ish frame");
+        let wire = String::from_utf8(bytes[4..].to_vec()).expect("JSON frame");
         let exposes_sensitive_wire_fields = wire.contains("api-key")
             || wire.contains("private-key")
             || wire.contains("read-secret");
@@ -1019,10 +1063,21 @@ mod tests {
 
     #[tokio::test]
     async fn unsupported_protocol_version_is_rejected() {
-        let body = br#"{"protocol_version":3,"payload":{"type":"cancel","request_id":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}}"#;
+        let body = br#"{"protocol_version":4,"release_version":"0.1.0","source_sha":"development","payload":{"type":"cancel","request_id":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}}"#;
         let mut frame = Vec::from((body.len() as u32).to_be_bytes());
         frame.extend_from_slice(body);
         let result = read_frame::<_, ClientFrame>(&mut frame.as_slice()).await;
         assert!(matches!(result, Err(ProtocolError::UnsupportedVersion)));
+    }
+
+    #[tokio::test]
+    async fn mixed_release_identity_is_rejected() {
+        let body = format!(
+            "{{\"protocol_version\":{PROTOCOL_VERSION},\"release_version\":\"{RELEASE_VERSION}\",\"source_sha\":\"different-source\",\"payload\":{{\"type\":\"cancel\",\"request_id\":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}}}}"
+        );
+        let mut frame = Vec::from((body.len() as u32).to_be_bytes());
+        frame.extend_from_slice(body.as_bytes());
+        let result = read_frame::<_, ClientFrame>(&mut frame.as_slice()).await;
+        assert!(matches!(result, Err(ProtocolError::ReleaseMismatch)));
     }
 }

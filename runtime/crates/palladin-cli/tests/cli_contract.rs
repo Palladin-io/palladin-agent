@@ -106,10 +106,12 @@ fn contract() -> Contract {
 
 fn command_name(command: &Commands) -> &'static str {
     match command {
+        Commands::VerifyReleasePolicy { .. } => "verify-release-policy",
         Commands::Init { .. } => "init",
         Commands::Doctor => "doctor",
         Commands::Connect(_) => "connect",
         Commands::Status => "status",
+        Commands::Disconnect { .. } => "disconnect",
         Commands::Search(_) => "search",
         Commands::Get(_) => "get",
         Commands::Exec(_) => "exec",
@@ -210,6 +212,31 @@ fn global_profile_selector_parses_after_the_command() {
             .expect("global profile selector after command");
     assert_eq!(parsed.id.as_deref(), Some("local-profile"));
     assert!(matches!(parsed.command, Commands::Get(_)));
+}
+
+#[test]
+fn disconnect_purge_requires_an_explicit_two_flag_acknowledgement() {
+    let parsed = Cli::try_parse_from([
+        "palladin",
+        "--id",
+        "local-profile",
+        "disconnect",
+        "--purge",
+        "--confirm",
+    ])
+    .expect("explicit disconnect purge");
+    assert_eq!(parsed.id.as_deref(), Some("local-profile"));
+    assert!(matches!(
+        parsed.command,
+        Commands::Disconnect {
+            purge: true,
+            confirm: true
+        }
+    ));
+    assert!(
+        Cli::try_parse_from(["palladin", "disconnect", "--confirm"]).is_err(),
+        "--confirm without --purge must be rejected by the parser"
+    );
 }
 
 #[test]

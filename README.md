@@ -7,7 +7,7 @@ Public npm launcher and native CLI/MCP runtime for Palladin Agent.
 
 ## Security boundary
 
-The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed universal executable from the exact x64 or arm64 npm package. On Windows it starts only the Authenticode-signed `palladin-client.exe` from the exact x64 or arm64 package; that client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. On Linux it reads only the `PT_INTERP` header of its own Node executable and selects the exact x64 or arm64 glibc or musl package; unknown libc loaders fail before package resolution. There is no TypeScript, `PATH`, download, cross-libc, or plaintext fallback.
+The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed universal executable from the exact x64 or arm64 npm package. On Windows it verifies the exact Authenticode-signed `palladin-client.exe` against signed release policy, copies only that public executable into a version-and-hash-specific per-user cache, opens and re-verifies the cached file under a non-write/non-delete handle, and keeps that handle until the child exits. The child is started without a shell. This avoids locking `node_modules` while an MCP session remains active. The client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. On Linux the dispatcher reads only the `PT_INTERP` header of its own Node executable and selects the exact x64 or arm64 glibc or musl package; unknown libc loaders fail before package resolution. There is no TypeScript credential implementation, `PATH`, runtime download, cross-libc, or plaintext fallback.
 
 The native runtime keeps these concepts separate:
 
@@ -39,7 +39,7 @@ palladin doctor
 
 On Windows, install the matching signed Palladin Runtime bootstrapper once before using Hardened mode. npm installation remains script-free and does not prompt for elevation. If the service or companion is unavailable or invalid, the client fails closed instead of falling back to the current-user credential store.
 
-On glibc Linux with systemd 252 or newer, npm alone installs the Convenience tier. Install the matching signed `palladin-runtime` DEB or RPM only for a dedicated headless Agent UID. An authorized UID fails closed when the broker, executor socket, root-owned mapping, or permissions are invalid; it never falls back to the npm worker or Secret Service. Alpine/OpenRC has no Hardened package in the MVP because it lacks an equivalent fresh per-request UID and executor sandbox.
+On glibc Linux with systemd 252 or newer, npm alone installs the Convenience tier. Install the matching signed `palladin-runtime` DEB or RPM only for a dedicated headless Agent UID. An authorized UID fails closed when the broker, executor socket, root-owned mapping, or permissions are invalid; it never falls back to the npm worker or Secret Service. Workload purge is blocked; permanent deletion requires the root-owned `palladin-manage-agent-uid revoke-purge USER --confirm-purge` operation, which retains the UID-reuse tombstone. Alpine/OpenRC has no Hardened package in the MVP because it lacks an equivalent fresh per-request UID and executor sandbox.
 
 No package uses `preinstall`, `install`, `postinstall`, `preprepare`, `prepare`, or `postprepare`. npm installs the matching prebuilt platform package; it does not download or compile a binary during installation.
 
@@ -51,6 +51,8 @@ No package uses `preinstall`, `install`, `postinstall`, `preprepare`, `prepare`,
 - `--omit=optional` is unsupported because the native runtime is an optional platform dependency. Offline installs require the launcher and its matching platform tarball to exist in the configured npm cache or proxy.
 
 All three modes run the same script-free launcher and exact platform package. They do not change where native public state or OS-protected secrets live.
+
+An active MCP process keeps the native version it started with. Updating npm changes only subsequent launches; the next launch requires the exact new platform package and its signed, unexpired version policy. The policy binds both the public npm client and the native credential-bearing worker; the worker hashes its own executable before opening identity. On Windows the public runtime cache may outlive npm uninstall so a loaded process is not interrupted. It contains no identity, API key, private key, profile, or credential. A signed policy can block a bad version before any identity-bearing command starts. Exact `doctor`, help, and version diagnostics remain available during a dynamic policy outage because they do not open identity, but they still require the release-bundled signed artifact binding, exact hash, and Windows Authenticode checks. Adding any other argument restores the current policy requirement.
 
 Node.js 20.5 or newer and npm 9.7.1 or newer are required. Older npm versions do not reliably enforce the Linux `libc` package filter and are unsupported because they may install both glibc and musl optional packages. npm 9.7.0 is excluded because that release shipped an invalid executable manifest.
 
@@ -108,13 +110,14 @@ API keys in argv or environment variables are rejected. Connecting a second prof
 | `palladin agents create <name>` | Create another local Agent identity. |
 | `palladin agents rename <old> <new>` | Rename an alias without moving secret slots. |
 | `palladin agents delete <name>` | Delete an identity; retain a shared organization credential while another Agent references it. |
+| `palladin --id <name> disconnect --purge --confirm` | Explicitly remove one Agent identity and retain its shared organization credential while another Agent references it. |
 | `palladin search <query>` | Search metadata visible to the Agent. |
 | `palladin get <vaultId> <entryId>` | Intentionally return a granted credential to the operator. |
 | `palladin exec <vaultId> <entryId> -- <program>` | Run an allowlisted program with delivered values in a sanitized child environment. |
 | `palladin inject ...` | Fail closed until an authenticated browser boundary exists. |
 | `palladin mcp serve` | Serve Palladin tools over MCP stdio. |
 | `palladin security upgrade` | Explicitly migrate pre-production schema v2 state and secret slots to integrity-bound schema v3. |
-| `palladin purge --confirm` | Explicitly remove native profiles and their known secret slots. |
+| `palladin purge --confirm` | Explicitly remove native profiles and their known secret slots in standalone tiers; Linux Hardened requires the root-owned administrative purge. |
 
 ## MCP configuration
 

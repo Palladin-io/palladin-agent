@@ -54,7 +54,7 @@ sha2 = { version = "0.10.9", features = ["oid"] }
 subtle = "2.6.1"
 tempfile = "3.27.0"
 thiserror = "2.0.18"
-time = { version = "0.3.44", features = ["formatting"] }
+time = { version = "0.3.44", features = ["formatting", "parsing"] }
 tokio = { version = "1.52.3", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = "0.7.18"
 tracing = { version = "0.1.44", features = ["max_level_off", "release_max_level_off"] }

@@ -68,8 +68,8 @@ After configuring trust, verify a staged dry run through the protected workflow 
 
 Repository administrators must configure these settings outside the repository:
 
-- Create `release-prepare`, `macos-signing`, `windows-signing`, `npm-bootstrap`, `npm-release`, and `release-finalize` environments.
-- Add only `@patryk-roguszewski` as required reviewer for all six environments.
+- Create `release-prepare`, `macos-signing`, `windows-signing`, `version-policy-signing`, `npm-bootstrap`, `npm-release`, and `release-finalize` environments.
+- Add only `@patryk-roguszewski` as required reviewer for all seven environments.
 - Keep **Prevent self-review** disabled because Patryk both starts and approves the release.
 - Restrict `release-prepare`, signing, npm release, and finalization environments to protected release tags. Restrict `npm-bootstrap` to the default branch and remove its secret after bootstrap.
 - Create a tag ruleset for `v*`. Limit tag creation, update, and deletion to Patryk. Block force updates and deletions.
@@ -80,6 +80,43 @@ Repository administrators must configure these settings outside the repository:
 - Protect workflow files with CODEOWNERS and do not permit workflow changes to bypass the normal pull request path.
 
 Do not enable branch or tag protections until their required check names are present on `main`, otherwise the stacked pre-production pull requests can deadlock. Enable them immediately after the release stack lands.
+
+## Signed version-policy operations
+
+Every production native binary and meta-package embeds the same public Ed25519 trust anchor and exact source commit. The private key never enters GitHub or npm: Cloud KMS performs raw Ed25519 signing through GitHub OIDC and Workload Identity Federation. The fixed public object is `https://releases.palladin.io/agent/version-policy.json`.
+
+Configure these public repository variables:
+
+- `PALLADIN_VERSION_POLICY_PUBLIC_KEY`: canonical base64 of the raw 32-byte Ed25519 public key
+- `PALLADIN_WINDOWS_PUBLISHER` and `PALLADIN_WINDOWS_SIGNER_THUMBPRINT`: exact Authenticode identity committed by each Windows artifact binding
+
+Configure these variables only on the protected `version-policy-signing` environment:
+
+- `GCP_WORKLOAD_IDENTITY_PROVIDER`
+- `GCP_VERSION_POLICY_SERVICE_ACCOUNT`
+- `GCP_PROJECT_ID`
+- `GCP_VERSION_POLICY_KEY_VERSION`
+- `GCP_VERSION_POLICY_KEY`
+- `GCP_VERSION_POLICY_KEYRING`
+- `GCP_VERSION_POLICY_LOCATION`
+- `PALLADIN_RELEASE_BUCKET`
+
+The environment must require Patryk's approval. Restrict the Workload Identity Provider condition to the exact `Palladin-io/palladin-agent` repository, `version-policy-signing` environment, approved workflow filenames, and either protected `main` for maintenance or the protected release tag for a release. Its service account may read the configured public key, sign only with the single enabled `EC_SIGN_ED25519` key version, and create objects only below `gs://$PALLADIN_RELEASE_BUCKET/agent/version-policy/` plus conditionally replace `agent/version-policy.json`. It must not have repository, npm, or general bucket administration access. Enable object versioning and a retention policy on the bucket so an incident has an external audit trail. Every signed policy is first written under its immutable sequence-and-digest name with generation-match zero; the fixed pointer is replaced only when its observed generation still matches. The public endpoint must preserve the exact pointer bytes, return `Content-Type: application/json`, reject redirects, and use `Cache-Control: no-store`.
+
+The release sequence is intentionally asymmetric:
+
+1. `release-platforms.yml` builds and signs all native candidates with the public key and exact `SOURCE_SHA`, then stages the platform packages.
+2. After Patryk approves all eight immutable platform candidates, `release-meta.yml` installs those exact registry versions without lifecycle scripts and verifies npm registry signatures.
+3. The workflow hashes every installed npm client and credential-bearing worker, verifies the Windows worker hash against the signed MSIX binding, creates the next monotonic policy, and signs its canonical payload in KMS.
+4. Before publication, every exact macOS, Windows, Linux glibc, and Linux musl worker verifies that candidate's signature, freshness, source/version binding, and its own executable hash without opening profile or secret state.
+5. Only after every native smoke passes is the byte-identical policy published to the fixed endpoint.
+6. Only after byte verification and an identity-free native retrieval from the live endpoint is the meta-package containing that policy staged. This keeps the consumer-visible package behind the artifact and policy gates.
+
+Set `bootstrap_policy=true` only for the first policy, after confirming that neither the GCS object nor fixed endpoint exists. Every later release must use `false`; the workflow verifies the previous signature, preserves immutable bindings for an already published version, and increments the sequence. A rollback never republishes an old version or lowers the security floor. Rebuild the safe source as a new, higher patch version.
+
+The policy lifetime is at most 30 days. Run `version-policy-maintenance.yml` in `renew` mode by day 21 even when no release is planned. The weekly tokenless `version-policy-verify.yml` check fails when fewer than nine days remain. Renewal verifies the historical signature even if the previous policy has just expired, increments the sequence, and changes no artifact binding.
+
+For a compromised immutable version, run the maintenance workflow in `incident` mode with the exact blocked version, an already published safe version, and confirmation `SIGN POLICY`. The workflow signs and publishes the higher sequence first, then prints a manual npm deprecation and dist-tag plan. Patryk performs those npm operations interactively; the workflow has no npm token and never executes them. Preserve the old GCS object generation and workflow run as incident evidence.
 
 ## Release order
 

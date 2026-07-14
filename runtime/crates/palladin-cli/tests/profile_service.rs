@@ -53,6 +53,16 @@ impl MemoryStore {
             .count()
     }
 
+    fn secret(&self, owner: &str, slot: SecretSlot) -> Vec<u8> {
+        self.state
+            .lock()
+            .expect("store")
+            .secrets
+            .get(&(owner.to_owned(), slot))
+            .cloned()
+            .expect("secret fixture")
+    }
+
     fn fail_delete(&self, owner: &str, slot: SecretSlot) {
         self.state.lock().expect("store").fail_delete = Some((owner.to_owned(), slot));
     }
@@ -226,6 +236,139 @@ async fn multiple_agents_share_one_organization_credential_reference_safely() {
         &second_config.organization_credential_id,
         SecretSlot::OrganizationApiKey
     ));
+}
+
+#[tokio::test]
+async fn explicit_profile_purge_preserves_shared_organization_key_until_last_agent() {
+    const TRUST_OWNER: &str = "00000000000000000000000000000000";
+
+    let root = tempfile::tempdir().expect("root");
+    let store = MemoryStore::default();
+    let service = service(root.path(), store.clone());
+    let first = service.create_profile("first", None).expect("first");
+    let second = service.create_profile("second", None).expect("second");
+    let (host, _) = response_server(vec![
+        Response::pending("agent-first"),
+        Response::pending("agent-second"),
+    ])
+    .await;
+    for profile in ["first", "second"] {
+        service
+            .connect(
+                Some(profile),
+                OrganizationApiKey::new("pl_shared_profile_purge_fixture".to_owned()),
+                ApiHost::parse(&host).expect("host"),
+                None,
+                None,
+                "fixture-host",
+            )
+            .await
+            .expect("connect");
+    }
+    let organization_id = service
+        .repository()
+        .load_config(&second.identity_id)
+        .expect("second config")
+        .organization_credential_id;
+    store
+        .set(
+            TRUST_OWNER,
+            SecretSlot::VersionPolicyTrustStateV1,
+            br#"{"schemaVersion":1,"highestSequence":1,"policyDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+        )
+        .expect("version policy trust fixture");
+
+    let removed = service
+        .purge_profile(Some("first"))
+        .expect("purge default profile");
+    assert_eq!(removed.identity_id, first.identity_id);
+    assert!(!store.contains(&first.identity_id, SecretSlot::X25519PrivateKey));
+    assert!(!store.contains(&first.identity_id, SecretSlot::Ed25519SecretKey));
+    assert!(store.contains(&second.identity_id, SecretSlot::X25519PrivateKey));
+    assert!(store.contains(&second.identity_id, SecretSlot::Ed25519SecretKey));
+    assert!(store.contains(&organization_id, SecretSlot::OrganizationApiKey));
+    assert!(store.contains(TRUST_OWNER, SecretSlot::VersionPolicyTrustStateV1));
+    let registry = service.registry().expect("remaining registry");
+    assert_eq!(registry.default, "second");
+
+    let removed = service.purge_profile(None).expect("purge last profile");
+    assert_eq!(removed.identity_id, second.identity_id);
+    assert!(!store.contains(&organization_id, SecretSlot::OrganizationApiKey));
+    assert!(store.contains(TRUST_OWNER, SecretSlot::VersionPolicyTrustStateV1));
+    assert!(
+        service
+            .registry()
+            .expect("empty registry")
+            .agents
+            .is_empty()
+    );
+}
+
+#[test]
+fn trust_state_reads_n_minus_one_writes_n_and_future_schema_fails_without_mutation() {
+    const TRUST_OWNER: &str = "00000000000000000000000000000000";
+
+    let root = tempfile::tempdir().expect("root");
+    let store = MemoryStore::default();
+    let service = service(root.path(), store.clone());
+    service.registry().expect("bootstrap");
+    let profile = service.create_profile("build", None).expect("profile");
+    let encryption_before = store.secret(&profile.identity_id, SecretSlot::X25519PrivateKey);
+    let signing_before = store.secret(&profile.identity_id, SecretSlot::Ed25519SecretKey);
+
+    let mut previous: serde_json::Value =
+        serde_json::from_slice(&store.secret(TRUST_OWNER, SecretSlot::IntegrityTrustStateV1))
+            .expect("trust JSON");
+    previous["trust_schema_version"] = serde_json::json!(1);
+    store
+        .set(
+            TRUST_OWNER,
+            SecretSlot::IntegrityTrustStateV1,
+            &serde_json::to_vec(&previous).expect("previous JSON"),
+        )
+        .expect("install N-1 trust fixture");
+    store.clear_operations();
+    service.registry().expect("current reads N-1");
+    assert_only_integrity_reads(&store.operations(), "N-1 trust state");
+
+    service
+        .rename_profile("build", "renamed")
+        .expect("authenticated journal migration to N");
+    let current: serde_json::Value =
+        serde_json::from_slice(&store.secret(TRUST_OWNER, SecretSlot::IntegrityTrustStateV1))
+            .expect("current trust JSON");
+    assert_eq!(current["trust_schema_version"], serde_json::json!(2));
+    assert!(store.contains(&profile.identity_id, SecretSlot::X25519PrivateKey));
+    assert!(store.contains(&profile.identity_id, SecretSlot::Ed25519SecretKey));
+    assert!(
+        store.secret(&profile.identity_id, SecretSlot::X25519PrivateKey) == encryption_before,
+        "trust migration must preserve the existing X25519 slot bytes"
+    );
+    assert!(
+        store.secret(&profile.identity_id, SecretSlot::Ed25519SecretKey) == signing_before,
+        "trust migration must preserve the existing Ed25519 slot bytes"
+    );
+    assert_eq!(store.count_slot(SecretSlot::IntegrityTrustStateV1), 1);
+
+    let registry_before = std::fs::read(root.path().join("registry.json")).expect("registry");
+    let mut future = current;
+    future["trust_schema_version"] = serde_json::json!(3);
+    store
+        .set(
+            TRUST_OWNER,
+            SecretSlot::IntegrityTrustStateV1,
+            &serde_json::to_vec(&future).expect("future JSON"),
+        )
+        .expect("install future trust fixture");
+    store.clear_operations();
+    assert!(service.registry().is_err());
+    assert_only_integrity_reads(&store.operations(), "future trust state");
+    assert_eq!(
+        std::fs::read(root.path().join("registry.json")).expect("registry after rejection"),
+        registry_before
+    );
+    assert!(store.contains(&profile.identity_id, SecretSlot::X25519PrivateKey));
+    assert!(store.contains(&profile.identity_id, SecretSlot::Ed25519SecretKey));
 }
 
 #[tokio::test]
@@ -864,6 +1007,8 @@ async fn existing_agent_requests_use_its_signing_identity_with_the_shared_organi
 
 #[tokio::test]
 async fn explicit_purge_removes_native_shared_and_identity_slots() {
+    const TRUST_OWNER: &str = "00000000000000000000000000000000";
+
     let root = tempfile::tempdir().expect("root");
     let root_path = root.path().to_path_buf();
     let store = MemoryStore::default();
@@ -889,11 +1034,73 @@ async fn explicit_purge_removes_native_shared_and_identity_slots() {
             .expect("connect");
     }
     assert_eq!(store.count_slot(SecretSlot::OrganizationApiKey), 1);
+    store
+        .set(
+            TRUST_OWNER,
+            SecretSlot::VersionPolicyTrustStateV1,
+            br#"{"schemaVersion":1,"highestSequence":1,"policyDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+        )
+        .expect("version policy trust fixture");
     service.purge().expect("purge");
     assert_eq!(store.count_slot(SecretSlot::OrganizationApiKey), 0);
     assert_eq!(store.count_slot(SecretSlot::X25519PrivateKey), 0);
     assert_eq!(store.count_slot(SecretSlot::Ed25519SecretKey), 0);
+    assert!(!store.contains(TRUST_OWNER, SecretSlot::VersionPolicyTrustStateV1));
     assert!(!root_path.exists());
+}
+
+#[test]
+fn purge_rejects_unexpected_public_artifacts_before_any_secret_deletion() {
+    let root = tempfile::tempdir().expect("root");
+    let store = MemoryStore::default();
+    let service = service(root.path(), store.clone());
+    let profile = service.create_profile("build", None).expect("profile");
+    write_private_fixture(&root.path().join("unexpected.txt"), b"preserve me");
+    store.clear_operations();
+
+    assert!(service.purge().is_err());
+    assert!(store.contains(&profile.identity_id, SecretSlot::X25519PrivateKey));
+    assert!(store.contains(&profile.identity_id, SecretSlot::Ed25519SecretKey));
+    assert!(
+        !store
+            .operations()
+            .iter()
+            .any(|operation| matches!(operation, StoreOperation::Delete(_, _))),
+        "public preflight must complete before any secure-store deletion"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("unexpected.txt")).expect("unexpected artifact"),
+        b"preserve me"
+    );
+}
+
+#[test]
+fn purge_recovery_preflights_again_before_replaying_any_mutation() {
+    let root = tempfile::tempdir().expect("root");
+    let store = MemoryStore::default();
+    let service = service(root.path(), store.clone());
+    let profile = service.create_profile("build", None).expect("profile");
+    store.fail_delete(&profile.identity_id, SecretSlot::X25519PrivateKey);
+    assert!(service.purge().is_err());
+    assert!(store.contains(&profile.identity_id, SecretSlot::X25519PrivateKey));
+    assert!(store.contains(&profile.identity_id, SecretSlot::Ed25519SecretKey));
+
+    write_private_fixture(&root.path().join("unexpected.txt"), b"preserve after crash");
+    let registry_before = std::fs::read(root.path().join("registry.json")).expect("registry");
+    store.clear_failure();
+    store.clear_operations();
+    assert!(service.recover_pending_operations().is_err());
+    assert_only_integrity_reads(&store.operations(), "purge replay preflight");
+    assert_eq!(
+        std::fs::read(root.path().join("registry.json")).expect("registry after replay rejection"),
+        registry_before
+    );
+    assert!(store.contains(&profile.identity_id, SecretSlot::X25519PrivateKey));
+    assert!(store.contains(&profile.identity_id, SecretSlot::Ed25519SecretKey));
+    assert_eq!(
+        std::fs::read(root.path().join("unexpected.txt")).expect("unexpected artifact"),
+        b"preserve after crash"
+    );
 }
 
 #[tokio::test]

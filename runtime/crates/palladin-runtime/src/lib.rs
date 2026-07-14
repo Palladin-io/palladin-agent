@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 mod integrity;
+pub mod version_policy;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_api::{
@@ -11,8 +12,8 @@ use palladin_api::{
 };
 use palladin_core::host::ApiHost;
 use palladin_core::profiles::{
-    ProfileError, ProfileName, ProfileRepository, add_profile, delete_profile, rename_profile,
-    set_default, set_profile_type,
+    ProfileError, ProfileName, ProfileRepository, add_profile, delete_profile, purge_profile,
+    rename_profile, set_default, set_profile_type,
 };
 use palladin_core::public_store::{
     PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicProfileConfig, PublicRegistry,
@@ -222,6 +223,33 @@ impl<S: SecretStore> RuntimeService<S> {
         let name = ProfileName::parse(name)?;
         let state = self.verified_state_locked()?;
         let (updated, deleted) = delete_profile(&state.registry, &name)?;
+        self.commit_profile_removal(&state, updated, deleted)
+    }
+
+    /// Deliberately removes the selected local Agent identity.
+    ///
+    /// This is the native implementation behind `disconnect --purge --confirm`.
+    /// An organization credential survives while any remaining Agent config references
+    /// it; the selected Agent's X25519 and Ed25519 slots are always removed.
+    pub fn purge_profile(
+        &self,
+        explicit_name: Option<&str>,
+    ) -> Result<PublicAgentEntry, RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let state = self.verified_state_locked()?;
+        let name = ProfileName::parse(explicit_name.unwrap_or(&state.registry.default))?;
+        let (updated, deleted) = purge_profile(&state.registry, &name)?;
+        self.commit_profile_removal(&state, updated, deleted.clone())?;
+        Ok(deleted)
+    }
+
+    fn commit_profile_removal(
+        &self,
+        state: &VerifiedState,
+        updated: PublicRegistry,
+        deleted: PublicAgentEntry,
+    ) -> Result<(), RuntimeError> {
         let organization_ids = state
             .configs
             .get(&deleted.identity_id)
@@ -249,7 +277,7 @@ impl<S: SecretStore> RuntimeService<S> {
             }
         }
         self.commit_transition(
-            &state,
+            state,
             updated,
             Vec::new(),
             vec![deleted.identity_id],
@@ -275,6 +303,7 @@ impl<S: SecretStore> RuntimeService<S> {
                 organizations.extend(config.retired_organization_credential_ids.iter().cloned());
             }
         }
+        self.repository.preflight_public_purge(&identities)?;
         let mut deletions = identities
             .iter()
             .cloned()
@@ -1198,6 +1227,9 @@ impl<S: SecretStore> RuntimeService<S> {
 
     fn finish_purge(&self) -> Result<(), RuntimeError> {
         self.repository.purge_public_data()?;
+        version_policy::purge_version_policy_cache(self.repository.root())?;
+        self.secrets
+            .delete(TRUST_OWNER_ID, SecretSlot::VersionPolicyTrustStateV1)?;
         self.secrets
             .delete(TRUST_OWNER_ID, SecretSlot::IntegrityTrustStateV1)?;
         Ok(())
@@ -1205,6 +1237,10 @@ impl<S: SecretStore> RuntimeService<S> {
 
     fn apply_journal(&self, journal: &IntegrityJournal) -> Result<(), RuntimeError> {
         journal.validate()?;
+        if journal.purge_public_root {
+            self.repository
+                .preflight_public_purge(&journal.remove_identity_directories)?;
+        }
         for copy in &journal.secret_copies {
             match copy {
                 SecretCopy::LegacyIdentity { identity_id } => {
@@ -1718,6 +1754,16 @@ impl std::fmt::Debug for DeliveredCredential {
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
+    #[error("signed runtime version policy is not configured; no identity was opened")]
+    VersionPolicyNotConfigured,
+    #[error("signed runtime version policy is unavailable; no identity was opened")]
+    VersionPolicyUnavailable,
+    #[error("signed runtime version policy verification failed; no identity was opened")]
+    VersionPolicyViolation,
+    #[error("this runtime version is blocked by signed policy; no identity was opened")]
+    VersionPolicyBlocked,
+    #[error("signed runtime version policy rollback was rejected; no identity was opened")]
+    VersionPolicyRollback,
     #[error("profile operation failed: {0}")]
     Profile(#[from] ProfileError),
     #[error("runtime filesystem operation failed")]

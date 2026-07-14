@@ -23,7 +23,7 @@ Linux Hardened protects against ordinary processes under other UIDs. It does not
 
 ## Build packages
 
-Build the four glibc binaries for the native target and stage the CLI as `palladin-worker`:
+Build the glibc runtime binaries for the native target and stage the CLI as `palladin-worker`:
 
 ```bash
 cd runtime
@@ -64,7 +64,14 @@ sudo -u palladin-agent-prod sh -c \
 
 The first `connect` form uses a masked prompt in the trusted native system client. The second is the headless pipe form. Do not place the API key in argv, an environment variable, a unit file, or a shell history. For unattended provisioning, deliver it once through a root-controlled systemd credential or an anonymous pipe and remove the source immediately.
 
-`authorize` refuses login-capable or password-enabled accounts and requires the explicit `--dedicated` acknowledgement. In Hardened mode, profile creation, rename, deletion, default switching, force-init, and purge are blocked because they could rebind the root-owned principal. Revoke through the administrative helper before replacing an Agent account.
+`authorize` refuses login-capable or password-enabled accounts and requires the explicit `--dedicated` acknowledgement. In Hardened mode, profile creation, rename, deletion, default switching, force-init, and workload-initiated purge are blocked because they could rebind the root-owned principal. Ordinary `revoke USER` stops access but preserves encrypted state for recovery. Permanent deletion is a separate root-owned operation:
+
+```bash
+pkexec /usr/lib/palladin/runtime/palladin-manage-agent-uid \
+  revoke-purge palladin-agent-prod --confirm-purge
+```
+
+The helper first publishes and retains the revoked UID tombstone, restarts the broker to terminate authenticated sessions, removes group access, atomically detaches the immutable principal namespace, and deletes only preflighted broker-owned files. It never runs from npm install, update, or uninstall.
 
 Run the MCP server under the same dedicated UID:
 

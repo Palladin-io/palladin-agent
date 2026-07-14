@@ -36,8 +36,11 @@ jobs:
     name: Resolve the protected release source
     if: github.actor == 'patryk-roguszewski'
     runs-on: ubuntu-latest
-    environment: release-prepare
-    timeout-minutes: 5
+    environment: version-policy-signing
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
@@ -79,6 +82,29 @@ jobs:
             --format-version 1 --no-deps | jq -r '.packages[].version' | sort -u)
           test "$cargo_versions" = "$VERSION"
           echo "source_sha=$source_sha" >>"$GITHUB_OUTPUT"
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_VERSION_POLICY_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        with:
+          version: 561.0.0
+
+      - name: Prove the native build trust anchor matches the KMS signer
+        env:
+          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          gcloud kms keys versions get-public-key "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
+            --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
+            --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
+            --location "${{ vars.GCP_VERSION_POLICY_LOCATION }}" \
+            --output-file "$RUNNER_TEMP/version-policy-public.pem"
+          node packaging/npm/verify-kms-public-key.mjs \
+            --pem "$RUNNER_TEMP/version-policy-public.pem" --expected "$PUBLIC_KEY"
 
   macos:
     name: Build, sign, notarize, and smoke macOS
@@ -125,6 +151,9 @@ jobs:
       attestations: write
     env:
       GLIBC_BASELINE: "2.34"
+      SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+      PALLADIN_PRODUCTION_BUILD: "1"
+      PALLADIN_VERSION_POLICY_PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
       CC_x86_64_unknown_linux_musl: musl-gcc
       CC_aarch64_unknown_linux_musl: musl-gcc
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
@@ -174,7 +203,7 @@ jobs:
             -p palladin-linux-broker -p palladin-linux-executor --bins
           native="target/${{ matrix.target }}/release"
           cp "$native/palladin" "$native/palladin-worker"
-          for binary in palladin-linux-client palladin-linux-service palladin-linux-executor palladin-worker; do
+          for binary in palladin-linux-client palladin-linux-service palladin-linux-executor palladin-linux-admin-purge palladin-worker; do
             maximum=$(readelf --version-info "$native/$binary" |
               sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' | sort -V | tail -n 1)
             if [[ -z $maximum ]] ||

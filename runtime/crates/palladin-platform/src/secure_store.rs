@@ -8,6 +8,8 @@ const SERVICE: &str = "io.palladin.agent";
 pub enum SecretSlot {
     /// Small, non-secret integrity root for the public profile store.
     IntegrityTrustStateV1,
+    /// Monotonic sequence and digest for the signed public runtime policy.
+    VersionPolicyTrustStateV1,
     OrganizationApiKey,
     X25519PrivateKey,
     Ed25519SecretKey,
@@ -23,6 +25,7 @@ impl SecretSlot {
     pub(crate) const fn account_suffix(self) -> &'static str {
         match self {
             Self::IntegrityTrustStateV1 => "integrity-trust-state-v1",
+            Self::VersionPolicyTrustStateV1 => "version-policy-trust-state-v1",
             Self::OrganizationApiKey => "organization-api-key-v3",
             Self::X25519PrivateKey => "x25519-private-key-v3",
             Self::Ed25519SecretKey => "ed25519-secret-key-v3",
@@ -44,6 +47,7 @@ impl SecretSlot {
     pub(crate) const fn keychain_label(self) -> &'static str {
         match self {
             Self::IntegrityTrustStateV1 => "Palladin profile integrity root",
+            Self::VersionPolicyTrustStateV1 => "Palladin version policy trust state",
             Self::OrganizationApiKey => "Palladin organization credential",
             Self::X25519PrivateKey => "Palladin Agent encryption identity",
             Self::Ed25519SecretKey => "Palladin Agent signing identity",
@@ -272,6 +276,10 @@ mod tests {
         assert_eq!(
             SecretSlot::IntegrityTrustStateV1.account_suffix(),
             "integrity-trust-state-v1"
+        );
+        assert_eq!(
+            SecretSlot::VersionPolicyTrustStateV1.account_suffix(),
+            "version-policy-trust-state-v1"
         );
         assert_eq!(
             SecretSlot::OrganizationApiKey.account_suffix(),

@@ -33,3 +33,7 @@ path = "src/bin/client.rs"
 [[bin]]
 name = "palladin-linux-service"
 path = "src/bin/service.rs"
+
+[[bin]]
+name = "palladin-linux-admin-purge"
+path = "src/bin/admin_purge.rs"

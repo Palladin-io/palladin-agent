@@ -31,7 +31,8 @@ install -d "$stage/usr/lib/palladin/runtime" "$stage/usr/lib/systemd/system" \
   "$stage/usr/lib/sysusers.d" "$stage/usr/lib/tmpfiles.d" "$stage/usr/share/polkit-1/actions"
 install -m 0755 \
   "$binaries/palladin-linux-client" "$binaries/palladin-linux-service" \
-  "$binaries/palladin-linux-executor" "$binaries/palladin-worker" \
+  "$binaries/palladin-linux-executor" "$binaries/palladin-linux-admin-purge" \
+  "$binaries/palladin-worker" \
   "$stage/usr/lib/palladin/runtime/"
 install -m 0755 "$root/scripts/configure-package.sh" "$stage/usr/lib/palladin/runtime/configure-package"
 install -m 0755 "$root/scripts/manage-agent-uid.sh" "$stage/usr/lib/palladin/runtime/palladin-manage-agent-uid"

@@ -23,6 +23,7 @@ Assert-PalladinPackageIdentity -PackagePath $CompanionPackage -ExpectedName 'Pal
 
 $temporary = Join-Path ([System.IO.Path]::GetTempPath()) "palladin-contract-$([guid]::NewGuid())"
 New-Item -ItemType Directory -Path $temporary | Out-Null
+$brokerWorkerHash = $null
 try {
   $brokerRoot = Join-Path $temporary 'broker'
   $companionRoot = Join-Path $temporary 'companion'
@@ -42,6 +43,7 @@ try {
   $brokerExecutor = Join-Path $brokerRoot 'bin/palladin-executor.exe'
   Assert-PalladinArchitecture -Path $brokerService -Architecture $Architecture
   Assert-PalladinArchitecture -Path $brokerWorker -Architecture $Architecture
+  $brokerWorkerHash = (Get-FileHash -LiteralPath $brokerWorker -Algorithm SHA256).Hash.ToLowerInvariant()
   Assert-PalladinArchitecture -Path $brokerExecutor -Architecture $Architecture
   Assert-PalladinSignature -Path $brokerExecutor -Publisher $Publisher -Thumbprint $SignerThumbprint -RequireTimestamp
   if ($companionManifest -notmatch 'uap10:TrustLevel="appContainer"' -or
@@ -60,6 +62,9 @@ if ($StagedNpmDirectory) {
   $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
   if ($manifest.name -cne "@palladin/runtime-win32-$Architecture") { throw 'unexpected npm package name' }
   if (($manifest.os -join ',') -cne 'win32' -or ($manifest.cpu -join ',') -cne $Architecture) { throw 'unexpected npm platform selectors' }
+  if ($null -eq $brokerWorkerHash -or $manifest.palladinRuntime.workerExecutableSha256 -cne $brokerWorkerHash) {
+    throw 'npm worker binding does not match the signed MSIX worker'
+  }
   foreach ($field in 'private', 'scripts', 'dependencies', 'optionalDependencies') {
     if ($null -ne $manifest.PSObject.Properties[$field]) { throw "published npm package contains forbidden field: $field" }
   }

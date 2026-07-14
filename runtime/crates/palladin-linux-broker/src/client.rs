@@ -12,8 +12,8 @@ use zeroize::Zeroizing;
 
 use crate::peer::{PeerError, load_authorized_principal};
 use crate::protocol::{
-    ClientFrame, MAX_STREAM_CHUNK_BYTES, OutputStream, PROTOCOL_VERSION, RejectionCode,
-    ServerFrame, read_frame, validate_arguments, write_frame,
+    ClientFrame, MAX_STREAM_CHUNK_BYTES, OutputStream, PROTOCOL_VERSION, RELEASE_VERSION,
+    RejectionCode, SOURCE_SHA, ServerFrame, read_frame, validate_arguments, write_frame,
 };
 use crate::{INSTALL_MARKER, SOCKET_PATH, SYSTEM_CLIENT};
 
@@ -86,6 +86,8 @@ async fn proxy(
         &mut writer,
         &ClientFrame::Start {
             version: PROTOCOL_VERSION,
+            release_version: RELEASE_VERSION.to_owned(),
+            source_sha: SOURCE_SHA.to_owned(),
             request_id,
             arguments,
             interactive: std::io::stdin().is_terminal(),

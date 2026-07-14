@@ -12,7 +12,7 @@ use std::time::Duration;
 use palladin_linux_broker::peer::{authenticate_peer, prepare_principal_profile_root};
 use palladin_linux_broker::protocol::{
     ClientFrame, MAX_STREAM_CHUNK_BYTES, OutputStream, PROTOCOL_VERSION, RejectionCode,
-    ServerFrame, read_frame, validate_arguments, write_frame,
+    ServerFrame, read_frame, release_identity_matches, validate_arguments, write_frame,
 };
 use palladin_linux_broker::{SOCKET_PATH, STATE_ROOT, SYSTEM_WORKER};
 use thiserror::Error;
@@ -98,13 +98,21 @@ async fn handle(
             return Ok(());
         }
     };
-    let (version, request_id, mut arguments) = match &mut frame {
+    let (version, release_version, source_sha, request_id, mut arguments) = match &mut frame {
         ClientFrame::Start {
             version,
+            release_version,
+            source_sha,
             request_id,
             arguments,
             ..
-        } => (*version, *request_id, std::mem::take(arguments)),
+        } => (
+            *version,
+            std::mem::take(release_version),
+            std::mem::take(source_sha),
+            *request_id,
+            std::mem::take(arguments),
+        ),
         _ => {
             reject(stream, None, RejectionCode::InvalidRequest).await;
             return Ok(());
@@ -112,6 +120,10 @@ async fn handle(
     };
     if version != PROTOCOL_VERSION {
         reject(stream, Some(request_id), RejectionCode::UnsupportedVersion).await;
+        return Ok(());
+    }
+    if !release_identity_matches(&release_version, &source_sha) {
+        reject(stream, Some(request_id), RejectionCode::ReleaseMismatch).await;
         return Ok(());
     }
     if validate_arguments(&arguments).is_err()
@@ -490,6 +502,7 @@ mod tests {
             args(&["agents", "create", "replacement"]),
             args(&["agents", "delete", "production"]),
             args(&["agents", "rename", "production", "replacement"]),
+            args(&["disconnect", "--purge", "--confirm"]),
             args(&["purge", "--confirm"]),
             args(&["init", "--force"]),
         ] {

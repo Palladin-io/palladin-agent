@@ -23,6 +23,7 @@
     { "argv": ["connect", "--api-key-stdin"], "name": "connect", "secretOutput": false },
     { "argv": ["--id", "build", "connect", "--name", "Build Agent"], "name": "connect", "secretOutput": false },
     { "argv": ["status"], "name": "status", "secretOutput": false },
+    { "argv": ["--id", "build", "disconnect", "--purge", "--confirm"], "name": "disconnect", "secretOutput": false },
     { "argv": ["search", "fixture"], "name": "search", "secretOutput": false },
     { "argv": ["get", "vault-fixture", "entry-fixture", "--no-wait"], "name": "get", "secretOutput": true },
     { "argv": ["get", "vault-fixture", "entry-fixture", "--field", "password", "--field-id", "field-fixture", "--wait", "30s", "--no-wait"], "name": "get", "secretOutput": true },

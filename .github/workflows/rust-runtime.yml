@@ -251,7 +251,7 @@ jobs:
         run: |
           set -euo pipefail
           native="runtime/target/${{ matrix.gnu_target }}/release"
-          for binary in palladin palladin-linux-client palladin-linux-service palladin-linux-executor; do
+          for binary in palladin palladin-linux-client palladin-linux-service palladin-linux-executor palladin-linux-admin-purge; do
             maximum=$(readelf --version-info "$native/$binary" |
               sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' | sort -V | tail -n 1)
             if [[ -z $maximum ]] ||

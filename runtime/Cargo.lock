@@ -1677,6 +1677,7 @@ name = "palladin-runtime"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "ed25519-dalek",
  "getrandom 0.4.3",
  "libc",
  "nix 0.31.3",
@@ -1686,6 +1687,7 @@ dependencies = [
  "palladin-crypto",
  "palladin-exec",
  "palladin-platform",
+ "reqwest",
  "secrecy",
  "serde",
  "serde_json",

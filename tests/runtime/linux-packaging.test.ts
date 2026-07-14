@@ -141,9 +141,14 @@ describe('Linux hardened package boundary', () => {
     expect(helper).not.toContain('master.key');
     expect(helper).not.toContain('palladin-linux-service');
     expect(helper).toContain('status=revoked');
+    expect(helper).toContain('revoke-purge USER --confirm-purge');
+    expect(helper).toContain('palladin-linux-admin-purge');
     expect(helper).toContain('--dedicated');
     expect(helper).toContain('the Agent account password must be locked');
-    const authorize = helper.slice(helper.indexOf('  authorize)\n'), helper.indexOf('  revoke)\n'));
+    const authorize = helper.slice(
+      helper.indexOf('  authorize)\n'),
+      helper.indexOf('  revoke|revoke-purge)\n'),
+    );
     expect(authorize.indexOf('restart_broker')).toBeLessThan(
       authorize.indexOf('mv -T "$temporary" "$mapping"'),
     );
