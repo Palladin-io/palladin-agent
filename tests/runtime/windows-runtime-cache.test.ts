@@ -68,6 +68,10 @@ function processIsAlive(processId: number): boolean {
   }
 }
 
+function childHasExited(child: ReturnType<typeof spawn>): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
 async function waitUntil(
   predicate: () => boolean,
   timeoutMs: number,
@@ -158,8 +162,10 @@ describe('Windows content-addressed runtime cache', () => {
       let nativePid: number | undefined;
       try {
         await waitUntil(() => {
-          if (child.exitCode !== null) {
-            throw new Error(`verified launcher exited before native child startup (code ${child.exitCode})`);
+          if (childHasExited(child)) {
+            throw new Error(
+              `verified launcher exited before native child startup (code ${child.exitCode}, signal ${child.signalCode})`,
+            );
           }
           return existsSync(pidPath);
         }, 60_000, 'native child startup');
@@ -167,10 +173,10 @@ describe('Windows content-addressed runtime cache', () => {
         expect(Number.isSafeInteger(nativePid) && nativePid > 0).toBe(true);
         expect(processIsAlive(nativePid)).toBe(true);
         expect(child.kill()).toBe(true);
-        await waitUntil(() => child.exitCode !== null, 15_000, 'launcher termination');
+        await waitUntil(() => childHasExited(child), 15_000, 'launcher termination');
         await waitUntil(() => !processIsAlive(nativePid!), 15_000, 'Job Object child termination');
       } finally {
-        if (child.exitCode === null) child.kill();
+        if (!childHasExited(child)) child.kill();
         if (nativePid !== undefined && processIsAlive(nativePid)) process.kill(nativePid);
         lease.release();
       }
