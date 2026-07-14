@@ -82,6 +82,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
       - run: npm ci --ignore-scripts --workspaces=false
       - name: Prove Node-seeded Keychain records are deleted by Rust
         shell: bash
@@ -96,7 +98,7 @@ jobs:
           node packaging/npm/run-bounded.mjs 30 node \
             packaging/npm/legacy-keyring-interop.mjs seed \
             "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
-          node packaging/npm/run-bounded.mjs 60 cargo test \
+          node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test \
             --manifest-path runtime/Cargo.toml --locked -p palladin-platform \
             legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client \
             -- --ignored --exact
@@ -128,6 +130,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
       - run: npm ci --ignore-scripts --workspaces=false
       - name: Prove Node-seeded Credential Manager records are deleted by Rust
         shell: pwsh
@@ -137,7 +141,7 @@ jobs:
               packaging/npm/legacy-keyring-interop.mjs seed `
               $env:PALLADIN_LEGACY_KEYRING_TEST_PROFILE
             if ($LASTEXITCODE -ne 0) { throw 'legacy credential seed failed' }
-            node packaging/npm/run-bounded.mjs 60 cargo test `
+            node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test `
               --manifest-path runtime/Cargo.toml --locked -p palladin-platform `
               'legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client' `
               -- --ignored --exact
@@ -175,6 +179,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
       - name: Install the isolated Secret Service test backend
         run: |
           sudo apt-get update
@@ -193,7 +199,7 @@ jobs:
           node packaging/npm/run-bounded.mjs 30 node \
             packaging/npm/legacy-keyring-interop.mjs seed \
             "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
-          node packaging/npm/run-bounded.mjs 60 cargo test \
+          node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test \
             --manifest-path runtime/Cargo.toml --locked -p palladin-platform \
             legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client \
             -- --ignored --exact
@@ -218,7 +224,7 @@ jobs:
             node packaging/npm/run-bounded.mjs 30 node \
               packaging/npm/legacy-keyring-interop.mjs seed "$profile"
             PALLADIN_LEGACY_KEYRING_TEST_PROFILE="$profile" \
-              node packaging/npm/run-bounded.mjs 60 cargo test \
+              node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test \
                 --manifest-path runtime/Cargo.toml --locked -p palladin-platform \
                 legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client \
                 -- --ignored --exact
