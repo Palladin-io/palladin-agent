@@ -10,6 +10,10 @@ LocalAppData is writable by the interactive user, so this cache is not a securit
 
 The Windows Hardened threat boundary covers unprivileged processes in the interactive user's session, including arbitrary Node applications. Local administrators, SYSTEM, kernel compromise, and a compromised Palladin signing identity are outside this boundary and require separate operating-system and release-security controls.
 
+The initial Windows Hello signature for `mcp serve` authorizes only creation of the bounded transport. It never authorizes later Agent operations. Every `search_entries`, `get_credential`, `exec_with_credential`, and `report_credential_stale` message is held inside the LocalService broker until a new Windows Hello signature is verified. The signature is single-use and binds the exact message bytes, selected profile, tool, batch position, broker-generated connection nonce, Windows logon session, lifecycle epoch, and monotonic sequence. Unknown MCP methods and tools fail closed. The companion sends one complete message at a time and waits for the broker acknowledgement, so queued stdin cannot race ahead of a pending consent challenge.
+
+Lock, logoff, console or remote disconnect, session termination, suspend, and resume revoke the in-memory lifecycle epoch and kill active workers. A service restart discards every pending nonce. No MCP consent is cached, exported to Node, or reusable across another message, profile, connection, Windows session, or service lifetime.
+
 The `packagedServices` restricted capability requires Microsoft approval for Store distribution. Until that approval exists, the owner-signed packages are intended for controlled sideloading/enterprise deployment. This is a release prerequisite, not a condition that may trigger a weaker fallback.
 
 Release order:
