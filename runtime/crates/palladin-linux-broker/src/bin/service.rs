@@ -268,9 +268,9 @@ async fn proxy_worker(
                 _ => Err(ServiceError::Cancelled),
             };
         }
-        failure = failure_receiver.recv() => {
+        Some(failure) = failure_receiver.recv() => {
             let _ = child.kill().await;
-            return Err(failure.unwrap_or(ServiceError::Output));
+            return Err(failure);
         }
     };
     input_task.abort();
@@ -472,7 +472,13 @@ enum ServiceError {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_operation;
+    use std::process::Stdio;
+
+    use palladin_linux_broker::protocol::{ClientFrame, ServerFrame, read_frame, write_frame};
+    use tokio::net::UnixStream;
+    use tokio::process::Command;
+
+    use super::{proxy_worker, validate_operation};
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
@@ -496,5 +502,45 @@ mod tests {
     fn hardened_connect_requires_the_bounded_secret_input_mode() {
         assert!(validate_operation(&args(&["connect"])).is_err());
         assert!(validate_operation(&args(&["connect", "--api-key-stdin"])).is_ok());
+    }
+
+    #[tokio::test]
+    async fn fast_worker_exit_is_not_misclassified_as_output_failure() {
+        for sequence in 0_u8..64 {
+            let request_id = [sequence; 16];
+            let (server, mut client) = UnixStream::pair().expect("Unix stream pair");
+            let child = Command::new("/usr/bin/true")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("fast worker");
+
+            let broker = tokio::spawn(async move {
+                let mut child = child;
+                proxy_worker(server, &mut child, request_id).await
+            });
+            write_frame(
+                &mut client,
+                &ClientFrame::InputClosed {
+                    request_id,
+                    sequence: 0,
+                },
+            )
+            .await
+            .expect("close worker input");
+
+            let frame: ServerFrame = read_frame(&mut client).await.expect("worker exit frame");
+            let ServerFrame::Exited {
+                request_id: received,
+                code,
+            } = frame
+            else {
+                panic!("broker did not return the worker exit frame");
+            };
+            assert_eq!(received, request_id);
+            assert_eq!(code, 0);
+            assert!(broker.await.expect("broker task").is_ok());
+        }
     }
 }
