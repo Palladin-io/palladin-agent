@@ -430,6 +430,30 @@ test('CI policy fixture signs exact staged Linux bytes without persisting a priv
   }
 });
 
+test('configured policy constants stay typed as strings for production compilation', () => {
+  const root = fixture();
+  try {
+    const { envelope, publicKey } = signedPolicyFixture();
+    const bundle = join(root, 'policy.json');
+    mkdirSync(join(root, 'src/runtime'), { recursive: true });
+    writeFileSync(bundle, envelope);
+    run('configure-version-policy-build.mjs', [
+      '--public-key', publicKey,
+      '--source-sha', sha,
+      '--bundle', bundle,
+    ], { cwd: root });
+    const generated = readFileSync(join(root, 'src/runtime/version-policy-build.ts'), 'utf8');
+    for (const name of [
+      'VERSION_POLICY_SOURCE', 'VERSION_POLICY_PUBLIC_KEY_BASE64',
+      'RUNTIME_SOURCE_SHA', 'VERSION_POLICY_BUNDLE_BASE64',
+    ]) {
+      assert.match(generated, new RegExp(`export const ${name}: string =`));
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('release policy generator binds all exact executables and rejects a symlink', () => {
   const root = fixture();
   try {

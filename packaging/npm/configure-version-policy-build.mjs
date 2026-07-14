@@ -27,10 +27,10 @@ try {
 }
 
 const source = `// Generated from public, owner-approved release inputs. Never place a private key here.
-export const VERSION_POLICY_SOURCE = 'https://releases.palladin.io/agent/version-policy.json';
-export const VERSION_POLICY_PUBLIC_KEY_BASE64 = ${JSON.stringify(publicKey)};
-export const RUNTIME_SOURCE_SHA = ${JSON.stringify(sourceSha)};
-export const VERSION_POLICY_BUNDLE_BASE64 = ${JSON.stringify(bundle.toString('base64'))};
+export const VERSION_POLICY_SOURCE: string = 'https://releases.palladin.io/agent/version-policy.json';
+export const VERSION_POLICY_PUBLIC_KEY_BASE64: string = ${JSON.stringify(publicKey)};
+export const RUNTIME_SOURCE_SHA: string = ${JSON.stringify(sourceSha)};
+export const VERSION_POLICY_BUNDLE_BASE64: string = ${JSON.stringify(bundle.toString('base64'))};
 `;
 writeFileSync(resolve('src/runtime/version-policy-build.ts'), source, { encoding: 'utf8', mode: 0o644 });
 
