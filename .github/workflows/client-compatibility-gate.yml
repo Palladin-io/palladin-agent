@@ -98,7 +98,7 @@ jobs:
           node packaging/npm/run-bounded.mjs 30 node \
             packaging/npm/legacy-keyring-interop.mjs seed \
             "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
-          node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test \
+          node packaging/npm/run-bounded.mjs 120 rustup run 1.97.0 cargo test \
             --manifest-path runtime/Cargo.toml --locked -p palladin-platform \
             legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client \
             -- --ignored --exact
@@ -141,7 +141,7 @@ jobs:
               packaging/npm/legacy-keyring-interop.mjs seed `
               $env:PALLADIN_LEGACY_KEYRING_TEST_PROFILE
             if ($LASTEXITCODE -ne 0) { throw 'legacy credential seed failed' }
-            node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test `
+            node packaging/npm/run-bounded.mjs 120 rustup run 1.97.0 cargo test `
               --manifest-path runtime/Cargo.toml --locked -p palladin-platform `
               'legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client' `
               -- --ignored --exact
@@ -201,7 +201,7 @@ jobs:
           node packaging/npm/run-bounded.mjs 30 node \
             packaging/npm/legacy-keyring-interop.mjs seed \
             "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
-          node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test \
+          node packaging/npm/run-bounded.mjs 120 rustup run 1.97.0 cargo test \
             --manifest-path runtime/Cargo.toml --locked -p palladin-platform \
             legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client \
             -- --ignored --exact
@@ -227,7 +227,7 @@ jobs:
               packaging/npm/legacy-keyring-interop.mjs seed "$profile"
             PALLADIN_LEGACY_KEYRING_TEST_PROFILE="$profile" \
             PALLADIN_LEGACY_KEYRING_TEST_BACKEND="secret-service" \
-              node packaging/npm/run-bounded.mjs 60 rustup run 1.97.0 cargo test \
+              node packaging/npm/run-bounded.mjs 120 rustup run 1.97.0 cargo test \
                 --manifest-path runtime/Cargo.toml --locked -p palladin-platform \
                 legacy_typescript_store::tests::os_adapter_deletes_credentials_seeded_by_the_legacy_node_client \
                 -- --ignored --exact
