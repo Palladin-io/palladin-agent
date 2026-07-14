@@ -249,9 +249,10 @@ function verifySystemAuthenticode(path: string, binding: VerifiedArtifactBinding
   if (publisher === undefined || thumbprint === undefined) {
     throw new Error('Palladin Windows runtime Authenticode binding is missing');
   }
-  const { powershell, root: canonicalRoot } = trustedPowerShell();
+  const { powershell, root: canonicalRoot, modulePath } = trustedPowerShell();
   const script = [
     "$ErrorActionPreference = 'Stop'",
+    'Import-Module -Name Microsoft.PowerShell.Security -ErrorAction Stop',
     '$signature = Get-AuthenticodeSignature -LiteralPath $env:PALLADIN_RUNTIME_PATH',
     "$actualThumbprint = $signature.SignerCertificate.Thumbprint.Replace(' ', '').ToUpperInvariant()",
     "if ($signature.Status -ne 'Valid') { exit 41 }",
@@ -274,6 +275,7 @@ function verifySystemAuthenticode(path: string, binding: VerifiedArtifactBinding
       windowsHide: true,
       env: {
         SystemRoot: canonicalRoot,
+        PSModulePath: modulePath,
         PALLADIN_RUNTIME_PATH: path,
         PALLADIN_EXPECTED_PUBLISHER: publisher,
         PALLADIN_EXPECTED_THUMBPRINT: thumbprint,
@@ -296,7 +298,7 @@ function spawnLockedSystemRuntime(
   if (publisher === undefined || thumbprint === undefined) {
     throw new Error('Palladin Windows runtime Authenticode binding is missing');
   }
-  const { powershell, root } = trustedPowerShell();
+  const { powershell, root, modulePath } = trustedPowerShell();
   const commandLine = [path, ...args].map(quoteWindowsArgument).join(' ');
   const lockedProcessSource = String.raw`
 using System;
@@ -466,6 +468,7 @@ public static class PalladinLockedProcess {
 }`;
   const script = [
     "$ErrorActionPreference = 'Stop'",
+    'Import-Module -Name Microsoft.PowerShell.Security -ErrorAction Stop',
     '$path = $env:PALLADIN_RUNTIME_PATH',
     '$stream = [IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)',
     'try {',
@@ -499,6 +502,7 @@ public static class PalladinLockedProcess {
     env: {
       ...(spawnOptions.env ?? process.env),
       SystemRoot: root,
+      PSModulePath: modulePath,
       PALLADIN_RUNTIME_PATH: path,
       PALLADIN_RUNTIME_COMMAND_LINE: Buffer.from(commandLine, 'utf8').toString('base64'),
       PALLADIN_EXPECTED_SHA256: expectedHash,
@@ -530,7 +534,7 @@ export function quoteWindowsArgument(value: string): string {
   return `${quoted}"`;
 }
 
-function trustedPowerShell(): { powershell: string; root: string } {
+function trustedPowerShell(): { powershell: string; root: string; modulePath: string } {
   const rootHint = process.env.SystemRoot;
   if (rootHint === undefined || !windowsPath.isAbsolute(rootHint)) {
     throw new Error('Palladin Windows system root is unavailable');
@@ -554,7 +558,17 @@ function trustedPowerShell(): { powershell: string; root: string } {
     !== 'system32\\windowspowershell\\v1.0\\powershell.exe') {
     throw new Error('Palladin Windows signature verifier is invalid');
   }
-  return { powershell, root };
+  const modulePath = windowsPath.join(
+    root,
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'Modules',
+  );
+  if (!sameFileIdentity(modulePath, `${SYSTEM_ROOT}\\System32\\WindowsPowerShell\\v1.0\\Modules`, 'directory')) {
+    throw new Error('Palladin Windows PowerShell module path is invalid');
+  }
+  return { powershell, root, modulePath };
 }
 
 function sameFileIdentity(
