@@ -68,10 +68,14 @@ function processIsAlive(processId: number): boolean {
   }
 }
 
-async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {
+async function waitUntil(
+  predicate: () => boolean,
+  timeoutMs: number,
+  description = 'Windows process state',
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('timed out waiting for Windows process state');
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${description}`);
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
 }
@@ -152,20 +156,22 @@ describe('Windows content-addressed runtime cache', () => {
         child.once('error', reject);
       });
       lease.bindToChild(child.pid);
-      await waitUntil(() => existsSync(pidPath), 15_000);
-      const nativePid = Number.parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
-      expect(Number.isSafeInteger(nativePid) && nativePid > 0).toBe(true);
-      expect(processIsAlive(nativePid)).toBe(true);
-      const wrapperExited = new Promise<void>((resolve, reject) => {
-        child.once('exit', () => resolve());
-        child.once('error', reject);
-      });
-      expect(child.kill()).toBe(true);
-      await wrapperExited;
-      await waitUntil(() => !processIsAlive(nativePid), 10_000);
-      lease.release();
+      let nativePid: number | undefined;
+      try {
+        await waitUntil(() => existsSync(pidPath), 15_000, 'native child startup');
+        nativePid = Number.parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
+        expect(Number.isSafeInteger(nativePid) && nativePid > 0).toBe(true);
+        expect(processIsAlive(nativePid)).toBe(true);
+        expect(child.kill()).toBe(true);
+        await waitUntil(() => child.exitCode !== null, 5_000, 'launcher termination');
+        await waitUntil(() => !processIsAlive(nativePid!), 5_000, 'Job Object child termination');
+      } finally {
+        if (child.exitCode === null) child.kill();
+        if (nativePid !== undefined && processIsAlive(nativePid)) process.kill(nativePid);
+        lease.release();
+      }
     },
-    30_000,
+    45_000,
   );
 
   it('atomically copies and re-verifies an exact signed version/hash before use', () => {
