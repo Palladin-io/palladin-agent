@@ -182,4 +182,4 @@ if find "$work_dir" -type f \( -name 'core' -o -name 'core.*' -o -name '*.core' 
   die "boundary probe left a core file"
 fi
 
-printf 'Verified exact signed artifact storage, blind-spawn, copy, signature, DYLD, task-port, debugger, cancellation, replay, second-connection, and profile boundaries on %s.\n' "$architecture"
+printf 'Verified exact signed artifact storage, blind-spawn, copy, signature, DYLD, task-port, debugger, cancellation, second-connection, and profile boundaries on %s.\n' "$architecture"

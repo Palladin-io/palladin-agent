@@ -81,7 +81,8 @@ describe('macOS authenticated signed-runtime boundary', () => {
     expect(client).toContain("['mcp', 'serve']");
     expect(client).toContain('mcp-first-connection');
     expect(client).toContain('mcp-second-connection');
-    expect(client).toContain('`${initialize}\\n${toolCall}\\n${toolCall}\\n`');
+    expect(client).toContain('`${initialize}\\n${toolCall}\\n`');
+    expect(client).not.toContain('`${initialize}\\n${toolCall}\\n${toolCall}\\n`');
     expect(harness).not.toContain('cat "$work_dir');
     expect(harness).not.toContain('set -x');
   });
@@ -105,6 +106,9 @@ describe('macOS authenticated signed-runtime boundary', () => {
     ]) expect(runtime, marker).toContain(marker);
     expect(runtime.match(/\.authorize_operation\(/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
     expect(runtime.match(/\.get_authorized\(/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+    const execOperation = runtime.split('pub async fn execute_with_credential')[1]?.split('\n    pub ')[0];
+    expect(execOperation).toContain('self.begin_operation(RuntimeOperation::ExecWithCredential)?;');
+    expect(runtime).toContain('Err(RuntimeError::OperationAuthorizationConsumed)');
     expect(platform).toContain('pub struct OperationAuthorization');
     expect(platform).not.toContain('impl Clone for OperationAuthorization');
     const mcp = read('runtime/crates/palladin-mcp/src/lib.rs');

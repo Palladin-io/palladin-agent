@@ -2633,7 +2633,7 @@ impl RuntimeSession {
     where
         H: FnMut(HeartbeatInfo),
     {
-        self.ensure_operation(RuntimeOperation::ExecWithCredential)?;
+        self.begin_operation(RuntimeOperation::ExecWithCredential)?;
         let operation_cancellation = self.operation_cancellation(cancellation)?;
         let cancellation = operation_cancellation.token();
         if let Some(command) = request.command.filter(|command| !command.is_empty()) {
@@ -3348,6 +3348,22 @@ mod tests {
                 cancelled: false,
             })
         );
+        let replay = session
+            .execute_with_credential(
+                CredentialExecRequest {
+                    delivery: request(),
+                    command: Some(&command),
+                    env_mappings: &[],
+                    output: OperatorOutput::Discard,
+                },
+                &CancellationToken::new(),
+                |_| {},
+            )
+            .await;
+        assert!(matches!(
+            replay,
+            Err(RuntimeError::OperationAuthorizationConsumed)
+        ));
         let requests = requests.lock().expect("requests");
         assert_eq!(requests.len(), 1);
         assert!(requests[0].contains(r#""method":"Exec""#));

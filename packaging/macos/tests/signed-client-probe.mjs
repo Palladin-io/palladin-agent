@@ -105,7 +105,7 @@ const toolCall = JSON.stringify({
   jsonrpc: '2.0', id: 2, method: 'tools/call',
   params: { name: 'get_credential', arguments: { vault_id: vault, entry_id: entry, reason: 'noninteractive boundary probe', no_wait: true } },
 });
-const mcpInput = `${initialize}\n${toolCall}\n${toolCall}\n`;
+const mcpInput = `${initialize}\n${toolCall}\n`;
 const firstMcp = runBounded(
   'mcp-first-connection', binary, ['mcp', 'serve'],
   { stdin: mcpInput, keepStdinOpen: true, interruptAfterMs: 600, timeoutMs: 5_000 },
@@ -120,4 +120,4 @@ if (mcpResults.some((result) => result.code === 0)) {
 }
 mcpResults.forEach((result, index) => assertAuthorizationDenial(`mcp-connection-${index + 1}`, result));
 
-process.stdout.write('Blind signed-client, cancellation, replay, and second-connection probes failed closed.\n');
+process.stdout.write('Blind signed-client, cancellation, and second-connection probes failed closed.\n');
