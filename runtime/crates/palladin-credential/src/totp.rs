@@ -239,7 +239,8 @@ mod tests {
             let mut params = TotpParams::new(secret.clone());
             params.digits = digits;
             let code = generate_totp_at(&params, 59).expect("supported digit count");
-            assert_eq!(code.code.expose_secret().len(), digits as usize);
+            let code_length = code.code.expose_secret().len();
+            assert_eq!(code_length, digits as usize);
         }
 
         for digits in [5, 9] {

@@ -22,10 +22,10 @@ import { INJECT_UNAVAILABLE } from '../commands/inject.js';
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
 export interface LegacyMcpToolRegistry {
-  registerTool(
+  registerTool<TSchema extends z.ZodType>(
     name: string,
-    definition: { description: string; inputSchema: unknown },
-    handler: (input: any) => Promise<ToolResult>,
+    definition: { description: string; inputSchema: TSchema },
+    handler: (input: z.infer<TSchema>) => Promise<ToolResult>,
   ): void;
 }
 
