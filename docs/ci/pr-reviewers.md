@@ -12,7 +12,7 @@ The Codex authorization job additionally verifies repository write access before
 
 Claude keeps the existing formal GitHub review behavior: `APPROVE` or `REQUEST_CHANGES`, inline comments, replies, and thread resolution.
 
-Codex analysis runs in a separate read-only job and returns a structured result tied to the analyzed PR commit. A fresh publisher job refuses stale results, posts inline comments prefixed with `Codex`, and creates or updates one summary comment headed `Codex Review — APPROVED` or `Codex Review — CHANGES_REQUESTED`. The Codex summary is an advisory PR comment, so the same `github-actions[bot]` identity cannot overwrite Claude's formal verdict. A valid Codex review keeps the `Codex Review` check green regardless of verdict; Codex is advisory and Claude retains the formal blocking verdict.
+Codex analysis runs in a separate read-only job and returns a structured result tied to the analyzed PR commit. The exact merge-base diff is divided into target-bounded, whole-file groups; a single file larger than the target gets its own group under the global 8 MiB limit. Every group reports changed interfaces and cross-file assumptions. A final Codex pass compares all group results and assignments for contract mismatches. Any `CHANGES_REQUESTED` result from a group or the cross-file pass rejects the combined review. A fresh publisher job refuses stale results, posts inline comments prefixed with `Codex`, and creates or updates one summary comment headed `Codex Review — APPROVED` or `Codex Review — CHANGES_REQUESTED`. The Codex summary is an advisory PR comment, so the same `github-actions[bot]` identity cannot overwrite Claude's formal verdict. A valid Codex review keeps the `Codex Review` check green regardless of verdict; Codex is advisory and Claude retains the formal blocking verdict.
 
 The reviewers do not depend on each other. A Codex failure does not remove or modify a Claude review, and Codex never replies to or resolves Claude threads.
 
@@ -23,7 +23,7 @@ The reviewers do not depend on each other. A Codex failure does not remove or mo
 | Claude Code | `CLAUDE_CODE_OAUTH_TOKEN` | Existing Claude Code subscription/session allowance |
 | Codex | organization secret `CODEX_AUTH_JSON_B64` | ChatGPT-managed Codex subscription session |
 
-The Codex workflow accepts manual dispatches only from `main`, so its definition and reviewer sources come from the trusted default branch. It never checks out or executes pull request code; it fetches the diff as untrusted review input. The Codex analysis job has only `contents: read` and `pull-requests: read`, and checkout credentials are not persisted.
+The Codex workflow accepts manual dispatches only from `main`, so its definition and reviewer sources come from the trusted default branch. It never checks out or executes pull request code; it pins the pull request head, fetches Git objects, verifies the fetched SHA, and computes the diff from the exact merge base. The Codex analysis job has only `contents: read` and `pull-requests: read`, and checkout credentials are not persisted.
 
 The organization secret contains the Base64-encoded `auth.json` produced by a ChatGPT login and is exposed only to the Codex process. The runner validates `auth_mode=chatgpt`, drops `sudo`, starts Codex in an empty directory with a read-only sandbox, disables shell and external tools, and removes the temporary credential file on exit. The separate publisher receives only the structured review result and has `pull-requests: write`; it never receives the ChatGPT session.
 
