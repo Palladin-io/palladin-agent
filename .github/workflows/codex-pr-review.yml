@@ -251,14 +251,17 @@ jobs:
           EMPTY_WORKSPACE="$RUNTIME_ROOT/workspace"
           PROMPT_DIR="$RUNTIME_ROOT/prompts"
           RESULTS_DIR="$RUNTIME_ROOT/results"
+          CODEX_OUTPUT_DIR="$RUNTIME_ROOT/codex-output"
           REVIEW_CONTEXT="$RUNTIME_ROOT/context.md"
           REVIEW_MANIFEST="$RUNTIME_ROOT/chunk-manifest.md"
           CROSS_CHUNK_INSTRUCTIONS="$RUNTIME_ROOT/cross-chunk-review.md"
           REVIEW_SCHEMA="$RUNTIME_ROOT/review-output.schema.json"
           REVIEW_OUTPUT="$RUNTIME_ROOT/result.json"
           trap 'sudo rm -rf "$RUNTIME_ROOT"' EXIT
-          install -d -m 0700 "$AUTH_HOME" "$EMPTY_WORKSPACE" "$EMPTY_WORKSPACE/home" "$RESULTS_DIR"
-          install -d -m 0755 "$PROMPT_DIR"
+          install -d -m 0700 \
+            "$AUTH_HOME" "$EMPTY_WORKSPACE" "$EMPTY_WORKSPACE/home" \
+            "$RESULTS_DIR"
+          install -d -m 0755 "$PROMPT_DIR" "$CODEX_OUTPUT_DIR"
           cp "$SOURCE_PROMPTS"/chunk-*.md "$PROMPT_DIR"/
           cp "$SOURCE_CONTEXT" "$REVIEW_CONTEXT"
           cp "$SOURCE_MANIFEST" "$REVIEW_MANIFEST"
@@ -270,7 +273,7 @@ jobs:
             .auth_mode == "chatgpt" and
             ((.tokens.refresh_token // "") | type == "string" and length > 0)
           ' "$AUTH_HOME/auth.json" > /dev/null
-          sudo chown -R nobody:nogroup "$AUTH_HOME" "$EMPTY_WORKSPACE" "$RESULTS_DIR"
+          sudo chown -R nobody:nogroup "$AUTH_HOME" "$EMPTY_WORKSPACE"
 
           BASE_ARGS=(
             exec
@@ -295,24 +298,34 @@ jobs:
             local REVIEW_NAME=$1
             local REVIEW_PROMPT=$2
             local REVIEW_RESULT=$3
+            local CODEX_PIPE="$CODEX_OUTPUT_DIR/${REVIEW_NAME}.pipe"
+            local RESULT_READER
             local CODEX_EXIT=0
-            touch "$REVIEW_RESULT"
-            sudo chown nobody:nogroup "$REVIEW_RESULT"
+            install -m 0600 /dev/null "$REVIEW_RESULT"
+            mkfifo -m 0620 "$CODEX_PIPE"
+            sudo chgrp nogroup "$CODEX_PIPE"
+            timeout 25m cat "$CODEX_PIPE" > "$REVIEW_RESULT" &
+            RESULT_READER=$!
             # shellcheck disable=SC2024 # The trusted runner shell intentionally owns the redirections; Codex only inherits the open descriptors.
             sudo -u nobody env -i \
                 HOME="$EMPTY_WORKSPACE/home" \
                 CODEX_HOME="$AUTH_HOME" \
                 PATH="$PATH" \
-                codex "${BASE_ARGS[@]}" --output-last-message "$REVIEW_RESULT" - \
+                codex "${BASE_ARGS[@]}" --output-last-message "$CODEX_PIPE" - \
                 < "$REVIEW_PROMPT" \
                 > "$RUNTIME_ROOT/${REVIEW_NAME}-events.log" \
                 2> "$RUNTIME_ROOT/${REVIEW_NAME}-error.log" \
               || CODEX_EXIT=$?
 
             if [ "$CODEX_EXIT" -ne 0 ]; then
+              kill "$RESULT_READER" 2>/dev/null || true
+              wait "$RESULT_READER" 2>/dev/null || true
+              rm -f "$CODEX_PIPE"
               echo "::error::Codex review failed for ${REVIEW_NAME}. Raw CLI output was suppressed because it may contain untrusted PR content."
               exit "$CODEX_EXIT"
             fi
+            wait "$RESULT_READER"
+            rm -f "$CODEX_PIPE"
             jq -e . "$REVIEW_RESULT" > /dev/null
           }
 
