@@ -43,7 +43,8 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(runner).toContain("body.output !== 'withheld'");
     expect(runner).toContain('concurrent MCP grant binding changed');
     expect(runner).toContain('npm reinstall did not repair the missing runtime');
-    expect(runner).toContain('literal downgrade was not rejected');
+    expect(runner).toContain('literal downgrade did not produce the exact signed-policy rejection');
+    expect(runner).toContain("rejected.stderr !== 'Error: Palladin native runtime version is blocked by signed version policy\\n'");
     expect(runner).toContain("rollbackMode: 'forward-rebuild'");
     expect(runner).toContain("['purge', '--confirm']");
     expect(runner).toContain('npm uninstall left the Agent launcher installed');

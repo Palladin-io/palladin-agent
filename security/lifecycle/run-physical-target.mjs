@@ -346,7 +346,11 @@ export async function runPhysicalTarget({ contract, manifest: manifestInput = lo
     if (await mcpCall(prefix, env, contract.vaultId, contract.entryId) !== grants) fail('repaired MCP grant binding changed');
     run.steps.push(step(run, 'repair', candidate.version, candidate.version, afterUpdate, afterRepair, grants, grants, { repairVerified: true }));
     npmInstall(baseline, prefix, env); const rejected = spawnSync(launcher(prefix), ['status'], { env, encoding: 'utf8', shell: false, timeout: 60_000 });
-    if (rejected.status === 0) fail('literal downgrade was not rejected');
+    if (rejected.error || rejected.signal !== null || rejected.status !== 1
+      || rejected.stdout !== ''
+      || rejected.stderr !== 'Error: Palladin native runtime version is blocked by signed version policy\n') {
+      fail('literal downgrade did not produce the exact signed-policy rejection');
+    }
     npmInstall(candidate, prefix, env); const afterRejected = identityDigest(prefix, env, home);
     run.steps.push(step(run, 'downgrade-rejected', candidate.version, candidate.version, afterRepair, afterRejected, grants, grants, { downgradeRejected: true }));
     installNativeExtra(target, rollback, env, root); npmInstall(rollback, prefix, env); versionCheck(prefix, env, rollback.version);

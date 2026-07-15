@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { aggregateShards } from '../../security/lifecycle/aggregate-shards.mjs';
+import { aggregateShards } from '../../security/lifecycle/shards.mjs';
 import { lifecycleFixture } from './platform-lifecycle-fixture';
 
 describe('physical lifecycle shard aggregation', () => {

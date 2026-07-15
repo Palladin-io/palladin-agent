@@ -53,6 +53,8 @@ const ELF64_PROGRAM_HEADER_BYTES = 56;
 const PT_INTERP = 3;
 const NATIVE_RUNTIME_VERSION = '0.1.0';
 
+class NativeRuntimeVersionBlockedError extends Error {}
+
 export interface NativeDispatchHost {
   platform: NodeJS.Platform;
   architecture: string;
@@ -203,6 +205,9 @@ export async function launchNativeRuntime(
     binding = policyIndependentDiagnostic
       ? await host.loadBundledArtifactBinding(request)
       : await host.loadVerifiedArtifactBinding(request);
+    if (!policyIndependentDiagnostic && !binding.runtimeAllowed) {
+      throw new NativeRuntimeVersionBlockedError();
+    }
     assertExactBinding(
       runtime.packageName,
       executableSha256,
@@ -210,8 +215,11 @@ export async function launchNativeRuntime(
       !policyIndependentDiagnostic,
       workerExecutableSha256,
     );
-  } catch {
-    process.stderr.write('Error: Palladin native runtime failed signed version policy verification\n');
+  } catch (error) {
+    const message = error instanceof NativeRuntimeVersionBlockedError
+      ? 'Error: Palladin native runtime version is blocked by signed version policy\n'
+      : 'Error: Palladin native runtime failed signed version policy verification\n';
+    process.stderr.write(message);
     return 1;
   }
 
