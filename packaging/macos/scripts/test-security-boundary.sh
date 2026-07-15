@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+PATH='/usr/bin:/bin:/usr/sbin:/sbin'
+export PATH
+readonly PATH
+
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 PACKAGING_DIR="$(dirname -- "$SCRIPT_DIR")"

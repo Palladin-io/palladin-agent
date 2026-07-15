@@ -287,7 +287,7 @@ jobs:
           set -euo pipefail
           unpacked="$RUNNER_TEMP/notarized-app"
           mkdir -p "$unpacked"
-          ditto -x -k "$RUNNER_TEMP/palladin-runtime-darwin-universal.zip" "$unpacked"
+          /usr/bin/ditto -x -k "$RUNNER_TEMP/palladin-runtime-darwin-universal.zip" "$unpacked"
           test -d "$unpacked/PalladinRuntime.app"
           for architecture in arm64 x64; do
             runtime_package="$RUNNER_TEMP/runtime-darwin-$architecture-package"
@@ -308,10 +308,13 @@ jobs:
             test -f "$runtime_tgz"
             packaged_runtime="$RUNNER_TEMP/packed-runtime-darwin-$architecture"
             mkdir -p "$packaged_runtime"
-            tar -xzf "$runtime_tgz" -C "$packaged_runtime"
+            /usr/bin/tar -xzf "$runtime_tgz" -C "$packaged_runtime"
             packaging/macos/scripts/verify-bundle.sh \
               --app "$packaged_runtime/package/PalladinRuntime.app" \
               --architecture universal
+            packaging/macos/scripts/compare-bundles.sh \
+              "$unpacked/PalladinRuntime.app" \
+              "$packaged_runtime/package/PalladinRuntime.app"
           done
           runtime_arch=$(node -p 'process.arch')
           runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$runtime_arch-${{ inputs.marketing_version }}.tgz"
@@ -323,6 +326,8 @@ jobs:
           installed_app="$smoke/node_modules/@palladin/runtime-darwin-$runtime_arch/PalladinRuntime.app"
           packaging/macos/scripts/verify-bundle.sh \
             --app "$installed_app" --architecture universal
+          packaging/macos/scripts/compare-bundles.sh \
+            "$unpacked/PalladinRuntime.app" "$installed_app"
           doctor=$("$installed_app/Contents/MacOS/palladin" doctor)
           grep -F 'platform: macos/aarch64' <<<"$doctor"
           grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
@@ -401,19 +406,28 @@ jobs:
           shopt -s nullglob
           runtime_matches=("$release"/palladin-runtime-darwin-${{ matrix.npm_architecture }}-*.tgz)
           test "${#runtime_matches[@]}" -eq 1
+          zip_root="$RUNNER_TEMP/signed-zip-${{ matrix.npm_architecture }}"
+          mkdir -p "$zip_root"
+          /usr/bin/ditto -x -k \
+            "$release/palladin-runtime-darwin-universal.zip" \
+            "$zip_root"
+          packaging/macos/scripts/verify-bundle.sh \
+            --app "$zip_root/PalladinRuntime.app" --architecture universal
           smoke="$RUNNER_TEMP/npm-smoke-${{ matrix.npm_architecture }}"
           mkdir -p "$smoke"
           npm install --prefix "$smoke" --ignore-scripts --no-save "${runtime_matches[0]}"
           app="$smoke/node_modules/@palladin/runtime-darwin-${{ matrix.npm_architecture }}/PalladinRuntime.app"
           packaging/macos/scripts/verify-bundle.sh --app "$app" --architecture universal
+          packaging/macos/scripts/compare-bundles.sh \
+            "$zip_root/PalladinRuntime.app" "$app"
           binary="$app/Contents/MacOS/palladin"
           doctor=$("$binary" doctor)
           grep -F 'platform: ${{ matrix.platform }}' <<<"$doctor"
           grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
           grep -F 'identity-opened: no' <<<"$doctor"
-          codesign -d --entitlements :- "$app" \
+          /usr/bin/codesign -d --entitlements :- "$app" \
             >"$RUNNER_TEMP/signed-entitlements.plist" 2>/dev/null
-          plutil -lint "$RUNNER_TEMP/signed-entitlements.plist" >/dev/null
+          /usr/bin/plutil -lint "$RUNNER_TEMP/signed-entitlements.plist" >/dev/null
           {
             echo "PALLADIN_SIGNED_APP=$app"
             echo "PALLADIN_SIGNED_ENTITLEMENTS=$RUNNER_TEMP/signed-entitlements.plist"
@@ -424,7 +438,7 @@ jobs:
           set -euo pipefail
           npm ci --ignore-scripts --workspaces=false
           brew list node@22 >/dev/null 2>&1 || brew install node@22
-          homebrew_node="$(realpath "$(brew --prefix node@22)/bin/node")"
+          homebrew_node="$(/usr/bin/realpath "$(brew --prefix node@22)/bin/node")"
           test -x "$homebrew_node"
           echo "PALLADIN_HOMEBREW_NODE=$homebrew_node" >>"$GITHUB_ENV"
 

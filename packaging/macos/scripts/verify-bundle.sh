@@ -5,7 +5,13 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 # shellcheck source=packaging/macos/scripts/lib.sh
-source "$SCRIPT_DIR/lib.sh"
+if [[ -n "${PALLADIN_VERIFIED_LIB_FD:-}" ]]; then
+  [[ "$PALLADIN_VERIFIED_LIB_FD" =~ ^[0-9]+$ ]] || exit 64
+  source "/dev/fd/$PALLADIN_VERIFIED_LIB_FD"
+  unset PALLADIN_VERIFIED_LIB_FD
+else
+  source "$SCRIPT_DIR/lib.sh"
+fi
 
 usage() {
   cat >&2 <<'USAGE'

@@ -272,7 +272,41 @@ jobs:
           cache-key: ${{ matrix.gnu_target }}
       - name: Install the pinned glibc baseline builder
         run: cargo install --locked --version 0.23.0 cargo-zigbuild
-      - run: sudo apt-get update && sudo apt-get install --yes gcc libxml2-utils musl-tools rpm
+      - name: Install Linux packaging dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # GitHub-hosted ARM runners occasionally cannot reach the Ubuntu
+          # ports mirror. Use a recent immutable Canonical snapshot for that
+          # architecture without disabling APT's Valid-Until verification.
+          if [[ "$(uname -m)" == "aarch64" ]]; then
+            snapshot_id="$(date --utc --date='1 day ago' '+%Y%m%dT000000Z')"
+            ubuntu_mirror="https://snapshot.ubuntu.com/ubuntu/${snapshot_id}"
+          else
+            ubuntu_mirror="https://ports.ubuntu.com/ubuntu-ports"
+          fi
+
+          for source_file in \
+            /etc/apt/sources.list \
+            /etc/apt/sources.list.d/*.list \
+            /etc/apt/sources.list.d/*.sources; do
+            if [[ -f "$source_file" ]]; then
+              sudo sed -i \
+                -e "s|http://ports\\.ubuntu\\.com/ubuntu-ports|${ubuntu_mirror}|g" \
+                -e "s|https://ports\\.ubuntu\\.com/ubuntu-ports|${ubuntu_mirror}|g" \
+                "$source_file"
+            fi
+          done
+
+          apt_options=(
+            -o Acquire::Retries=5
+            -o Acquire::http::Timeout=30
+            -o Acquire::https::Timeout=30
+          )
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install --yes \
+            gcc libxml2-utils musl-tools rpm
       - run: rustup target add ${{ matrix.gnu_target }} ${{ matrix.musl_target }}
       - name: Validate Linux packaging source
         working-directory: .

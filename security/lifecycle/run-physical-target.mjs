@@ -42,11 +42,19 @@ function readJson(path, label) {
 }
 function sha256Bytes(value) { return createHash('sha256').update(value).digest('hex'); }
 function sha256File(path) { return sha256Bytes(readRegular(path, `artifact ${basename(path)}`)); }
-function repositoryScript(relativePath) {
+function openRepositoryFile(relativePath) {
   const path = join(REPOSITORY_ROOT, relativePath);
-  const linked = lstatSync(path);
-  if (!linked.isFile() || linked.isSymbolicLink()) fail('repository lifecycle script is invalid');
-  return path;
+  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = fstatSync(descriptor); const linked = lstatSync(path);
+    if (!opened.isFile() || linked.isSymbolicLink() || opened.dev !== linked.dev || opened.ino !== linked.ino) {
+      fail('repository lifecycle file is not an unchanged regular file');
+    }
+    return descriptor;
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
 }
 function writeAtomic(path, value) {
   const absolute = resolve(path); mkdirSync(dirname(absolute), { recursive: true, mode: 0o700 });
@@ -77,10 +85,10 @@ function safeEnvironment(home, prefix) {
 function npmExecutable() {
   return join(dirname(process.execPath), process.platform === 'win32' ? 'npm.cmd' : 'npm');
 }
-function bounded(command, args, { cwd, env, input, expected = 0, timeout = 180_000 } = {}) {
+function bounded(command, args, { cwd, env, input, stdio, expected = 0, timeout = 180_000 } = {}) {
   const result = spawnSync(command, args, {
     cwd, env, input, encoding: null, shell: false, windowsHide: true, timeout,
-    maxBuffer: MAX_CAPTURE,
+    maxBuffer: MAX_CAPTURE, ...(stdio === undefined ? {} : { stdio }),
   });
   if (input?.fill) input.fill(0);
   const stdout = Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.alloc(0);
@@ -181,9 +189,18 @@ function requirePinnedNpm(env) {
   if (version.stdout.trim() !== '11.18.0' || version.stderr !== '') fail('physical lifecycle requires npm 11.18.0');
 }
 function verifyMacBundle(app, phase, env) {
-  bounded('/bin/bash', [repositoryScript('packaging/macos/scripts/verify-bundle.sh'), '--app', app, '--architecture', 'universal'], {
-    env, timeout: 300_000,
-  });
+  let scriptDescriptor; let libraryDescriptor;
+  try {
+    scriptDescriptor = openRepositoryFile('packaging/macos/scripts/verify-bundle.sh');
+    libraryDescriptor = openRepositoryFile('packaging/macos/scripts/lib.sh');
+    bounded('/bin/bash', ['/dev/fd/3', '--app', app, '--architecture', 'universal'], {
+      env: { ...env, PALLADIN_VERIFIED_LIB_FD: '4' }, timeout: 300_000,
+      stdio: ['pipe', 'pipe', 'pipe', scriptDescriptor, libraryDescriptor],
+    });
+  } finally {
+    if (libraryDescriptor !== undefined) closeSync(libraryDescriptor);
+    if (scriptDescriptor !== undefined) closeSync(scriptDescriptor);
+  }
   const version = captureText(bounded('/usr/libexec/PlistBuddy', [
     '-c', 'Print :CFBundleShortVersionString', join(app, 'Contents', 'Info.plist'),
   ], { env }));
