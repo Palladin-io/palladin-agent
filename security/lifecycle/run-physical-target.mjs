@@ -3,7 +3,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync,
-  openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync,
+  mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,8 @@ const SOURCE_SHA = /^[0-9a-f]{40}$/;
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_CAPTURE = 256 * 1024;
+const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+const REPOSITORY_ROOT = resolve(SCRIPT_DIRECTORY, '../..');
 function fail(message) { throw new Error(message); }
 function record(value, label) {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) fail(`${label} must be an object`);
@@ -40,6 +42,12 @@ function readJson(path, label) {
 }
 function sha256Bytes(value) { return createHash('sha256').update(value).digest('hex'); }
 function sha256File(path) { return sha256Bytes(readRegular(path, `artifact ${basename(path)}`)); }
+function repositoryScript(relativePath) {
+  const path = join(REPOSITORY_ROOT, relativePath);
+  const linked = lstatSync(path);
+  if (!linked.isFile() || linked.isSymbolicLink()) fail('repository lifecycle script is invalid');
+  return path;
+}
 function writeAtomic(path, value) {
   const absolute = resolve(path); mkdirSync(dirname(absolute), { recursive: true, mode: 0o700 });
   const temporary = join(dirname(absolute), `.${basename(absolute)}.${randomUUID()}.tmp`);
@@ -173,7 +181,7 @@ function requirePinnedNpm(env) {
   if (version.stdout.trim() !== '11.18.0' || version.stderr !== '') fail('physical lifecycle requires npm 11.18.0');
 }
 function verifyMacBundle(app, phase, env) {
-  bounded('/bin/bash', [resolve('packaging/macos/scripts/verify-bundle.sh'), '--app', app, '--architecture', 'universal'], {
+  bounded('/bin/bash', [repositoryScript('packaging/macos/scripts/verify-bundle.sh'), '--app', app, '--architecture', 'universal'], {
     env, timeout: 300_000,
   });
   const version = captureText(bounded('/usr/libexec/PlistBuddy', [
@@ -462,13 +470,15 @@ export async function runPhysicalTarget({ contract, manifest: manifestInput = lo
   const candidate = loadPhase(contract, target, 'candidate');
   const rollback = loadPhase(contract, target, 'forward-rollback');
   if (candidate.sourceSha !== contract.sourceSha) fail('candidate source is invalid');
-  const root = join(dirname(resolve(contract.output)), `Palladin lifecycle ${target.id} zażółć`);
-  const home = join(root, 'home'); const prefix = join(root, 'global prefix');
-  mkdirSync(home, { recursive: true, mode: 0o700 }); mkdirSync(prefix, { recursive: true, mode: 0o700 });
-  if (process.platform !== 'win32') { chmodSync(home, 0o700); chmodSync(prefix, 0o700); }
-  const env = safeEnvironment(home, prefix);
-  const run = { targetId: target.id, runId: contract.runId, runAttempt: contract.runAttempt, steps: [] };
+  const scratch = mkdtempSync(join(SCRIPT_DIRECTORY, '.palladin-physical-'));
   try {
+    if (process.platform !== 'win32') chmodSync(scratch, 0o700);
+    const root = join(scratch, `Palladin lifecycle ${target.id} zażółć`);
+    const home = join(root, 'home'); const prefix = join(root, 'global prefix');
+    mkdirSync(home, { recursive: true, mode: 0o700 }); mkdirSync(prefix, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') { chmodSync(home, 0o700); chmodSync(prefix, 0o700); }
+    const env = safeEnvironment(home, prefix);
+    const run = { targetId: target.id, runId: contract.runId, runAttempt: contract.runAttempt, steps: [] };
     requirePinnedNpm(env);
     assertNativeExtraAbsent(target, env);
     installPhase(target, baseline, prefix, env, root); versionCheck(prefix, env, baseline.version);
@@ -541,16 +551,22 @@ export async function runPhysicalTarget({ contract, manifest: manifestInput = lo
       runId: contract.runId, runAttempt: contract.runAttempt, target: { targetId: target.id, artifacts, steps: run.steps },
     };
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
   }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     if (process.argv.length !== 3) fail('usage: run-physical-target.mjs CONTRACT_JSON');
-    const contract = readJson(process.argv[2], 'contract');
+    const contractPath = resolve(process.argv[2]);
+    const contract = readJson(contractPath, 'contract');
+    const outputPath = resolve(contract.output);
+    if (dirname(outputPath) !== dirname(contractPath)
+      || basename(outputPath) !== `lifecycle-${contract.targetId}.json`) {
+      fail('contract output must be the target evidence file beside the contract');
+    }
     const output = await runPhysicalTarget({ contract });
-    writeAtomic(contract.output, output);
+    writeAtomic(outputPath, output);
     process.stdout.write(`lifecycle-target=${contract.targetId} result=passed\n`);
   } catch (error) {
     process.stderr.write(`physical lifecycle target failed: ${error instanceof Error ? error.message : 'unknown error'}\n`);
