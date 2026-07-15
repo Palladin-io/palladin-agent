@@ -19,7 +19,9 @@ describe('macOS authenticated signed-runtime boundary', () => {
     expect(signedJob).toContain('PALLADIN_RUNNER_ENVIRONMENT: ${{ runner.environment }}');
     expect(signedJob).toContain('PALLADIN_SECURITY_TEST_CONFIRM: github-hosted-ephemeral-runner');
     expect(signedJob).toContain('palladin-runtime-darwin-${{ matrix.npm_architecture }}-*.tgz');
+    expect(signedJob).toContain('/usr/bin/ditto -x -k \\\n            "$release/palladin-runtime-darwin-universal.zip"');
     expect(signedJob).toContain('npm install --prefix "$smoke" --ignore-scripts --no-save');
+    expect(signedJob).toContain('/usr/bin/diff -qr "$zip_root/PalladinRuntime.app" "$app"');
     expect(signedJob).toContain('test-security-boundary.sh');
     expect(signedJob).toContain("--architecture '${{ matrix.architecture }}'");
     expect(workflow.match(/test-security-boundary\.sh/g)).toHaveLength(1);
@@ -90,6 +92,8 @@ describe('macOS authenticated signed-runtime boundary', () => {
     expect(harness).not.toContain('"$binary" purge');
     expect(harness).not.toContain('cat "$work_dir');
     expect(harness).not.toContain('set -x');
+    expect(harness).toContain("PATH='/usr/bin:/bin:/usr/sbin:/sbin'");
+    expect(harness).not.toContain('/usr/local/bin');
   });
 
   it('binds operations to semantic arguments, process, connection, sequence, epoch, and expiry', () => {
