@@ -218,6 +218,9 @@ jobs:
           test -f "$assets/adversarial-report.json"
           test -f "$assets/adversarial-report.md"
           test -f "$assets/adversarial-approval.json"
+          test -f "$assets/lifecycle-report.json"
+          test -f "$assets/lifecycle-report.md"
+          test -f "$assets/lifecycle-approval.json"
           test "$(find "$assets" -maxdepth 1 -name 'palladin-agent-*.tgz' | wc -l | tr -d ' ')" = 1
           platform_packages="$RUNNER_TEMP/platform-packages"
           mkdir -p "$platform_packages"
@@ -250,6 +253,9 @@ jobs:
             'adversarial-report.json',
             'adversarial-report.md',
             'adversarial-approval.json',
+            'lifecycle-report.json',
+            'lifecycle-report.md',
+            'lifecycle-approval.json',
           ]);
           for (const manifestPath of manifestPaths) {
             const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -285,9 +291,27 @@ jobs:
             --approval "$assets/adversarial-approval.json" \
             --public-key "$RUNNER_TEMP/adversarial-public-key.txt"
 
+          node security/lifecycle/report.mjs validate \
+            --source-sha "$SOURCE_SHA" \
+            --json "$assets/lifecycle-report.json" \
+            --markdown "$assets/lifecycle-report.md"
+          node security/lifecycle/verify-release-artifacts.mjs \
+            --report "$assets/lifecycle-report.json" \
+            --platform-manifest "$assets/release-manifest.json" \
+            --agent-manifest "$assets/release-manifest-agent.json"
+          printf '%s' "$PUBLIC_KEY" \
+            > "$RUNNER_TEMP/lifecycle-public-key.txt"
+          node security/lifecycle/operator-approval.mjs verify \
+            --report "$assets/lifecycle-report.json" \
+            --markdown "$assets/lifecycle-report.md" \
+            --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
+            --approval "$assets/lifecycle-approval.json" \
+            --public-key "$RUNNER_TEMP/lifecycle-public-key.txt"
+
           while IFS= read -r filename; do
             case "$filename" in
               adversarial-report.json|adversarial-report.md|adversarial-approval.json) continue ;;
+              lifecycle-report.json|lifecycle-report.md|lifecycle-approval.json) continue ;;
             esac
             gh attestation verify "$assets/$filename" --repo "$GITHUB_REPOSITORY"
           done <"$RUNNER_TEMP/expected-release-assets.txt"

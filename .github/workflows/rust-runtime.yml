@@ -15,7 +15,7 @@ concurrency:
 jobs:
   apple:
     name: Build ${{ matrix.target }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -474,13 +474,18 @@ jobs:
               test ! -e "$HOME/.palladin/agent.key"
               test ! -e "$HOME/.palladin/config.json"
             '
-      - name: Install, upgrade, roll back, and reinstall on Debian, Fedora, and Rocky 9
+      - name: Install, enroll, run MCP, update, roll back, reinstall, purge, and uninstall
         working-directory: .
         shell: bash
         env:
           ARCHITECTURE: ${{ matrix.gnu_target == 'x86_64-unknown-linux-gnu' && 'x64' || 'arm64' }}
         run: |
           set -euo pipefail
+          packaging/linux/tests/test-package-family.sh ubuntu \
+            "$(find "$RUNNER_TEMP/linux-packages/base" -name '*.deb' -print -quit)" \
+            "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)" \
+            "runtime/target/${{ matrix.gnu_target }}/release/examples/package_state_fixture" \
+            "$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
           packaging/linux/tests/test-package-family.sh debian \
             "$(find "$RUNNER_TEMP/linux-packages/base" -name '*.deb' -print -quit)" \
             "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)" \

@@ -76,6 +76,7 @@ describe('cross-platform CI gates', () => {
     expect(native).toContain('--exclude palladin-linux-broker --exclude palladin-linux-executor');
     expect(native).toContain('--exclude palladin-windows-broker --exclude palladin-windows-executor');
     expect(native).toContain('runner: macos-15-intel');
+    expect(native).toMatch(/apple:[\s\S]*?timeout-minutes: 45/);
     expect(native).toContain('runner: windows-11-arm');
     expect(native).toContain('runner: ubuntu-24.04-arm');
     expect(native).toContain('Build and run the native musl npm package on Alpine');
