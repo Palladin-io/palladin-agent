@@ -56,7 +56,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["b
 objc2-local-authentication = { version = "0.3.2", default-features = false, features = ["LAContext", "block2"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-sha1 = "0.10.6"
+sha1 = "0.11.0"
 sha2 = { version = "0.10.9", features = ["oid"] }
 subtle = "2.6.1"
 tempfile = "3.27.0"
