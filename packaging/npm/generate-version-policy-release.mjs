@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync, writeFileSync,
+} from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import {
@@ -35,33 +37,30 @@ const releaseArtifacts = packages.map(([name, executable, worker]) => {
   if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) fail();
   const canonicalRoot = realpathSync(root);
   assertInside(canonicalModules, canonicalRoot);
-  const manifestPath = join(root, 'package.json');
-  const manifestMetadata = lstatSync(manifestPath);
-  if (!manifestMetadata.isFile() || manifestMetadata.isSymbolicLink()
-    || manifestMetadata.size <= 0 || manifestMetadata.size > 128 * 1024) fail();
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const manifest = JSON.parse(readVerifiedFile(
+    join(canonicalRoot, 'package.json'), canonicalRoot, 128 * 1024,
+  ).toString('utf8'));
   if (manifest.name !== name || manifest.version !== version) fail();
-  const executablePath = join(root, executable);
-  const executableMetadata = lstatSync(executablePath);
-  if (!executableMetadata.isFile() || executableMetadata.isSymbolicLink()
-    || executableMetadata.size <= 0 || executableMetadata.size > 256 * 1024 * 1024) fail();
+  const executablePath = join(canonicalRoot, executable);
   const canonicalExecutable = realpathSync(executablePath);
   assertInside(canonicalRoot, canonicalExecutable);
+  const executableBytes = readVerifiedFile(
+    executablePath, canonicalRoot, 256 * 1024 * 1024,
+  );
   let workerExecutableSha256;
   if (worker === null) {
     workerExecutableSha256 = manifest.palladinRuntime?.workerExecutableSha256;
     if (!/^[0-9a-f]{64}$/.test(workerExecutableSha256 ?? '')) fail();
   } else {
-    const workerPath = join(root, worker);
-    const workerMetadata = lstatSync(workerPath);
-    if (!workerMetadata.isFile() || workerMetadata.isSymbolicLink()
-      || workerMetadata.size <= 0 || workerMetadata.size > 256 * 1024 * 1024) fail();
+    const workerPath = join(canonicalRoot, worker);
     const canonicalWorker = realpathSync(workerPath);
     assertInside(canonicalRoot, canonicalWorker);
-    workerExecutableSha256 = createHash('sha256').update(readFileSync(canonicalWorker)).digest('hex');
+    workerExecutableSha256 = createHash('sha256').update(readVerifiedFile(
+      workerPath, canonicalRoot, 256 * 1024 * 1024,
+    )).digest('hex');
   }
   const artifact = {
-    executableSha256: createHash('sha256').update(readFileSync(canonicalExecutable)).digest('hex'),
+    executableSha256: createHash('sha256').update(executableBytes).digest('hex'),
     packageName: name,
     sourceSha,
     version,
@@ -76,8 +75,9 @@ const releaseArtifacts = packages.map(([name, executable, worker]) => {
 
 let current;
 const currentPath = resolve(required('current'));
-if (existsSync(currentPath) && readFileSync(currentPath).length > 0) {
-  current = parseAndVerifyHistoricalVersionPolicy(readFileSync(currentPath), {
+const currentBytes = readOptionalRegularFile(currentPath, 4 * 1024 * 1024);
+if (currentBytes !== undefined && currentBytes.length > 0) {
+  current = parseAndVerifyHistoricalVersionPolicy(currentBytes, {
     publicKeyBase64: required('public-key'),
     source: 'https://releases.palladin.io/agent/version-policy.json',
   }).signed;
@@ -135,6 +135,38 @@ function ascii(left, right) { return left < right ? -1 : left > right ? 1 : 0; }
 function assertInside(parent, child) {
   const path = relative(parent, child);
   if (path === '' || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)) fail();
+}
+function readVerifiedFile(path, parent, maximumSize) {
+  const canonicalPath = realpathSync(path);
+  assertInside(parent, canonicalPath);
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile() || metadata.size <= 0 || metadata.size > maximumSize) fail();
+    const bytes = readFileSync(descriptor);
+    if (bytes.length !== metadata.size) fail();
+    return bytes;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+function readOptionalRegularFile(path, maximumSize) {
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return undefined;
+    fail();
+  }
+  try {
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile() || metadata.size < 0 || metadata.size > maximumSize) fail();
+    const bytes = readFileSync(descriptor);
+    if (bytes.length !== metadata.size) fail();
+    return bytes;
+  } finally {
+    closeSync(descriptor);
+  }
 }
 function sameArtifact(left, right) {
   return left.packageName === right.packageName && left.version === right.version

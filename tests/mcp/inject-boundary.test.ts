@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AgentConfig } from '../../src/config/config.js';
 import type { Keypair } from '../../src/crypto/keypair.js';
 import { INJECT_UNAVAILABLE } from '../../src/commands/inject.js';
-import { registerTools } from '../../src/mcp/tools.js';
+import { registerTools, type LegacyMcpToolRegistry } from '../../src/mcp/tools.js';
 
 type ToolHandler = (input: Record<string, unknown>) => Promise<{
   content: Array<{ type: string; text: string }>;
@@ -21,7 +20,7 @@ describe('inject_credential browser boundary', () => {
       registerTool(name: string, _definition: unknown, handler: ToolHandler) {
         handlers.set(name, handler);
       },
-    } as unknown as McpServer;
+    } as unknown as LegacyMcpToolRegistry;
     const fetch = vi.fn(() => {
       throw new Error('network must not be contacted');
     });

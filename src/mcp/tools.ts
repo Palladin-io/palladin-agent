@@ -1,4 +1,3 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { AgentConfig } from '../config/config.js';
 import { Keypair } from '../crypto/keypair.js';
@@ -22,6 +21,14 @@ import { INJECT_UNAVAILABLE } from '../commands/inject.js';
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
+export interface LegacyMcpToolRegistry {
+  registerTool(
+    name: string,
+    definition: { description: string; inputSchema: unknown },
+    handler: (input: any) => Promise<ToolResult>,
+  ): void;
+}
+
 function ok(text: string): ToolResult {
   return { content: [{ type: 'text', text }] };
 }
@@ -38,7 +45,7 @@ function errorMessage(err: unknown): string {
 // Discovery is org-wide via GET /api/agent/entries (agent-auth, metadata only).
 // The legacy CVT-44 placeholders list_vaults / list_entries called JwtBearer (user)
 // endpoints and returned 401 under agent-auth — they are intentionally not exposed.
-export function registerTools(server: McpServer, config: AgentConfig, keypair: Keypair, signing?: SigningContext): void {
+export function registerTools(server: LegacyMcpToolRegistry, config: AgentConfig, keypair: Keypair, signing?: SigningContext): void {
   server.registerTool(
     'search_entries',
     {
