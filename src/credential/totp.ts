@@ -73,8 +73,8 @@ function normalizedParams(secret: string, record: Record<string, unknown>): Totp
   if (Object.hasOwn(record, 'digits')) {
     if (typeof record.digits !== 'number'
       || !Number.isSafeInteger(record.digits)
-      || record.digits < 1
-      || record.digits > 10) return null;
+      || record.digits < 6
+      || record.digits > 8) return null;
     params.digits = record.digits;
   }
   if (Object.hasOwn(record, 'period')) {

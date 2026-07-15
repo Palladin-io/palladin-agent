@@ -84,6 +84,21 @@ describe('parseTotpValue — explicit parameters', () => {
     expect(parseTotpValue(JSON.stringify({ secret: SEED_SHA1, [name]: value }))).toBeNull();
   });
 
+  it.each([5, 9])('rejects an explicit %i-digit value in JSON and otpauth URIs', (digits) => {
+    expect(parseTotpValue(JSON.stringify({ secret: SEED_SHA1, digits }))).toBeNull();
+    expect(parseTotpValue(
+      `otpauth://totp/Palladin?secret=${SEED_SHA1}&digits=${digits}`,
+    )).toBeNull();
+  });
+
+  it.each([6, 8])('accepts an explicit %i-digit value in JSON and otpauth URIs', (digits) => {
+    const expected = { secret: SEED_SHA1, digits };
+    expect(parseTotpValue(JSON.stringify(expected))).toEqual(expected);
+    expect(parseTotpValue(
+      `otpauth://totp/Palladin?secret=${SEED_SHA1}&digits=${digits}`,
+    )).toEqual(expected);
+  });
+
   it('keeps defaults only when optional parameters are absent', () => {
     expect(parseTotpValue(JSON.stringify({ secret: SEED_SHA1 }))).toEqual({ secret: SEED_SHA1 });
     expect(parseTotpValue(`otpauth://totp/Palladin?secret=${SEED_SHA1}`)).toEqual({
