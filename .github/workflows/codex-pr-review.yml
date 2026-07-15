@@ -87,10 +87,36 @@ jobs:
           REPO: ${{ github.repository }}
           USER_CONTEXT: ${{ github.event.inputs.user_context }}
         run: |
-          gh pr view "$PR" --json number,title,body,author,additions,deletions,changedFiles,headRefName,headRefOid,baseRefName > /tmp/pr_meta.json
-          echo "head_sha=$(jq -r .headRefOid /tmp/pr_meta.json)" >> "$GITHUB_OUTPUT"
-          gh pr diff "$PR" > /tmp/pr_diff.patch 2>/dev/null \
-            || gh api -H 'Accept: application/vnd.github.diff' "repos/${REPO}/pulls/${PR}" > /tmp/pr_diff.patch
+          gh api "repos/${REPO}/pulls/${PR}" > /tmp/pr_rest.json
+          jq '{
+            number,
+            title,
+            body,
+            author: .user.login,
+            additions,
+            deletions,
+            changedFiles: .changed_files,
+            headRefName: .head.ref,
+            headRefOid: .head.sha,
+            baseRefName: .base.ref
+          }' /tmp/pr_rest.json > /tmp/pr_meta.json
+          HEAD_SHA=$(jq -r .head.sha /tmp/pr_rest.json)
+          BASE_SHA=$(jq -r .base.sha /tmp/pr_rest.json)
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          PR_REF="refs/remotes/origin/codex-review-${PR}"
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --no-tags --no-recurse-submodules --unshallow origin
+          fi
+          git fetch --no-tags --no-recurse-submodules origin "$BASE_SHA"
+          git fetch --no-tags --no-recurse-submodules origin \
+            "+refs/pull/${PR}/head:${PR_REF}"
+          test "$(git rev-parse "$PR_REF")" = "$HEAD_SHA"
+          MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          # Diffing fetched objects never checks out or executes untrusted PR code.
+          git diff --no-ext-diff --no-textconv --binary \
+            "$MERGE_BASE" "$HEAD_SHA" > /tmp/pr_diff.patch
+          test -s /tmp/pr_diff.patch
+          test "$(wc -c < /tmp/pr_diff.patch)" -le 8388608
           gh api --paginate "repos/${REPO}/pulls/${PR}/files" --jq '.[].filename' > /tmp/pr_files.txt
           gh pr view "$PR" --json reviews > /tmp/pr_reviews.json
           gh api --paginate "repos/${REPO}/pulls/${PR}/comments" > /tmp/pr_inline_comments.json
@@ -98,7 +124,7 @@ jobs:
 
       - name: Build isolated review prompt
         run: |
-          mkdir -p "$RUNNER_TEMP/codex-review"
+          install -d -m 0700 "$RUNNER_TEMP/codex-review"
           {
             cat .github/codex/pr-review.md
             echo ''
