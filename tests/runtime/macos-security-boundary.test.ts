@@ -70,7 +70,10 @@ describe('macOS authenticated signed-runtime boundary', () => {
     expect(harness).toContain('$PALLADIN_INVOCATION_SLOT_SUFFIX');
     expect(helpers).toContain('assert_binary_session_contract()');
     expect(read('packaging/macos/scripts/build-bundle.sh')).toContain('assert_binary_session_contract "$binary"');
-    expect(read('packaging/macos/scripts/verify-bundle.sh')).toContain('assert_binary_session_contract "$binary"');
+    const verifier = read('packaging/macos/scripts/verify-bundle.sh');
+    expect(verifier).toContain('assert_binary_session_contract "$binary"');
+    expect(verifier).toContain('source "/dev/fd/$PALLADIN_VERIFIED_LIB_FD"');
+    expect(verifier).toContain('[[ "$PALLADIN_VERIFIED_LIB_FD" =~ ^[0-9]+$ ]]');
   });
 
   it('compares signed app contents and security-relevant filesystem metadata', () => {

@@ -59,9 +59,12 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(runner).toContain("existsSync(join(home, '.palladin'))");
     expect(runner).not.toContain('if (purged.status === 0)');
     expect(runner).toContain('npm uninstall left the Agent launcher installed');
-    expect(runner).toContain("assertRepositoryScript('packaging/macos/scripts/verify-bundle.sh');");
-    expect(runner).toContain("['packaging/macos/scripts/verify-bundle.sh', '--app', app, '--architecture', 'universal']");
-    expect(runner).toContain('moduleFile.dev !== workingFile.dev || moduleFile.ino !== workingFile.ino');
+    expect(runner).toContain("openRepositoryFile('packaging/macos/scripts/verify-bundle.sh');");
+    expect(runner).toContain("openRepositoryFile('packaging/macos/scripts/lib.sh');");
+    expect(runner).toContain("['/dev/fd/3', '--app', app, '--architecture', 'universal']");
+    expect(runner).toContain("PALLADIN_VERIFIED_LIB_FD: '4'");
+    expect(runner).toContain("stdio: ['pipe', 'pipe', 'pipe', scriptDescriptor, libraryDescriptor]");
+    expect(runner).toContain('opened.dev !== linked.dev || opened.ino !== linked.ino');
     expect(runner).toContain('verifyMacBundle(packagedApp, phase, env)');
     expect(runner).toContain("bounded('/usr/bin/ditto'");
     expect(runner).toContain("bounded('/bin/bash'");
