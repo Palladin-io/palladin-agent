@@ -17,7 +17,7 @@ Usage: build-bundle.sh --binary PATH --profile PATH --output-dir PATH
 
 Required environment:
   PALLADIN_APPLICATION_IDENTIFIER  Exact TEAMID.io.palladin.runtime value.
-  PALLADIN_KEYCHAIN_ACCESS_GROUP   Exact TEAMID.io.palladin.runtime value embedded in the binary.
+  PALLADIN_KEYCHAIN_ACCESS_GROUP   Exact TEAMID.io.palladin.runtime.session-v2 value embedded in the binary.
 USAGE
   exit 64
 }
@@ -57,6 +57,7 @@ require_regular_file "$PACKAGING_DIR/PalladinRuntime.entitlements.in" "entitleme
 require_regular_file "$profile" "provisioning profile"
 require_empty_output_path "$output_dir" "output directory"
 assert_binary_contract "$binary" "$access_group" "$architecture"
+assert_binary_session_contract "$binary"
 
 output_parent="$(dirname -- "$output_dir")"
 mkdir -p "$output_parent"

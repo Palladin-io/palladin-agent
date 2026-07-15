@@ -23,7 +23,8 @@ use palladin_credential::wait::{
 };
 use palladin_runtime::{
     CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
-    OperatorOutput, RuntimeError, RuntimeSession,
+    CredentialOutputPolicy, InvocationSurface, OperationConnection, OperationDescriptor,
+    OperatorOutput, RuntimeError, RuntimeService, SecretStore,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -85,30 +86,58 @@ pub trait McpApplication: Send + Sync + 'static {
     ) -> ApplicationFuture<'a>;
 }
 
-#[derive(Clone)]
-pub struct NativeApplication {
-    session: Arc<RuntimeSession>,
+pub struct NativeApplication<S> {
+    service: Arc<RuntimeService<S>>,
+    profile: Option<String>,
+    hostname: String,
+    connection: OperationConnection,
 }
 
-impl NativeApplication {
+impl<S> NativeApplication<S> {
     #[must_use]
-    pub fn new(session: RuntimeSession) -> Self {
+    pub fn new(
+        service: Arc<RuntimeService<S>>,
+        profile: Option<String>,
+        hostname: String,
+        connection: OperationConnection,
+    ) -> Self {
         Self {
-            session: Arc::new(session),
+            service,
+            profile,
+            hostname,
+            connection,
         }
     }
 }
 
-impl McpApplication for NativeApplication {
+impl<S> McpApplication for NativeApplication<S>
+where
+    S: SecretStore + Send + Sync + 'static,
+{
     fn search<'a>(
         &'a self,
         input: SearchInput,
         cancellation: CancellationToken,
     ) -> ApplicationFuture<'a> {
         Box::pin(async move {
+            let descriptor = OperationDescriptor::SearchEntries {
+                surface: InvocationSurface::Mcp,
+                query: input.query.trim().to_owned(),
+                cursor: input.cursor.clone(),
+                page_size: input.page_size,
+            };
+            let session = match self.service.open_session(
+                self.profile.as_deref(),
+                &self.hostname,
+                &self.connection,
+                descriptor,
+            ) {
+                Ok(session) => session,
+                Err(error) => return runtime_failure(&error),
+            };
             let result = tokio::select! {
                 () = cancellation.cancelled() => return ToolOutcome::error("Search was cancelled."),
-                result = self.session.search_entries(
+                result = session.search_entries(
                     input.query.trim(),
                     input.cursor.as_deref(),
                     input.page_size,
@@ -131,9 +160,27 @@ impl McpApplication for NativeApplication {
                 Ok(wait) => wait,
                 Err(message) => return ToolOutcome::error(message),
             };
+            let descriptor = OperationDescriptor::GetCredential {
+                surface: InvocationSurface::Mcp,
+                vault_id: input.vault_id.trim().to_owned(),
+                entry_id: input.entry_id.trim().to_owned(),
+                reason: input.reason.clone(),
+                wait,
+                field: input.field.clone(),
+                field_id: input.field_id.clone(),
+                output: CredentialOutputPolicy::McpSecretResponse,
+            };
+            let session = match self.service.open_session(
+                self.profile.as_deref(),
+                &self.hostname,
+                &self.connection,
+                descriptor,
+            ) {
+                Ok(session) => session,
+                Err(error) => return runtime_failure(&error),
+            };
             let progress = wait.progress.unwrap_or(ProgressMode::Plain);
-            let delivery = self
-                .session
+            let delivery = session
                 .deliver_for_get(
                     CredentialDeliveryRequest {
                         vault_id: input.vault_id.trim(),
@@ -239,9 +286,27 @@ impl McpApplication for NativeApplication {
                 Ok(wait) => wait,
                 Err(message) => return ToolOutcome::error(message),
             };
+            let descriptor = OperationDescriptor::ExecWithCredential {
+                surface: InvocationSurface::Mcp,
+                vault_id: input.vault_id.trim().to_owned(),
+                entry_id: input.entry_id.trim().to_owned(),
+                reason: input.reason.clone(),
+                wait,
+                command: input.command.clone().unwrap_or_default(),
+                env_mappings: Vec::new(),
+                output: CredentialOutputPolicy::McpChildProcessWithheld,
+            };
+            let session = match self.service.open_session(
+                self.profile.as_deref(),
+                &self.hostname,
+                &self.connection,
+                descriptor,
+            ) {
+                Ok(session) => session,
+                Err(error) => return exec_failure(&error),
+            };
             let progress = wait.progress.unwrap_or(ProgressMode::Plain);
-            let execution = self
-                .session
+            let execution = session
                 .execute_with_credential(
                     CredentialExecRequest {
                         delivery: CredentialDeliveryRequest {
@@ -300,9 +365,25 @@ impl McpApplication for NativeApplication {
                     .map(|note| note.trim().to_owned())
                     .filter(|note| !note.is_empty()),
             };
+            let descriptor = OperationDescriptor::ReportCredentialStale {
+                surface: InvocationSurface::Mcp,
+                vault_id: request.vault_id.clone(),
+                entry_id: request.entry_id.clone(),
+                code: stale_reason_code_name(request.code).to_owned(),
+                note: request.note.clone(),
+            };
+            let session = match self.service.open_session(
+                self.profile.as_deref(),
+                &self.hostname,
+                &self.connection,
+                descriptor,
+            ) {
+                Ok(session) => session,
+                Err(error) => return runtime_failure(&error),
+            };
             let result = tokio::select! {
                 () = cancellation.cancelled() => return ToolOutcome::error("Stale-credential report was cancelled."),
-                result = self.session.report_credential_stale(&request) => result,
+                result = session.report_credential_stale(&request) => result,
             };
             match result {
                 Ok(()) => ToolOutcome::success(
@@ -361,6 +442,12 @@ impl<A: McpApplication> PalladinMcpServer<A> {
             "search_entries" => {
                 let input = parse_input::<SearchInput>(arguments)?;
                 validate_search(&input)?;
+                let _operation = self.secret_limit.clone().try_acquire_owned().map_err(|_| {
+                    McpError::internal_error(
+                        "Another Agent identity operation is in progress",
+                        None,
+                    )
+                })?;
                 self.application.search(input, cancellation).await
             }
             "get_credential" => {
@@ -387,6 +474,12 @@ impl<A: McpApplication> PalladinMcpServer<A> {
             "report_credential_stale" => {
                 let input = parse_input::<ReportStaleInput>(arguments)?;
                 validate_report(&input)?;
+                let _operation = self.secret_limit.clone().try_acquire_owned().map_err(|_| {
+                    McpError::internal_error(
+                        "Another Agent identity operation is in progress",
+                        None,
+                    )
+                })?;
                 self.application.report_stale(input, cancellation).await
             }
             _ => {
@@ -931,10 +1024,18 @@ fn bridge_state_error() -> io::Error {
     io::Error::other("MCP protocol bridge state is unavailable")
 }
 
-pub fn native_server(
-    session: RuntimeSession,
-) -> Result<PalladinMcpServer<NativeApplication>, ContractError> {
-    PalladinMcpServer::new(NativeApplication::new(session))
+pub fn native_server<S>(
+    service: Arc<RuntimeService<S>>,
+    profile: Option<String>,
+    hostname: String,
+    connection: OperationConnection,
+) -> Result<PalladinMcpServer<NativeApplication<S>>, ContractError>
+where
+    S: SecretStore + Send + Sync + 'static,
+{
+    PalladinMcpServer::new(NativeApplication::new(
+        service, profile, hostname, connection,
+    ))
 }
 
 pub struct BoundedLineReader<R> {
@@ -1364,6 +1465,14 @@ impl From<StaleCodeInput> for StaleReasonCode {
     }
 }
 
+const fn stale_reason_code_name(code: StaleReasonCode) -> &'static str {
+    match code {
+        StaleReasonCode::LoginRejected => "login_rejected",
+        StaleReasonCode::AuthFailed => "auth_failed",
+        StaleReasonCode::Manual => "manual",
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ReportStaleInput {
@@ -1583,6 +1692,26 @@ pub enum McpServeError {
     Initialization,
     #[error("MCP stdio transport failed")]
     Transport,
+}
+
+#[cfg(test)]
+mod operation_descriptor_tests {
+    use palladin_api::StaleReasonCode;
+
+    use super::stale_reason_code_name;
+
+    #[test]
+    fn stale_reason_codes_use_the_api_binding_values() {
+        assert_eq!(
+            stale_reason_code_name(StaleReasonCode::LoginRejected),
+            "login_rejected"
+        );
+        assert_eq!(
+            stale_reason_code_name(StaleReasonCode::AuthFailed),
+            "auth_failed"
+        );
+        assert_eq!(stale_reason_code_name(StaleReasonCode::Manual), "manual");
+    }
 }
 
 #[cfg(test)]

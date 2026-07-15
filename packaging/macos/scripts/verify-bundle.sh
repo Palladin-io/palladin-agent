@@ -13,7 +13,7 @@ Usage: verify-bundle.sh --app PATH --architecture arm64|x86_64|universal
 
 Required environment:
   PALLADIN_APPLICATION_IDENTIFIER  Exact TEAMID.io.palladin.runtime value.
-  PALLADIN_KEYCHAIN_ACCESS_GROUP   Exact TEAMID.io.palladin.runtime value.
+  PALLADIN_KEYCHAIN_ACCESS_GROUP   Exact TEAMID.io.palladin.runtime.session-v2 value.
 
 The command verifies a final Developer ID-signed, notarized and stapled bundle.
 USAGE
@@ -45,6 +45,7 @@ embedded_profile="$app_path/Contents/embedded.provisionprofile"
 require_regular_file "$info_plist" "Info.plist"
 require_regular_file "$embedded_profile" "embedded provisioning profile"
 assert_binary_contract "$binary" "$access_group" "$architecture"
+assert_binary_session_contract "$binary"
 [[ "$(plist_read "$info_plist" 'CFBundleIdentifier')" == "$PALLADIN_BUNDLE_IDENTIFIER" ]] ||
   die "bundle identifier is not $PALLADIN_BUNDLE_IDENTIFIER"
 [[ "$(plist_read "$info_plist" 'CFBundleExecutable')" == "palladin" ]] ||

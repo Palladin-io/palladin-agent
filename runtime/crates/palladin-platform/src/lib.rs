@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 use std::path::PathBuf;
 
@@ -10,6 +10,14 @@ pub mod secure_store;
 
 #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
 mod macos_hardened_store;
+
+#[cfg(all(target_os = "macos", feature = "macos-hardened"))]
+#[allow(unsafe_code)]
+mod macos_lifecycle;
+
+#[cfg(all(target_os = "macos", feature = "macos-hardened"))]
+#[allow(unsafe_code)]
+mod macos_local_authentication;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 compile_error!("Palladin runtime supports only macOS, Windows, and Linux");

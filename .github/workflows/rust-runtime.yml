@@ -42,7 +42,10 @@ jobs:
           plutil -lint ../packaging/macos/Info.plist.in
           plutil -lint ../packaging/macos/PalladinRuntime.entitlements.in
           node --check ../packaging/macos/tests/node-keyring-probe.mjs
+          node --check ../packaging/macos/tests/signed-client-probe.mjs
           xcrun swiftc -warnings-as-errors -typecheck ../packaging/macos/tests/untrusted-dpk-probe.swift
+          xcrun clang -Wall -Wextra -Werror -fsyntax-only ../packaging/macos/tests/dyld-injection-probe.c
+          xcrun clang -Wall -Wextra -Werror -fsyntax-only ../packaging/macos/tests/task-port-probe.c
           fake_root="$(mktemp -d)"
           mkdir -p "$fake_root/PalladinRuntime.app"
           npm_arch=${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'x64' }}

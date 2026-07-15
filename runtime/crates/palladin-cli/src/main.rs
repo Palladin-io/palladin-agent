@@ -2,6 +2,7 @@
 
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
 use palladin_api::{CredentialMethod, ReportCredentialStaleInput, StaleReasonCode};
@@ -39,7 +40,11 @@ use palladin_platform::legacy_typescript_store::{
     LegacyCredentialError, OsLegacyCredentialDeleter, delete_legacy_typescript_credentials,
 };
 use palladin_platform::secure_store::{
-    NativeSecretStore, SecretSlot, SecretStore, StoreError, storage_tier_description,
+    AuthorizationPrompt, NativeSecretStore, OperationAuthorization, OperationScope, SecretSlot,
+    SecretStore, StoreError, storage_tier_description,
+};
+use palladin_runtime::{
+    CredentialOutputPolicy, InvocationSurface, OperationConnection, OperationDescriptor,
 };
 #[cfg(windows)]
 use palladin_windows_broker::BrokerSecretStore;
@@ -119,7 +124,7 @@ async fn main() -> ExitCode {
         Ok(repository) => repository,
         Err(error) => return fail(&error.to_string()),
     };
-    let service = RuntimeService::new(repository, secret_store);
+    let service = Arc::new(RuntimeService::new(repository, secret_store));
 
     if requires_version_policy(&cli.command) {
         if palladin_runtime::version_policy::system_version_policy_configured() {
@@ -162,7 +167,7 @@ async fn main() -> ExitCode {
         Commands::Exec(args) => exec(&service, cli.id.as_deref(), args).await,
         Commands::Inject(_) => unreachable!("inject exits before identity initialization"),
         Commands::ReportStale(args) => report_stale(&service, cli.id.as_deref(), args).await,
-        Commands::Mcp { command } => mcp(&service, cli.id.as_deref(), command).await,
+        Commands::Mcp { command } => mcp(Arc::clone(&service), cli.id.clone(), command).await,
         Commands::Agents { command } => agents(&service, command, runtime_storage_tier),
         Commands::Security { command } => security(
             &service,
@@ -215,6 +220,61 @@ impl SecretStore for RuntimeSecretStore {
             Self::Hardened(store) => store.delete(owner_id, slot),
             #[cfg(target_os = "linux")]
             Self::LinuxHardened(store) => store.delete(owner_id, slot),
+        }
+    }
+
+    fn requires_operation_authorization(&self) -> bool {
+        match self {
+            Self::Convenience(store) => store.requires_operation_authorization(),
+            #[cfg(windows)]
+            Self::Hardened(store) => store.requires_operation_authorization(),
+            #[cfg(target_os = "linux")]
+            Self::LinuxHardened(store) => store.requires_operation_authorization(),
+        }
+    }
+
+    fn initialize_operation_authorization(&self, identity_id: &str) -> Result<(), StoreError> {
+        match self {
+            Self::Convenience(store) => store.initialize_operation_authorization(identity_id),
+            #[cfg(windows)]
+            Self::Hardened(store) => store.initialize_operation_authorization(identity_id),
+            #[cfg(target_os = "linux")]
+            Self::LinuxHardened(store) => store.initialize_operation_authorization(identity_id),
+        }
+    }
+
+    fn authorize_operation(
+        &self,
+        scope: &OperationScope,
+        prompt: AuthorizationPrompt,
+        binding: &[u8],
+    ) -> Result<OperationAuthorization, StoreError> {
+        match self {
+            Self::Convenience(store) => store.authorize_operation(scope, prompt, binding),
+            #[cfg(windows)]
+            Self::Hardened(store) => store.authorize_operation(scope, prompt, binding),
+            #[cfg(target_os = "linux")]
+            Self::LinuxHardened(store) => store.authorize_operation(scope, prompt, binding),
+        }
+    }
+
+    fn get_authorized(
+        &self,
+        owner_id: &str,
+        slot: SecretSlot,
+        authorization: &OperationAuthorization,
+        binding: &[u8],
+    ) -> Result<Option<secrecy::SecretSlice<u8>>, StoreError> {
+        match self {
+            Self::Convenience(store) => {
+                store.get_authorized(owner_id, slot, authorization, binding)
+            }
+            #[cfg(windows)]
+            Self::Hardened(store) => store.get_authorized(owner_id, slot, authorization, binding),
+            #[cfg(target_os = "linux")]
+            Self::LinuxHardened(store) => {
+                store.get_authorized(owner_id, slot, authorization, binding)
+            }
         }
     }
 }
@@ -415,8 +475,8 @@ const fn requires_version_policy(command: &Commands) -> bool {
 }
 
 async fn mcp(
-    service: &RuntimeService<RuntimeSecretStore>,
-    profile: Option<&str>,
+    service: Arc<RuntimeService<RuntimeSecretStore>>,
+    profile: Option<String>,
     command: McpCommand,
 ) -> ExitCode {
     match command {
@@ -425,11 +485,11 @@ async fn mcp(
                 Ok(hostname) => hostname,
                 Err(error) => return fail(error),
             };
-            let session = match service.open_session(profile, &hostname) {
-                Ok(session) => session,
+            let connection = match OperationConnection::new() {
+                Ok(connection) => connection,
                 Err(error) => return fail(&error.to_string()),
             };
-            let server = match palladin_mcp::native_server(session) {
+            let server = match palladin_mcp::native_server(service, profile, hostname, connection) {
                 Ok(server) => server,
                 Err(error) => return fail(&error.to_string()),
             };
@@ -462,7 +522,15 @@ fn init(
         .iter()
         .any(|profile| profile.name == profile_name)
     {
-        let profile = match service.verify_identity(Some(profile_name)) {
+        let hostname = match operating_system_hostname() {
+            Ok(hostname) => hostname,
+            Err(error) => return fail(error),
+        };
+        let connection = match OperationConnection::new() {
+            Ok(connection) => connection,
+            Err(error) => return fail(&error.to_string()),
+        };
+        let profile = match service.verify_identity(Some(profile_name), &hostname, &connection) {
             Ok(profile) => profile,
             Err(error) => return fail(&error.to_string()),
         };
@@ -610,6 +678,10 @@ async fn connect(
         Ok(hostname) => hostname.to_string_lossy().into_owned(),
         Err(_) => return fail("the operating-system hostname is unavailable"),
     };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
     let outcome = match service
         .connect(
             profile,
@@ -618,6 +690,7 @@ async fn connect(
             args.name.as_deref(),
             args.r#type.as_deref(),
             &hostname,
+            &connection,
         )
         .await
     {
@@ -641,7 +714,11 @@ async fn status(
         Ok(hostname) => hostname.to_string_lossy().into_owned(),
         Err(_) => return fail("the operating-system hostname is unavailable"),
     };
-    let outcome = match service.status(profile, &hostname).await {
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let outcome = match service.status(profile, &hostname, &connection).await {
         Ok(outcome) => outcome,
         Err(error) => return fail(&error.to_string()),
     };
@@ -666,7 +743,17 @@ async fn search(
         Ok(hostname) => hostname,
         Err(error) => return fail(error),
     };
-    let session = match service.open_session(profile, &hostname) {
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let descriptor = OperationDescriptor::SearchEntries {
+        surface: InvocationSurface::Cli,
+        query: query.to_owned(),
+        cursor: args.cursor.clone(),
+        page_size: args.page_size,
+    };
+    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
         Ok(session) => session,
         Err(error) => return fail(&error.to_string()),
     };
@@ -716,10 +803,6 @@ async fn get(
         Ok(hostname) => hostname,
         Err(error) => return fail(error),
     };
-    let session = match service.open_session(profile, &hostname) {
-        Ok(session) => session,
-        Err(error) => return fail(&error.to_string()),
-    };
     let progress = args.progress.map(|value| match value {
         ProgressArg::Plain => ProgressMode::Plain,
         ProgressArg::Json => ProgressMode::Json,
@@ -729,6 +812,24 @@ async fn get(
         wait_ms,
         poll_ms,
         progress,
+    };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let descriptor = OperationDescriptor::GetCredential {
+        surface: InvocationSurface::Cli,
+        vault_id: args.vault_id.clone(),
+        entry_id: args.entry_id.clone(),
+        reason: args.reason.clone(),
+        wait,
+        field: args.field.clone(),
+        field_id: args.field_id.clone(),
+        output: CredentialOutputPolicy::CliSecretStdout,
+    };
+    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
     };
     let cancellation = signal_cancellation_token();
     let delivery = match session
@@ -838,15 +939,34 @@ async fn exec(
         Ok(hostname) => hostname,
         Err(error) => return fail(error),
     };
-    let session = match service.open_session(profile, &hostname) {
-        Ok(session) => session,
-        Err(error) => return fail(&error.to_string()),
-    };
     let progress = args.progress.map(|value| match value {
         ProgressArg::Plain => ProgressMode::Plain,
         ProgressArg::Json => ProgressMode::Json,
         ProgressArg::None => ProgressMode::None,
     });
+    let wait = WaitOptions {
+        wait_ms,
+        poll_ms,
+        progress,
+    };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let descriptor = OperationDescriptor::ExecWithCredential {
+        surface: InvocationSurface::Cli,
+        vault_id: args.vault_id.clone(),
+        entry_id: args.entry_id.clone(),
+        reason: args.reason.clone(),
+        wait,
+        command: args.command.clone(),
+        env_mappings: args.env_mappings.clone(),
+        output: CredentialOutputPolicy::CliChildProcess,
+    };
+    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
     let cancellation = signal_cancellation_token();
     let outcome = session
         .execute_with_credential(
@@ -855,11 +975,7 @@ async fn exec(
                     vault_id: &args.vault_id,
                     entry_id: &args.entry_id,
                     reason: args.reason.as_deref(),
-                    wait: WaitOptions {
-                        wait_ms,
-                        poll_ms,
-                        progress,
-                    },
+                    wait,
                 },
                 command: Some(&args.command),
                 env_mappings: &args.env_mappings,
@@ -900,10 +1016,6 @@ async fn report_stale(
         Ok(hostname) => hostname,
         Err(error) => return fail(error),
     };
-    let session = match service.open_session(profile, &hostname) {
-        Ok(session) => session,
-        Err(error) => return fail(&error.to_string()),
-    };
     let code = match args.code {
         StaleCodeArg::LoginRejected => StaleReasonCode::LoginRejected,
         StaleCodeArg::AuthFailed => StaleReasonCode::AuthFailed,
@@ -919,9 +1031,32 @@ async fn report_stale(
         code,
         note,
     };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let descriptor = OperationDescriptor::ReportCredentialStale {
+        surface: InvocationSurface::Cli,
+        vault_id: input.vault_id.clone(),
+        entry_id: input.entry_id.clone(),
+        code: stale_reason_code_name(input.code).to_owned(),
+        note: input.note.clone(),
+    };
+    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
     match session.report_credential_stale(&input).await {
         Ok(()) => emit_output(render_report_stale()),
         Err(error) => fail(&error.to_string()),
+    }
+}
+
+const fn stale_reason_code_name(code: StaleReasonCode) -> &'static str {
+    match code {
+        StaleReasonCode::LoginRejected => "login_rejected",
+        StaleReasonCode::AuthFailed => "auth_failed",
+        StaleReasonCode::Manual => "manual",
     }
 }
 
@@ -930,7 +1065,21 @@ fn agents(
     command: AgentsCommand,
     runtime_storage_tier: &str,
 ) -> ExitCode {
-    match agents_result(service, command, runtime_storage_tier) {
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    match agents_result(
+        service,
+        command,
+        runtime_storage_tier,
+        &hostname,
+        &connection,
+    ) {
         Ok(output) => emit_output(output),
         Err(error) => fail(&error.to_string()),
     }
@@ -944,14 +1093,24 @@ fn security(
     hardened_runtime: bool,
 ) -> ExitCode {
     match command {
-        SecurityCommand::Upgrade => match service.upgrade_security(profile) {
-            Ok(outcome) => emit_output(render_security_upgrade(
-                &outcome.profile.name,
-                runtime_storage_tier,
-                outcome.migrated,
-            )),
-            Err(error) => fail(&error.to_string()),
-        },
+        SecurityCommand::Upgrade => {
+            let hostname = match operating_system_hostname() {
+                Ok(hostname) => hostname,
+                Err(error) => return fail(error),
+            };
+            let connection = match OperationConnection::new() {
+                Ok(connection) => connection,
+                Err(error) => return fail(&error.to_string()),
+            };
+            match service.upgrade_security(profile, &hostname, &connection) {
+                Ok(outcome) => emit_output(render_security_upgrade(
+                    &outcome.profile.name,
+                    runtime_storage_tier,
+                    outcome.migrated,
+                )),
+                Err(error) => fail(&error.to_string()),
+            }
+        }
         SecurityCommand::LegacyStatus => legacy_status(service, hardened_runtime),
         SecurityCommand::LegacyCutover {
             confirm_pre_production_reset,
@@ -1040,6 +1199,8 @@ fn agents_result(
     service: &RuntimeService<RuntimeSecretStore>,
     command: AgentsCommand,
     runtime_storage_tier: &str,
+    hostname: &str,
+    connection: &OperationConnection,
 ) -> Result<RenderedOutput, RuntimeError> {
     match command {
         AgentsCommand::List => {
@@ -1051,7 +1212,7 @@ fn agents_result(
             Ok(render_profile_created(&created, runtime_storage_tier))
         }
         AgentsCommand::Delete { name } => {
-            service.delete_profile(&name)?;
+            service.delete_profile(&name, hostname, connection)?;
             Ok(render_agent_action("Agent profile deleted", &name))
         }
         AgentsCommand::SetDefault { name } => {
@@ -1081,7 +1242,15 @@ fn disconnect(
     if let Err(error) = ensure_workload_purge_allowed(hardened_runtime) {
         return fail(error);
     }
-    match service.purge_profile(profile) {
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    match service.purge_profile(profile, &hostname, &connection) {
         Ok(removed) => {
             println!("Local Palladin Agent identity '{}' purged.", removed.name);
             ExitCode::SUCCESS
@@ -1114,7 +1283,15 @@ fn purge(
             Err(error) => return fail(&error.to_string()),
         }
     }
-    match service.purge() {
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    match service.purge(&hostname, &connection) {
         Ok(()) => {
             println!("Native Palladin profiles and secret slots purged.");
             ExitCode::SUCCESS
@@ -1326,5 +1503,25 @@ mod version_policy_gate_tests {
         assert!(!requires_version_policy(
             &command(&["palladin", "security", "legacy-status"]).command
         ));
+    }
+}
+
+#[cfg(test)]
+mod operation_descriptor_tests {
+    use palladin_api::StaleReasonCode;
+
+    use super::stale_reason_code_name;
+
+    #[test]
+    fn stale_reason_codes_use_the_api_binding_values() {
+        assert_eq!(
+            stale_reason_code_name(StaleReasonCode::LoginRejected),
+            "login_rejected"
+        );
+        assert_eq!(
+            stale_reason_code_name(StaleReasonCode::AuthFailed),
+            "auth_failed"
+        );
+        assert_eq!(stale_reason_code_name(StaleReasonCode::Manual), "manual");
     }
 }
