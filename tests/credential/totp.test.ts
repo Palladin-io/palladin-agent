@@ -51,6 +51,15 @@ describe('generateTotp — defaults and window', () => {
     expect(() => generateTotp({ secret: '' })).toThrow(TotpError);
     expect(() => generateTotp({ secret: '!!!!' })).toThrow(TotpError);
   });
+
+  it.each([6, 8])('accepts the frozen contract boundary of %i digits', (digits) => {
+    expect(generateTotp({ secret: SEED_SHA1, digits }, 59 * 1000).code).toHaveLength(digits);
+  });
+
+  it.each([5, 9])('rejects %i digits without generating a weak or unsupported code', (digits) => {
+    expect(() => generateTotp({ secret: SEED_SHA1, digits }, 59 * 1000))
+      .toThrow(`unsupported TOTP digits: ${digits} (expected 6-8)`);
+  });
 });
 
 describe('parseTotpValue — explicit parameters', () => {

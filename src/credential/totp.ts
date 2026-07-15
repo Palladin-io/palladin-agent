@@ -107,8 +107,8 @@ export function generateTotp(params: TotpParams, atMs: number = Date.now()): Tot
   const digits = params.digits ?? DEFAULT_DIGITS;
   const period = params.period ?? DEFAULT_PERIOD;
 
-  if (digits < 1 || digits > 10) {
-    throw new TotpError(`unsupported TOTP digits: ${digits} (expected 1-10)`);
+  if (digits < 6 || digits > 8) {
+    throw new TotpError(`unsupported TOTP digits: ${digits} (expected 6-8)`);
   }
   if (period < 1) {
     throw new TotpError(`unsupported TOTP period: ${period}`);
