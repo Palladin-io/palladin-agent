@@ -278,15 +278,22 @@ jobs:
           set -euo pipefail
 
           # GitHub-hosted ARM runners occasionally cannot reach the Ubuntu
-          # ports mirror over plain HTTP. Prefer authenticated transport and
-          # let apt recover from transient mirror or runner-network failures.
+          # ports mirror. Use Canonical's immutable snapshot endpoint for that
+          # architecture and let apt recover from transient network failures.
+          if [[ "$(uname -m)" == "aarch64" ]]; then
+            ubuntu_mirror="https://snapshot.ubuntu.com/ubuntu/20260714T000000Z"
+          else
+            ubuntu_mirror="https://ports.ubuntu.com/ubuntu-ports"
+          fi
+
           for source_file in \
             /etc/apt/sources.list \
             /etc/apt/sources.list.d/*.list \
             /etc/apt/sources.list.d/*.sources; do
             if [[ -f "$source_file" ]]; then
               sudo sed -i \
-                's|http://ports\.ubuntu\.com|https://ports.ubuntu.com|g' \
+                -e "s|http://ports\\.ubuntu\\.com/ubuntu-ports|${ubuntu_mirror}|g" \
+                -e "s|https://ports\\.ubuntu\\.com/ubuntu-ports|${ubuntu_mirror}|g" \
                 "$source_file"
             fi
           done
