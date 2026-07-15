@@ -443,6 +443,23 @@ internal static class SemanticVectors
 
             ValidateSelection(parsed, vector, totpUnixSeconds);
         }
+
+        foreach (var rejection in root.GetProperty("totpRejections").EnumerateArray())
+        {
+            var rejected = false;
+            try
+            {
+                _ = ParseTotp(rejection.GetProperty("descriptor"));
+            }
+            catch (InvalidDataException)
+            {
+                rejected = true;
+            }
+            if (!rejected)
+            {
+                throw new InvalidDataException(".NET accepted a rejected TOTP descriptor");
+            }
+        }
     }
 
     private static ParsedCredential TryParseCredential(string plaintext)
@@ -673,9 +690,9 @@ internal static class SemanticVectors
         if (value.ValueKind == JsonValueKind.Object)
         {
             var objectSecret = OptionalString(value, "secret") ?? throw new InvalidDataException("missing TOTP secret");
-            var objectAlgorithm = (OptionalString(value, "algorithm") ?? "SHA1").ToUpperInvariant();
-            var objectDigits = OptionalInt(value, "digits") ?? 6;
-            var objectPeriod = OptionalInt(value, "period") ?? 30;
+            var objectAlgorithm = StringOrDefault(value, "algorithm", "SHA1").ToUpperInvariant();
+            var objectDigits = IntOrDefault(value, "digits", 6);
+            var objectPeriod = IntOrDefault(value, "period", 30);
             return ValidatedTotp(objectSecret, objectAlgorithm, objectDigits, objectPeriod);
         }
         if (value.ValueKind != JsonValueKind.String) throw new InvalidDataException("invalid TOTP descriptor");
@@ -763,6 +780,26 @@ internal static class SemanticVectors
         int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) && parsed > 0
             ? parsed
             : throw new InvalidDataException("invalid positive integer");
+
+    private static string StringOrDefault(JsonElement element, string property, string fallback)
+    {
+        if (!element.TryGetProperty(property, out var value)) return fallback;
+        if (value.ValueKind != JsonValueKind.String || value.GetString() is not { } result)
+        {
+            throw new InvalidDataException($"invalid {property} string");
+        }
+        return result;
+    }
+
+    private static int IntOrDefault(JsonElement element, string property, int fallback)
+    {
+        if (!element.TryGetProperty(property, out var value)) return fallback;
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out var result))
+        {
+            throw new InvalidDataException($"invalid {property} integer");
+        }
+        return result;
+    }
 
     private static int? OptionalInt(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number ? value.GetInt32() : null;

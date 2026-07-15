@@ -11,6 +11,7 @@ import { CredentialAccess } from '../../src/http/agent-api.js';
 
 interface CredentialFixture {
   totpUnixSeconds: number;
+  totpRejections: Array<{ name: string; descriptor: unknown }>;
   cases: Array<{
     name: string;
     plaintext: string;
@@ -56,6 +57,12 @@ const credentials = fixture<CredentialFixture>('credential-blobs.json');
 const grants = fixture<GrantFixture>('grant-access.json');
 
 describe('frozen credential runtime vectors', () => {
+  it('rejects every frozen invalid TOTP descriptor', () => {
+    for (const vector of credentials.totpRejections) {
+      expect(parseTotpValue(JSON.stringify(vector.descriptor)), vector.name).toBeNull();
+    }
+  });
+
   it('keeps TypeScript parsing aligned with the native runtime', () => {
     for (const vector of credentials.cases) {
       if (vector.parseError) {

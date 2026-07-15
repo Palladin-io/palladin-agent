@@ -1,7 +1,7 @@
 use palladin_api::CredentialAccess;
 use palladin_credential::access::exit_code_for_access;
 use palladin_credential::fields::{FieldSelector, redact_totp_secrets, resolve_field_at};
-use palladin_credential::secret::parse_secret;
+use palladin_credential::secret::{parse_secret, parse_totp_value};
 use palladin_credential::wait::{
     HeartbeatInfo, ProgressMode, WaitError, WaitHints, WaitOptions, WaitPolicy, await_grant,
     resolve_wait_policy,
@@ -17,6 +17,13 @@ use tokio_util::sync::CancellationToken;
 struct CredentialFixture {
     totp_unix_seconds: u64,
     cases: Vec<CredentialCase>,
+    totp_rejections: Vec<TotpRejection>,
+}
+
+#[derive(Deserialize)]
+struct TotpRejection {
+    name: String,
+    descriptor: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -46,6 +53,14 @@ fn credential_blob_contract_is_consumed_byte_for_byte() {
     let fixture: CredentialFixture =
         serde_json::from_str(include_str!("../../../contracts/v1/credential-blobs.json"))
             .expect("credential fixture");
+    for rejection in fixture.totp_rejections {
+        let descriptor = serde_json::to_string(&rejection.descriptor).expect("TOTP descriptor");
+        assert!(
+            parse_totp_value(&descriptor).is_none(),
+            "{}",
+            rejection.name
+        );
+    }
     for case in fixture.cases {
         let parsed = parse_secret(case.plaintext.as_bytes());
         if case.parse_error {
