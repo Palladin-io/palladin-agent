@@ -1,0 +1,29 @@
+[package]
+name = "palladin-linux-executor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+command-group.workspace = true
+libc.workspace = true
+nix.workspace = true
+palladin-core = { path = "../palladin-core" }
+palladin-windows-executor = { path = "../palladin-windows-executor" }
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+getrandom.workspace = true
+
+[[bin]]
+name = "palladin-linux-executor"
+path = "src/bin/executor.rs"

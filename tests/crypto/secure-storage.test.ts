@@ -32,6 +32,7 @@ import {
   upgradeToKeychain,
 } from '../../src/crypto/secure-storage.js'
 import { profilePaths } from '../../src/config/paths.js'
+import { expectSensitiveEqual } from '../helpers/sensitive-assert.js'
 
 const FAKE_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
 
@@ -108,7 +109,7 @@ describe('loadPrivateKey', () => {
 
     const { value, tier } = await loadPrivateKey('default', testPaths)
 
-    expect(value).toBe(FAKE_KEY)
+    expectSensitiveEqual(value, FAKE_KEY, 'keychain private key')
     expect(tier).toBe('keychain')
   })
 
@@ -119,7 +120,7 @@ describe('loadPrivateKey', () => {
 
     const { value, tier } = await loadPrivateKey('default', testPaths)
 
-    expect(value).toBe(FAKE_KEY)
+    expectSensitiveEqual(value, FAKE_KEY, 'environment private key')
     expect(tier).toBe('env')
   })
 
@@ -130,7 +131,7 @@ describe('loadPrivateKey', () => {
 
     const { value, tier } = await loadPrivateKey('cursor', testPaths)
 
-    expect(value).toBe(FAKE_KEY)
+    expectSensitiveEqual(value, FAKE_KEY, 'profile environment private key')
     expect(tier).toBe('env')
   })
 
@@ -141,7 +142,7 @@ describe('loadPrivateKey', () => {
 
     const { value, tier } = await loadPrivateKey('default', testPaths)
 
-    expect(value).toBe(FAKE_KEY)
+    expectSensitiveEqual(value, FAKE_KEY, 'file private key')
     expect(tier).toBe('file')
   })
 
@@ -248,7 +249,7 @@ describe('upgradeToKeychain', () => {
     const success = await upgradeToKeychain('default', testPaths)
 
     expect(success).toBe(true)
-    expect(mockSetPassword).toHaveBeenCalledWith(FAKE_KEY)
+    expectSensitiveEqual(mockSetPassword.mock.calls, [[FAKE_KEY]], 'keychain write arguments')
     expect(existsSync(testPaths.privateKey)).toBe(false)
   })
 

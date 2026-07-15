@@ -1,0 +1,237 @@
+name: Finalize Immutable Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Protected tag whose meta-package was approved"
+        required: true
+        type: string
+      version:
+        description: "Exact public meta-package version"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: palladin-npm-release
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Resolve the public npm release
+    if: github.actor == 'patryk-roguszewski'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm install --global npm@11.18.0
+
+      - id: source
+        name: Verify source tag and public npm release set
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$RELEASE_TAG" = "v$VERSION"
+          source_sha=$(git rev-parse HEAD)
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          test "$GITHUB_SHA" = "$source_sha"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$source_sha"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$source_sha" origin/main
+
+          test "$(npm view "@palladin/agent@$VERSION" version --json)" = "\"$VERSION\""
+          test "$(npm view @palladin/agent dist-tags.latest --json)" = "\"$VERSION\""
+          npm view "@palladin/agent@$VERSION" optionalDependencies --json \
+            >"$RUNNER_TEMP/optional-dependencies.json"
+          node - "$RUNNER_TEMP/optional-dependencies.json" "$VERSION" <<'NODE'
+          const fs = require('node:fs');
+          const dependencies = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const version = process.argv[3];
+          const expected = [
+            '@palladin/runtime-darwin-arm64',
+            '@palladin/runtime-darwin-x64',
+            '@palladin/runtime-linux-arm64-gnu',
+            '@palladin/runtime-linux-arm64-musl',
+            '@palladin/runtime-linux-x64-gnu',
+            '@palladin/runtime-linux-x64-musl',
+            '@palladin/runtime-win32-arm64',
+            '@palladin/runtime-win32-x64',
+          ];
+          if (Object.keys(dependencies).sort().join('\n') !== expected.sort().join('\n')) process.exit(1);
+          if (Object.values(dependencies).some((value) => value !== version)) process.exit(1);
+          NODE
+          for package in $(jq -r 'keys[]' "$RUNNER_TEMP/optional-dependencies.json"); do
+            test "$(npm view "$package@$VERSION" version --json)" = "\"$VERSION\""
+          done
+          echo "source_sha=$source_sha" >>"$GITHUB_OUTPUT"
+
+  compatibility:
+    name: Require client compatibility for the release source
+    needs: authorize
+    uses: ./.github/workflows/client-compatibility-gate.yml
+    with:
+      source_sha: ${{ needs.authorize.outputs.source_sha }}
+
+  smoke-native:
+    name: Public meta smoke - ${{ matrix.platform }}
+    needs: [authorize, compatibility]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macOS-arm64
+            runtime_package: runtime-darwin-arm64
+          - runner: macos-15-intel
+            platform: macOS-x64
+            runtime_package: runtime-darwin-x64
+          - runner: windows-11-arm
+            platform: Windows-arm64
+            runtime_package: runtime-win32-arm64
+          - runner: windows-2025
+            platform: Windows-x64
+            runtime_package: runtime-win32-x64
+          - runner: ubuntu-24.04-arm
+            platform: Linux-GNU-arm64
+            runtime_package: runtime-linux-arm64-gnu
+          - runner: ubuntu-24.04
+            platform: Linux-GNU-x64
+            runtime_package: runtime-linux-x64-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm install --global npm@11.18.0
+      - name: Install, audit, and execute the public meta-package
+        shell: bash
+        env:
+          RUNTIME_PACKAGE: ${{ matrix.runtime_package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          smoke="$RUNNER_TEMP/final-registry-smoke"
+          mkdir -p "$smoke"
+          npm install --prefix "$smoke" --ignore-scripts --package-lock \
+            "@palladin/agent@$VERSION"
+          test -f "$smoke/node_modules/@palladin/$RUNTIME_PACKAGE/package.json"
+          npm audit signatures --prefix "$smoke"
+          node "$smoke/node_modules/@palladin/agent/dist/bin/palladin.js" --version
+
+  smoke-musl:
+    name: Public meta smoke - Linux musl ${{ matrix.architecture }}
+    needs: [authorize, compatibility]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            architecture: x64
+            docker_architecture: amd64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+            docker_architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Install, audit, and execute on native Alpine
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          docker run --rm --platform "linux/${{ matrix.docker_architecture }}" \
+            --tmpfs /smoke node:24-alpine3.22 sh -euc "
+              npm install --global npm@11.18.0 >/dev/null
+              npm install --prefix /smoke --ignore-scripts --package-lock @palladin/agent@$VERSION
+              test -f /smoke/node_modules/@palladin/runtime-linux-${{ matrix.architecture }}-musl/package.json
+              npm audit signatures --prefix /smoke
+              node /smoke/node_modules/@palladin/agent/dist/bin/palladin.js --version
+            "
+
+  finalize:
+    name: Verify assets and publish the draft release
+    needs: [authorize, compatibility, smoke-native, smoke-musl]
+    runs-on: ubuntu-latest
+    environment: release-finalize
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      attestations: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Download and verify every draft release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          release=$(gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" --json isDraft,tagName)
+          test "$(jq -r .isDraft <<<"$release")" = true
+          test "$(jq -r .tagName <<<"$release")" = "$RELEASE_TAG"
+
+          assets="$RUNNER_TEMP/release-assets"
+          mkdir -p "$assets"
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" --dir "$assets"
+          test -f "$assets/release-manifest.json"
+          test -f "$assets/SHA256SUMS"
+          test -f "$assets/release-manifest-agent.json"
+          test -f "$assets/SHA256SUMS-agent"
+          test "$(find "$assets" -maxdepth 1 -name 'palladin-agent-*.tgz' | wc -l | tr -d ' ')" = 1
+          node packaging/npm/verify-platform-release-set.mjs \
+            --directory "$assets" --version "$VERSION"
+          (cd "$assets" && sha256sum --check SHA256SUMS)
+          (cd "$assets" && sha256sum --check SHA256SUMS-agent)
+
+          node - "$assets/release-manifest.json" "$assets/release-manifest-agent.json" <<'NODE'
+          const fs = require('node:fs');
+          const manifests = process.argv.slice(2).map((path) => JSON.parse(fs.readFileSync(path, 'utf8')));
+          for (const manifest of manifests) {
+            if (manifest.version !== process.env.VERSION) process.exit(1);
+            if (manifest.sourceSha !== process.env.SOURCE_SHA) process.exit(1);
+          }
+          NODE
+
+          while IFS= read -r -d '' asset; do
+            gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY"
+          done < <(find "$assets" -type f -print0)
+
+      - name: Publish the verified GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release edit "${{ inputs.release_tag }}" \
+            --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          test "$(gh release view "${{ inputs.release_tag }}" \
+            --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false

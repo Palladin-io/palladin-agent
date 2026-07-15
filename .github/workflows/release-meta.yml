@@ -1,0 +1,688 @@
+name: Release Meta-Package Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Protected tag whose platform packages were approved"
+        required: true
+        type: string
+      version:
+        description: "Exact approved platform version"
+        required: true
+        type: string
+      bootstrap_policy:
+        description: "One-time only: assert no current policy exists and start sequence 1"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: palladin-npm-release
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Verify approved platform candidates
+    if: github.actor == 'patryk-roguszewski'
+    runs-on: ubuntu-latest
+    environment: version-policy-signing
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      policy_generation: ${{ steps.policy_input.outputs.policy_generation }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm install --global npm@11.18.0
+
+      - id: source
+        name: Verify tag and all eight public platform versions
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$RELEASE_TAG" = "v$VERSION"
+          source_sha=$(git rev-parse HEAD)
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          test "$GITHUB_SHA" = "$source_sha"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$source_sha"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$source_sha" origin/main
+
+          packages=(
+            @palladin/runtime-darwin-arm64
+            @palladin/runtime-darwin-x64
+            @palladin/runtime-linux-arm64-gnu
+            @palladin/runtime-linux-arm64-musl
+            @palladin/runtime-linux-x64-gnu
+            @palladin/runtime-linux-x64-musl
+            @palladin/runtime-win32-arm64
+            @palladin/runtime-win32-x64
+          )
+          for package in "${packages[@]}"; do
+            test "$(npm view "$package@$VERSION" version --json)" = "\"$VERSION\""
+            test "$(npm view "$package" dist-tags.candidate --json)" = "\"$VERSION\""
+          done
+          echo "source_sha=$source_sha" >>"$GITHUB_OUTPUT"
+
+      - run: npm ci --ignore-scripts --workspaces=false
+      - run: npm run build
+
+      - name: Verify registry tarballs against the attested tagged release set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/release-assets"
+          registry="$RUNNER_TEMP/registry-tarballs"
+          mkdir -p "$assets" "$registry"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$assets"
+          rm -f "$assets"/palladin-agent-*.tgz \
+            "$assets/release-manifest-agent.json" \
+            "$assets/SHA256SUMS-agent" \
+            "$assets/sbom-agent.spdx.json"
+          node packaging/npm/verify-release-manifest.mjs \
+            --artifacts "$assets" --version "$VERSION" --source-sha "$SOURCE_SHA" \
+            --sbom "$assets/sbom-release.spdx.json" \
+            --manifest "$assets/release-manifest.json" --checksums "$assets/SHA256SUMS"
+          packages=(
+            @palladin/runtime-darwin-arm64
+            @palladin/runtime-darwin-x64
+            @palladin/runtime-linux-arm64-gnu
+            @palladin/runtime-linux-arm64-musl
+            @palladin/runtime-linux-x64-gnu
+            @palladin/runtime-linux-x64-musl
+            @palladin/runtime-win32-arm64
+            @palladin/runtime-win32-x64
+          )
+          for package in "${packages[@]}"; do
+            npm pack "$package@$VERSION" --pack-destination "$registry" --ignore-scripts >/dev/null
+          done
+          mapfile -t release_tarballs < <(find "$assets" -maxdepth 1 -type f \
+            -name 'palladin-runtime-*.tgz' -print | sort)
+          mapfile -t registry_tarballs < <(find "$registry" -maxdepth 1 -type f \
+            -name 'palladin-runtime-*.tgz' -print | sort)
+          test "${#release_tarballs[@]}" -eq 8
+          test "${#registry_tarballs[@]}" -eq 8
+          for asset in "${release_tarballs[@]}"; do
+            registry_tarball="$registry/$(basename "$asset")"
+            test -f "$registry_tarball"
+            cmp --silent "$asset" "$registry_tarball"
+            gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-platforms.yml \
+              --source-digest "$SOURCE_SHA" --source-ref "refs/tags/$RELEASE_TAG" \
+              --deny-self-hosted-runners
+          done
+
+      - name: Install the immutable candidate runtime set for policy hashing
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/policy-install"
+          mkdir -p "$root"
+          npm init --yes --prefix "$root" >/dev/null
+          packages=(
+            @palladin/runtime-darwin-arm64
+            @palladin/runtime-darwin-x64
+            @palladin/runtime-linux-arm64-gnu
+            @palladin/runtime-linux-arm64-musl
+            @palladin/runtime-linux-x64-gnu
+            @palladin/runtime-linux-x64-musl
+            @palladin/runtime-win32-arm64
+            @palladin/runtime-win32-x64
+          )
+          exact=()
+          for package in "${packages[@]}"; do exact+=("$package@$VERSION"); done
+          npm install --prefix "$root" --force --ignore-scripts --save-exact "${exact[@]}"
+          npm audit signatures --prefix "$root"
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_VERSION_POLICY_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        with:
+          version: 561.0.0
+
+      - name: Verify the pinned public key before signing an immutable release
+        env:
+          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          gcloud kms keys versions get-public-key "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
+            --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
+            --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
+            --location "${{ vars.GCP_VERSION_POLICY_LOCATION }}" \
+            --output-file "$RUNNER_TEMP/version-policy-public.pem"
+          node packaging/npm/verify-kms-public-key.mjs \
+            --pem "$RUNNER_TEMP/version-policy-public.pem" --expected "$PUBLIC_KEY"
+
+      - id: policy_input
+        name: Generate and KMS-sign the canonical policy candidate
+        env:
+          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          WINDOWS_PUBLISHER: ${{ vars.PALLADIN_WINDOWS_PUBLISHER }}
+          WINDOWS_THUMBPRINT: ${{ vars.PALLADIN_WINDOWS_SIGNER_THUMBPRINT }}
+          RELEASE_BUCKET: ${{ vars.PALLADIN_RELEASE_BUCKET }}
+          BOOTSTRAP_POLICY: ${{ inputs.bootstrap_policy }}
+        run: |
+          set -euo pipefail
+          policy="$RUNNER_TEMP/version-policy"
+          mkdir -m 700 "$policy"
+          if [[ "$BOOTSTRAP_POLICY" == true ]]; then
+            if gcloud storage objects describe \
+              "gs://$RELEASE_BUCKET/agent/version-policy.json" >/dev/null 2>&1; then
+              echo 'bootstrap refused because a policy object already exists' >&2
+              exit 1
+            fi
+            if curl --fail --silent --show-error \
+              https://releases.palladin.io/agent/version-policy.json \
+              --output "$policy/current.json"; then
+              echo 'bootstrap refused because the fixed endpoint already exists' >&2
+              exit 1
+            fi
+            : >"$policy/current.json"
+            current_generation=0
+          else
+            current_generation=$(gcloud storage objects describe \
+              "gs://$RELEASE_BUCKET/agent/version-policy.json" --format='value(generation)')
+            [[ "$current_generation" =~ ^[1-9][0-9]*$ ]]
+            gcloud storage cp "gs://$RELEASE_BUCKET/agent/version-policy.json" \
+              "$policy/current.json" --if-generation-match="$current_generation"
+            curl --fail --silent --show-error \
+              https://releases.palladin.io/agent/version-policy.json \
+              --output "$policy/current-endpoint.json"
+            cmp --silent "$policy/current.json" "$policy/current-endpoint.json"
+          fi
+          echo "policy_generation=$current_generation" >>"$GITHUB_OUTPUT"
+          issued_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          node packaging/npm/generate-version-policy-release.mjs \
+            --node-modules "$RUNNER_TEMP/policy-install/node_modules" \
+            --version "$VERSION" --source-sha "$SOURCE_SHA" \
+            --current "$policy/current.json" --public-key "$PUBLIC_KEY" \
+            --issued-at "$issued_at" --windows-publisher "$WINDOWS_PUBLISHER" \
+            --windows-thumbprint "$WINDOWS_THUMBPRINT" --output "$policy/payload.json"
+          gcloud kms asymmetric-sign \
+            --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
+            --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
+            --location "${{ vars.GCP_VERSION_POLICY_LOCATION }}" \
+            --version "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
+            --input-file "$policy/payload.json" --signature-file "$policy/signature.txt"
+          node packaging/npm/assemble-version-policy-envelope.mjs \
+            --payload "$policy/payload.json" --signature "$policy/signature.txt" \
+            --public-key "$PUBLIC_KEY" --output "$policy/version-policy.json"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: version-policy-${{ inputs.version }}-${{ steps.source.outputs.source_sha }}
+          path: ${{ runner.temp }}/version-policy/version-policy.json
+          if-no-files-found: error
+          retention-days: 1
+
+  compatibility:
+    name: Require client compatibility for the release source
+    needs: authorize
+    uses: ./.github/workflows/client-compatibility-gate.yml
+    with:
+      source_sha: ${{ needs.authorize.outputs.source_sha }}
+
+  smoke-native:
+    name: Registry smoke - ${{ matrix.platform }}
+    needs: [authorize, compatibility]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macOS-arm64
+            runtime_package: runtime-darwin-arm64
+          - runner: macos-15-intel
+            platform: macOS-x64
+            runtime_package: runtime-darwin-x64
+          - runner: windows-11-arm
+            platform: Windows-arm64
+            runtime_package: runtime-win32-arm64
+          - runner: windows-2025
+            platform: Windows-x64
+            runtime_package: runtime-win32-x64
+          - runner: ubuntu-24.04-arm
+            platform: Linux-GNU-arm64
+            runtime_package: runtime-linux-arm64-gnu
+          - runner: ubuntu-24.04
+            platform: Linux-GNU-x64
+            runtime_package: runtime-linux-x64-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: version-policy-${{ inputs.version }}-${{ needs.authorize.outputs.source_sha }}
+          path: ${{ runner.temp }}/version-policy-artifact
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm install --global npm@11.18.0
+      - run: npm ci --ignore-scripts --workspaces=false
+      - name: Embed and verify the owner-signed public policy
+        env:
+          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/version-policy-artifact/version-policy.json"
+          test -f "$bundle"
+          node packaging/npm/configure-version-policy-build.mjs \
+            --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
+            --bundle "$bundle"
+          npm run build
+          node packaging/npm/verify-version-policy-build.mjs \
+            --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
+            --bundle "$bundle" --version "${{ inputs.version }}"
+
+      - name: Build the exact local meta-package candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node packaging/npm/stage-meta-package.mjs \
+            --source . --output-dir "$RUNNER_TEMP/meta" --version "${{ inputs.version }}"
+          npm pack "$RUNNER_TEMP/meta" --pack-destination "$RUNNER_TEMP" >/dev/null
+
+      - name: Install from the registry and execute the native package
+        shell: bash
+        env:
+          RUNTIME_PACKAGE: ${{ matrix.runtime_package }}
+        run: |
+          set -euo pipefail
+          meta=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'palladin-agent-*.tgz' -print -quit)
+          test -n "$meta"
+          smoke="$RUNNER_TEMP/registry-smoke"
+          mkdir -p "$smoke"
+          npm install --prefix "$smoke" --ignore-scripts --package-lock "$meta"
+          test -f "$smoke/node_modules/@palladin/$RUNTIME_PACKAGE/package.json"
+          node "$smoke/node_modules/@palladin/agent/dist/bin/palladin.js" --version
+          npm audit signatures --prefix "$smoke"
+
+      - name: Verify the candidate policy in the exact packaged native worker
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RUNTIME_PACKAGE: ${{ matrix.runtime_package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          smoke="$RUNNER_TEMP/registry-smoke"
+          policy="$RUNNER_TEMP/version-policy-artifact/version-policy.json"
+          case "$RUNTIME_PACKAGE" in
+            runtime-darwin-*)
+              worker="$smoke/node_modules/@palladin/$RUNTIME_PACKAGE/PalladinRuntime.app/Contents/MacOS/palladin"
+              ;;
+            runtime-linux-*)
+              worker="$smoke/node_modules/@palladin/$RUNTIME_PACKAGE/bin/palladin-worker"
+              ;;
+            runtime-win32-*)
+              architecture=${RUNTIME_PACKAGE#runtime-win32-}
+              windows="$RUNNER_TEMP/windows-worker"
+              mkdir -p "$windows/bundle" "$windows/msix"
+              gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+                --pattern "Palladin.Runtime.Broker-$VERSION.0.msixbundle" \
+                --dir "$windows"
+              bundle=$(find "$windows" -maxdepth 1 -name '*.msixbundle' -print -quit)
+              test -n "$bundle"
+              tar.exe -xf "$bundle" -C "$windows/bundle"
+              mapfile -t packages < <(find "$windows/bundle" -maxdepth 1 -type f \
+                -iname "*-$architecture-*.msix" -print)
+              test "${#packages[@]}" -eq 1
+              tar.exe -xf "${packages[0]}" -C "$windows/msix"
+              cp "$windows/msix/bin/palladin-worker.exe" \
+                "$windows/palladin-release-verifier.exe"
+              worker="$windows/palladin-release-verifier.exe"
+              ;;
+          esac
+          test -f "$worker"
+          "$worker" verify-release-policy --policy "$policy"
+
+  smoke-musl:
+    name: Registry smoke - Linux musl ${{ matrix.architecture }}
+    needs: [authorize, compatibility]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            architecture: x64
+            docker_architecture: amd64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+            docker_architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: version-policy-${{ inputs.version }}-${{ needs.authorize.outputs.source_sha }}
+          path: ${{ runner.temp }}/version-policy-artifact
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - run: npm ci --ignore-scripts --workspaces=false
+      - name: Embed and verify the owner-signed public policy
+        env:
+          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/version-policy-artifact/version-policy.json"
+          test -f "$bundle"
+          node packaging/npm/configure-version-policy-build.mjs \
+            --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
+            --bundle "$bundle"
+          npm run build
+          node packaging/npm/verify-version-policy-build.mjs \
+            --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
+            --bundle "$bundle" --version "${{ inputs.version }}"
+      - name: Build the exact local meta-package candidate
+        run: |
+          set -euo pipefail
+          node packaging/npm/stage-meta-package.mjs \
+            --source . --output-dir "$RUNNER_TEMP/meta" --version "${{ inputs.version }}"
+          npm pack "$RUNNER_TEMP/meta" --pack-destination "$RUNNER_TEMP" >/dev/null
+
+      - name: Resolve through npm on native Alpine
+        run: |
+          set -euo pipefail
+          meta=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'palladin-agent-*.tgz' -print -quit)
+          test -n "$meta"
+          mkdir -p "$RUNNER_TEMP/musl-smoke"
+          cp "$meta" "$RUNNER_TEMP/musl-smoke/palladin-agent.tgz"
+          cp "$RUNNER_TEMP/version-policy-artifact/version-policy.json" \
+            "$RUNNER_TEMP/musl-smoke/version-policy.json"
+          docker run --rm --platform "linux/${{ matrix.docker_architecture }}" \
+            --volume "$RUNNER_TEMP/musl-smoke:/release:ro" \
+            --tmpfs /smoke node:24-alpine3.22 sh -euc '
+              npm install --global npm@11.18.0 >/dev/null
+              npm install --prefix /smoke --ignore-scripts --package-lock /release/palladin-agent.tgz
+              test -f /smoke/node_modules/@palladin/runtime-linux-${{ matrix.architecture }}-musl/package.json
+              /smoke/node_modules/@palladin/runtime-linux-${{ matrix.architecture }}-musl/bin/palladin-worker \
+                verify-release-policy --policy /release/version-policy.json
+              node /smoke/node_modules/@palladin/agent/dist/bin/palladin.js --version
+              npm audit signatures --prefix /smoke
+            '
+
+  publish-policy:
+    name: Publish the policy only after all native smokes pass
+    needs: [authorize, smoke-native, smoke-musl]
+    runs-on: ubuntu-latest
+    environment: version-policy-signing
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: version-policy-${{ inputs.version }}-${{ needs.authorize.outputs.source_sha }}
+          path: ${{ runner.temp }}/version-policy-artifact
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts --workspaces=false
+      - run: npm run build
+      - name: Re-verify the exact signed object before external publication
+        run: >-
+          node packaging/npm/verify-version-policy-build.mjs
+          --public-key "${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}"
+          --source-sha "${{ needs.authorize.outputs.source_sha }}"
+          --bundle "$RUNNER_TEMP/version-policy-artifact/version-policy.json"
+          --version "${{ inputs.version }}"
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_VERSION_POLICY_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        with:
+          version: 561.0.0
+      - name: Publish and observe the byte-identical fixed endpoint
+        env:
+          RELEASE_BUCKET: ${{ vars.PALLADIN_RELEASE_BUCKET }}
+          OBSERVED_GENERATION: ${{ needs.authorize.outputs.policy_generation }}
+          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          policy="$RUNNER_TEMP/version-policy-artifact/version-policy.json"
+          object=$(node packaging/npm/version-policy-object-name.mjs \
+            --bundle "$policy" --public-key "$PUBLIC_KEY")
+          immutable="gs://$RELEASE_BUCKET/agent/version-policy/$object"
+          if ! gcloud storage cp "$policy" "$immutable" --if-generation-match=0 \
+            --cache-control=no-store --content-type=application/json; then
+            gcloud storage cp "$immutable" "$RUNNER_TEMP/existing-immutable.json"
+            cmp --silent "$policy" "$RUNNER_TEMP/existing-immutable.json"
+          fi
+          gcloud storage cp "$policy" "gs://$RELEASE_BUCKET/agent/version-policy.json" \
+            --if-generation-match="$OBSERVED_GENERATION" \
+            --cache-control=no-store --content-type=application/json
+          published=false
+          for attempt in {1..12}; do
+            echo "policy endpoint verification attempt $attempt"
+            if curl --fail --silent --show-error \
+              https://releases.palladin.io/agent/version-policy.json \
+              --output "$RUNNER_TEMP/published.json" && \
+              cmp --silent "$policy" "$RUNNER_TEMP/published.json"; then
+              published=true
+              break
+            fi
+            sleep 5
+          done
+          test "$published" = true
+
+      - name: Exercise the live dynamic policy before the meta-package can be staged
+        env:
+          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/version-policy-artifact/version-policy.json"
+          node packaging/npm/configure-version-policy-build.mjs \
+            --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
+            --bundle "$bundle"
+          npm run build
+          node packaging/npm/stage-meta-package.mjs \
+            --source . --output-dir "$RUNNER_TEMP/live-policy-meta" \
+            --version "${{ inputs.version }}"
+          npm pack "$RUNNER_TEMP/live-policy-meta" \
+            --pack-destination "$RUNNER_TEMP" >/dev/null
+          meta=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'palladin-agent-*.tgz' -print -quit)
+          test -n "$meta"
+          smoke="$RUNNER_TEMP/live-policy-smoke"
+          home="$RUNNER_TEMP/live-policy-home"
+          mkdir -p "$smoke" "$home"
+          npm install --prefix "$smoke" --ignore-scripts --package-lock "$meta"
+          set +e
+          HOME="$home" XDG_CONFIG_HOME="$home/config" \
+            node "$smoke/node_modules/@palladin/agent/dist/bin/palladin.js" status \
+            >"$RUNNER_TEMP/live-policy.stdout" 2>"$RUNNER_TEMP/live-policy.stderr"
+          status=$?
+          set -e
+          test "$status" -ne 0
+          test ! -s "$RUNNER_TEMP/live-policy.stdout"
+          grep -F 'profile does not exist' "$RUNNER_TEMP/live-policy.stderr"
+          if grep -F 'signed runtime version policy' "$RUNNER_TEMP/live-policy.stderr"; then
+            exit 1
+          fi
+          npm audit signatures --prefix "$smoke"
+
+  stage-meta:
+    name: Attest and stage @palladin/agent
+    needs: [authorize, compatibility, smoke-native, smoke-musl, publish-policy]
+    runs-on: ubuntu-latest
+    environment: npm-release
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: version-policy-${{ inputs.version }}-${{ needs.authorize.outputs.source_sha }}
+          path: ${{ runner.temp }}/version-policy-artifact
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm install --global npm@11.18.0
+      - run: npm ci --ignore-scripts --workspaces=false
+      - name: Embed and verify the owner-signed public policy
+        env:
+          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/version-policy-artifact/version-policy.json"
+          test -f "$bundle"
+          node packaging/npm/configure-version-policy-build.mjs \
+            --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
+            --bundle "$bundle"
+          npm run build
+          node packaging/npm/verify-version-policy-build.mjs \
+            --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
+            --bundle "$bundle" --version "${{ inputs.version }}"
+      - run: npm test
+
+      - name: Stage the public meta-package directory
+        run: >-
+          node packaging/npm/stage-meta-package.mjs
+          --source . --output-dir "$RUNNER_TEMP/meta" --version "${{ inputs.version }}"
+
+      - name: Pack the meta-package
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/meta-release"
+          npm pack "$RUNNER_TEMP/meta" --pack-destination "$RUNNER_TEMP/meta-release" >/dev/null
+
+      - name: Generate the meta-package SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: ${{ runner.temp }}/meta
+          format: spdx-json
+          output-file: ${{ runner.temp }}/meta-release/sbom-agent.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+
+      - name: Generate the meta release manifest
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/meta-release"
+          node packaging/npm/generate-release-manifest.mjs \
+            --artifacts "$release" --version "${{ inputs.version }}" \
+            --source-sha "${{ needs.authorize.outputs.source_sha }}" \
+            --sbom "$release/sbom-agent.spdx.json" \
+            --manifest "$release/release-manifest-agent.json" \
+            --checksums "$release/SHA256SUMS-agent"
+          node packaging/npm/verify-release-manifest.mjs \
+            --artifacts "$release" --version "${{ inputs.version }}" \
+            --source-sha "${{ needs.authorize.outputs.source_sha }}" \
+            --sbom "$release/sbom-agent.spdx.json" \
+            --manifest "$release/release-manifest-agent.json" \
+            --checksums "$release/SHA256SUMS-agent"
+
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/meta-release/*
+
+      - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: ${{ runner.temp }}/meta-release/*
+          sbom-path: ${{ runner.temp }}/meta-release/sbom-agent.spdx.json
+
+      - name: Add the attested meta assets to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find "$RUNNER_TEMP/meta-release" -type f -print | sort)
+          gh release upload "${{ inputs.release_tag }}" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Stage the meta-package under latest
+        run: |
+          set -euo pipefail
+          package=$(find "$RUNNER_TEMP/meta-release" -name 'palladin-agent-*.tgz' -print -quit)
+          test -n "$package"
+          npm stage publish "$package" --tag latest --provenance --ignore-scripts
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: meta-release-${{ inputs.version }}-${{ needs.authorize.outputs.source_sha }}
+          path: ${{ runner.temp }}/meta-release/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Record the final manual npm approval boundary
+        run: |
+          cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          `@palladin/agent` was staged with the immutable `latest` tag after all eight native registry smokes passed.
+
+          Patryk must inspect and approve this single stage with npm 2FA. Run `release-finalize.yml` only after the exact meta-package is public.
+          SUMMARY

@@ -1,0 +1,67 @@
+name: Dependency Policy
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-policy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Reject vulnerable or unapproved dependencies
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          fail-on-scopes: development, runtime, unknown
+          license-check: true
+          allow-licenses: >-
+            0BSD, Apache-2.0, Apache-2.0 WITH LLVM-exception,
+            BSD-2-Clause, BSD-3-Clause, CDLA-Permissive-2.0, ISC,
+            MIT, MPL-2.0, Unicode-3.0
+          comment-summary-in-pr: never
+          retry-on-snapshot-warnings: false
+
+  cargo-policy:
+    name: Cargo advisories, licenses, bans, and sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Enforce Cargo dependency policy
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          arguments: --all-features
+          manifest-path: runtime/Cargo.toml
+          log-level: warn
+
+  dependency-policy-gate:
+    name: Dependency Policy Gate
+    if: always()
+    needs: [dependency-review, cargo-policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every applicable dependency check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DEPENDENCY_REVIEW: ${{ needs.dependency-review.result }}
+          CARGO_POLICY: ${{ needs.cargo-policy.result }}
+        run: |
+          test "$CARGO_POLICY" = success
+          if [ "$EVENT_NAME" = pull_request ]; then
+            test "$DEPENDENCY_REVIEW" = success
+          else
+            test "$DEPENDENCY_REVIEW" = skipped
+          fi

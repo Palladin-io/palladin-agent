@@ -13,6 +13,7 @@ describe('parseDuration', () => {
     expect(parseDuration('3m')).toBe(180_000);
     expect(parseDuration('1h')).toBe(3_600_000);
     expect(parseDuration('500ms')).toBe(500);
+    expect(parseDuration('1.5s')).toBe(1_500);
   });
 
   it('tolerates whitespace and case', () => {
@@ -23,5 +24,6 @@ describe('parseDuration', () => {
     expect(() => parseDuration('soon')).toThrow(/invalid duration/);
     expect(() => parseDuration('3 days')).toThrow(/invalid duration/);
     expect(() => parseDuration('')).toThrow(/invalid duration/);
+    expect(() => parseDuration('999999999999999999999h')).toThrow(/invalid duration/);
   });
 });

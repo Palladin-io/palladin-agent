@@ -32,7 +32,7 @@ export function accessMessage(access: Exclude<CredentialAccess['access'], 'grant
 }
 
 function methodNotAllowedMessage(method: CredentialMethod): string {
-  const alternatives = (['exec', 'inject', 'get'] as CredentialMethod[])
+  const alternatives = (['exec', 'get'] as CredentialMethod[])
     .filter((m) => m !== method)
     .map((m) => `palladin ${m}`)
     .join(' or ');
@@ -41,8 +41,9 @@ function methodNotAllowedMessage(method: CredentialMethod): string {
 
 /**
  * Warning shown after a successful `get`: the plaintext is now in the agent's context and, for a
- * hosted LLM, leaves the machine. exec/inject keep the secret out of the model's context.
+ * hosted LLM, leaves the machine. exec keeps the secret out of the model's context.
  */
 export const GET_EXPOSURE_WARNING =
   'Note: this secret is now in the agent\'s context. On a hosted LLM it may leave your machine. ' +
-  'Prefer `palladin exec` (injects into a subprocess) or `palladin inject` (fills a login form) to avoid exposing it.';
+  'Prefer `palladin exec` when the credential only needs to authenticate a child process. ' +
+  'Browser injection is disabled until an authenticated browser boundary is installed.';

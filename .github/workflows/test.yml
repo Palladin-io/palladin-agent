@@ -2,11 +2,20 @@ name: Test
 
 on:
   pull_request:
-    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     name: Node ${{ matrix.node }} - ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -19,7 +28,88 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts --workspaces=false
       - run: npm run lint
       - run: npm run build
       - run: npm test
+
+  minimum-npm-platform-selection:
+    name: npm 9.7.1 platform selection
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20.19.0
+          cache: npm
+      - run: npm install --global npm@9.7.1
+      - run: npm --version | grep -Fx '9.7.1'
+      - run: npm ci --ignore-scripts --workspaces=false
+      - run: npm run build
+      - run: npm exec -- vitest run tests/runtime/npm-install-selection.test.ts tests/runtime/npm-install-modes.test.ts
+        env:
+          PALLADIN_NPM_SELECTION_NATIVE_ONLY: "1"
+
+  contracts:
+    name: Client compatibility gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify the exact event source commit
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Verify frozen contract digests
+        working-directory: runtime/contracts/v1
+        run: sha256sum --check SOURCE.sha256
+      - name: Validate contracts with .NET 10
+        run: |
+          dotnet restore --locked-mode runtime/contracts/dotnet/Palladin.ContractGate/Palladin.ContractGate.csproj
+          dotnet run --no-restore --configuration Release \
+            --project runtime/contracts/dotnet/Palladin.ContractGate/Palladin.ContractGate.csproj \
+            -- runtime/contracts/v1
+      - name: Check Rust formatting
+        working-directory: runtime
+        run: cargo fmt --all -- --check
+      - name: Lint every Rust target
+        working-directory: runtime
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run Rust compatibility and migration tests
+        working-directory: runtime
+        run: cargo test --workspace --locked
+      - run: npm ci --ignore-scripts --workspaces=false
+      - run: npm run build
+      - name: Run TypeScript contract vectors
+        run: npm exec -- vitest run tests/contracts
+
+  ci-gate:
+    name: CI Gate
+    if: always()
+    needs: [test, minimum-npm-platform-selection, contracts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every portable gate
+        env:
+          NODE_MATRIX: ${{ needs.test.result }}
+          MINIMUM_NPM: ${{ needs.minimum-npm-platform-selection.result }}
+          CONTRACTS: ${{ needs.contracts.result }}
+        run: |
+          test "$NODE_MATRIX" = success
+          test "$MINIMUM_NPM" = success
+          test "$CONTRACTS" = success

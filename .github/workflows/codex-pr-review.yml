@@ -164,7 +164,7 @@ jobs:
           REVIEW_SCHEMA="$RUNTIME_ROOT/review-output.schema.json"
           REVIEW_OUTPUT="$RUNTIME_ROOT/result.json"
           trap 'sudo rm -rf "$RUNTIME_ROOT"' EXIT
-          mkdir -m 700 -p "$AUTH_HOME" "$EMPTY_WORKSPACE/home"
+          install -d -m 0700 "$AUTH_HOME" "$EMPTY_WORKSPACE" "$EMPTY_WORKSPACE/home"
           cp "$SOURCE_PROMPT" "$REVIEW_PROMPT"
           cp "$SOURCE_SCHEMA" "$REVIEW_SCHEMA"
           printf '%s' "$CODEX_AUTH_JSON_B64" | base64 --decode > "$AUTH_HOME/auth.json"
@@ -198,6 +198,7 @@ jobs:
           fi
 
           CODEX_EXIT=0
+          # shellcheck disable=SC2024 # The trusted runner shell intentionally owns the redirections; Codex only inherits the open descriptors.
           sudo -u nobody env -i \
               HOME="$EMPTY_WORKSPACE/home" \
               CODEX_HOME="$AUTH_HOME" \

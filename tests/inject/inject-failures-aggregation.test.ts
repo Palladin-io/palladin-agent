@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { buildFailureReport, writeFailureReport, failureReportDir } from '../../src/inject/failure-report.js';
+import { expectSensitiveExcludes } from '../helpers/sensitive-assert.js';
 
 // The review command's aggregation logic is exercised indirectly here via the stored reports,
 // asserting the on-disk format round-trips and stays value-free across multiple entries.
@@ -48,7 +49,7 @@ describe('inject failure reports — aggregation source data', () => {
     expect(domains).toEqual(['tricky-site.com', 'tricky-site.com', 'tricky-site.com']);
 
     // Still value-free: the URL token never persisted, the localised aria-label structure did.
-    expect(content).not.toContain('SHOULD-NOT-PERSIST');
+    expectSensitiveExcludes(content, 'SHOULD-NOT-PERSIST', 'aggregated failure report');
     expect(content).toContain('Identyfikator');
   });
 });

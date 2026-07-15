@@ -1,0 +1,11 @@
+Package: palladin-runtime
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCHITECTURE@
+Maintainer: Palladin Security <security@palladin.io>
+Depends: systemd (>= 252), polkitd, passwd, util-linux
+Homepage: https://palladin.io
+Description: Hardened native runtime broker for dedicated Palladin Agent UIDs
+ This optional system package installs the Linux Hardened broker and one-shot
+ executor boundary. The public npm package remains an unprivileged launcher.

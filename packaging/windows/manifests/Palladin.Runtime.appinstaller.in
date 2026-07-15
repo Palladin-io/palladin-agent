@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AppInstaller
+  xmlns="http://schemas.microsoft.com/appx/appinstaller/2021"
+  Uri="__APPINSTALLER_URI__"
+  Version="__VERSION__">
+  <MainBundle
+    Name="Palladin.Runtime.Broker"
+    Publisher="__PUBLISHER__"
+    Version="__VERSION__"
+    Uri="__BROKER_URI__" />
+  <RelatedPackages>
+    <Bundle
+      Name="Palladin.Runtime.Companion"
+      Publisher="__PUBLISHER__"
+      Version="__VERSION__"
+      Uri="__COMPANION_URI__" />
+  </RelatedPackages>
+  <UpdateSettings>
+    <OnLaunch HoursBetweenUpdateChecks="0" ShowPrompt="true" UpdateBlocksActivation="true" />
+    <AutomaticBackgroundTask />
+    <ForceUpdateFromAnyVersion>false</ForceUpdateFromAnyVersion>
+  </UpdateSettings>
+</AppInstaller>

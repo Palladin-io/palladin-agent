@@ -9,6 +9,7 @@ import {
   writeFailureReport,
 } from '../../src/inject/failure-report.js';
 import { parseHTML } from 'linkedom';
+import { expectSensitiveExcludes } from '../helpers/sensitive-assert.js';
 
 function doc(html: string) {
   return parseHTML(html).document as unknown as Parameters<typeof summarizeControls>[0];
@@ -25,15 +26,16 @@ describe('summarizeControls — value-free structural snapshot', () => {
     const username = controls.find((c) => c.name === 'username');
     expect(username).toMatchObject({ tag: 'input', type: 'text', autocomplete: 'username', inForm: true });
     // The snapshot must not carry any value field at all.
-    expect(JSON.stringify(controls)).not.toContain('alice@example.com');
-    expect(JSON.stringify(controls)).not.toContain('superSecret123');
+    const serialized = JSON.stringify(controls);
+    expectSensitiveExcludes(serialized, 'alice@example.com', 'structural control snapshot');
+    expectSensitiveExcludes(serialized, 'superSecret123', 'structural control snapshot');
     expect(Object.keys(username!)).not.toContain('value');
   });
 
   it('records hidden inputs as hidden (so we know they were skipped)', () => {
     const controls = summarizeControls(doc('<form><input type="hidden" name="csrf" value="abc"></form>'));
     expect(controls[0]).toMatchObject({ name: 'csrf', hidden: true });
-    expect(JSON.stringify(controls)).not.toContain('abc');
+    expectSensitiveExcludes(JSON.stringify(controls), 'abc', 'hidden control snapshot');
   });
 });
 
@@ -52,8 +54,8 @@ describe('buildFailureReport', () => {
 
     expect(report.pageOrigin).toBe('https://example.com');
     const serialized = JSON.stringify(report);
-    expect(serialized).not.toContain('SECRET-TOKEN');
-    expect(serialized).not.toContain('leak');
+    expectSensitiveExcludes(serialized, 'SECRET-TOKEN', 'failure report');
+    expectSensitiveExcludes(serialized, 'leak', 'failure report');
     expect(report.controls).toHaveLength(1);
     expect(report.timestamp).toBe('2026-06-11T12:00:00.000Z');
   });

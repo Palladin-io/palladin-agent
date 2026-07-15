@@ -1,0 +1,123 @@
+{
+  "contract": "native-cli-v2",
+  "version": "1.0.0",
+  "status": "frozen",
+  "syntheticOnly": true,
+  "sourceOfTruth": "native-runtime",
+  "intentionalSecureDifferences": [
+    "connect-api-key-in-argv-is-rejected-use-prompt-or-stdin",
+    "connect-id-after-subcommand-is-rejected-use-name-for-display-or-place-profile-id-before-connect",
+    "init-force-in-place-identity-rotation-is-rejected-use-a-new-profile",
+    "security-upgrade-performs-an-explicit-downgrade-safe-v2-to-v3-migration-or-verifies-v3",
+    "legacy-typescript-cutover-generates-fresh-identities-and-never-imports-old-private-keys",
+    "human-readable-long-identifiers-use-prefix-and-suffix",
+    "inject-external-cdp-is-rejected-before-profile-open-because-cdp-cannot-attest-browser-origin"
+  ],
+  "identityModel": {
+    "apiKeyOwner": "organization",
+    "organizationKeyMayBeSharedByAgents": true,
+    "agentIdentity": ["agentId", "x25519", "ed25519"]
+  },
+  "commands": [
+    { "argv": ["init"], "name": "init", "secretOutput": false },
+    { "argv": ["doctor"], "name": "doctor", "secretOutput": false },
+    { "argv": ["connect", "--api-key-stdin"], "name": "connect", "secretOutput": false },
+    { "argv": ["--id", "build", "connect", "--name", "Build Agent"], "name": "connect", "secretOutput": false },
+    { "argv": ["status"], "name": "status", "secretOutput": false },
+    { "argv": ["--id", "build", "disconnect", "--purge", "--confirm"], "name": "disconnect", "secretOutput": false },
+    { "argv": ["search", "fixture"], "name": "search", "secretOutput": false },
+    { "argv": ["get", "vault-fixture", "entry-fixture", "--no-wait"], "name": "get", "secretOutput": true },
+    { "argv": ["get", "vault-fixture", "entry-fixture", "--field", "password", "--field-id", "field-fixture", "--wait", "30s", "--no-wait"], "name": "get", "secretOutput": true },
+    { "argv": ["get", "vault-fixture", "entry-fixture", "--no-wait", "--wait", "30s"], "name": "get", "secretOutput": true },
+    { "argv": ["retrieve", "vault-fixture", "entry-fixture", "--no-wait"], "name": "get", "secretOutput": true },
+    { "argv": ["exec", "vault-fixture", "entry-fixture", "--no-wait", "--", "fixture-program", "$CLAW_SECRET"], "name": "exec", "secretOutput": false },
+    { "argv": ["inject", "vault-fixture", "entry-fixture", "--cdp", "http://127.0.0.1:9222", "--no-wait"], "name": "inject", "secretOutput": false },
+    { "argv": ["report-stale", "vault-fixture", "entry-fixture", "--code", "login_rejected"], "name": "report-stale", "secretOutput": false },
+    { "argv": ["mcp", "serve"], "name": "mcp", "secretOutput": false },
+    { "argv": ["agents", "list"], "name": "agents", "secretOutput": false },
+    { "argv": ["security", "upgrade"], "name": "security", "secretOutput": false },
+    { "argv": ["security", "legacy-status"], "name": "security", "secretOutput": false },
+    { "argv": ["security", "legacy-cutover", "--confirm-pre-production-reset"], "name": "security", "secretOutput": false },
+    { "argv": ["security", "legacy-cleanup", "11111111111111111111111111111111", "--confirm"], "name": "security", "secretOutput": false },
+    { "argv": ["purge", "--confirm"], "name": "purge", "secretOutput": false }
+  ],
+  "processCases": [
+    {
+      "name": "version",
+      "argv": ["--version"],
+      "exitCode": 0,
+      "stdoutExact": "palladin {{VERSION}}\n",
+      "stderrExact": ""
+    },
+    {
+      "name": "unknown-command",
+      "argv": ["definitely-unknown"],
+      "exitCode": 2,
+      "stdoutExact": "",
+      "stderrExact": "error: unrecognized subcommand 'definitely-unknown'\n\n  tip: a similar subcommand exists: 'init'\n\nUsage: palladin{{EXE}} [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n"
+    },
+    {
+      "name": "deprecated-connect-id",
+      "argv": ["connect", "--id", "legacy-display-name"],
+      "exitCode": 1,
+      "stdoutExact": "",
+      "stderrExact": "Error: connect --id no longer sets the backend display name; use connect --name <name>. To select a local profile, place --id <profile> before connect\n"
+    },
+    {
+      "name": "unsafe-terminal-argument",
+      "argv": ["definitely-unknown\nforged-line"],
+      "exitCode": 1,
+      "stdoutExact": "",
+      "stderrExact": "Error: command-line arguments contain unsupported control characters\n"
+    },
+    {
+      "name": "inject-fake-cdp-fails-before-profile-open",
+      "argv": ["inject", "vault-fixture", "entry-fixture", "--cdp", "http://127.0.0.1:9222"],
+      "exitCode": 78,
+      "stdoutExact": "",
+      "stderrExact": "Error: browser injection is disabled because an unauthenticated CDP endpoint can spoof the page origin and receive plaintext; Palladin will enable inject only through a reviewed authenticated browser boundary; no profile was opened and no credential was requested\n"
+    },
+    {
+      "name": "unsafe-environment",
+      "argv": ["agents", "list"],
+      "environment": { "NODE_OPTIONS": "synthetic-contract-value" },
+      "exitCode": 78,
+      "stdoutExact": "dangerous-variable-names: NODE_OPTIONS\n",
+      "stderrExact": ""
+    }
+  ],
+  "exitCodes": {
+    "success": 0,
+    "failure": 1,
+    "usage": 2,
+    "pendingOrUnavailable": 75,
+    "notPermitted": 77,
+    "unsafeEnvironment": 78
+  },
+  "credentialOutputSnapshots": {
+    "whole": "{\n  \"entryId\": \"entry-fixture\",\n  \"label\": \"Fixture credential\",\n  \"secret\": \"synthetic-secret\"\n}\n",
+    "field": "{\n  \"entryId\": \"entry-fixture\",\n  \"label\": \"Fixture credential\",\n  \"field\": \"password\",\n  \"value\": \"synthetic-secret\"\n}\n",
+    "totp": "{\n  \"entryId\": \"entry-fixture\",\n  \"label\": \"Fixture credential\",\n  \"field\": \"Authenticator\",\n  \"code\": \"123456\",\n  \"expiresIn\": 17\n}\n"
+  },
+  "commandOutputSnapshots": [
+    { "name": "init-created", "exitCode": 0, "stdout": "Palladin initialized: build\nSecurity: OS secure storage\nNext: palladin --id build connect\n", "stderr": "" },
+    { "name": "connect-pending", "exitCode": 0, "stdout": "Security: OS secure storage\nAgent registered - awaiting approval\nAgent ID: 12345678…uvwxyz\nApprove this Agent in the Palladin panel.\n", "stderr": "" },
+    { "name": "connect-unreachable", "exitCode": 0, "stdout": "Security: OS secure storage\n", "stderr": "Warning: server unreachable (transport�forged)\nConfiguration saved. Run: palladin status\n" },
+    { "name": "connect-invalid-key", "exitCode": 1, "stdout": "Security: OS secure storage\n", "stderr": "Error: API key is invalid or revoked\n" },
+    { "name": "status-active", "exitCode": 0, "stdout": "Profile: build\nHost: https://api.example.test\nSecurity: OS secure storage\nAgent: active (agent-build)\nBackend name: Build�forged\n", "stderr": "" },
+    { "name": "agents-list", "exitCode": 0, "stdout": "* build\n  second\n", "stderr": "" },
+    { "name": "agents-created", "exitCode": 0, "stdout": "Agent profile created: build\nEncryption key: ABCDEFGH…UVWXYZ\nSigning key: 12345678…567890\nSecurity: OS secure storage\nNext: palladin --id build connect\n", "stderr": "" },
+    { "name": "security-upgrade", "exitCode": 0, "stdout": "Profile: build\nSecurity: OS secure storage\nUpgrade: not required - schema v3 integrity binding is already active.\n", "stderr": "" },
+    { "name": "legacy-cutover", "exitCode": 0, "stdout": "Legacy TypeScript cutover: prepared\nFresh profiles: 2\nNew identities created: 2\nCutover ID: 11111111111111111111111111111111\nNext:\n1. Create a new organization API key in the Palladin panel.\n2. palladin --id default connect --api-key-stdin\n2. palladin --id build connect --api-key-stdin\n3. Approve every fresh Agent in the Palladin panel.\n4. palladin security legacy-cleanup 11111111111111111111111111111111 --confirm\n5. Revoke the old shared organization API key and deactivate the old Agents in the panel.\n", "stderr": "" },
+    { "name": "legacy-cleanup", "exitCode": 0, "stdout": "Legacy TypeScript cleanup: completed\nProfiles cleaned: 2\nRequired: revoke the old shared organization API key and deactivate the old Agents in the Palladin panel.\nNote: local deletion cannot erase copies retained by SSD snapshots, backups, or parent-shell environment variables.\n", "stderr": "" },
+    { "name": "search-human", "exitCode": 0, "stdout": "entry-12…abcdef  Fixture�Entry  vault=vault-12…abcdef\n  domain: example.test\n  description: metadata�spoof\n  Region: eu-central-1\nNext cursor: cursor-1…abcdef\n", "stderr": "" },
+    { "name": "report-stale", "exitCode": 0, "stdout": "Reported credential as not working - the vault owners have been notified to rotate it.\n", "stderr": "" }
+  ],
+  "outputRules": {
+    "stdoutMayContainPlaintextSecretOnlyFor": ["get", "retrieve"],
+    "errorsAndProgress": "stderr",
+    "machineOutput": "stdout",
+    "identifierDisplay": "first8-ellipsis-last6",
+    "apiKeyArgv": "reject-before-parser-without-echo"
+  }
+}

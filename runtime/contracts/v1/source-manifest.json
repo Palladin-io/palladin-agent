@@ -1,0 +1,8 @@
+{
+  "contract": "palladin-agent-runtime",
+  "version": "1.0.0",
+  "status": "frozen",
+  "syntheticOnly": true,
+  "consumers": ["typescript", "rust", "dotnet"],
+  "fixtures": ["cli.json", "mcp-tools.json", "request-signing.json", "encrypted-envelope.json", "credential-blobs.json", "grant-access.json"]
+}

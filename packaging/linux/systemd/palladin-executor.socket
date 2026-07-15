@@ -1,0 +1,15 @@
+[Unit]
+Description=Palladin one-shot hardened executor socket
+
+[Socket]
+ListenStream=/run/palladin-executor/executor.sock
+SocketUser=root
+SocketGroup=palladin-executor
+SocketMode=0660
+DirectoryMode=0755
+Accept=yes
+MaxConnections=32
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

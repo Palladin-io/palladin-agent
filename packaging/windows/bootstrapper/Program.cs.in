@@ -1,0 +1,95 @@
+using System.Diagnostics;
+using System.Reflection;
+
+internal static class Program
+{
+    private const string Architecture = __ARCHITECTURE_LITERAL__;
+    private const string Version = __VERSION_LITERAL__;
+    private const string SecurityFloor = __SECURITY_FLOOR_LITERAL__;
+    private const string Publisher = __PUBLISHER_LITERAL__;
+    private const string Thumbprint = __THUMBPRINT_LITERAL__;
+    private const string PowerShellPayload = __POWERSHELL_PAYLOAD_LITERAL__;
+
+    private static int Main()
+    {
+        string? session = null;
+        try
+        {
+            string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string cache = Path.Combine(programFiles, "Palladin", "InstallerCache");
+            Directory.CreateDirectory(cache);
+            EnsureNotReparse(programFiles);
+            EnsureNotReparse(Path.Combine(programFiles, "Palladin"));
+            EnsureNotReparse(cache);
+            session = Path.Combine(cache, Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(session);
+            EnsureNotReparse(session);
+            HardenDirectory(session);
+            EnsureNotReparse(session);
+
+            string broker = ExtractResource(session, "Palladin.Runtime.Broker.msix");
+            string companion = ExtractResource(session, "Palladin.Runtime.Companion.msix");
+            string powershell = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+            if (!File.Exists(powershell)) throw new InvalidOperationException("trusted Windows PowerShell host is unavailable");
+
+            var start = new ProcessStartInfo(powershell) { UseShellExecute = false };
+            foreach (string argument in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", PowerShellPayload })
+                start.ArgumentList.Add(argument);
+            start.Environment["PALLADIN_INSTALL_ARCHITECTURE"] = Architecture;
+            start.Environment["PALLADIN_INSTALL_VERSION"] = Version;
+            start.Environment["PALLADIN_INSTALL_SECURITY_FLOOR"] = SecurityFloor;
+            start.Environment["PALLADIN_INSTALL_PUBLISHER"] = Publisher;
+            start.Environment["PALLADIN_INSTALL_THUMBPRINT"] = Thumbprint;
+            start.Environment["PALLADIN_INSTALL_BROKER"] = broker;
+            start.Environment["PALLADIN_INSTALL_COMPANION"] = companion;
+            using Process process = Process.Start(start) ?? throw new InvalidOperationException("installer could not start");
+            process.WaitForExit();
+            return process.ExitCode;
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine($"Palladin Runtime installation failed: {error.Message}");
+            return 1;
+        }
+        finally
+        {
+            if (session is not null)
+            {
+                try { Directory.Delete(session, recursive: true); } catch { /* cleanup is best effort */ }
+            }
+        }
+    }
+
+    private static void EnsureNotReparse(string path)
+    {
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidOperationException("installer cache contains a reparse point");
+    }
+
+    private static void HardenDirectory(string path)
+    {
+        string icacls = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+            "System32", "icacls.exe");
+        var start = new ProcessStartInfo(icacls) { UseShellExecute = false, CreateNoWindow = true };
+        foreach (string argument in new[] {
+            path, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"
+        }) start.ArgumentList.Add(argument);
+        using Process process = Process.Start(start) ?? throw new InvalidOperationException("installer cache ACL could not be applied");
+        process.WaitForExit();
+        if (process.ExitCode != 0) throw new InvalidOperationException("installer cache ACL could not be applied");
+    }
+
+    private static string ExtractResource(string directory, string name)
+    {
+        string path = Path.Combine(directory, name);
+        using Stream source = Assembly.GetExecutingAssembly().GetManifestResourceStream(name)
+            ?? throw new InvalidOperationException($"embedded package is missing: {name}");
+        using FileStream destination = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        source.CopyTo(destination);
+        destination.Flush(flushToDisk: true);
+        return path;
+    }
+}

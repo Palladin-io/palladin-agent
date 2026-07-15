@@ -97,6 +97,50 @@ describe('awaitGrant', () => {
     expect(h.heartbeats[0]!.grantId).toBe('g1');
     expect(h.heartbeats[0]!.deadlineMs).toBe(10_000);
   });
+
+  it('polls at exact non-multiple intervals', async () => {
+    const h = harness([pending, { access: 'denied' }]);
+    const result = await awaitGrant(pending, {
+      waitMs: 40_000,
+      pollMs: 15_000,
+      heartbeatMs: 10_000,
+      pollTimeoutMs: 10_000,
+      progress: 'plain',
+    }, h.deps);
+    expect(result.access).toBe('denied');
+    expect(h.slept).toBe(30_000);
+    expect(h.heartbeats.map((heartbeat) => heartbeat.elapsedMs)).toEqual([10_000, 20_000, 30_000]);
+  });
+
+  it('interrupts an in-flight wait when cancelled', async () => {
+    const controller = new AbortController();
+    const deps = {
+      poll: async () => pending,
+      sleep: async () => new Promise<void>(() => {}),
+      heartbeat: () => {},
+      signal: controller.signal,
+    };
+    const waiting = awaitGrant(pending, resolveWaitPolicy(), deps);
+    controller.abort(new Error('cancelled'));
+    await expect(waiting).rejects.toThrow('cancelled');
+  });
+
+  it('times out a hung poll and keeps heartbeats moving', async () => {
+    const heartbeats: number[] = [];
+    const result = await awaitGrant(pending, {
+      waitMs: 6_000,
+      pollMs: 5_000,
+      heartbeatMs: 1_000,
+      pollTimeoutMs: 10,
+      progress: 'plain',
+    }, {
+      poll: async () => new Promise<CredentialAccess>(() => {}),
+      sleep: async () => {},
+      heartbeat: (heartbeat) => heartbeats.push(heartbeat.elapsedMs),
+    });
+    expect(result.access).toBe('pending');
+    expect(heartbeats).toEqual([1_000, 2_000, 3_000, 4_000, 5_000, 5_000, 6_000]);
+  });
 });
 
 describe('makeHeartbeat', () => {
