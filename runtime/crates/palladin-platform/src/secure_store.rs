@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use secrecy::SecretSlice;
@@ -179,19 +180,122 @@ pub(crate) struct OperationLeaseState {
     process_id: u32,
     deadline: Instant,
     cancellation: CancellationToken,
+    commit_state: AtomicU8,
 }
 
-#[cfg(all(target_os = "macos", feature = "macos-hardened"))]
 impl OperationLeaseState {
     pub(crate) fn revoke(&self) {
-        self.cancellation.cancel();
+        loop {
+            match self.commit_state.load(Ordering::SeqCst) {
+                COMMIT_ACTIVE => {
+                    if self
+                        .commit_state
+                        .compare_exchange(
+                            COMMIT_ACTIVE,
+                            COMMIT_REVOKED,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_ok()
+                    {
+                        self.cancellation.cancel();
+                        return;
+                    }
+                }
+                COMMIT_PREPARING => {
+                    if self
+                        .commit_state
+                        .compare_exchange(
+                            COMMIT_PREPARING,
+                            COMMIT_REVOKE_PENDING,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_ok()
+                    {
+                        self.cancellation.cancel();
+                        return;
+                    }
+                }
+                COMMIT_REVOKED | COMMIT_REVOKE_PENDING | COMMIT_SEALED => {
+                    self.cancellation.cancel();
+                    return;
+                }
+                _ => {
+                    self.cancellation.cancel();
+                    return;
+                }
+            }
+        }
     }
 }
+
+const COMMIT_ACTIVE: u8 = 0;
+const COMMIT_PREPARING: u8 = 1;
+const COMMIT_REVOKED: u8 = 2;
+const COMMIT_REVOKE_PENDING: u8 = 3;
+const COMMIT_SEALED: u8 = 4;
 
 /// A cloneable, thread-safe lifetime signal for work derived from one approval.
 #[derive(Clone, Debug)]
 pub struct OperationLease {
     state: Arc<OperationLeaseState>,
+}
+
+/// Linearizes one durable operation commit against lifecycle revocation.
+///
+/// The guard is intentionally opaque. Holding it authorizes only the journal
+/// commit marker; recovery may finish an already committed transaction.
+pub struct OperationCommitGuard<'a> {
+    state: &'a OperationLeaseState,
+    sealed: bool,
+}
+
+impl OperationCommitGuard<'_> {
+    pub fn seal(&mut self) -> Result<(), StoreError> {
+        if self.sealed
+            || self.state.process_id != std::process::id()
+            || Instant::now() >= self.state.deadline
+            || self.state.cancellation.is_cancelled()
+        {
+            return Err(StoreError::AuthorizationFailed);
+        }
+        self.state
+            .commit_state
+            .compare_exchange(
+                COMMIT_PREPARING,
+                COMMIT_SEALED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .map_err(|_| StoreError::AuthorizationFailed)?;
+        self.sealed = true;
+        Ok(())
+    }
+}
+
+impl Drop for OperationCommitGuard<'_> {
+    fn drop(&mut self) {
+        let expected = if self.sealed {
+            COMMIT_SEALED
+        } else {
+            COMMIT_PREPARING
+        };
+        if self
+            .state
+            .commit_state
+            .compare_exchange(expected, COMMIT_ACTIVE, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+            && !self.sealed
+        {
+            let _ = self.state.commit_state.compare_exchange(
+                COMMIT_REVOKE_PENDING,
+                COMMIT_REVOKED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+        }
+    }
 }
 
 impl OperationLease {
@@ -204,6 +308,7 @@ impl OperationLease {
                 process_id: std::process::id(),
                 deadline: Instant::now() + duration,
                 cancellation: CancellationToken::new(),
+                commit_state: AtomicU8::new(COMMIT_ACTIVE),
             }),
         })
     }
@@ -232,8 +337,30 @@ impl OperationLease {
             .ok_or(StoreError::AuthorizationFailed)
     }
 
+    pub fn begin_commit(&self) -> Result<OperationCommitGuard<'_>, StoreError> {
+        self.ensure_active()?;
+        self.state
+            .commit_state
+            .compare_exchange(
+                COMMIT_ACTIVE,
+                COMMIT_PREPARING,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .map_err(|_| StoreError::AuthorizationFailed)?;
+        let guard = OperationCommitGuard {
+            state: &self.state,
+            sealed: false,
+        };
+        if self.ensure_active().is_err() {
+            drop(guard);
+            return Err(StoreError::AuthorizationFailed);
+        }
+        Ok(guard)
+    }
+
     pub fn cancel(&self) {
-        self.state.cancellation.cancel();
+        self.state.revoke();
     }
 
     #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
@@ -763,6 +890,34 @@ mod tests {
         assert!(
             OperationLease::new(MAX_OPERATION_LEASE + std::time::Duration::from_nanos(1)).is_err()
         );
+    }
+
+    #[test]
+    fn durable_commit_linearizes_against_revocation() {
+        let lease = OperationLease::new(MAX_OPERATION_LEASE).expect("lease");
+        let mut guard = lease.begin_commit().expect("commit guard");
+        let cancellation = lease.cancellation_token();
+        let revoking = lease.clone();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let task = std::thread::spawn(move || {
+            revoking.cancel();
+            finished_tx.send(()).expect("finished");
+        });
+
+        finished_rx.recv().expect("revocation finished");
+        task.join().expect("revocation task");
+        assert!(cancellation.is_cancelled());
+        assert!(guard.seal().is_err());
+        drop(guard);
+        assert!(lease.begin_commit().is_err());
+
+        let committed = OperationLease::new(MAX_OPERATION_LEASE).expect("committed lease");
+        let mut committed_guard = committed.begin_commit().expect("committed guard");
+        committed_guard.seal().expect("seal commit");
+        committed.cancel();
+        assert!(committed.cancellation_token().is_cancelled());
+        drop(committed_guard);
+        assert!(committed.begin_commit().is_err());
     }
 
     #[test]

@@ -718,7 +718,7 @@ impl<S: SecretStore> RuntimeService<S> {
             .ensure_active()
             .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
         let (updated, deleted) = delete_profile(&state.registry, &name)?;
-        self.commit_profile_removal(&state, updated, deleted)
+        self.commit_profile_removal(&state, updated, deleted, &lease)
     }
 
     /// Deliberately removes the selected local Agent identity.
@@ -749,7 +749,7 @@ impl<S: SecretStore> RuntimeService<S> {
             .ensure_active()
             .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
         let (updated, deleted) = purge_profile(&state.registry, &name)?;
-        self.commit_profile_removal(&state, updated, deleted.clone())?;
+        self.commit_profile_removal(&state, updated, deleted.clone(), &lease)?;
         Ok(deleted)
     }
 
@@ -758,6 +758,7 @@ impl<S: SecretStore> RuntimeService<S> {
         state: &VerifiedState,
         updated: PublicRegistry,
         deleted: PublicAgentEntry,
+        lease: &OperationLease,
     ) -> Result<(), RuntimeError> {
         let organization_ids = state
             .configs
@@ -785,13 +786,14 @@ impl<S: SecretStore> RuntimeService<S> {
                 });
             }
         }
-        self.commit_transition(
+        self.commit_authorized_transition(
             state,
             updated,
             Vec::new(),
             vec![deleted.identity_id],
             deletions,
             false,
+            lease,
         )?;
         Ok(())
     }
@@ -860,14 +862,26 @@ impl<S: SecretStore> RuntimeService<S> {
                 organization_credential_id,
             }
         }));
-        self.commit_transition(
-            &state,
-            PublicRegistry::default(),
-            Vec::new(),
-            identities,
-            deletions,
-            true,
-        )?;
+        if let Some(lease) = &lease {
+            self.commit_authorized_transition(
+                &state,
+                PublicRegistry::default(),
+                Vec::new(),
+                identities,
+                deletions,
+                true,
+                lease,
+            )?;
+        } else {
+            self.commit_transition(
+                &state,
+                PublicRegistry::default(),
+                Vec::new(),
+                identities,
+                deletions,
+                true,
+            )?;
+        }
         Ok(())
     }
 
@@ -2176,7 +2190,7 @@ impl<S: SecretStore> RuntimeService<S> {
         secret_deletions: Vec<SecretDeletion>,
         purge_public_root: bool,
     ) -> Result<(), RuntimeError> {
-        self.commit_transition_with_copies(
+        self.commit_transition_with_copies_inner(
             current,
             target_registry,
             config_writes,
@@ -2184,6 +2198,30 @@ impl<S: SecretStore> RuntimeService<S> {
             Vec::new(),
             secret_deletions,
             purge_public_root,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_authorized_transition(
+        &self,
+        current: &VerifiedState,
+        target_registry: PublicRegistry,
+        config_writes: Vec<ConfigWrite>,
+        remove_identity_directories: Vec<String>,
+        secret_deletions: Vec<SecretDeletion>,
+        purge_public_root: bool,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError> {
+        self.commit_transition_with_copies_inner(
+            current,
+            target_registry,
+            config_writes,
+            remove_identity_directories,
+            Vec::new(),
+            secret_deletions,
+            purge_public_root,
+            Some(lease),
         )
     }
 
@@ -2198,6 +2236,30 @@ impl<S: SecretStore> RuntimeService<S> {
         secret_deletions: Vec<SecretDeletion>,
         purge_public_root: bool,
     ) -> Result<(), RuntimeError> {
+        self.commit_transition_with_copies_inner(
+            current,
+            target_registry,
+            config_writes,
+            remove_identity_directories,
+            secret_copies,
+            secret_deletions,
+            purge_public_root,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_transition_with_copies_inner(
+        &self,
+        current: &VerifiedState,
+        target_registry: PublicRegistry,
+        config_writes: Vec<ConfigWrite>,
+        remove_identity_directories: Vec<String>,
+        secret_copies: Vec<SecretCopy>,
+        secret_deletions: Vec<SecretDeletion>,
+        purge_public_root: bool,
+        operation_lease: Option<&OperationLease>,
+    ) -> Result<(), RuntimeError> {
         let journal = IntegrityJournal::new(
             current.generation,
             current.registry_digest.clone(),
@@ -2208,6 +2270,13 @@ impl<S: SecretStore> RuntimeService<S> {
             purge_public_root,
         )?
         .with_secret_copies(secret_copies)?;
+        // Lifecycle revocation and the durable transition marker are linearized
+        // by this guard. Before the marker, revocation aborts with no committed
+        // deletion. After the marker, recovery must finish the atomic journal.
+        let mut commit_guard = operation_lease
+            .map(OperationLease::begin_commit)
+            .transpose()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
         if journal_path(self.repository.root()).exists() {
             remove_journal(self.repository.root())?;
         }
@@ -2219,7 +2288,14 @@ impl<S: SecretStore> RuntimeService<S> {
             journal.to_registry_digest.clone(),
             journal.digest()?,
         );
+        if let Some(guard) = &mut commit_guard
+            && guard.seal().is_err()
+        {
+            remove_journal(self.repository.root())?;
+            return Err(RuntimeError::OperationAuthorizationExpired);
+        }
         self.write_trust_state(&transition)?;
+        drop(commit_guard);
         self.apply_journal(&journal)?;
         let committed = if journal.purge_public_root {
             TrustState::purge_committed(journal.to_generation, journal.to_registry_digest.clone())

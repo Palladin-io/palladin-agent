@@ -114,7 +114,11 @@ describe('macOS authenticated signed-runtime boundary', () => {
     const execOperation = runtime.split('pub async fn execute_with_credential')[1]?.split('\n    pub ')[0];
     expect(execOperation).toContain('self.begin_operation(RuntimeOperation::ExecWithCredential)?;');
     expect(runtime).toContain('Err(RuntimeError::OperationAuthorizationConsumed)');
+    expect(runtime).toContain('self.commit_profile_removal(&state, updated, deleted, &lease)');
+    expect(runtime).toContain('fn commit_authorized_transition(');
+    expect(runtime).toContain('.map(OperationLease::begin_commit)');
     expect(platform).toContain('pub struct OperationAuthorization');
+    expect(platform).toContain('pub struct OperationCommitGuard');
     expect(platform).not.toContain('impl Clone for OperationAuthorization');
     const mcp = read('runtime/crates/palladin-mcp/src/lib.rs');
     expect(mcp).toContain('notifications/cancelled');
