@@ -72,6 +72,10 @@ describe('Linux adversarial boundary wiring', () => {
     expect(hardened).toContain('for user in "$agent" "$attacker"; do');
     expect(hardened).toContain('foreign-node-probe.mjs');
     expect(hardened).toContain('process-scan-probe.mjs');
+    expect(hardened).toContain('"$root/process-scan-probe.mjs"');
+    expect(hardened).toContain('"$root/foreign-node-probe.mjs"');
+    expect(hardened).not.toContain('runuser -u "$agent" -- node \\\n  "$(dirname "$0")/process-scan-probe.mjs"');
+    expect(hardened).not.toContain('runuser -u "$user" -- node "$(dirname "$0")/foreign-node-probe.mjs"');
     expect(hardened).toContain('--tree \\');
     expect(foreignNode).toContain('/master.key');
     expect(foreignNode).toContain('/environ');

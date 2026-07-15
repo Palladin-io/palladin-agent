@@ -6,6 +6,7 @@ set -euo pipefail
   exit 64
 }
 root=$(mktemp -d /var/tmp/palladin-boundary.XXXXXX)
+test_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 agent=palladin-boundary-agent
 attacker=palladin-boundary-attacker
 login_user=palladin-boundary-login
@@ -136,6 +137,10 @@ grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
 grep -F 'dedicated Agent UID' <<<"$doctor"
 
 chmod 0711 "$root"
+install -o root -g root -m 0555 \
+  "$test_dir/process-scan-probe.mjs" "$root/process-scan-probe.mjs"
+install -o root -g root -m 0555 \
+  "$test_dir/foreign-node-probe.mjs" "$root/foreign-node-probe.mjs"
 scan_fifo=$root/connect-input
 scan_pid_file=$root/connect.pid
 mkfifo -m 0600 "$scan_fifo"
@@ -155,7 +160,7 @@ scan_pid=$(cat "$scan_pid_file")
 scan_canary="palladin-stdin-$(openssl rand -hex 32)"
 printf '%s' "$scan_canary" >&8
 printf '%s' "$scan_canary" | runuser -u "$agent" -- node \
-  "$(dirname "$0")/process-scan-probe.mjs" --process "$scan_pid" \
+  "$root/process-scan-probe.mjs" --process "$scan_pid" \
   /usr/lib/palladin/runtime/palladin-linux-client
 exec 8>&-
 for _ in $(seq 1 100); do
@@ -167,9 +172,9 @@ wait "$scan_launcher" >/dev/null 2>&1 || true
 scan_launcher=
 scan_pid=
 printf '%s' "$scan_canary" | runuser -u "$agent" -- node \
-  "$(dirname "$0")/process-scan-probe.mjs" --tree \
+  "$root/process-scan-probe.mjs" --tree \
   /etc/palladin/agents.d "$root/connect.out" "$root/connect.err"
-printf '%s' "$scan_canary" | node "$(dirname "$0")/process-scan-probe.mjs" --tree \
+printf '%s' "$scan_canary" | node "$root/process-scan-probe.mjs" --tree \
   /var/lib/palladin-runtime/v1
 scan_canary=
 
@@ -200,7 +205,7 @@ principal=$(sed -n 's/^principal=//p' "/etc/palladin/agents.d/$(id -u "$agent")"
 state=/var/lib/palladin-runtime/v1/agents/$principal
 [[ $(stat -c '%U:%G:%a' "$state") == 'palladin-runtime:palladin-runtime:700' ]]
 for user in "$agent" "$attacker"; do
-  runuser -u "$user" -- node "$(dirname "$0")/foreign-node-probe.mjs" \
+  runuser -u "$user" -- node "$root/foreign-node-probe.mjs" \
     --broker-root /var/lib/palladin-runtime/v1 \
     --agent-state "$state" \
     --broker-pid "$broker_pid"
