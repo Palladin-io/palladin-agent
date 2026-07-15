@@ -24,6 +24,7 @@ const platformManifest = {
     artifact('palladin-runtime-win32-x64-1.2.3.tgz', digest('2')),
     artifact('palladin-runtime-linux-arm64-musl-1.2.3.tgz', digest('3')),
     artifact('palladin-runtime_1.2.3_amd64.deb', digest('4')),
+    artifact('palladin-runtime-1.2.3-1.x86_64.rpm', digest('6')),
   ],
 };
 const agentManifest = {
@@ -41,8 +42,9 @@ describe('adversarial release artifact binding', () => {
           cell('macos-arm64-hardened', digest('1')),
           cell('windows-x64-hardened', digest('2')),
           cell('linux-musl-arm64-convenience', digest('3')),
-          cell('linux-gnu-x64-hardened', digest('4')),
-          cell('macos-x64-convenience-source', digest('6')),
+          cell('linux-gnu-x64-hardened-deb', digest('4')),
+          cell('linux-gnu-x64-hardened-rpm', digest('6')),
+          cell('macos-x64-convenience-source', digest('7')),
         ],
       },
       platformManifest,
@@ -60,6 +62,14 @@ describe('adversarial release artifact binding', () => {
   it('rejects a digest copied from a different staged target', () => {
     expect(() => verifyReleaseArtifactBindings({
       report: { sourceSha, coverage: [cell('macos-arm64-hardened', digest('2'))] },
+      platformManifest,
+      agentManifest,
+    })).toThrow(/does not match the staged target/);
+  });
+
+  it('does not let DEB evidence authorize the RPM target', () => {
+    expect(() => verifyReleaseArtifactBindings({
+      report: { sourceSha, coverage: [cell('linux-gnu-x64-hardened-rpm', digest('4'))] },
       platformManifest,
       agentManifest,
     })).toThrow(/does not match the staged target/);

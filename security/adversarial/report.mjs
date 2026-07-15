@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -133,12 +131,14 @@ function assertResidualReviewsCurrent(manifest, now) {
 
 function assertEvidenceRef(value, targetTierId, attackId, label, manualRequired = false) {
   const reference = string(value, label);
-  const artifact = new RegExp(`^artifact://github-actions/[1-9][0-9]{0,19}/${targetTierId}/${attackId}$`);
-  const manual = new RegExp(`^manual://operator-attestation/${targetTierId}/${attackId}/[0-9]{8}T[0-9]{6}Z$`);
-  if (manualRequired && !manual.test(reference)) {
+  const artifact = /^artifact:\/\/github-actions\/([1-9][0-9]{0,19})\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/.exec(reference);
+  const manual = /^manual:\/\/operator-attestation\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/([0-9]{8}T[0-9]{6}Z)$/.exec(reference);
+  const artifactMatches = artifact?.[2] === targetTierId && artifact[3] === attackId;
+  const manualMatches = manual?.[1] === targetTierId && manual[2] === attackId;
+  if (manualRequired && !manualMatches) {
     fail(`${label} requires a manual operator attestation`);
   }
-  if (!artifact.test(reference) && !manual.test(reference)) {
+  if (!artifactMatches && !manualMatches) {
     fail(`${label} must identify only a GitHub Actions run or operator attestation`);
   }
   return reference;

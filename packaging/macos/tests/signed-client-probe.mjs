@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync,
+  chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync,
+  readFileSync, readdirSync, realpathSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -26,6 +27,19 @@ const canary = `palladin-boundary-${randomBytes(24).toString('hex')}`;
 const maximumCaptureBytes = 1024 * 1024;
 const maximumScannedFileBytes = 4 * 1024 * 1024;
 
+function readOpenedRegular(path, expectedMetadata, label) {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = fstatSync(descriptor);
+    if (!opened.isFile() || opened.dev !== expectedMetadata.dev || opened.ino !== expectedMetadata.ino) {
+      throw new Error(`${label} changed during the bounded scan`);
+    }
+    return readFileSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 function assertTreeDoesNotContainCanary(root, label) {
   if (!existsSync(root)) return;
   const rootMetadata = lstatSync(root);
@@ -46,7 +60,7 @@ function assertTreeDoesNotContainCanary(root, label) {
     }
     scannedBytes += metadata.size;
     if (scannedBytes > maximumScannedFileBytes) throw new Error(`${label} exceeded the scan bound`);
-    if (readFileSync(current).includes(Buffer.from(canary))) {
+    if (readOpenedRegular(current, metadata, label).includes(Buffer.from(canary))) {
       throw new Error(`${label} persisted the private boundary canary`);
     }
   }

@@ -1,6 +1,11 @@
-#!/usr/bin/env node
-
-import { lstatSync, readFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+} from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,10 +20,17 @@ function readJson(path, label) {
   const absolute = resolve(path);
   const metadata = lstatSync(absolute);
   if (!metadata.isFile() || metadata.isSymbolicLink()) fail(`${label} must be a regular file`);
+  const descriptor = openSync(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
-    return JSON.parse(readFileSync(absolute, 'utf8'));
+    const opened = fstatSync(descriptor);
+    if (!opened.isFile() || opened.dev !== metadata.dev || opened.ino !== metadata.ino) {
+      fail(`${label} changed while it was opened`);
+    }
+    return JSON.parse(readFileSync(descriptor, 'utf8'));
   } catch {
     fail(`${label} must be valid JSON`);
+  } finally {
+    closeSync(descriptor);
   }
 }
 
@@ -44,12 +56,14 @@ function artifactSelector(targetTierId) {
   if (match) return (name) => new RegExp(`^palladin-runtime-win32-${match[1]}-.+\\.tgz$`).test(name);
   match = /^linux-(gnu|musl)-(arm64|x64)-convenience$/.exec(targetTierId);
   if (match) return (name) => new RegExp(`^palladin-runtime-linux-${match[2]}-${match[1]}-.+\\.tgz$`).test(name);
-  match = /^linux-gnu-(arm64|x64)-hardened$/.exec(targetTierId);
+  match = /^linux-gnu-(arm64|x64)-hardened-(deb|rpm)$/.exec(targetTierId);
   if (match) {
     const debArchitecture = match[1] === 'arm64' ? 'arm64' : 'amd64';
     const rpmArchitecture = match[1] === 'arm64' ? 'aarch64' : 'x86_64';
-    return (name) => (name.startsWith('palladin-runtime_') && name.endsWith(`_${debArchitecture}.deb`))
-      || (name.startsWith('palladin-runtime-') && name.endsWith(`.${rpmArchitecture}.rpm`));
+    if (match[2] === 'deb') {
+      return (name) => name.startsWith('palladin-runtime_') && name.endsWith(`_${debArchitecture}.deb`);
+    }
+    return (name) => name.startsWith('palladin-runtime-') && name.endsWith(`.${rpmArchitecture}.rpm`);
   }
   if (/^(?:macos|windows)-(?:arm64|x64)-convenience-source$/.test(targetTierId)) return null;
   fail(`report contains an unknown release target: ${targetTierId}`);

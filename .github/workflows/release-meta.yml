@@ -572,9 +572,87 @@ jobs:
           fi
           npm audit signatures --prefix "$smoke"
 
+  approve-adversarial:
+    name: KMS-sign the owner-approved adversarial evidence
+    needs: [authorize, smoke-native, smoke-musl]
+    runs-on: ubuntu-latest
+    environment: version-policy-signing
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_VERSION_POLICY_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        with:
+          version: 561.0.0
+      - name: Sign and upload the exact manual-evidence approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATOR: ${{ github.actor }}
+          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          approval="$RUNNER_TEMP/adversarial-approval"
+          mkdir -m 700 "$approval"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$approval" \
+            --pattern adversarial-report.json \
+            --pattern adversarial-report.md \
+            --pattern release-manifest.json
+          node security/adversarial/report.mjs validate \
+            --source-sha "$SOURCE_SHA" \
+            --json "$approval/adversarial-report.json" \
+            --markdown "$approval/adversarial-report.md"
+          node security/adversarial/verify-release-artifacts.mjs \
+            --report "$approval/adversarial-report.json" \
+            --platform-manifest "$approval/release-manifest.json"
+          gcloud kms keys versions get-public-key "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
+            --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
+            --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
+            --location "${{ vars.GCP_VERSION_POLICY_LOCATION }}" \
+            --output-file "$approval/kms-public.pem"
+          node packaging/npm/verify-kms-public-key.mjs \
+            --pem "$approval/kms-public.pem" --expected "$PUBLIC_KEY"
+          approved_at=$(node -p 'new Date().toISOString()')
+          node security/adversarial/operator-approval.mjs payload \
+            --report "$approval/adversarial-report.json" \
+            --markdown "$approval/adversarial-report.md" \
+            --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
+            --approved-at "$approved_at" --output "$approval/payload.json"
+          gcloud kms asymmetric-sign \
+            --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
+            --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
+            --location "${{ vars.GCP_VERSION_POLICY_LOCATION }}" \
+            --version "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
+            --input-file "$approval/payload.json" --signature-file "$approval/signature.txt"
+          printf '%s' "$PUBLIC_KEY" > "$approval/public-key.txt"
+          node security/adversarial/operator-approval.mjs assemble \
+            --report "$approval/adversarial-report.json" \
+            --markdown "$approval/adversarial-report.md" \
+            --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
+            --payload "$approval/payload.json" --signature "$approval/signature.txt" \
+            --public-key "$approval/public-key.txt" \
+            --output "$approval/adversarial-approval.json"
+          gh release upload "$RELEASE_TAG" "$approval/adversarial-approval.json" \
+            --repo "$GITHUB_REPOSITORY"
+
   stage-meta:
     name: Attest and stage @palladin/agent
-    needs: [authorize, compatibility, smoke-native, smoke-musl, publish-policy]
+    needs: [authorize, compatibility, smoke-native, smoke-musl, publish-policy, approve-adversarial]
     runs-on: ubuntu-latest
     environment: npm-release
     timeout-minutes: 15
@@ -677,6 +755,8 @@ jobs:
       - name: Revalidate the adversarial release gate before staging
         env:
           GH_TOKEN: ${{ github.token }}
+          OPERATOR: ${{ github.actor }}
+          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
         run: |
@@ -686,6 +766,7 @@ jobs:
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$gate" \
             --pattern adversarial-report.json \
             --pattern adversarial-report.md \
+            --pattern adversarial-approval.json \
             --pattern release-manifest.json
           node security/adversarial/report.mjs validate \
             --source-sha "$SOURCE_SHA" \
@@ -694,6 +775,13 @@ jobs:
           node security/adversarial/verify-release-artifacts.mjs \
             --report "$gate/adversarial-report.json" \
             --platform-manifest "$gate/release-manifest.json"
+          printf '%s' "$PUBLIC_KEY" > "$gate/public-key.txt"
+          node security/adversarial/operator-approval.mjs verify \
+            --report "$gate/adversarial-report.json" \
+            --markdown "$gate/adversarial-report.md" \
+            --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
+            --approval "$gate/adversarial-approval.json" \
+            --public-key "$gate/public-key.txt"
 
       - name: Stage the meta-package under latest
         run: |

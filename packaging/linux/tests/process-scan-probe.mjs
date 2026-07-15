@@ -1,4 +1,13 @@
-import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 const [mode, ...arguments_] = process.argv.slice(2);
@@ -25,13 +34,27 @@ function assertAbsent(bytes, label) {
   if (bytes.includes(canary)) throw new Error(`${label} contained the stdin canary`);
 }
 
+function readOpenedRegular(path, expectedMetadata, label) {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = fstatSync(descriptor);
+    if (!opened.isFile() || (expectedMetadata !== undefined
+      && (opened.dev !== expectedMetadata.dev || opened.ino !== expectedMetadata.ino))) {
+      throw new Error(`${label} changed during the bounded scan`);
+    }
+    return readFileSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 if (mode === '--process') {
   const [pid, expectedExecutable] = arguments_;
   if (realpathSync(`/proc/${pid}/exe`) !== realpathSync(expectedExecutable)) {
     throw new Error('process scan target is not the exact installed client');
   }
-  assertAbsent(readFileSync(`/proc/${pid}/cmdline`), 'client argv');
-  assertAbsent(readFileSync(`/proc/${pid}/environ`), 'client environment');
+  assertAbsent(readOpenedRegular(`/proc/${pid}/cmdline`, undefined, 'client argv'), 'client argv');
+  assertAbsent(readOpenedRegular(`/proc/${pid}/environ`, undefined, 'client environment'), 'client environment');
 } else {
   const pending = [...arguments_];
   let total = 0;
@@ -45,7 +68,7 @@ if (mode === '--process') {
     } else if (metadata.isFile()) {
       total += metadata.size;
       if (total > 4 * 1024 * 1024) throw new Error('public state exceeded the scan bound');
-      assertAbsent(readFileSync(current), 'public state');
+      assertAbsent(readOpenedRegular(current, metadata, 'public state'), 'public state');
     } else throw new Error('public state contains an unsupported file type');
   }
 }

@@ -168,8 +168,9 @@ After platform staging and registry smoke tests pass, but before the public meta
 5. Use `node security/adversarial/report.mjs evidence` once with the complete exact target list, source SHA, per-target artifact hashes, observation time, explicit outcome map, evidence-reference map, and findings JSON. Use that complete bundle to generate both reports with `node security/adversarial/report.mjs generate`.
 6. Run `node security/adversarial/report.mjs validate` against both generated files and the exact 40-character source SHA. Missing, stale, incomplete, blocked, mismatched, or overdue evidence must fail.
 7. Patryk alone uploads `adversarial-report.json` and `adversarial-report.md` to the existing draft release after reviewing that both files contain no secrets. Do not replace either file after approval.
+8. The protected `version-policy-signing` job derives every manual-required cell from that exact report and KMS-signs `adversarial-approval.json` as Patryk. The signed payload binds the operator, approval time, source SHA, report digest, target, attack, result, observation time, evidence reference, and exact artifact SHA-256. Never create or upload this approval by hand.
 
-An unresolved or accepted Critical/High finding, incomplete target, stale observation, artifact mismatch, overdue residual-risk review, or missing manual attestation stops the workflow before `@palladin/agent` is staged. The protected meta workflow validates this gate once before build and again immediately before `npm stage publish`.
+An unresolved or accepted Critical/High finding, incomplete target, stale observation, artifact mismatch, overdue residual-risk review, missing manual attestation, forged operator, or invalid KMS signature stops the workflow before `@palladin/agent` is staged. Linux Hardened DEB and RPM are separate evidence targets with separate artifact digests. The protected meta workflow validates the report before build, KMS-signs the manual approval after native smoke tests, and verifies both again immediately before `npm stage publish`.
 
 ### 5. Stage and approve the meta package
 
@@ -179,7 +180,7 @@ Only after all eight registry smoke tests and the adversarial gate pass:
 2. Verify its package allowlist contains only the launcher, runtime metadata, documentation, and license files. It must not contain private source, keys, build caches, test fixtures, or lifecycle scripts.
 3. Verify all eight optional dependencies use exact `X.Y.Z` versions and no unsupported platform fallback exists.
 4. Generate and verify its checksum, manifest entry, SBOM, provenance, and attestations.
-5. Re-download and revalidate the approved adversarial reports against the tagged source and exact platform release manifest.
+5. Re-download and revalidate the approved adversarial reports and KMS-signed operator approval against the tagged source and exact platform release manifest.
 6. Stage the meta package through the protected OIDC workflow with `npm stage publish --tag latest`.
 7. Patryk downloads and inspects the staged tarball, verifies the digest, provenance, and recorded adversarial gate, then approves it with npm 2FA.
 8. Install `@palladin/agent@X.Y.Z` and `@palladin/agent@latest` from npm in clean macOS, Windows, and Linux runners and repeat the end-to-end smoke checks.
@@ -198,8 +199,9 @@ After the public meta-package smoke tests pass, Patryk approves finalization. Cr
 - links to npm and GitHub attestations
 - `adversarial-report.json`
 - `adversarial-report.md`
+- `adversarial-approval.json`
 
-The owner-only finalizer requires the exact draft asset set, revalidates the same JSON and Markdown adversarial reports against each other, the tagged source SHA, both release manifests, exact artifact digests, the canonical coverage manifest, freshness policy, manual-evidence policy, residual-risk reviews, and release blockers before publication. Any extra asset or missing expected asset fails finalization. Verify every attachment digest once more, publish the release, and confirm GitHub reports it as immutable. Do not replace assets or move the tag after publication.
+The owner-only finalizer requires the exact draft asset set, revalidates the same JSON and Markdown adversarial reports against each other, verifies the KMS-signed operator approval, and binds them to the tagged source SHA, both release manifests, every exact artifact digest, the canonical coverage manifest, freshness policy, manual-evidence policy, residual-risk reviews, and release blockers before publication. Any extra asset or missing expected asset fails finalization. Verify every attachment digest once more, publish the release, and confirm GitHub reports it as immutable. Do not replace assets or move the tag after publication.
 
 ## Failure and recovery
 
@@ -221,6 +223,7 @@ Record the following without secrets:
 - version, protected tag, and full source commit SHA
 - GitHub workflow run IDs and environment approvals
 - npm stage IDs and Patryk's approval timestamps
+- the KMS-signed adversarial operator approval and its exact report digest
 - package names, registry URLs, tarball digests, and dist-tags
 - signing identities, certificate fingerprints, timestamps, notarization request IDs, and verification results
 - release manifest, SBOM, provenance, and attestation URLs and digests

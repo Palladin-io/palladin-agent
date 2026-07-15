@@ -310,6 +310,7 @@ test('release finalization requires the exact fresh adversarial report before pu
   assert.ok(workflow.includes('[[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]'));
   assert.match(workflow, /test -f "\$assets\/adversarial-report\.json"/);
   assert.match(workflow, /test -f "\$assets\/adversarial-report\.md"/);
+  assert.match(workflow, /test -f "\$assets\/adversarial-approval\.json"/);
   assert.match(workflow, /--directory "\$platform_packages" --version "\$VERSION"/);
   assert.match(workflow, /expected-release-assets\.txt/);
   assert.match(workflow, /actual-release-assets\.txt/);
@@ -321,7 +322,9 @@ test('release finalization requires the exact fresh adversarial report before pu
   assert.match(workflow, /node security\/adversarial\/verify-release-artifacts\.mjs/);
   assert.match(workflow, /--platform-manifest "\$assets\/release-manifest\.json"/);
   assert.match(workflow, /--agent-manifest "\$assets\/release-manifest-agent\.json"/);
-  assert.match(workflow, /adversarial-report\.json\|adversarial-report\.md\) continue/);
+  assert.match(workflow, /node security\/adversarial\/operator-approval\.mjs verify/);
+  assert.match(workflow, /--approval "\$assets\/adversarial-approval\.json"/);
+  assert.match(workflow, /adversarial-report\.json\|adversarial-report\.md\|adversarial-approval\.json\) continue/);
   assert.doesNotMatch(workflow, /report\.mjs validate[^]*\|\| true/);
   assert.ok(
     workflow.indexOf('node security/adversarial/report.mjs validate')
@@ -337,8 +340,8 @@ test('meta-package staging is blocked by the exact adversarial release report', 
   ];
   const stageOffset = workflow.indexOf('npm stage publish "$package" --tag latest');
 
-  assert.equal(reportValidations.length, 2);
-  assert.equal(artifactValidations.length, 2);
+  assert.equal(reportValidations.length, 3);
+  assert.equal(artifactValidations.length, 3);
   assert.ok(stageOffset > 0);
   assert.ok(reportValidations.every((match) => match.index < stageOffset));
   assert.ok(artifactValidations.every((match) => match.index < stageOffset));
@@ -346,6 +349,12 @@ test('meta-package staging is blocked by the exact adversarial release report', 
   assert.match(workflow, /test -f "\$assets\/adversarial-report\.md"/);
   assert.match(workflow, /name: Revalidate the adversarial release gate before staging/);
   assert.match(workflow, /--platform-manifest "\$gate\/release-manifest\.json"/);
+  assert.match(workflow, /name: KMS-sign the owner-approved adversarial evidence/);
+  assert.match(workflow, /gcloud kms asymmetric-sign/);
+  assert.match(workflow, /operator-approval\.mjs assemble/);
+  assert.match(workflow, /operator-approval\.mjs verify/);
+  assert.match(workflow, /--approval "\$gate\/adversarial-approval\.json"/);
+  assert.match(workflow, /needs: \[authorize, compatibility, smoke-native, smoke-musl, publish-policy, approve-adversarial\]/);
   assert.doesNotMatch(workflow, /adversarial\/report\.mjs validate[^]*\|\| true/);
 });
 

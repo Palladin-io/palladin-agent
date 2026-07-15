@@ -329,12 +329,12 @@
       ]
     },
     {
-      "id": "linux-gnu-arm64-hardened",
+      "id": "linux-gnu-arm64-hardened-deb",
       "os": "linux",
       "arch": "arm64",
       "libc": "gnu",
       "tier": "Hardened",
-      "channel": "deb-rpm-systemd",
+      "channel": "deb-systemd",
       "disposition": "evidence-required",
       "expectedResidualAttacks": [
         "node-key-enumeration-read",
@@ -359,12 +359,72 @@
       ]
     },
     {
-      "id": "linux-gnu-x64-hardened",
+      "id": "linux-gnu-arm64-hardened-rpm",
+      "os": "linux",
+      "arch": "arm64",
+      "libc": "gnu",
+      "tier": "Hardened",
+      "channel": "rpm-systemd",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace"
+      ],
+      "expectedResidualRiskIds": [
+        "RR-LINUX-AGENT-UID"
+      ],
+      "manualRequiredAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "argv-env-config-scan",
+        "core-dump-debugger-ptrace",
+        "loader-injection",
+        "malicious-exec"
+      ],
+      "residualRiskIds": [
+        "RR-PRIVILEGED-HOST-COMPROMISE",
+        "RR-LINUX-AGENT-UID",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "linux-gnu-x64-hardened-deb",
       "os": "linux",
       "arch": "x64",
       "libc": "gnu",
       "tier": "Hardened",
-      "channel": "deb-rpm-systemd",
+      "channel": "deb-systemd",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace"
+      ],
+      "expectedResidualRiskIds": [
+        "RR-LINUX-AGENT-UID"
+      ],
+      "manualRequiredAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "argv-env-config-scan",
+        "core-dump-debugger-ptrace",
+        "loader-injection",
+        "malicious-exec"
+      ],
+      "residualRiskIds": [
+        "RR-PRIVILEGED-HOST-COMPROMISE",
+        "RR-LINUX-AGENT-UID",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "linux-gnu-x64-hardened-rpm",
+      "os": "linux",
+      "arch": "x64",
+      "libc": "gnu",
+      "tier": "Hardened",
+      "channel": "rpm-systemd",
       "disposition": "evidence-required",
       "expectedResidualAttacks": [
         "node-key-enumeration-read",

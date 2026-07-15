@@ -29,6 +29,12 @@ workflow run. Missing, duplicate, expired, or mismatched evidence fails closed. 
 when any Critical or High finding is not resolved. Accepting a Critical or High finding is not a way
 around the gate.
 
+Manual evidence is not trusted because it contains an operator URI. After native smoke tests, the
+owner-only protected workflow derives every manual cell from the exact report and signs the complete
+approval payload with the pinned Ed25519 KMS key. Meta-package staging and finalization both verify
+that signature, operator, source SHA, report digest, observation, target, attack, result, and artifact
+digest. An unsigned or copied manual approval is release-blocking.
+
 The canonical target, attack, evidence, and residual-risk matrix lives under
 `security/adversarial/`. Reports contain only public identifiers and enumerated outcomes. They never
 contain a canary, credential, API key, private key, plaintext secret, raw process memory, raw process
@@ -80,6 +86,8 @@ Linux authenticates an npm package or isolates sibling processes inside the Agen
 
 A privileged container is package-integration evidence only. Release acceptance for the Hardened
 boundary requires a native VM with systemd 252 or newer and distinct kernel UIDs.
+DEB and RPM are separate release-evidence targets for each architecture; neither package digest or
+native run can authorize the other format.
 
 ### Linux musl
 
