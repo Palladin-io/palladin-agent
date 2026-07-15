@@ -16,6 +16,8 @@ describe('macOS authenticated signed-runtime boundary', () => {
     expect(signedJob).toContain('architecture: arm64');
     expect(signedJob).toContain('runner: macos-15-intel');
     expect(signedJob).toContain('architecture: x86_64');
+    expect(signedJob).toContain('PALLADIN_RUNNER_ENVIRONMENT: ${{ runner.environment }}');
+    expect(signedJob).toContain('PALLADIN_SECURITY_TEST_CONFIRM: github-hosted-ephemeral-runner');
     expect(signedJob).toContain('palladin-runtime-darwin-${{ matrix.npm_architecture }}-*.tgz');
     expect(signedJob).toContain('npm install --prefix "$smoke" --ignore-scripts --no-save');
     expect(signedJob).toContain('test-security-boundary.sh');
@@ -83,6 +85,9 @@ describe('macOS authenticated signed-runtime boundary', () => {
     expect(client).toContain('mcp-second-connection');
     expect(client).toContain('`${initialize}\\n${toolCall}\\n`');
     expect(client).not.toContain('`${initialize}\\n${toolCall}\\n${toolCall}\\n`');
+    expect(harness).toContain('PALLADIN_RUNNER_ENVIRONMENT:-}" == "github-hosted"');
+    expect(harness).toContain('[[ ! -e "$HOME/.palladin" && ! -L "$HOME/.palladin" ]]');
+    expect(harness).not.toContain('"$binary" purge');
     expect(harness).not.toContain('cat "$work_dir');
     expect(harness).not.toContain('set -x');
   });

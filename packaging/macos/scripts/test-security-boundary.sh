@@ -17,11 +17,13 @@ Usage: test-security-boundary.sh --app PATH --entitlements PATH
 Required environment:
   PALLADIN_APPLICATION_IDENTIFIER  Exact TEAMID.io.palladin.runtime value.
   PALLADIN_KEYCHAIN_ACCESS_GROUP   Exact TEAMID.io.palladin.runtime.session-v2 value.
-  PALLADIN_SECURITY_TEST_CONFIRM   Must equal ephemeral-runner.
+  PALLADIN_RUNNER_ENVIRONMENT      Must equal github-hosted.
+  PALLADIN_SECURITY_TEST_CONFIRM   Must equal github-hosted-ephemeral-runner.
 
-This noninteractive test creates and purges only synthetic Palladin state. It never approves a
-LocalAuthentication prompt. Interactive approval and lock/sleep/logout transitions are covered by
-the dedicated-lab procedure in packaging/macos/README.md.
+This noninteractive test creates only synthetic Palladin state on a fresh GitHub-hosted VM. Purge
+requires LocalAuthentication and cannot honestly run headlessly, so the state is destroyed only
+with the entire ephemeral VM. Interactive approval and lifecycle transitions are covered by the
+dedicated-lab procedure in packaging/macos/README.md.
 USAGE
   exit 64
 }
@@ -41,8 +43,10 @@ while (( $# > 0 )); do
   esac
 done
 
-[[ "${PALLADIN_SECURITY_TEST_CONFIRM:-}" == "ephemeral-runner" ]] ||
-  die "refusing to alter the current account without PALLADIN_SECURITY_TEST_CONFIRM=ephemeral-runner"
+[[ "${PALLADIN_RUNNER_ENVIRONMENT:-}" == "github-hosted" ]] ||
+  die "boundary fixtures require a disposable GitHub-hosted runner"
+[[ "${PALLADIN_SECURITY_TEST_CONFIRM:-}" == "github-hosted-ephemeral-runner" ]] ||
+  die "refusing to create state without PALLADIN_SECURITY_TEST_CONFIRM=github-hosted-ephemeral-runner"
 [[ "$architecture" == "arm64" || "$architecture" == "x86_64" ]] || usage
 application_identifier="${PALLADIN_APPLICATION_IDENTIFIER:-}"
 access_group="${PALLADIN_KEYCHAIN_ACCESS_GROUP:-}"
@@ -62,6 +66,8 @@ require_regular_file "$PACKAGING_DIR/tests/task-port-probe.c" "task-port probe"
 assert_plist_contract "$entitlements" "$application_identifier" "$access_group"
 assert_binary_session_contract "$binary"
 test "$(uname -m)" = "$architecture"
+[[ ! -e "$HOME/.palladin" && ! -L "$HOME/.palladin" ]] ||
+  die "boundary fixtures require a fresh account without Palladin state"
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/palladin-boundary.XXXXXX")"
 target_pid=""

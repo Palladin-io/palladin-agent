@@ -371,7 +371,7 @@ jobs:
     env:
       PALLADIN_APPLICATION_IDENTIFIER: ${{ vars.PALLADIN_MACOS_APPLICATION_IDENTIFIER }}
       PALLADIN_KEYCHAIN_ACCESS_GROUP: ${{ vars.PALLADIN_MACOS_KEYCHAIN_ACCESS_GROUP }}
-      PALLADIN_SECURITY_TEST_CONFIRM: ephemeral-runner
+      PALLADIN_SECURITY_TEST_CONFIRM: github-hosted-ephemeral-runner
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -429,6 +429,8 @@ jobs:
           echo "PALLADIN_HOMEBREW_NODE=$homebrew_node" >>"$GITHUB_ENV"
 
       - name: Run the same noninteractive boundary harness on the exact artifact
+        env:
+          PALLADIN_RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           set -euo pipefail
           packaging/macos/scripts/test-security-boundary.sh \
