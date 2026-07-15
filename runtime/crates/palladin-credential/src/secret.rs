@@ -263,41 +263,41 @@ fn parse_script_refs(value: Option<&Value>) -> Result<Vec<ScriptRef>, SecretPars
 }
 
 pub fn parse_totp_params(value: &str) -> Option<TotpParams> {
-    let mut json = SensitiveJson(serde_json::from_str(value).ok()?);
-    let object = json.0.as_object_mut()?;
+    let json = SensitiveJson(serde_json::from_str(value).ok()?);
+    parse_totp_json(&json.0)
+}
+
+fn parse_totp_json(value: &Value) -> Option<TotpParams> {
+    let object = value.as_object()?;
     let secret = object.get("secret")?.as_str()?.to_owned();
     let mut params = TotpParams::new(secret);
-    params.algorithm =
-        object
-            .get("algorithm")
-            .and_then(Value::as_str)
-            .map_or(TotpAlgorithm::Sha1, |algorithm| {
-                if algorithm.eq_ignore_ascii_case("SHA256") {
-                    TotpAlgorithm::Sha256
-                } else if algorithm.eq_ignore_ascii_case("SHA512") {
-                    TotpAlgorithm::Sha512
-                } else {
-                    TotpAlgorithm::Sha1
-                }
-            });
-    if let Some(digits) = object
-        .get("digits")
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-    {
-        params.digits = digits;
-    }
-    if let Some(period) = object.get("period").and_then(Value::as_u64) {
-        params.period = period;
-    }
+    params.algorithm = match object.get("algorithm") {
+        None => TotpAlgorithm::Sha1,
+        Some(Value::String(algorithm)) => parse_totp_algorithm(algorithm)?,
+        Some(_) => return None,
+    };
+    params.digits = match object.get("digits") {
+        None => 6,
+        Some(value) => value
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|digits| (6..=8).contains(digits))?,
+    };
+    params.period = match object.get("period") {
+        None => 30,
+        Some(value) => value.as_u64().filter(|period| *period > 0)?,
+    };
     Some(params)
 }
 
 pub fn parse_totp_value(value: &str) -> Option<TotpParams> {
-    if let Some(params) = parse_totp_params(value) {
-        return Some(params);
-    }
     let trimmed = value.trim();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        let json = SensitiveJson(value);
+        if json.0.is_object() {
+            return parse_totp_json(&json.0);
+        }
+    }
     if trimmed
         .get(.."otpauth://".len())
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("otpauth://"))
@@ -336,17 +336,14 @@ fn parse_otpauth_uri(value: &str) -> Option<TotpParams> {
         if name.eq_ignore_ascii_case("secret") {
             secret = Some(decoded);
         } else if name.eq_ignore_ascii_case("algorithm") {
-            algorithm = if decoded.eq_ignore_ascii_case("SHA256") {
-                TotpAlgorithm::Sha256
-            } else if decoded.eq_ignore_ascii_case("SHA512") {
-                TotpAlgorithm::Sha512
-            } else {
-                TotpAlgorithm::Sha1
-            };
+            algorithm = parse_totp_algorithm(&decoded)?;
         } else if name.eq_ignore_ascii_case("digits") {
-            digits = decoded.parse::<u32>().ok()?;
+            digits = decoded
+                .parse::<u32>()
+                .ok()
+                .filter(|digits| (6..=8).contains(digits))?;
         } else if name.eq_ignore_ascii_case("period") {
-            period = decoded.parse::<u64>().ok()?;
+            period = decoded.parse::<u64>().ok().filter(|period| *period > 0)?;
         }
     }
     let secret = secret?;
@@ -359,6 +356,18 @@ fn parse_otpauth_uri(value: &str) -> Option<TotpParams> {
     params.digits = digits;
     params.period = period;
     Some(params)
+}
+
+fn parse_totp_algorithm(value: &str) -> Option<TotpAlgorithm> {
+    if value.eq_ignore_ascii_case("SHA1") {
+        Some(TotpAlgorithm::Sha1)
+    } else if value.eq_ignore_ascii_case("SHA256") {
+        Some(TotpAlgorithm::Sha256)
+    } else if value.eq_ignore_ascii_case("SHA512") {
+        Some(TotpAlgorithm::Sha512)
+    } else {
+        None
+    }
 }
 
 #[must_use]
@@ -419,6 +428,8 @@ pub enum SecretParseError {
 mod tests {
     use secrecy::ExposeSecret;
 
+    use crate::totp::TotpAlgorithm;
+
     use super::{
         CustomFieldType, SecretParseError, env_field_key, parse_secret, parse_totp_params,
         parse_totp_value,
@@ -458,6 +469,56 @@ mod tests {
         let params =
             parse_totp_params(parsed.custom_fields[0].value.expose_secret()).expect("TOTP");
         assert_eq!(params.period, 60);
+    }
+
+    #[test]
+    fn explicit_totp_algorithms_are_validated_instead_of_defaulting_to_sha1() {
+        let default = parse_totp_params(r#"{"secret":"JBSWY3DP"}"#).expect("default");
+        assert_eq!(default.algorithm, TotpAlgorithm::Sha1);
+
+        for (algorithm, expected) in [
+            ("sha1", TotpAlgorithm::Sha1),
+            ("Sha256", TotpAlgorithm::Sha256),
+            ("SHA512", TotpAlgorithm::Sha512),
+        ] {
+            let descriptor = format!(r#"{{"secret":"JBSWY3DP","algorithm":"{algorithm}"}}"#);
+            let params = parse_totp_params(&descriptor).expect("supported algorithm");
+            assert_eq!(params.algorithm, expected);
+        }
+
+        assert!(parse_totp_value(r#"{"secret":"JBSWY3DP","algorithm":"MD5"}"#).is_none());
+        assert!(
+            parse_totp_value("otpauth://totp/Palladin?secret=JBSWY3DP&algorithm=MD5").is_none()
+        );
+    }
+
+    #[test]
+    fn explicit_invalid_totp_parameter_types_and_bounds_fail_closed() {
+        for descriptor in [
+            r#"{"secret":1}"#,
+            r#"{"secret":"JBSWY3DP","algorithm":null}"#,
+            r#"{"secret":"JBSWY3DP","algorithm":1}"#,
+            r#"{"secret":"JBSWY3DP","digits":"6"}"#,
+            r#"{"secret":"JBSWY3DP","digits":null}"#,
+            r#"{"secret":"JBSWY3DP","digits":6.5}"#,
+            r#"{"secret":"JBSWY3DP","digits":5}"#,
+            r#"{"secret":"JBSWY3DP","digits":9}"#,
+            r#"{"secret":"JBSWY3DP","period":"30"}"#,
+            r#"{"secret":"JBSWY3DP","period":null}"#,
+            r#"{"secret":"JBSWY3DP","period":30.5}"#,
+            r#"{"secret":"JBSWY3DP","period":0}"#,
+        ] {
+            assert!(parse_totp_params(descriptor).is_none(), "{descriptor}");
+            assert!(parse_totp_value(descriptor).is_none(), "{descriptor}");
+        }
+
+        for uri in [
+            "otpauth://totp/Palladin?secret=JBSWY3DP&digits=5",
+            "otpauth://totp/Palladin?secret=JBSWY3DP&digits=9",
+            "otpauth://totp/Palladin?secret=JBSWY3DP&period=0",
+        ] {
+            assert!(parse_totp_value(uri).is_none(), "{uri}");
+        }
     }
 
     #[test]
