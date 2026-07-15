@@ -5,6 +5,7 @@ import { join } from 'path';
 import { Writable } from 'stream';
 import { runExecCapture, runExecForTool } from '../../src/exec/run-exec.js';
 import { ParsedSecret } from '../../src/crypto/secret.js';
+import { expectSensitiveContains, expectSensitiveExcludes } from '../helpers/sensitive-assert.js';
 
 function collectStream(): { stream: Writable; text: () => string } {
   let buf = '';
@@ -34,7 +35,7 @@ describe('runExecCapture — env injection + masking', () => {
     expect(result.code).toBe(0);
     // The username is not a secret value (<4 chars? "alice" is 5, so it IS masked). Verify structure
     // via a field that is short enough not to be masked.
-    expect(result.stdout).toContain(':'); // both env vars were present
+    expectSensitiveContains(result.stdout, ':', 'captured credential output'); // both env vars were present
   });
 
   it('masks secret values that the command echoes', async () => {
@@ -44,8 +45,8 @@ describe('runExecCapture — env injection + masking', () => {
       secret,
     );
     expect(result.code).toBe(0);
-    expect(result.stdout).not.toContain('superSecretPassword123');
-    expect(result.stdout).toContain('***');
+    expectSensitiveExcludes(result.stdout, 'superSecretPassword123', 'masked child output');
+    expectSensitiveContains(result.stdout, '***', 'masked child output');
   });
 
   it('masks a secret split across stream chunks', async () => {
@@ -53,7 +54,7 @@ describe('runExecCapture — env injection + masking', () => {
     // Print the secret in two halves with a flush in between to force separate chunks.
     const script = 'process.stdout.write("ABCDEFGH"); setTimeout(() => process.stdout.write("IJKLMNOP"), 50)';
     const result = await runExecCapture(['node', '-e', script], secret);
-    expect(result.stdout).not.toContain('ABCDEFGHIJKLMNOP');
+    expectSensitiveExcludes(result.stdout, 'ABCDEFGHIJKLMNOP', 'chunked child output');
   });
 
   it('exports every string field as CLAW_<FIELD>', async () => {
@@ -62,7 +63,7 @@ describe('runExecCapture — env injection + masking', () => {
       ['node', '-e', 'process.stdout.write(process.env.CLAW_APIKEY ? "has-apikey" : "no")'],
       secret,
     );
-    expect(result.stdout).toContain('has-apikey');
+    expectSensitiveContains(result.stdout, 'has-apikey', 'credential environment probe');
   });
 
   it('passes through the exit code', async () => {
@@ -89,13 +90,13 @@ describe('runExecForTool — model-safe result (CVT-200)', () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.output).toBe('withheld');
-    expect(result).not.toHaveProperty('stdout');
-    expect(result).not.toHaveProperty('stderr');
+    expect(!('stdout' in result)).toBe(true);
+    expect(!('stderr' in result)).toBe(true);
 
     const serialized = JSON.stringify(result);
-    expect(serialized).not.toContain('superSecretPassword123');
-    expect(serialized).not.toContain('BEGIN');
-    expect(serialized).not.toContain('END');
+    expectSensitiveExcludes(serialized, 'superSecretPassword123', 'model-safe result');
+    expectSensitiveExcludes(serialized, 'BEGIN', 'model-safe result');
+    expectSensitiveExcludes(serialized, 'END', 'model-safe result');
   });
 
   it('mirrors (masked) output to the operator stream so a human still sees it', async () => {
@@ -108,10 +109,10 @@ describe('runExecForTool — model-safe result (CVT-200)', () => {
       { mirror: mirror.stream, logRoot },
     );
     const seen = mirror.text();
-    expect(seen).toContain('BEGIN');
-    expect(seen).toContain('END');
-    expect(seen).not.toContain('superSecretPassword123');
-    expect(seen).toContain('***');
+    expectSensitiveContains(seen, 'BEGIN', 'operator output');
+    expectSensitiveContains(seen, 'END', 'operator output');
+    expectSensitiveExcludes(seen, 'superSecretPassword123', 'operator output');
+    expectSensitiveContains(seen, '***', 'operator output');
   });
 
   it('writes a masked local log for the operator (never the raw secret)', async () => {
@@ -126,8 +127,8 @@ describe('runExecForTool — model-safe result (CVT-200)', () => {
     expect(result.localLog).toBeDefined();
     expect(existsSync(result.localLog!)).toBe(true);
     const contents = readFileSync(result.localLog!, 'utf8');
-    expect(contents).not.toContain('superSecretPassword123');
-    expect(contents).toContain('***');
+    expectSensitiveExcludes(contents, 'superSecretPassword123', 'local operator log');
+    expectSensitiveContains(contents, '***', 'local operator log');
   });
 
   it('honours PALLADIN_NO_DIAGNOSTICS=1 (no local log written)', async () => {

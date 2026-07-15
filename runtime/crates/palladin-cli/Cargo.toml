@@ -1,0 +1,59 @@
+[package]
+name = "palladin-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+local-development = [
+    "palladin-core/local-development",
+    "palladin-linux-broker/local-development",
+    "palladin-runtime/local-development",
+]
+macos-hardened = ["palladin-platform/macos-hardened"]
+
+[[bin]]
+name = "palladin"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+clap.workspace = true
+getrandom.workspace = true
+hostname.workspace = true
+palladin-api = { path = "../palladin-api" }
+palladin-core = { path = "../palladin-core" }
+palladin-crypto = { path = "../palladin-crypto" }
+palladin-credential = { path = "../palladin-credential" }
+palladin-platform = { path = "../palladin-platform" }
+palladin-runtime = { path = "../palladin-runtime" }
+palladin-mcp = { path = "../palladin-mcp" }
+rpassword.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subtle.workspace = true
+time.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+blake2.workspace = true
+crypto_secretbox.workspace = true
+ed25519-dalek.workspace = true
+palladin-core = { path = "../palladin-core", features = ["local-development"] }
+salsa20.workspace = true
+tempfile.workspace = true
+x25519-dalek.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+palladin-windows-broker = { path = "../palladin-windows-broker" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix.workspace = true
+palladin-linux-broker = { path = "../palladin-linux-broker" }

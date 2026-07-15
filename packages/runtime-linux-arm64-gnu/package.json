@@ -1,0 +1,21 @@
+{
+  "name": "@palladin/runtime-linux-arm64-gnu",
+  "version": "0.1.0",
+  "description": "Native glibc Linux arm64 client and runtime for Palladin Agent",
+  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Palladin-io/palladin-agent.git",
+    "directory": "packages/runtime-linux-arm64-gnu"
+  },
+  "files": [
+    "bin/palladin-linux-client",
+    "bin/palladin-worker",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

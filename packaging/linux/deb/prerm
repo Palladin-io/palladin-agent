@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" = remove ]; then
+  systemctl disable --now palladin-runtime.service palladin-executor.socket >/dev/null 2>&1 || true
+fi

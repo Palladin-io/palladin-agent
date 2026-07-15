@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Palladin</vendor>
+  <vendor_url>https://palladin.io</vendor_url>
+  <action id="io.palladin.runtime.manage-agent-uid">
+    <description>Authorize or revoke a dedicated Palladin Agent OS account</description>
+    <message>Authentication is required to change the Palladin hardened Agent UID mapping</message>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/palladin/runtime/palladin-manage-agent-uid</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

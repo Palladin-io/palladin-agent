@@ -1,0 +1,26 @@
+[package]
+name = "palladin-exec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+command-group.workspace = true
+palladin-credential = { path = "../palladin-credential" }
+palladin-core = { path = "../palladin-core" }
+secrecy.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+palladin-windows-executor = { path = "../palladin-windows-executor" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+palladin-linux-executor = { path = "../palladin-linux-executor" }
+palladin-windows-executor = { path = "../palladin-windows-executor" }

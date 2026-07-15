@@ -1,5 +1,5 @@
-import { CustomField, ParsedSecret, parseTotpParams } from '../crypto/secret.js';
-import { generateTotp } from './totp.js';
+import { CustomField, ParsedSecret } from '../crypto/secret.js';
+import { generateTotp, parseTotpValue } from './totp.js';
 
 /** A `--field <label>` / `--field-id <uuid>` selector. At most one should be set. */
 export interface FieldSelector {
@@ -52,6 +52,9 @@ function resolveById(secret: ParsedSecret, id: string): ResolvedField {
   if (matches.length === 0) {
     throw new FieldSelectionError(`no custom field with id "${id}". ${availableHint(secret)}`);
   }
+  if (matches.length > 1) {
+    throw new FieldSelectionError('custom field id is duplicated; the credential is ambiguous');
+  }
   return toResolved(matches[0]!);
 }
 
@@ -61,10 +64,17 @@ function resolveByLabel(secret: ParsedSecret, label: string): ResolvedField {
   const custom = secret.customFields.filter((f) => f.label.toLowerCase() === lower);
   if (custom.length > 1) {
     const ids = custom.map((f) => f.id).join(', ');
-    throw new FieldSelectionError(`multiple fields are labelled "${label}" — disambiguate with --field-id <uuid>: ${ids}`);
+    throw new FieldSelectionError(`multiple fields are labelled "${label}" - disambiguate with --field-id <uuid>: ${ids}`);
   }
   if (custom.length === 1) {
     return toResolved(custom[0]!);
+  }
+
+  if (lower === 'totp' && secret.legacyTotp) {
+    const params = parseTotpValue(secret.legacyTotp);
+    if (!params) throw new FieldSelectionError('the legacy TOTP descriptor is unreadable');
+    const { code, expiresIn } = generateTotp(params);
+    return { kind: 'totp', label: 'totp', code, expiresIn };
   }
 
   if ((WELL_KNOWN_ALIASES as readonly string[]).includes(lower)) {
@@ -92,7 +102,7 @@ function resolveWellKnown(secret: ParsedSecret, alias: WellKnownAlias, label: st
 
 function toResolved(field: CustomField): ResolvedField {
   if (field.type === 'totp') {
-    const params = parseTotpParams(field.value);
+    const params = parseTotpValue(field.value);
     if (!params) {
       throw new FieldSelectionError(`field "${field.label}" is a TOTP field but its descriptor is unreadable`);
     }
@@ -115,13 +125,18 @@ export function redactTotpSecrets(plaintext: string): string {
   } catch {
     return plaintext;
   }
-  if (typeof raw !== 'object' || raw === null || !Array.isArray((raw as Record<string, unknown>).fields)) {
+  if (typeof raw !== 'object' || raw === null) {
     return plaintext;
   }
 
-  const obj = raw as Record<string, unknown> & { fields: unknown[] };
+  const obj = raw as Record<string, unknown> & { fields?: unknown[] };
   let redacted = false;
-  obj.fields = obj.fields.map((field) => {
+  if (obj.totp !== undefined) {
+    const descriptor = typeof obj.totp === 'string' ? obj.totp : JSON.stringify(obj.totp) ?? '';
+    obj.totp = totpReplacement(descriptor);
+    redacted = true;
+  }
+  if (Array.isArray(obj.fields)) obj.fields = obj.fields.map((field) => {
     if (typeof field !== 'object' || field === null) {
       return field;
     }
@@ -129,17 +144,23 @@ export function redactTotpSecrets(plaintext: string): string {
     if (record.type !== 'totp') {
       return field;
     }
-    const descriptor = typeof record.value === 'string' ? record.value : JSON.stringify(record.value);
-    const params = parseTotpParams(descriptor);
-    if (!params) {
-      return field;
-    }
+    const descriptor = typeof record.value === 'string' ? record.value : JSON.stringify(record.value) ?? '';
     redacted = true;
-    const { code, expiresIn } = generateTotp(params);
-    return { ...record, value: { code, expiresIn, note: 'TOTP secret withheld — use --field to get a fresh code' } };
+    return { ...record, value: totpReplacement(descriptor) };
   });
 
   return redacted ? JSON.stringify(obj) : plaintext;
+}
+
+function totpReplacement(descriptor: string): Record<string, unknown> {
+  const params = parseTotpValue(descriptor);
+  if (!params) return { error: 'TOTP descriptor is invalid and was withheld' };
+  try {
+    const { code, expiresIn } = generateTotp(params);
+    return { code, expiresIn, note: 'TOTP secret withheld - use --field to get a fresh code' };
+  } catch {
+    return { error: 'TOTP descriptor is invalid and was withheld' };
+  }
 }
 
 /** A value-free hint listing addressable field names, to guide a failed selection. */
@@ -149,6 +170,6 @@ function availableHint(secret: ParsedSecret): string {
     return present !== null && present !== undefined && present !== '';
   });
   const custom = secret.customFields.map((f) => f.label);
-  const names = [...wellKnown, ...custom];
+  const names = [...wellKnown, ...(secret.legacyTotp ? ['totp'] : []), ...custom];
   return names.length > 0 ? `Available fields: ${names.join(', ')}.` : 'This entry has no addressable fields.';
 }

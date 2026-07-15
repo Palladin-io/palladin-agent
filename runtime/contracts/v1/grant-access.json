@@ -1,0 +1,65 @@
+{
+  "contract": "grant-access",
+  "version": "1.0.0",
+  "syntheticOnly": true,
+  "states": [
+    { "access": "granted", "exitCode": 0, "retryable": false },
+    { "access": "pending", "exitCode": 75, "retryable": true },
+    { "access": "unavailable", "exitCode": 75, "retryable": true },
+    { "access": "denied", "exitCode": 77, "retryable": false },
+    { "access": "revoked", "exitCode": 77, "retryable": false },
+    { "access": "expired", "exitCode": 77, "retryable": false },
+    { "access": "consumed", "exitCode": 77, "retryable": false },
+    { "access": "method-not-allowed", "exitCode": 77, "retryable": false },
+    { "access": "script-exec-only", "exitCode": 77, "retryable": false },
+    { "access": "blocked", "exitCode": 77, "retryable": false }
+  ],
+  "waitPolicies": [
+    {
+      "name": "defaults",
+      "options": {},
+      "hints": {},
+      "expected": { "waitMs": 180000, "pollMs": 30000, "heartbeatMs": 10000, "pollTimeoutMs": 10000 }
+    },
+    {
+      "name": "backend-hints",
+      "options": {},
+      "hints": { "pollIntervalMs": 45000, "maxWaitMs": 120000 },
+      "expected": { "waitMs": 120000, "pollMs": 45000, "heartbeatMs": 10000, "pollTimeoutMs": 10000 }
+    },
+    {
+      "name": "cli-overrides-and-poll-floor",
+      "options": { "waitMs": 60000, "pollMs": 1000 },
+      "hints": { "pollIntervalMs": 45000, "maxWaitMs": 120000 },
+      "expected": { "waitMs": 60000, "pollMs": 5000, "heartbeatMs": 5000, "pollTimeoutMs": 5000 }
+    }
+  ],
+  "durations": [
+    { "input": "1.5s", "expectedMs": 1500 },
+    { "input": "0.25m", "expectedMs": 15000 },
+    { "input": "500ms", "expectedMs": 500 }
+  ],
+  "waitScenarios": [
+    {
+      "name": "non-multiple-poll-and-heartbeat",
+      "policy": { "waitMs": 40000, "pollMs": 15000, "heartbeatMs": 10000, "pollTimeoutMs": 10000 },
+      "responses": ["pending", "denied"],
+      "expectedSleepMs": [10000, 5000, 5000, 10000],
+      "expectedHeartbeatMs": [10000, 20000, 30000],
+      "expectedAccess": "denied"
+    },
+    {
+      "name": "cancellation-interrupts-in-flight-poll",
+      "policy": { "waitMs": 6000, "pollMs": 5000, "heartbeatMs": 1000, "pollTimeoutMs": 1000 },
+      "cancelDuring": "poll",
+      "expectedError": "cancelled"
+    },
+    {
+      "name": "hung-poll-is-bounded-and-heartbeat-continues",
+      "policy": { "waitMs": 6000, "pollMs": 5000, "heartbeatMs": 1000, "pollTimeoutMs": 10 },
+      "hangPoll": true,
+      "expectedHeartbeatMs": [1000, 2000, 3000, 4000, 5000, 5000, 6000],
+      "expectedAccess": "pending"
+    }
+  ]
+}

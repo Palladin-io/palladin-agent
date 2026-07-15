@@ -50,6 +50,6 @@ describe('uploadInjectFailure', () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
     expect(await uploadInjectFailure(config, keypair, body)).toBe(false);
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchSpy.mock.calls.length).toBe(0);
   });
 });

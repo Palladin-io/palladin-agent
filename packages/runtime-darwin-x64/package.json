@@ -1,0 +1,21 @@
+{
+  "name": "@palladin/runtime-darwin-x64",
+  "version": "0.1.0",
+  "description": "Signed native Palladin runtime for macOS x64",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Palladin-io/palladin-agent.git",
+    "directory": "packages/runtime-darwin-x64"
+  },
+  "private": true,
+  "files": [
+    "PalladinRuntime.app/",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

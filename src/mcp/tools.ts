@@ -1,4 +1,3 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { AgentConfig } from '../config/config.js';
 import { Keypair } from '../crypto/keypair.js';
@@ -6,8 +5,6 @@ import {
   AgentApiError,
   searchEntries,
   getCredential,
-  uploadInjectFailure,
-  tryReportCredentialStale,
   reportCredentialStale,
   STALE_REASON_CODES,
   CredentialMethod,
@@ -20,10 +17,17 @@ import { resolveField, injectionValue, redactTotpSecrets, FieldSelectionError } 
 import { runExecForTool } from '../exec/run-exec.js';
 import { runScriptForTool, assertAllowedInterpreter, ScriptError } from '../exec/run-script.js';
 import { prepareScriptEnv, applyDefaultVaultId } from '../exec/script-refs.js';
-import { injectCredential, InjectablePage } from '../inject/inject-runner.js';
-import { buildFailureReport, writeFailureReport } from '../inject/failure-report.js';
+import { INJECT_UNAVAILABLE } from '../commands/inject.js';
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
+
+export interface LegacyMcpToolRegistry {
+  registerTool<TSchema extends z.ZodType>(
+    name: string,
+    definition: { description: string; inputSchema: TSchema },
+    handler: (input: z.infer<TSchema>) => Promise<ToolResult>,
+  ): void;
+}
 
 function ok(text: string): ToolResult {
   return { content: [{ type: 'text', text }] };
@@ -41,14 +45,14 @@ function errorMessage(err: unknown): string {
 // Discovery is org-wide via GET /api/agent/entries (agent-auth, metadata only).
 // The legacy CVT-44 placeholders list_vaults / list_entries called JwtBearer (user)
 // endpoints and returned 401 under agent-auth — they are intentionally not exposed.
-export function registerTools(server: McpServer, config: AgentConfig, keypair: Keypair, signing?: SigningContext): void {
+export function registerTools(server: LegacyMcpToolRegistry, config: AgentConfig, keypair: Keypair, signing?: SigningContext): void {
   server.registerTool(
     'search_entries',
     {
       description:
         "Search vault entries by name/url/description (e.g. 'facebook') across the agent's organization. " +
         'Returns candidates (id, vaultId, name, url, description) — metadata only, no secrets. ' +
-        'Pick one and call get_credential / exec_with_credential / inject_credential with its vaultId+entryId.',
+        'Pick one and call exec_with_credential, or get_credential only when plaintext must enter the model context. Browser injection is currently unavailable.',
       inputSchema: z.object({
         query: z.string().min(2).describe('Search term — matched against entry name, url and description (min 2 chars)'),
       }),
@@ -68,7 +72,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
     {
       description:
         "Get a credential as PLAINTEXT. WARNING: this places the secret in your context — on a hosted model it leaves the user's machine. " +
-        'Prefer exec_with_credential (runs a command with the secret in its environment) or inject_credential (fills a login form) so the secret never enters your context. ' +
+        'Prefer exec_with_credential when the secret only needs to authenticate a command. Browser injection is currently unavailable. ' +
         "If the agent has no grant yet, this requests one (user approves in the panel) and returns access:'pending' — call again shortly.",
       inputSchema: z.object({
         vaultId: z.string().describe('Vault ID'),
@@ -147,88 +151,20 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
     'inject_credential',
     {
       description:
-        "Fill a login form in a browser you control over the Chrome DevTools Protocol. The secret is typed into the page and NEVER returned to you. " +
-        "The page's origin is verified against the entry's bound domain first (anti-phishing) — navigate to the real login page before calling. " +
-        'Launch your browser with --remote-debugging-port and pass its CDP endpoint.',
+        'Browser injection is fail-closed in this runtime. Unauthenticated CDP endpoints can spoof page origins, so this tool does not request or decrypt a credential until a reviewed authenticated browser boundary is installed.',
       inputSchema: z.object({
         vaultId: z.string().describe('Vault ID'),
         entryId: z.string().describe('Entry ID'),
-        cdp: z.string().describe('CDP endpoint of your running browser, e.g. http://localhost:9222'),
-        reason: z.string().optional().describe('Justification shown to the approving user (required when first requesting access)'),
-        pageUrl: z.string().optional().describe('Pick the open page whose URL starts with this prefix (default: first page)'),
-        usernameSelector: z.string().optional().describe('Override CSS selector for the username field'),
-        passwordSelector: z.string().optional().describe('Override CSS selector for the password field'),
-        submitSelector: z.string().optional().describe('Override CSS selector for the submit button'),
+        cdp: z.string().describe('Deprecated unauthenticated CDP endpoint. It is accepted for contract compatibility, always rejected, and never contacted.'),
+        reason: z.string().optional().describe('Reserved for a future reviewed implementation'),
+        pageUrl: z.string().optional().describe('Reserved for a future reviewed implementation'),
+        usernameSelector: z.string().optional().describe('Reserved for a future reviewed implementation'),
+        passwordSelector: z.string().optional().describe('Reserved for a future reviewed implementation'),
+        submitSelector: z.string().optional().describe('Reserved for a future reviewed implementation'),
       }),
     },
-    async ({ vaultId, entryId, cdp, reason, pageUrl, usernameSelector, passwordSelector, submitSelector }) => {
-      const resolved = await resolveForTool(config, keypair, vaultId, entryId, 'inject', reason, signing);
-      if ('error' in resolved) {
-        return fail(resolved.error);
-      }
-      if (!resolved.urlDomain) {
-        return fail('entry has no bound URL — inject is only allowed for entries with a known site (anti-phishing).');
-      }
-
-      let chromium: typeof import('playwright-core').chromium;
-      try {
-        ({ chromium } = await import('playwright-core'));
-      } catch {
-        return fail('inject requires playwright-core (npm i -g playwright-core).');
-      }
-
-      let browser: import('playwright-core').Browser;
-      try {
-        browser = await chromium.connectOverCDP(cdp);
-      } catch (err) {
-        return fail(`could not connect to the browser at ${cdp}: ${(err as Error).message}`);
-      }
-
-      try {
-        const pages = browser.contexts().flatMap((ctx) => ctx.pages());
-        const page = pageUrl ? pages.find((p) => p.url().startsWith(pageUrl)) ?? pages[0] : pages[0];
-        if (!page) {
-          return fail('no open page found in the connected browser.');
-        }
-        const result = await injectCredential(page as unknown as InjectablePage, resolved.secret, {
-          entryDomain: resolved.urlDomain,
-          overrides: { usernameSelector, passwordSelector, submitSelector },
-        });
-        if (result.ok) {
-          // `outcome` is a best-effort hint (succeeded/rejected/unknown) — the agent confirms from
-          // its own browser. `rejected` means the form was driven fine but the credential was
-          // likely refused (stale password), NOT a heuristic miss.
-          let reportedStale = false;
-          if (result.outcome === 'rejected') {
-            // Auto-report the likely-stale credential so the vault owners get a `credential_stale`
-            // notification (CVT-162). Best-effort, no secret, never blocks the tool result.
-            reportedStale = await tryReportCredentialStale(config, keypair, { vaultId, entryId, code: 'login_rejected' }, signing);
-          }
-          return ok(JSON.stringify({ ok: true, steps: result.steps, outcome: result.outcome, reportedStale }, null, 2));
-        }
-        if (result.diagnostic) {
-          const report = buildFailureReport({
-            reason: result.reason,
-            steps: result.steps,
-            vaultId,
-            entryId,
-            entryDomain: resolved.urlDomain,
-            pageUrl: result.diagnostic.url,
-            html: result.diagnostic.html,
-          });
-          writeFailureReport(report);
-          await uploadInjectFailure(config, keypair, {
-            entryId,
-            domain: report.entryDomain,
-            reason: report.reason,
-            pageOrigin: report.pageOrigin,
-            controls: report.controls,
-          }, signing);
-        }
-        return fail(`${result.reason} (steps: ${result.steps.join(' → ') || 'none'})`);
-      } finally {
-        await browser.close();
-      }
+    async () => {
+      return fail(INJECT_UNAVAILABLE);
     }
   );
 
@@ -239,7 +175,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
         'Report that a stored credential did NOT work (wrong/expired password, login refused). ' +
         'This notifies the vault owners so they can rotate it. Send NO secret and no typed values — only the entry reference and an optional note. ' +
         'It does NOT create a new credential; issuing a fresh one is a human action in the panel. ' +
-        'inject_credential already auto-reports when it observes a `rejected` outcome — use this for failures it cannot see (e.g. an API 401).',
+        'Use this after a failed authentication attempt. Browser injection is currently unavailable until a reviewed authenticated browser boundary is installed.',
       inputSchema: z.object({
         vaultId: z.string().describe('Vault ID'),
         entryId: z.string().describe('Entry ID'),
@@ -260,7 +196,7 @@ export function registerTools(server: McpServer, config: AgentConfig, keypair: K
 }
 
 /**
- * Shared resolve for the exec/inject tools: returns the parsed secret + trusted domain, or an
+ * Shared resolve for the exec tool: returns the parsed secret + trusted domain, or an
  * `error` string for any non-granted access state (so the tool reports it without throwing).
  */
 async function resolveForTool(

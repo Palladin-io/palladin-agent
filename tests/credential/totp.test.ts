@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { generateTotp, base32Encode, base32Decode, TotpError } from '../../src/credential/totp.js';
+import {
+  generateTotp,
+  base32Encode,
+  base32Decode,
+  parseTotpValue,
+  TotpError,
+} from '../../src/credential/totp.js';
+import { expectSensitiveEqual } from '../helpers/sensitive-assert.js';
 
 // RFC 6238 Appendix B test seeds (ASCII), encoded to base32 as the field descriptor stores them.
 const SEED_SHA1 = base32Encode(Buffer.from('12345678901234567890', 'ascii'));
@@ -19,9 +26,9 @@ describe('generateTotp — RFC 6238 Appendix B vectors', () => {
   ];
 
   for (const { seconds, algorithm, secret, code } of cases) {
-    it(`t=${seconds}s ${algorithm} → ${code}`, () => {
+    it(`validates t=${seconds}s ${algorithm}`, () => {
       const result = generateTotp({ secret, algorithm, digits: 8, period: 30 }, seconds * 1000);
-      expect(result.code).toBe(code);
+      expectSensitiveEqual(result.code, code, 'RFC TOTP code');
     });
   }
 });
@@ -30,8 +37,8 @@ describe('generateTotp — defaults and window', () => {
   it('defaults to SHA1 / 6 digits / 30s', () => {
     const result = generateTotp({ secret: SEED_SHA1 }, 59 * 1000);
     // The 8-digit SHA1 vector is 94287082 → last 6 digits for the default 6-digit code.
-    expect(result.code).toBe('287082');
-    expect(result.code).toHaveLength(6);
+    expectSensitiveEqual(result.code, '287082', 'default TOTP code');
+    expect(result.code.length).toBe(6);
   });
 
   it('reports seconds remaining in the current window', () => {
@@ -43,6 +50,85 @@ describe('generateTotp — defaults and window', () => {
   it('rejects an empty or non-base32 secret', () => {
     expect(() => generateTotp({ secret: '' })).toThrow(TotpError);
     expect(() => generateTotp({ secret: '!!!!' })).toThrow(TotpError);
+  });
+
+  it.each([6, 8])('accepts the frozen contract boundary of %i digits', (digits) => {
+    expect(generateTotp({ secret: SEED_SHA1, digits }, 59 * 1000).code).toHaveLength(digits);
+  });
+
+  it.each([5, 9])('rejects %i digits without generating a weak or unsupported code', (digits) => {
+    expect(() => generateTotp({ secret: SEED_SHA1, digits }, 59 * 1000))
+      .toThrow(`unsupported TOTP digits: ${digits} (expected 6-8)`);
+  });
+});
+
+describe('parseTotpValue — explicit parameters', () => {
+  it('rejects unsupported algorithms instead of silently defaulting to SHA1', () => {
+    expect(parseTotpValue(JSON.stringify({ secret: SEED_SHA1, algorithm: 'MD5' }))).toBeNull();
+    expect(parseTotpValue(`otpauth://totp/Palladin?secret=${SEED_SHA1}&algorithm=MD5`)).toBeNull();
+  });
+
+  it.each([
+    ['algorithm', null],
+    ['algorithm', 1],
+    ['digits', '6'],
+    ['digits', null],
+    ['digits', 6.5],
+    ['digits', 0],
+    ['digits', 11],
+    ['period', '30'],
+    ['period', null],
+    ['period', 30.5],
+    ['period', 0],
+    ['period', 2_147_483_648],
+  ])('rejects an explicitly invalid %s value (%j)', (name, value) => {
+    expect(parseTotpValue(JSON.stringify({ secret: SEED_SHA1, [name]: value }))).toBeNull();
+  });
+
+  it.each([5, 9])('rejects an explicit %i-digit value in JSON and otpauth URIs', (digits) => {
+    expect(parseTotpValue(JSON.stringify({ secret: SEED_SHA1, digits }))).toBeNull();
+    expect(parseTotpValue(
+      `otpauth://totp/Palladin?secret=${SEED_SHA1}&digits=${digits}`,
+    )).toBeNull();
+  });
+
+  it.each([6, 8])('accepts an explicit %i-digit value in JSON and otpauth URIs', (digits) => {
+    const expected = { secret: SEED_SHA1, digits };
+    expect(parseTotpValue(JSON.stringify(expected))).toEqual(expected);
+    expect(parseTotpValue(
+      `otpauth://totp/Palladin?secret=${SEED_SHA1}&digits=${digits}`,
+    )).toEqual(expected);
+  });
+
+  it('keeps defaults only when optional parameters are absent', () => {
+    expect(parseTotpValue(JSON.stringify({ secret: SEED_SHA1 }))).toEqual({ secret: SEED_SHA1 });
+    expect(parseTotpValue(`otpauth://totp/Palladin?secret=${SEED_SHA1}`)).toEqual({
+      secret: SEED_SHA1,
+    });
+  });
+
+  it('normalizes supported algorithms and accepts bounded numeric parameters', () => {
+    expect(parseTotpValue(JSON.stringify({
+      secret: `  ${SEED_SHA1}  `,
+      algorithm: 'sha256',
+      digits: 8,
+      period: 2_147_483_647,
+    }))).toEqual({
+      secret: SEED_SHA1,
+      algorithm: 'SHA256',
+      digits: 8,
+      period: 2_147_483_647,
+    });
+  });
+
+  it.each([
+    `secret=${SEED_SHA1}&SeCrEt=${SEED_SHA1}`,
+    `secret=${SEED_SHA1}&algorithm=SHA1&ALGORITHM=SHA256`,
+    `secret=${SEED_SHA1}&digits=6&DIGITS=8`,
+    `secret=${SEED_SHA1}&period=30&Period=60`,
+    `secret=${SEED_SHA1}&se%63ret=${SEED_SHA1}`,
+  ])('rejects duplicate recognized otpauth parameters: %s', (query) => {
+    expect(parseTotpValue(`otpauth://totp/Palladin?${query}`)).toBeNull();
   });
 });
 

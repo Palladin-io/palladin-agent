@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { prepareScriptEnv, applyDefaultVaultId } from '../../src/exec/script-refs.js';
 import { parseSecret, ScriptRef } from '../../src/crypto/secret.js';
 import { base32Encode } from '../../src/credential/totp.js';
+import { expectSensitiveEqual, expectSensitiveMatches } from '../helpers/sensitive-assert.js';
 
 const ref = (over: Partial<ScriptRef> = {}): ScriptRef => ({ env: 'TOKEN', vaultId: 'v1', entryId: 'e1', field: null, ...over });
 
@@ -22,7 +23,11 @@ describe('prepareScriptEnv', () => {
       ok: true,
       secret: parseSecret(JSON.stringify({ value: 'gh-secret' })),
     }));
-    expect(prepared).toEqual({ ok: true, env: { GH_TOKEN: 'gh-secret' }, secretValues: ['gh-secret'] });
+    expectSensitiveEqual(
+      prepared,
+      { ok: true, env: { GH_TOKEN: 'gh-secret' }, secretValues: ['gh-secret'] },
+      'prepared script credential environment',
+    );
   });
 
   it('resolves a named ref field, mapping a totp field to its code', async () => {
@@ -33,7 +38,7 @@ describe('prepareScriptEnv', () => {
     }));
     expect(prepared.ok).toBe(true);
     if (prepared.ok) {
-      expect(prepared.env.OTP).toMatch(/^\d{6}$/);
+      expectSensitiveMatches(prepared.env.OTP, /^\d{6}$/, 'prepared script TOTP');
     }
   });
 

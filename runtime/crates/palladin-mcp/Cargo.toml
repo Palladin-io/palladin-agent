@@ -1,0 +1,26 @@
+[package]
+name = "palladin-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+palladin-api = { path = "../palladin-api" }
+palladin-core = { path = "../palladin-core" }
+palladin-credential = { path = "../palladin-credential" }
+palladin-runtime = { path = "../palladin-runtime" }
+rmcp.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

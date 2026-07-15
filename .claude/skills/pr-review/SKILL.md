@@ -1,13 +1,13 @@
 ---
 name: pr-review
-description: Reviews a pull request in the Palladin Agent CLI for TypeScript correctness, security (key storage, no plaintext secrets), CLI UX, and Node.js best practices. Posts findings as a structured GitHub PR comment.
+description: Reviews a pull request in the Palladin Agent CLI and native runtime for correctness, fail-closed secret storage, CLI UX, packaging, and cross-platform security. Posts findings as a structured GitHub PR comment.
 argument-hint: <pr-number>
 disable-model-invocation: true
-allowed-tools: Read Grep Glob Bash(gh pr view *) Bash(gh pr diff *) Bash(gh pr comment *) Bash(gh api *) Bash(gh api graphql *) Bash(git log *)
+allowed-tools: Read Grep Glob Bash(gh pr view *) Bash(gh pr diff *) Bash(gh pr comment *) Bash(gh api *) Bash(gh api graphql *) Bash(git log *) Bash(npm *) Bash(cargo *) Bash(bash *) Bash(shellcheck *) Bash(actionlint *)
 effort: high
 ---
 
-# PR Review — Palladin Agent CLI
+# PR Review — Palladin Agent CLI and Native Runtime
 
 ## Pull Request Context
 
@@ -34,12 +34,13 @@ effort: high
 ## Review Focus Areas
 
 Cover all sections from `criteria.md`:
-- TypeScript: strict mode, no `any`, async/await correctness
-- Security: key storage tiers, no plaintext secrets in logs or files, `@napi-rs/keyring` optional handling
-- Multi-profile: all commands use `getProfile()`, registry consistency
+- TypeScript: strict mode, no `any`, native dispatcher containment and argument forwarding
+- Rust: formatting, Clippy, tests, error handling, and feature-gated platform code
+- Security: no plaintext secret fallback, organization-wide API-key ownership, per-Agent identity keys, fail-closed native storage
+- Multi-profile: commands use native `RuntimeService` profile resolution and preserve registry consistency
 - CLI UX: clear error messages, correct exit codes, security tier shown where needed
-- File permissions: `0o600` for sensitive files
-- Build: `npm run build` and `npm run lint` pass
+- Packaging: fixed platform package, no lifecycle download, no `PATH`/TypeScript fallback, signature and entitlement verification
+- Build: Node and Rust checks relevant to the changed files pass
 
 ## Output
 

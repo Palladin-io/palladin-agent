@@ -5,8 +5,10 @@ import {
   resolveWaitPolicy,
   DEFAULT_WAIT_MS,
   DEFAULT_POLL_MS,
+  MAX_WAIT_MS,
   MIN_POLL_MS,
   HeartbeatInfo,
+  WaitPolicyError,
 } from '../../src/credential/await-grant.js';
 import { CredentialAccess } from '../../src/http/agent-api.js';
 
@@ -61,6 +63,23 @@ describe('resolveWaitPolicy — hierarchy CLI > backend > default', () => {
     const p = resolveWaitPolicy({ pollMs: 6_000 });
     expect(p.heartbeatMs).toBeLessThanOrEqual(p.pollMs);
   });
+
+  it('accepts exactly five minutes from an explicit option or backend hint', () => {
+    expect(resolveWaitPolicy({ waitMs: MAX_WAIT_MS }).waitMs).toBe(MAX_WAIT_MS);
+    expect(resolveWaitPolicy({}, { maxWaitMs: MAX_WAIT_MS }).waitMs).toBe(MAX_WAIT_MS);
+  });
+
+  it('rejects an explicit option above five minutes with a deterministic error', () => {
+    const resolve = () => resolveWaitPolicy({ waitMs: MAX_WAIT_MS + 1 });
+    expect(resolve).toThrow(WaitPolicyError);
+    expect(resolve).toThrow('wait duration exceeds the five-minute limit');
+  });
+
+  it('rejects a backend hint above five minutes with the same deterministic error', () => {
+    const resolve = () => resolveWaitPolicy({}, { maxWaitMs: MAX_WAIT_MS + 1 });
+    expect(resolve).toThrow(WaitPolicyError);
+    expect(resolve).toThrow('wait duration exceeds the five-minute limit');
+  });
 });
 
 describe('awaitGrant', () => {
@@ -96,6 +115,50 @@ describe('awaitGrant', () => {
     await awaitGrant(pending, resolveWaitPolicy({ waitMs: 10_000 }), h.deps);
     expect(h.heartbeats[0]!.grantId).toBe('g1');
     expect(h.heartbeats[0]!.deadlineMs).toBe(10_000);
+  });
+
+  it('polls at exact non-multiple intervals', async () => {
+    const h = harness([pending, { access: 'denied' }]);
+    const result = await awaitGrant(pending, {
+      waitMs: 40_000,
+      pollMs: 15_000,
+      heartbeatMs: 10_000,
+      pollTimeoutMs: 10_000,
+      progress: 'plain',
+    }, h.deps);
+    expect(result.access).toBe('denied');
+    expect(h.slept).toBe(30_000);
+    expect(h.heartbeats.map((heartbeat) => heartbeat.elapsedMs)).toEqual([10_000, 20_000, 30_000]);
+  });
+
+  it('interrupts an in-flight wait when cancelled', async () => {
+    const controller = new AbortController();
+    const deps = {
+      poll: async () => pending,
+      sleep: async () => new Promise<void>(() => {}),
+      heartbeat: () => {},
+      signal: controller.signal,
+    };
+    const waiting = awaitGrant(pending, resolveWaitPolicy(), deps);
+    controller.abort(new Error('cancelled'));
+    await expect(waiting).rejects.toThrow('cancelled');
+  });
+
+  it('times out a hung poll and keeps heartbeats moving', async () => {
+    const heartbeats: number[] = [];
+    const result = await awaitGrant(pending, {
+      waitMs: 6_000,
+      pollMs: 5_000,
+      heartbeatMs: 1_000,
+      pollTimeoutMs: 10,
+      progress: 'plain',
+    }, {
+      poll: async () => new Promise<CredentialAccess>(() => {}),
+      sleep: async () => {},
+      heartbeat: (heartbeat) => heartbeats.push(heartbeat.elapsedMs),
+    });
+    expect(result.access).toBe('pending');
+    expect(heartbeats).toEqual([1_000, 2_000, 3_000, 4_000, 5_000, 5_000, 6_000]);
   });
 });
 

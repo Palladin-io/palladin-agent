@@ -1,0 +1,95 @@
+name: npm One-Time Bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type BOOTSTRAP @palladin to create the initial inert package versions"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-one-time-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: Bootstrap the nine npm package names
+    if: github.actor == 'patryk-roguszewski'
+    runs-on: ubuntu-latest
+    environment: npm-bootstrap
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Require explicit owner confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$CONFIRMATION" = 'BOOTSTRAP @palladin'
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Pin the npm CLI that supports trust and staged publishing
+        run: npm install --global npm@11.18.0
+
+      - name: Stage inert bootstrap packages
+        run: >-
+          node packaging/npm/stage-bootstrap-packages.mjs
+          --output-dir "$RUNNER_TEMP/npm-bootstrap"
+
+      - name: Publish only the inert bootstrap versions
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${NODE_AUTH_TOKEN:?missing short-lived npm bootstrap token}"
+          mapfile -t packages < <(find "$RUNNER_TEMP/npm-bootstrap" \
+            -mindepth 1 -maxdepth 1 -type d -print | sort)
+          test "${#packages[@]}" -eq 9
+
+          for package in "${packages[@]}"; do
+            name=$(node -p "require(process.argv[1]).name" "$package/package.json")
+            version=$(node -p "require(process.argv[1]).version" "$package/package.json")
+            test "$version" = 0.0.0-bootstrap
+
+            if npm view "$name@$version" version --json >/dev/null 2>&1; then
+              published=$(npm view "$name@$version" version --json)
+              tag=$(npm view "$name" dist-tags.bootstrap --json)
+              test "$published" = '"0.0.0-bootstrap"'
+              test "$tag" = '"0.0.0-bootstrap"'
+              continue
+            fi
+
+            npm publish "$package" \
+              --access public --tag bootstrap --provenance --ignore-scripts
+          done
+
+      - name: Require immediate credential retirement and trust setup
+        run: |
+          cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          ## Mandatory owner follow-up
+
+          1. Revoke the short-lived bootstrap token and remove `NPM_BOOTSTRAP_TOKEN` from the environment.
+          2. Configure stage-only Trusted Publishing for all eight runtime packages with `release-platforms.yml` and `npm-release`.
+          3. Configure stage-only Trusted Publishing for `@palladin/agent` with `release-meta.yml` and `npm-release`.
+          4. Set every package to require 2FA and disallow traditional publish tokens.
+
+          Do not run this bootstrap workflow again after those controls are enabled.
+          SUMMARY

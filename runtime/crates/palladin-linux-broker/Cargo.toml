@@ -1,0 +1,48 @@
+[package]
+name = "palladin-linux-broker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+local-development = [
+    "palladin-core/local-development",
+    "palladin-runtime/local-development",
+]
+
+[dependencies]
+crypto_secretbox.workspace = true
+getrandom.workspace = true
+libc.workspace = true
+nix.workspace = true
+palladin-platform = { path = "../palladin-platform" }
+palladin-core = { path = "../palladin-core" }
+palladin-linux-executor = { path = "../palladin-linux-executor" }
+palladin-runtime = { path = "../palladin-runtime" }
+rpassword.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "palladin-linux-client"
+path = "src/bin/client.rs"
+
+[[bin]]
+name = "palladin-linux-service"
+path = "src/bin/service.rs"
+
+[[bin]]
+name = "palladin-linux-admin-purge"
+path = "src/bin/admin_purge.rs"

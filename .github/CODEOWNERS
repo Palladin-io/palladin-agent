@@ -1,0 +1,14 @@
+# Palladin Agent is a public security-sensitive runtime. The product owner must
+# approve every change, including changes outside the explicitly sensitive paths.
+* @patryk-roguszewski
+
+# Keep high-risk ownership explicit so that future, more specific rules cannot
+# accidentally remove the product owner from these areas.
+/.github/ @patryk-roguszewski
+/package.json @patryk-roguszewski
+/package-lock.json @patryk-roguszewski
+/packages/ @patryk-roguszewski
+/runtime/ @patryk-roguszewski
+/SECURITY.md @patryk-roguszewski
+/RELEASING.md @patryk-roguszewski
+/deny.toml @patryk-roguszewski

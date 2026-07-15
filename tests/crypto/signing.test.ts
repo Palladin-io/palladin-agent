@@ -9,6 +9,7 @@ import {
   generateNonce,
   buildSignatureHeaders,
 } from '../../src/crypto/signing.js';
+import { expectSensitiveEqual, expectSensitiveNotEqual } from '../helpers/sensitive-assert.js';
 
 async function sodium() {
   await _sodium.ready;
@@ -19,18 +20,18 @@ describe('generateSigningKeypair', () => {
   it('produces a 32-byte public key and 64-byte secret key (Ed25519)', async () => {
     const kp = await generateSigningKeypair();
     expect(kp.publicKey).toHaveLength(32);
-    expect(kp.privateKey).toHaveLength(64);
+    expect(kp.privateKey.length).toBe(64);
   });
 
   it('embeds the public key in the trailing 32 bytes of the secret key', async () => {
     const kp = await generateSigningKeypair();
-    expect(Buffer.from(kp.privateKey.slice(32))).toEqual(Buffer.from(kp.publicKey));
+    expectSensitiveEqual(kp.privateKey.slice(32), kp.publicKey, 'embedded signing public key');
   });
 
   it('is unique per call', async () => {
     const a = await generateSigningKeypair();
     const b = await generateSigningKeypair();
-    expect(Buffer.from(a.privateKey).toString('hex')).not.toBe(Buffer.from(b.privateKey).toString('hex'));
+    expectSensitiveNotEqual(a.privateKey, b.privateKey, 'generated signing private keys must differ');
   });
 });
 

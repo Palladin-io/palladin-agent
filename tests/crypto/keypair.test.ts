@@ -9,20 +9,21 @@ vi.mock('../../src/crypto/secure-storage.js', () => ({
 import { generateKeypair, loadKeypair, ensureKeypair, publicKeyBase64 } from '../../src/crypto/keypair.js'
 import { storePrivateKey, loadPrivateKey, hasPrivateKey } from '../../src/crypto/secure-storage.js'
 import { profilePaths } from '../../src/config/paths.js'
+import { expectSensitiveEqual, expectSensitiveNotEqual } from '../helpers/sensitive-assert.js'
 
 const TEST_PATHS = profilePaths('default')
 
 describe('generateKeypair', () => {
   it('returns a 32-byte private key and 32-byte public key', async () => {
     const kp = await generateKeypair()
-    expect(kp.privateKey).toHaveLength(32)
+    expect(kp.privateKey.length).toBe(32)
     expect(kp.publicKey).toHaveLength(32)
   })
 
   it('generates unique keypairs on each call', async () => {
     const a = await generateKeypair()
     const b = await generateKeypair()
-    expect(Buffer.from(a.privateKey).toString('hex')).not.toBe(Buffer.from(b.privateKey).toString('hex'))
+    expectSensitiveNotEqual(a.privateKey, b.privateKey, 'generated private keys must differ')
   })
 })
 
@@ -46,7 +47,11 @@ describe('loadKeypair', () => {
 
     const loaded = await loadKeypair('default', TEST_PATHS)
 
-    expect(Buffer.from(loaded.privateKey).toString('base64')).toBe(base64)
+    expectSensitiveEqual(
+      Buffer.from(loaded.privateKey).toString('base64'),
+      base64,
+      'loaded private key',
+    )
     expect(publicKeyBase64(loaded)).toBe(publicKeyBase64(original))
   })
 
@@ -67,7 +72,7 @@ describe('ensureKeypair', () => {
 
     const result = await ensureKeypair('default', TEST_PATHS)
 
-    expect(vi.mocked(storePrivateKey)).not.toHaveBeenCalled()
+    expect(vi.mocked(storePrivateKey).mock.calls.length).toBe(0)
     expect(publicKeyBase64(result)).toBe(publicKeyBase64(existing))
   })
 
@@ -76,7 +81,7 @@ describe('ensureKeypair', () => {
 
     const result = await ensureKeypair('default', TEST_PATHS)
 
-    expect(result.privateKey).toHaveLength(32)
-    expect(vi.mocked(storePrivateKey)).toHaveBeenCalledOnce()
+    expect(result.privateKey.length).toBe(32)
+    expect(vi.mocked(storePrivateKey).mock.calls.length).toBe(1)
   })
 })

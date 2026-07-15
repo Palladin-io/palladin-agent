@@ -1,7 +1,8 @@
 {
   "name": "@palladin/agent",
   "version": "0.1.0",
-  "description": "Palladin Agent CLI and MCP server",
+  "description": "Script-free launcher for the Palladin native Agent CLI and MCP runtime",
+  "private": true,
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -12,10 +13,14 @@
     "url": "https://github.com/Palladin-io/palladin-agent/issues"
   },
   "files": [
-    "dist/",
+    "dist/bin/",
+    "dist/runtime/",
     "README.md",
     "LICENSE",
     "SECURITY.md"
+  ],
+  "workspaces": [
+    "packages/*"
   ],
   "publishConfig": {
     "access": "public",
@@ -30,29 +35,35 @@
     "dev": "tsc --watch",
     "start": "node dist/bin/palladin.js",
     "lint": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "prepare": "tsc"
+    "test": "vitest run && npm run test:release",
+    "test:release": "node --test packaging/npm/release-scripts.security.mjs",
+    "test:watch": "vitest"
   },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
+  "devDependencies": {
+    "@napi-rs/keyring": "^1.3.0",
     "@noble/curves": "^2.2.0",
+    "@types/libsodium-wrappers": "^0.7.14",
+    "@types/node": "^22.0.0",
     "commander": "^13.1.0",
     "libsodium-wrappers": "^0.8.4",
     "linkedom": "^0.18.12",
-    "tldts": "^6.1.86"
-  },
-  "devDependencies": {
-    "@types/libsodium-wrappers": "^0.7.14",
-    "@types/node": "^22.0.0",
+    "tldts": "^6.1.86",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "zod": "4.4.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.5.0",
+    "npm": ">=9.7.1"
   },
   "optionalDependencies": {
-    "@napi-rs/keyring": "^1.3.0",
-    "playwright-core": "^1.60.0"
+    "@palladin/runtime-darwin-arm64": "0.1.0",
+    "@palladin/runtime-darwin-x64": "0.1.0",
+    "@palladin/runtime-linux-arm64-gnu": "0.1.0",
+    "@palladin/runtime-linux-arm64-musl": "0.1.0",
+    "@palladin/runtime-linux-x64-gnu": "0.1.0",
+    "@palladin/runtime-linux-x64-musl": "0.1.0",
+    "@palladin/runtime-win32-arm64": "0.1.0",
+    "@palladin/runtime-win32-x64": "0.1.0"
   }
 }

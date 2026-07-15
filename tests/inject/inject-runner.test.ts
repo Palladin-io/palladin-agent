@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { injectCredential, InjectablePage } from '../../src/inject/inject-runner.js';
 import { ParsedSecret } from '../../src/crypto/secret.js';
+import { expectSensitiveEqual } from '../helpers/sensitive-assert.js';
 
 function credential(username: string, password: string): ParsedSecret {
   return { username, password, url: null, notes: null, fields: { username, password } };
@@ -78,8 +79,8 @@ describe('injectCredential', () => {
     const result = await injectCredential(page, credential('alice', 'pw'), { entryDomain: 'github.com' });
 
     expect(result.ok).toBe(true);
-    expect(page.filled['#email']).toBe('alice');
-    expect(page.filled['#password']).toBe('pw');
+    expectSensitiveEqual(page.filled['#email'], 'alice', 'filled username');
+    expectSensitiveEqual(page.filled['#password'], 'pw', 'filled password');
     expect(page.clicks).toContain('#go');
   });
 
@@ -125,7 +126,8 @@ describe('injectCredential', () => {
     const result = await injectCredential(page, credential('alice', 'pw'), { entryDomain: 'github.com' });
 
     expect(result.ok).toBe(false);
-    expect(page.filled).toEqual({});
+    const filledCount = Object.keys(page.filled).length;
+    expect(filledCount).toBe(0);
     expect(page.clicks).toEqual([]);
   });
 
@@ -133,7 +135,8 @@ describe('injectCredential', () => {
     const page = new FakePage({ url: 'http://github.com/login', views: [COMBINED] });
     const result = await injectCredential(page, credential('alice', 'pw'), { entryDomain: 'github.com' });
     expect(result.ok).toBe(false);
-    expect(page.filled).toEqual({});
+    const filledCount = Object.keys(page.filled).length;
+    expect(filledCount).toBe(0);
   });
 
   it('drives a multi-step (username → password) flow', async () => {
@@ -141,8 +144,8 @@ describe('injectCredential', () => {
     const result = await injectCredential(page, credential('alice@example.com', 'pw'), { entryDomain: 'google.com' });
 
     expect(result.ok).toBe(true);
-    expect(page.filled['#identifier']).toBe('alice@example.com');
-    expect(page.filled['#password']).toBe('pw');
+    expectSensitiveEqual(page.filled['#identifier'], 'alice@example.com', 'filled account identifier');
+    expectSensitiveEqual(page.filled['#password'], 'pw', 'filled password');
     expect(page.clicks).toEqual(['#next', '#signin']);
   });
 
@@ -151,7 +154,7 @@ describe('injectCredential', () => {
     const result = await injectCredential(page, credential('alice', 'pw'), { entryDomain: 'github.com', submit: false });
     expect(result.ok).toBe(true);
     expect(page.clicks).toEqual([]);
-    expect(page.filled['#password']).toBe('pw');
+    expectSensitiveEqual(page.filled['#password'], 'pw', 'filled password');
   });
 
   it('fails clearly when no login form is present, and attaches a diagnostic snapshot', async () => {
@@ -187,7 +190,7 @@ describe('injectCredential', () => {
       overrides: { usernameSelector: '#weird', passwordSelector: '#pw', submitSelector: '#go' },
     });
     expect(result.ok).toBe(true);
-    expect(page.filled['#weird']).toBe('alice');
-    expect(page.filled['#pw']).toBe('pw');
+    expectSensitiveEqual(page.filled['#weird'], 'alice', 'overridden username');
+    expectSensitiveEqual(page.filled['#pw'], 'pw', 'overridden password');
   });
 });

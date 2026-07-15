@@ -1,0 +1,451 @@
+name: macOS Signed Runtime
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: "Full trusted commit SHA to sign"
+        required: true
+        type: string
+      marketing_version:
+        description: "Product version, for example 0.2.0"
+        required: true
+        type: string
+      bundle_version:
+        description: "Numeric build version, for example 42"
+        required: true
+        type: string
+      release_pipeline:
+        description: "Require a protected version tag invocation from the release pipeline"
+        required: false
+        default: false
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Pełny, zaufany SHA commita do podpisania"
+        required: true
+        type: string
+      marketing_version:
+        description: "Wersja produktu, np. 0.2.0"
+        required: true
+        type: string
+      bundle_version:
+        description: "Numeryczna wersja buildu, np. 42"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-signed-runtime-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Autoryzacja właściciela
+    if: github.actor == 'patryk-roguszewski' && (inputs.release_pipeline != true || github.ref_type == 'tag')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Potwierdź ręczne uruchomienie i niezmienny SHA
+        env:
+          ACTOR: ${{ github.actor }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_PIPELINE: ${{ inputs.release_pipeline }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG_SHA: ${{ github.sha }}
+          MARKETING_VERSION: ${{ inputs.marketing_version }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$RELEASE_PIPELINE" == "true" ]]; then
+            test "$REF_TYPE" = "tag"
+            test "$REF_NAME" = "v$MARKETING_VERSION"
+            test "$SOURCE_SHA" = "$TAG_SHA"
+          else
+            test "$EVENT_NAME" = "workflow_dispatch"
+            test "$ACTOR" = "patryk-roguszewski"
+          fi
+
+  build-native:
+    name: Zbuduj ${{ matrix.architecture }}
+    needs: authorize
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            architecture: arm64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    env:
+      PALLADIN_KEYCHAIN_ACCESS_GROUP: ${{ vars.PALLADIN_MACOS_KEYCHAIN_ACCESS_GROUP }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      PALLADIN_PRODUCTION_BUILD: "1"
+      PALLADIN_VERSION_POLICY_PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
+    steps:
+      - name: Sprawdź konfigurację access group
+        run: |
+          : "${PALLADIN_KEYCHAIN_ACCESS_GROUP:?missing repository variable}"
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Zweryfikuj checkout i pochodzenie z main
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+
+      - name: Zweryfikuj atomową wersję paczek i bundle
+        env:
+          MARKETING_VERSION: ${{ inputs.marketing_version }}
+        run: |
+          set -euo pipefail
+          root_version=$(node -p 'require("./package.json").version')
+          test "$root_version" = "$MARKETING_VERSION"
+          for architecture in arm64 x64; do
+            runtime_version=$(node -p "require('./packages/runtime-darwin-$architecture/package.json').version")
+            test "$runtime_version" = "$MARKETING_VERSION"
+          done
+
+      - name: Potwierdź natywną architekturę bez Rosetty
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "${{ matrix.architecture }}"
+          translated=$(sysctl -in sysctl.proc_translated 2>/dev/null || echo 0)
+          test "$translated" = 0
+
+      - name: Zbuduj natywny slice Hardened Runtime
+        working-directory: runtime
+        run: |
+          set -euo pipefail
+          rustup target add "${{ matrix.target }}"
+          cargo build --release --locked --features macos-hardened \
+            --target "${{ matrix.target }}" -p palladin-cli
+          install -m 0755 \
+            "target/${{ matrix.target }}/release/palladin" \
+            "$RUNNER_TEMP/palladin-${{ matrix.architecture }}"
+
+      - name: Przekaż niepodpisany slice do joba universal
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-palladin-${{ matrix.architecture }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/palladin-${{ matrix.architecture }}
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-universal:
+    name: Podpisz i notaryzuj universal bundle
+    needs: [authorize, build-native]
+    runs-on: macos-15
+    environment: macos-signing
+    timeout-minutes: 45
+    env:
+      PALLADIN_APPLICATION_IDENTIFIER: ${{ vars.PALLADIN_MACOS_APPLICATION_IDENTIFIER }}
+      PALLADIN_KEYCHAIN_ACCESS_GROUP: ${{ vars.PALLADIN_MACOS_KEYCHAIN_ACCESS_GROUP }}
+    steps:
+      - name: Confirm native Apple Silicon execution
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          translated=$(sysctl -in sysctl.proc_translated 2>/dev/null || echo 0)
+          test "$translated" = 0
+
+      - name: Sprawdź konfigurację bez ujawniania wartości
+        env:
+          SIGNING_CERTIFICATE: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_IDENTITY }}
+          PROVISIONING_PROFILE: ${{ secrets.APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64 }}
+          NOTARY_PRIVATE_KEY: ${{ secrets.APPLE_NOTARYTOOL_KEY_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARYTOOL_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARYTOOL_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          : "${PALLADIN_APPLICATION_IDENTIFIER:?missing repository variable}"
+          : "${PALLADIN_KEYCHAIN_ACCESS_GROUP:?missing repository variable}"
+          : "${SIGNING_CERTIFICATE:?missing signing certificate secret}"
+          : "${SIGNING_CERTIFICATE_PASSWORD:?missing signing certificate password secret}"
+          : "${SIGNING_IDENTITY:?missing signing identity secret}"
+          : "${PROVISIONING_PROFILE:?missing provisioning profile secret}"
+          : "${NOTARY_PRIVATE_KEY:?missing notary private key secret}"
+          : "${NOTARY_KEY_ID:?missing notary key ID secret}"
+          : "${NOTARY_ISSUER_ID:?missing notary issuer secret}"
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Zweryfikuj checkout i pochodzenie z main przed użyciem skryptów
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+
+      - name: Pobierz slice arm64
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: unsigned-palladin-arm64-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/slices/arm64
+
+      - name: Pobierz slice x86_64
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: unsigned-palladin-x86_64-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/slices/x86_64
+
+      - name: Złóż dokładnie dwa slice w universal binary
+        run: |
+          set -euo pipefail
+          lipo -create \
+            "$RUNNER_TEMP/slices/arm64/palladin-arm64" \
+            "$RUNNER_TEMP/slices/x86_64/palladin-x86_64" \
+            -output "$RUNNER_TEMP/palladin-universal"
+          chmod 0755 "$RUNNER_TEMP/palladin-universal"
+          archs="$(lipo -archs "$RUNNER_TEMP/palladin-universal")"
+          [[ " $archs " == *' arm64 '* && " $archs " == *' x86_64 '* ]]
+          [[ "$(wc -w <<<"$archs" | tr -d ' ')" == "2" ]]
+
+      - name: Przygotuj tymczasowy Keychain i materiały podpisu
+        env:
+          SIGNING_CERTIFICATE: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          PROVISIONING_PROFILE: ${{ secrets.APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64 }}
+          NOTARY_PRIVATE_KEY: ${{ secrets.APPLE_NOTARYTOOL_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/palladin-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          PROFILE_PATH="$RUNNER_TEMP/palladin.provisionprofile"
+          NOTARY_KEY_PATH="$RUNNER_TEMP/notary-private-key.p8"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          printf '%s' "$SIGNING_CERTIFICATE" | base64 --decode >"$CERTIFICATE_PATH"
+          printf '%s' "$PROVISIONING_PROFILE" | base64 --decode >"$PROFILE_PATH"
+          printf '%s' "$NOTARY_PRIVATE_KEY" | base64 --decode >"$NOTARY_KEY_PATH"
+          chmod 0600 "$CERTIFICATE_PATH" "$PROFILE_PATH" "$NOTARY_KEY_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" \
+            -P "$SIGNING_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          {
+            echo "PALLADIN_SIGNING_KEYCHAIN=$KEYCHAIN_PATH"
+            echo "PALLADIN_PROFILE_PATH=$PROFILE_PATH"
+            echo "PALLADIN_NOTARY_KEY_PATH=$NOTARY_KEY_PATH"
+          } >>"$GITHUB_ENV"
+
+      - name: Zbuduj, podpisz i notaryzuj universal bundle
+        env:
+          SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_IDENTITY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARYTOOL_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARYTOOL_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          output_dir="$RUNNER_TEMP/palladin-universal-bundle"
+          packaging/macos/scripts/build-bundle.sh \
+            --binary "$RUNNER_TEMP/palladin-universal" \
+            --profile "$PALLADIN_PROFILE_PATH" \
+            --output-dir "$output_dir" \
+            --architecture universal \
+            --marketing-version "${{ inputs.marketing_version }}" \
+            --bundle-version "${{ inputs.bundle_version }}"
+          packaging/macos/scripts/sign-notarize.sh \
+            --bundle-dir "$output_dir" \
+            --architecture universal \
+            --identity "$SIGNING_IDENTITY" \
+            --notary-key "$PALLADIN_NOTARY_KEY_PATH" \
+            --notary-key-id "$NOTARY_KEY_ID" \
+            --notary-issuer "$NOTARY_ISSUER_ID" \
+            --output-archive "$RUNNER_TEMP/palladin-runtime-darwin-universal.zip"
+
+      - name: Zapewnij rzeczywisty Homebrew Node do testu izolacji
+        run: |
+          set -euo pipefail
+          brew list node@22 >/dev/null 2>&1 || brew install node@22
+          homebrew_node="$(realpath "$(brew --prefix node@22)/bin/node")"
+          test -x "$homebrew_node"
+          echo "PALLADIN_HOMEBREW_NODE=$homebrew_node" >>"$GITHUB_ENV"
+
+      - name: Zweryfikuj instalację z rzeczywistych tarballi npm
+        run: |
+          set -euo pipefail
+          unpacked="$RUNNER_TEMP/notarized-app"
+          mkdir -p "$unpacked"
+          ditto -x -k "$RUNNER_TEMP/palladin-runtime-darwin-universal.zip" "$unpacked"
+          test -d "$unpacked/PalladinRuntime.app"
+          for architecture in arm64 x64; do
+            runtime_package="$RUNNER_TEMP/runtime-darwin-$architecture-package"
+            packaging/macos/scripts/stage-npm-platform-package.sh \
+              --architecture "$architecture" \
+              --app "$unpacked/PalladinRuntime.app" \
+              --output-dir "$runtime_package"
+          done
+
+          npm ci --ignore-scripts --workspaces=false
+          npm run build
+          for architecture in arm64 x64; do
+            npm pack "$RUNNER_TEMP/runtime-darwin-$architecture-package" \
+              --pack-destination "$RUNNER_TEMP" >/dev/null
+          done
+          for architecture in arm64 x64; do
+            runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$architecture-${{ inputs.marketing_version }}.tgz"
+            test -f "$runtime_tgz"
+            packaged_runtime="$RUNNER_TEMP/packed-runtime-darwin-$architecture"
+            mkdir -p "$packaged_runtime"
+            tar -xzf "$runtime_tgz" -C "$packaged_runtime"
+            packaging/macos/scripts/verify-bundle.sh \
+              --app "$packaged_runtime/package/PalladinRuntime.app" \
+              --architecture universal
+          done
+          runtime_arch=$(node -p 'process.arch')
+          runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$runtime_arch-${{ inputs.marketing_version }}.tgz"
+          test -f "$runtime_tgz"
+
+          smoke="$RUNNER_TEMP/npm-smoke"
+          mkdir -p "$smoke"
+          npm install --prefix "$smoke" --ignore-scripts "$runtime_tgz"
+          installed_app="$smoke/node_modules/@palladin/runtime-darwin-$runtime_arch/PalladinRuntime.app"
+          packaging/macos/scripts/verify-bundle.sh \
+            --app "$installed_app" --architecture universal
+          doctor=$("$installed_app/Contents/MacOS/palladin" doctor)
+          grep -F 'platform: macos/aarch64' <<<"$doctor"
+          grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
+          grep -F 'identity-opened: no' <<<"$doctor"
+          echo "PALLADIN_NPM_RUNTIME_ARCH=$runtime_arch" >>"$GITHUB_ENV"
+
+      - name: Przetestuj granicę Keychain na podpisanym runtime
+        if: inputs.release_pipeline != true
+        env:
+          PALLADIN_SECURITY_TEST_CONFIRM: ephemeral-runner
+          SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_IDENTITY }}
+        run: |
+          set -euo pipefail
+          installed_app="$RUNNER_TEMP/npm-smoke/node_modules/@palladin/runtime-darwin-$PALLADIN_NPM_RUNTIME_ARCH/PalladinRuntime.app"
+          packaging/macos/scripts/test-security-boundary.sh \
+            --app "$installed_app" \
+            --entitlements "$RUNNER_TEMP/palladin-universal-bundle/PalladinRuntime.entitlements.plist" \
+            --identity "$SIGNING_IDENTITY" \
+            --homebrew-node "$PALLADIN_HOMEBREW_NODE"
+
+      - name: Opublikuj zweryfikowany artefakt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: palladin-runtime-darwin
+          path: |
+            ${{ runner.temp }}/palladin-runtime-darwin-universal.zip
+            ${{ runner.temp }}/palladin-runtime-darwin-arm64-*.tgz
+            ${{ runner.temp }}/palladin-runtime-darwin-x64-*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Usuń materiały podpisu
+        if: always()
+        run: |
+          set +e
+          if [[ -n "${PALLADIN_SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$PALLADIN_SIGNING_KEYCHAIN"
+          fi
+          rm -f -- \
+            "${RUNNER_TEMP}/developer-id.p12" \
+            "${RUNNER_TEMP}/palladin.provisionprofile" \
+            "${RUNNER_TEMP}/notary-private-key.p8"
+
+  smoke-signed-intel:
+    name: Test signed artifact natively on Intel
+    needs: [authorize, sign-universal]
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    env:
+      PALLADIN_APPLICATION_IDENTIFIER: ${{ vars.PALLADIN_MACOS_APPLICATION_IDENTIFIER }}
+      PALLADIN_KEYCHAIN_ACCESS_GROUP: ${{ vars.PALLADIN_MACOS_KEYCHAIN_ACCESS_GROUP }}
+      PALLADIN_SECURITY_TEST_CONFIRM: ephemeral-runner
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source and native Intel execution
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          test "$(uname -m)" = x86_64
+          translated=$(sysctl -in sysctl.proc_translated 2>/dev/null || echo 0)
+          test "$translated" = 0
+          test "$(node -p 'process.arch')" = x64
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: palladin-runtime-darwin
+          path: ${{ runner.temp }}/signed-release
+      - name: Install and execute the exact signed Intel npm artifact
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/signed-release"
+          shopt -s nullglob
+          runtime_matches=("$release"/palladin-runtime-darwin-x64-*.tgz)
+          test "${#runtime_matches[@]}" -eq 1
+          smoke="$RUNNER_TEMP/npm-smoke-intel"
+          mkdir -p "$smoke"
+          npm install --prefix "$smoke" --ignore-scripts "${runtime_matches[0]}"
+          app="$smoke/node_modules/@palladin/runtime-darwin-x64/PalladinRuntime.app"
+          packaging/macos/scripts/verify-bundle.sh --app "$app" --architecture universal
+          binary="$app/Contents/MacOS/palladin"
+          doctor=$("$binary" doctor)
+          grep -F 'platform: macos/x86_64' <<<"$doctor"
+          grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
+          grep -F 'identity-opened: no' <<<"$doctor"
+          if [[ '${{ inputs.release_pipeline }}' != true ]]; then
+            cleanup() { "$binary" purge --confirm >/dev/null 2>&1 || true; }
+            trap cleanup EXIT
+            "$binary" purge --confirm >/dev/null 2>&1 || true
+            "$binary" init >/dev/null
+            "$binary" --id default security upgrade >/dev/null
+            "$binary" --id default security upgrade >/dev/null
+          fi
+
+  macos-signed-gate:
+    name: macOS Signed Release Gate
+    if: always()
+    needs: [authorize, build-native, sign-universal, smoke-signed-intel]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require signed native Apple Silicon and Intel release
+        env:
+          AUTHORIZE: ${{ needs.authorize.result }}
+          BUILD_NATIVE: ${{ needs.build-native.result }}
+          SIGN_UNIVERSAL: ${{ needs.sign-universal.result }}
+          INTEL_SMOKE: ${{ needs.smoke-signed-intel.result }}
+        run: |
+          test "$AUTHORIZE" = success
+          test "$BUILD_NATIVE" = success
+          test "$SIGN_UNIVERSAL" = success
+          test "$INTEL_SMOKE" = success

@@ -17,9 +17,11 @@ export const EX_NOPERM = 77;
 
 /** Map a non-granted access state to its exit code. */
 export function exitCodeForAccess(
-  access: Exclude<CredentialAccess['access'], 'granted'>,
+  access: CredentialAccess['access'],
 ): number {
   switch (access) {
+    case 'granted':
+      return EX_OK;
     case 'pending':
     case 'unavailable':
       return EX_TEMPFAIL;

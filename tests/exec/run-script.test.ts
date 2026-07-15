@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync } from 'fs';
 import { Writable } from 'stream';
 import { runScript, assertAllowedInterpreter, interpreterBinary, ScriptError, ALLOWED_INTERPRETERS } from '../../src/exec/run-script.js';
+import { expectSensitiveContains, expectSensitiveEqual, expectSensitiveExcludes } from '../helpers/sensitive-assert.js';
 
 function collectStream(): { stream: Writable; text: () => string } {
   let buf = '';
@@ -41,7 +42,7 @@ describe('runScript', () => {
       secretValues: [],
     });
     expect(result.code).toBe(0);
-    expect(result.stdout).toBe('tok-123');
+    expectSensitiveEqual(result.stdout, 'tok-123', 'script credential output');
   });
 
   it('writes the script with private POSIX permissions and deletes it afterwards', async () => {
@@ -67,7 +68,8 @@ describe('runScript', () => {
       { env: { ...process.env }, secretValues: [] },
     );
     expect(result.code).toBe(2);
-    expect(existsSync(result.stdout)).toBe(false);
+    const temporaryScriptStillExists = existsSync(result.stdout);
+    expect(temporaryScriptStillExists).toBe(false);
   });
 
   it('masks reference values in the mirrored/captured output', async () => {
@@ -77,9 +79,9 @@ describe('runScript', () => {
       secretValues: ['superSecretRefValue'],
       mirror: mirror.stream,
     });
-    expect(result.stdout).not.toContain('superSecretRefValue');
-    expect(result.stdout).toContain('***');
-    expect(mirror.text()).not.toContain('superSecretRefValue');
+    expectSensitiveExcludes(result.stdout, 'superSecretRefValue', 'captured script output');
+    expectSensitiveContains(result.stdout, '***', 'masked script output');
+    expectSensitiveExcludes(mirror.text(), 'superSecretRefValue', 'mirrored script output');
   });
 
   it('rejects a non-whitelisted interpreter before running anything', async () => {

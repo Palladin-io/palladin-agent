@@ -55,6 +55,8 @@ export interface ParsedSecret {
   password: string;
   url: string | null;
   notes: string | null;
+  /** Legacy top-level otpauth URI from imported CREDENTIAL blobs. Never added to `fields`. */
+  legacyTotp: string | null;
   /**
    * Well-known + non-totp custom fields, keyed for env injection (`CLAW_<UPPER>`). Excludes totp
    * secrets (a code is derived on demand instead) and Script structural keys.
@@ -67,7 +69,7 @@ export interface ParsedSecret {
 }
 
 // Top-level keys that carry structure, not an injectable well-known value.
-const STRUCTURAL_KEYS = new Set(['v', 'fields', 'script', 'interpreter', 'refs']);
+const STRUCTURAL_KEYS = new Set(['v', 'fields', 'script', 'interpreter', 'refs', 'totp']);
 
 /**
  * Parse the decrypted plaintext. Accepts every entry shape; falls back to treating the whole
@@ -114,7 +116,16 @@ export function parseSecret(plaintext: string): ParsedSecret {
     }
   }
 
-  return { username, password, url: str(obj.url), notes: str(obj.notes), fields, customFields, script };
+  return {
+    username,
+    password,
+    url: str(obj.url),
+    notes: str(obj.notes),
+    legacyTotp: str(obj.totp),
+    fields,
+    customFields,
+    script,
+  };
 }
 
 function rawSecret(plaintext: string): ParsedSecret {
@@ -123,6 +134,7 @@ function rawSecret(plaintext: string): ParsedSecret {
     password: plaintext,
     url: null,
     notes: null,
+    legacyTotp: null,
     fields: { value: plaintext },
     customFields: [],
     script: null,
@@ -176,13 +188,16 @@ function parseScript(obj: Record<string, unknown>): ScriptPayload | null {
 }
 
 function parseScriptRefs(value: unknown): ScriptRef[] {
-  if (!Array.isArray(value)) {
+  if (value === undefined) {
     return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error('Script entry contains malformed credential references');
   }
   const refs: ScriptRef[] = [];
   for (const entry of value) {
     if (typeof entry !== 'object' || entry === null) {
-      continue;
+      throw new Error('Script entry contains a malformed credential reference');
     }
     const record = entry as Record<string, unknown>;
     // Accept `placeholder` as a legacy alias for `env` (spec draft §1).
@@ -191,7 +206,7 @@ function parseScriptRefs(value: unknown): ScriptRef[] {
     const env = envRaw?.trim() ?? null;
     const entryId = typeof record.entryId === 'string' ? record.entryId.trim() : null;
     if (!env || !entryId) {
-      continue;
+      throw new Error('Script entry contains a malformed credential reference');
     }
     const vaultId = typeof record.vaultId === 'string' && record.vaultId.trim() ? record.vaultId.trim() : null;
     const field = typeof record.field === 'string' && record.field.trim() ? record.field.trim() : null;

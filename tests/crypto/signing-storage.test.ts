@@ -63,7 +63,7 @@ describe('signing key storage (file tier)', () => {
     const created = await ensureSigningKeypair('default', paths);
     const loaded = await loadSigningKeypair('default', paths);
     expect(Buffer.from(loaded.publicKey)).toEqual(Buffer.from(created.publicKey));
-    expect(loaded.privateKey).toHaveLength(64);
+    expect(loaded.privateKey.length).toBe(64);
   });
 
   it('hasKey reports the signing slot present after enrollment, box slot absent', async () => {

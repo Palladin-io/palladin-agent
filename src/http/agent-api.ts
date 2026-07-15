@@ -272,6 +272,8 @@ export interface GetCredentialOptions {
    * the delivery method, so a plain `exec` call requests exec access.
    */
   requestedMethods?: CredentialMethod[];
+  /** Cancels a bounded approval poll without changing the signed request bytes. */
+  signal?: AbortSignal;
 }
 
 export async function getCredential(
@@ -297,7 +299,7 @@ export async function getCredential(
     `/api/agent/vaults/${encodeURIComponent(vaultId)}/entries/${encodeURIComponent(entryId)}/credential`,
     config,
     keypair,
-    { method: 'POST', body: JSON.stringify(body) },
+    { method: 'POST', body: JSON.stringify(body), signal: options?.signal },
     signing,
   );
 
@@ -308,7 +310,7 @@ export async function getCredential(
   }
 
   if (res.status === 400) {
-    throw new AgentApiError(400, 'A reason is required to request access to this entry — pass --reason.');
+    throw new AgentApiError(400, 'A reason is required to request access to this entry - pass --reason.');
   }
   throw new AgentApiError(res.status, `credential request failed (HTTP ${res.status})`);
 }

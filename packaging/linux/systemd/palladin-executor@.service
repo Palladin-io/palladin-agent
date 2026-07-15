@@ -1,0 +1,45 @@
+[Unit]
+Description=Palladin one-shot hardened executor
+Requires=palladin-executor.socket
+After=palladin-executor.socket
+
+[Service]
+Type=exec
+DynamicUser=yes
+# The static palladin-executor group owns the broker-only socket. Reusing that
+# name for DynamicUser makes systemd fail credential setup because the group
+# exists without a matching account. The socket-derived instance name is
+# numeric, so this produces a distinct ephemeral identity per connection.
+User=plx-%i
+ExecStart=/usr/lib/palladin/runtime/palladin-linux-executor
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+LimitCORE=0
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG GLIBC_TUNABLES BASH_ENV ENV NODE_OPTIONS NODE_PATH PYTHONPATH PYTHONHOME PALLADIN_HOME
+TimeoutStopSec=10s
+RuntimeMaxSec=24h

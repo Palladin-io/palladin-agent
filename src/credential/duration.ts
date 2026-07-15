@@ -7,21 +7,30 @@ export function parseDuration(input: string): number {
   const s = input.trim().toLowerCase();
   const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(s);
   if (!m) {
-    throw new Error(`invalid duration "${input}" — use e.g. 30s, 3m, 0`);
+    throw new Error(`invalid duration "${input}" - use e.g. 30s, 3m, 0`);
   }
   const n = parseFloat(m[1]!);
+  let milliseconds: number;
   switch (m[2]) {
     case 'ms':
-      return Math.round(n);
+      milliseconds = Math.round(n);
+      break;
     case 'm':
-      return Math.round(n * 60_000);
+      milliseconds = Math.round(n * 60_000);
+      break;
     case 'h':
-      return Math.round(n * 3_600_000);
+      milliseconds = Math.round(n * 3_600_000);
+      break;
     case 's':
     case undefined:
-      return Math.round(n * 1_000);
+      milliseconds = Math.round(n * 1_000);
+      break;
     default:
       // Unreachable given the regex, but keeps the switch exhaustive.
       throw new Error(`invalid duration "${input}"`);
   }
+  if (!Number.isSafeInteger(milliseconds)) {
+    throw new Error(`invalid duration "${input}"`);
+  }
+  return milliseconds;
 }
