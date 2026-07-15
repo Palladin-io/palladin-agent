@@ -33,14 +33,17 @@ append_xattrs() {
   local path="$1"
   local output="$2"
   local attribute
+  local attributes
   local value
 
+  attributes="$(/usr/bin/xattr -s "$path" | LC_ALL=C /usr/bin/sort)" ||
+    die 'could not list app extended attributes'
   while IFS= read -r attribute; do
     [[ -n "$attribute" ]] || continue
     value="$(/usr/bin/xattr -psx "$attribute" "$path" | /usr/bin/tr -d ' \n')" ||
       die 'could not read an app extended attribute'
     printf 'X\0%s\0%s\0' "$attribute" "$value" >>"$output"
-  done < <(/usr/bin/xattr -s "$path" | LC_ALL=C /usr/bin/sort)
+  done <<<"$attributes"
 }
 
 write_manifest() {
@@ -52,8 +55,10 @@ write_manifest() {
   local mode
   local digest
   local target
+  local path_list="${output}.paths"
 
   : >"$output"
+  /usr/bin/find -s "$root" -print0 >"$path_list" || die 'could not enumerate app entries'
   while IFS= read -r -d '' path; do
     if [[ "$path" == "$root" ]]; then
       relative='.'
@@ -78,7 +83,8 @@ write_manifest() {
       *) die 'app contains an unsupported filesystem entry type' ;;
     esac
     append_xattrs "$path" "$output"
-  done < <(/usr/bin/find -s "$root" -print0)
+  done <"$path_list"
+  /bin/rm -f -- "$path_list"
 }
 
 write_manifest "$reference_root" "$scratch/reference.manifest"

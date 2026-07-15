@@ -42,11 +42,14 @@ function readJson(path, label) {
 }
 function sha256Bytes(value) { return createHash('sha256').update(value).digest('hex'); }
 function sha256File(path) { return sha256Bytes(readRegular(path, `artifact ${basename(path)}`)); }
-function repositoryScript(relativePath) {
-  const path = join(REPOSITORY_ROOT, relativePath);
-  const linked = lstatSync(path);
-  if (!linked.isFile() || linked.isSymbolicLink()) fail('repository lifecycle script is invalid');
-  return path;
+function assertRepositoryScript(relativePath) {
+  const modulePath = join(REPOSITORY_ROOT, relativePath);
+  const workingPath = resolve(relativePath);
+  const moduleFile = lstatSync(modulePath); const workingFile = lstatSync(workingPath);
+  if (!moduleFile.isFile() || moduleFile.isSymbolicLink() || !workingFile.isFile()
+    || workingFile.isSymbolicLink() || moduleFile.dev !== workingFile.dev || moduleFile.ino !== workingFile.ino) {
+    fail('repository lifecycle script is not the exact checked-out file');
+  }
 }
 function writeAtomic(path, value) {
   const absolute = resolve(path); mkdirSync(dirname(absolute), { recursive: true, mode: 0o700 });
@@ -181,7 +184,8 @@ function requirePinnedNpm(env) {
   if (version.stdout.trim() !== '11.18.0' || version.stderr !== '') fail('physical lifecycle requires npm 11.18.0');
 }
 function verifyMacBundle(app, phase, env) {
-  bounded('/bin/bash', [repositoryScript('packaging/macos/scripts/verify-bundle.sh'), '--app', app, '--architecture', 'universal'], {
+  assertRepositoryScript('packaging/macos/scripts/verify-bundle.sh');
+  bounded('/bin/bash', ['packaging/macos/scripts/verify-bundle.sh', '--app', app, '--architecture', 'universal'], {
     env, timeout: 300_000,
   });
   const version = captureText(bounded('/usr/libexec/PlistBuddy', [

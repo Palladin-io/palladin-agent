@@ -82,6 +82,9 @@ describe('macOS authenticated signed-runtime boundary', () => {
     expect(comparison).toContain('/usr/bin/shasum -a 256');
     expect(comparison).toContain('/usr/bin/readlink');
     expect(comparison).toContain('/usr/bin/xattr -psx');
+    expect(comparison).toContain("attributes=\"$(/usr/bin/xattr -s \"$path\" | LC_ALL=C /usr/bin/sort)\"");
+    expect(comparison).toContain('/usr/bin/find -s "$root" -print0 >"$path_list"');
+    expect(comparison).not.toContain('< <(');
     expect(comparison).toContain('/usr/bin/cmp -s');
     expect(comparison).not.toContain('/usr/local/bin');
   });
