@@ -10,6 +10,16 @@ for binary in palladin-linux-client palladin-linux-service palladin-linux-execut
   [[ $(stat -c '%U:%G:%a:%h' "$path") == 'root:root:755:1' ]] || fail "$path permissions are invalid"
 done
 
+authorization_helper=/usr/lib/palladin/runtime/palladin-manage-agent-uid
+[[ -f $authorization_helper && ! -L $authorization_helper && -x $authorization_helper ]] \
+  || fail 'authorization helper is missing or not executable'
+[[ $(stat -c '%U:%G:%a:%h' "$authorization_helper") == 'root:root:755:1' ]] \
+  || fail 'authorization helper permissions are invalid'
+origin_policy=$(sed -n "s/^readonly PALLADIN_LOOPBACK_POLICY='\(production\|development\)'$/\1/p" \
+  "$authorization_helper")
+[[ $origin_policy == production || $origin_policy == development ]] \
+  || fail 'authorization helper origin policy is unresolved or invalid'
+
 [[ $(stat -c '%U:%G:%a:%h' /etc/palladin/runtime-v1) == 'root:root:644:1' ]] || fail 'install marker permissions are invalid'
 [[ $(stat -c '%U:%G:%a:%h:%s' /var/lib/palladin-runtime/v1/master.key) == 'palladin-runtime:palladin-runtime:400:1:32' ]] || fail 'master key permissions are invalid'
 [[ $(stat -c '%U:%G:%a' /var/lib/palladin-runtime/v1/policy) == 'palladin-runtime:palladin-runtime:700' ]] || fail 'system policy state permissions are invalid'

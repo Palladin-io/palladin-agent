@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo 'Usage: build-rpm.sh --version VERSION --architecture x64|arm64 --binaries DIR --output DIR' >&2
+  echo 'Usage: build-rpm.sh --version VERSION --architecture x64|arm64 --binaries DIR --output DIR [--development-loopback]' >&2
   exit 64
 }
 
@@ -10,16 +10,22 @@ version=''
 architecture=''
 binaries=''
 output=''
+loopback_policy=production
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) version=${2:-}; shift 2 ;;
     --architecture) architecture=${2:-}; shift 2 ;;
     --binaries) binaries=${2:-}; shift 2 ;;
     --output) output=${2:-}; shift 2 ;;
+    --development-loopback) loopback_policy=development; shift ;;
     *) usage ;;
   esac
 done
 [[ -n $version && -n $architecture && -d $binaries && -n $output ]] || usage
+if [[ $loopback_policy == development && ! $version =~ (^|[.+~])dev[0-9A-Za-z.+~]*$ ]]; then
+  echo 'Error: development loopback packages require an explicitly .dev-labelled version' >&2
+  exit 64
+fi
 case "$architecture" in x64) rpm_arch=x86_64 ;; arm64) rpm_arch=aarch64 ;; *) usage ;; esac
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -35,7 +41,13 @@ install -m 0755 \
   "$binaries/palladin-worker" \
   "$stage/usr/lib/palladin/runtime/"
 install -m 0755 "$root/scripts/configure-package.sh" "$stage/usr/lib/palladin/runtime/configure-package"
-install -m 0755 "$root/scripts/manage-agent-uid.sh" "$stage/usr/lib/palladin/runtime/palladin-manage-agent-uid"
+sed "s/@PALLADIN_LOOPBACK_POLICY@/$loopback_policy/g" \
+  "$root/scripts/manage-agent-uid.sh" > "$stage/usr/lib/palladin/runtime/palladin-manage-agent-uid"
+chmod 0755 "$stage/usr/lib/palladin/runtime/palladin-manage-agent-uid"
+if grep -Fq '@PALLADIN_LOOPBACK_POLICY@' "$stage/usr/lib/palladin/runtime/palladin-manage-agent-uid"; then
+  echo 'Error: the packaged authorization helper contains an unresolved origin policy' >&2
+  exit 1
+fi
 install -m 0755 "$root/scripts/verify-installation.sh" "$stage/usr/lib/palladin/runtime/verify-installation"
 install -m 0644 "$root/systemd/"* "$stage/usr/lib/systemd/system/"
 install -m 0644 "$root/sysusers.d/palladin-runtime.conf" "$stage/usr/lib/sysusers.d/"

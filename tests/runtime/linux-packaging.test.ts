@@ -1,5 +1,5 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -145,6 +145,8 @@ describe('Linux hardened package boundary', () => {
     expect(helper).toContain('palladin-linux-admin-purge');
     expect(helper).toContain('--dedicated');
     expect(helper).toContain('the Agent account password must be locked');
+    expect(helper).toContain("readonly PALLADIN_LOOPBACK_POLICY='@PALLADIN_LOOPBACK_POLICY@'");
+    expect(helper).toContain('[[ $PALLADIN_LOOPBACK_POLICY == development ]]');
     const authorize = helper.slice(
       helper.indexOf('  authorize)\n'),
       helper.indexOf('  revoke|revoke-purge)\n'),
@@ -152,6 +154,69 @@ describe('Linux hardened package boundary', () => {
     expect(authorize.indexOf('restart_broker')).toBeLessThan(
       authorize.indexOf('mv -T "$temporary" "$mapping"'),
     );
+  });
+
+  it('renders loopback authorization only for explicitly development-labelled packages', () => {
+    const temporary = mkdtempSync(join(tmpdir(), 'palladin-linux-origin-policy-'));
+    try {
+      const template = read('packaging/linux/scripts/manage-agent-uid.sh');
+      const unresolved = spawnSync('bash', ['packaging/linux/scripts/manage-agent-uid.sh'], {
+        encoding: 'utf8',
+      });
+      expect(unresolved.status).not.toBe(0);
+      expect(unresolved.stderr).toContain('the installed origin policy is invalid');
+      const production = join(temporary, 'production-helper.sh');
+      const development = join(temporary, 'development-helper.sh');
+      writeFileSync(production, template.replace('@PALLADIN_LOOPBACK_POLICY@', 'production'));
+      writeFileSync(development, template.replace('@PALLADIN_LOOPBACK_POLICY@', 'development'));
+
+      const accepts = (helper: string, host: string): boolean => {
+        try {
+          execFileSync('bash', ['-c', 'source "$1"; valid_authorization_host "$2"', '_', helper, host]);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      for (const helper of [production, development]) {
+        expect(accepts(helper, 'https://api.palladin.io')).toBe(true);
+        expect(accepts(helper, 'https://api.stage.palladin.io')).toBe(true);
+        expect(accepts(helper, 'http://localhost:5000')).toBe(false);
+        expect(accepts(helper, 'http://127.0.0.1')).toBe(false);
+        expect(accepts(helper, 'http://127.0.0.1:0')).toBe(false);
+        expect(accepts(helper, 'http://127.0.0.1:65536')).toBe(false);
+      }
+      expect(accepts(production, 'http://127.0.0.1:5000')).toBe(false);
+      expect(accepts(production, 'http://[::1]:5000')).toBe(false);
+      expect(accepts(development, 'http://127.0.0.1:5000')).toBe(true);
+      expect(accepts(development, 'http://[::1]:5000')).toBe(true);
+
+      const binaries = join(temporary, 'binaries');
+      mkdirSync(binaries);
+      for (const builder of [
+        'packaging/linux/deb/build-deb.sh',
+        'packaging/linux/rpm/build-rpm.sh',
+      ]) {
+        const rejected = spawnSync('bash', [
+          builder,
+          '--version', '0.1.0',
+          '--architecture', 'x64',
+          '--binaries', binaries,
+          '--output', join(temporary, 'output'),
+          '--development-loopback',
+        ], { encoding: 'utf8' });
+        expect(rejected.status).not.toBe(0);
+        expect(rejected.stderr).toMatch(
+          /development loopback packages require an explicitly \.dev-labelled version/,
+        );
+        const source = read(builder);
+        expect(source).toContain('loopback_policy=production');
+        expect(source).toContain('--development-loopback) loopback_policy=development');
+        expect(source).toContain("s/@PALLADIN_LOOPBACK_POLICY@/$loopback_policy/g");
+      }
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
   });
 
   it('builds and tests glibc packages on native x64 and arm64 Linux runners', () => {

@@ -26,13 +26,24 @@ useradd --system --no-create-home --shell /usr/sbin/nologin "$agent"
 useradd --system --no-create-home --shell /usr/sbin/nologin "$attacker"
 useradd --create-home --shell /bin/bash "$login_user"
 if /usr/lib/palladin/runtime/palladin-manage-agent-uid \
-  authorize "$login_user" login-agent http://127.0.0.1:5000 --dedicated; then
+  authorize "$login_user" login-agent https://api.stage.palladin.io --dedicated; then
   echo 'Error: a login-capable desktop account was authorized as Hardened' >&2
   exit 1
 fi
 echo 'login-capable-account=denied'
+grep -Fxq "readonly PALLADIN_LOOPBACK_POLICY='production'" \
+  /usr/lib/palladin/runtime/palladin-manage-agent-uid
+for loopback in http://127.0.0.1:5000 'http://[::1]:5000'; do
+  if /usr/lib/palladin/runtime/palladin-manage-agent-uid \
+    authorize "$agent" boundary-agent "$loopback" --dedicated; then
+    echo "Error: the production package authorized loopback origin $loopback" >&2
+    exit 1
+  fi
+done
+[[ ! -e /etc/palladin/agents.d/$(id -u "$agent") ]]
+echo 'production-loopback-origin=denied ipv4=denied ipv6=denied'
 /usr/lib/palladin/runtime/palladin-manage-agent-uid \
-  authorize "$agent" boundary-agent http://127.0.0.1:5000 --dedicated
+  authorize "$agent" boundary-agent https://api.stage.palladin.io --dedicated
 usermod -a -G palladin-runtime "$attacker"
 
 for user in "$agent" "$attacker"; do
@@ -178,14 +189,14 @@ fi
 userdel --force "$agent"
 useradd --system --uid "$recycled_uid" --no-create-home --shell /usr/sbin/nologin "$agent"
 if /usr/lib/palladin/runtime/palladin-manage-agent-uid \
-  authorize "$agent" recycled-agent http://127.0.0.1:5000 --dedicated; then
+  authorize "$agent" recycled-agent https://api.stage.palladin.io --dedicated; then
   echo 'Error: a live process survived revocation and crossed into a recycled UID principal' >&2
   exit 1
 fi
 kill "$stale_pid"
 wait "$stale_launcher" 2>/dev/null || true
 /usr/lib/palladin/runtime/palladin-manage-agent-uid \
-  authorize "$agent" recycled-agent http://127.0.0.1:5000 --dedicated
+  authorize "$agent" recycled-agent https://api.stage.palladin.io --dedicated
 recycled_principal=$(sed -n 's/^principal=//p' "/etc/palladin/agents.d/$recycled_uid")
 [[ $recycled_principal =~ ^[0-9a-f]{32}$ && $recycled_principal != "$principal" ]]
 runuser -u "$agent" -- /usr/lib/palladin/runtime/palladin-linux-client doctor \

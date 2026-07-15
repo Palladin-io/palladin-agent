@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+readonly PALLADIN_LOOPBACK_POLICY='@PALLADIN_LOOPBACK_POLICY@'
+
 usage() {
   echo 'Usage: palladin-manage-agent-uid <authorize USER PROFILE HOST --dedicated|revoke USER|revoke-purge USER --confirm-purge>' >&2
   exit 64
@@ -11,11 +13,8 @@ fail_account() {
   exit 65
 }
 
-valid_host() {
+valid_loopback_host() {
   local host=$1 port
-  case "$host" in
-    https://api.palladin.io|https://api.stage.palladin.io) return 0 ;;
-  esac
   if [[ $host =~ ^http://127\.0\.0\.1:([0-9]{1,5})$ \
     || $host =~ ^http://\[::1\]:([0-9]{1,5})$ ]]; then
     port=${BASH_REMATCH[1]}
@@ -23,6 +22,24 @@ valid_host() {
     return
   fi
   return 1
+}
+
+valid_record_host() {
+  local host=$1
+  case "$host" in
+    https://api.palladin.io|https://api.stage.palladin.io) return 0 ;;
+  esac
+  # A historical development record must remain revocable after installing a
+  # production helper. This parser is never used to grant authorization.
+  valid_loopback_host "$host"
+}
+
+valid_authorization_host() {
+  local host=$1
+  case "$host" in
+    https://api.palladin.io|https://api.stage.palladin.io) return 0 ;;
+  esac
+  [[ $PALLADIN_LOOPBACK_POLICY == development ]] && valid_loopback_host "$host"
 }
 
 validate_service_account() {
@@ -92,28 +109,35 @@ stop_broker() {
     || fail_account 'the broker socket remained available during principal purge'
 }
 
-if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-  echo 'Error: run this root-owned helper through pkexec or sudo' >&2
-  exit 77
-fi
+main() {
+  case "$PALLADIN_LOOPBACK_POLICY" in
+    production|development) ;;
+    *) fail_account 'the installed origin policy is invalid; reinstall the Palladin runtime package' ;;
+  esac
 
-exec 9>/run/lock/palladin-manage-agent-uid.lock
-flock -x 9
+  if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+    echo 'Error: run this root-owned helper through pkexec or sudo' >&2
+    exit 77
+  fi
 
-action=${1:-}
-user=${2:-}
-[[ -n $action && -n $user ]] || usage
-uid=$(id -u -- "$user" 2>/dev/null) || fail_account 'the dedicated Agent account does not exist'
-mapping=/etc/palladin/agents.d/$uid
+  exec 9>/run/lock/palladin-manage-agent-uid.lock
+  flock -x 9
 
-case "$action" in
+  action=${1:-}
+  user=${2:-}
+  [[ -n $action && -n $user ]] || usage
+  uid=$(id -u -- "$user" 2>/dev/null) || fail_account 'the dedicated Agent account does not exist'
+  mapping=/etc/palladin/agents.d/$uid
+
+  case "$action" in
   authorize)
     [[ $# -eq 5 && $5 == --dedicated ]] || usage
     profile=$3
     host=$4
     [[ $profile =~ ^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$ ]] \
       || fail_account 'profile must contain only letters, digits, underscore, and hyphen'
-    valid_host "$host" || fail_account 'host must be the exact Palladin production/staging origin or literal loopback with a port'
+    valid_authorization_host "$host" \
+      || fail_account 'host must be the exact Palladin production/staging origin; loopback requires an explicitly development-labelled package'
     validate_service_account
     ! uid_has_live_processes \
       || fail_account 'the Agent UID still has live processes; stop them before authorization or UID reuse'
@@ -181,7 +205,7 @@ case "$action" in
       && ${record[4]} =~ ^principal=[0-9a-f]{32}$ \
       && ${record[5]} =~ ^profile=[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$ \
       && ${record[6]} == host=* ]] || fail_account 'the active Agent principal record is invalid'
-    valid_host "${record[6]#host=}" || fail_account 'the active Agent principal host is invalid'
+    valid_record_host "${record[6]#host=}" || fail_account 'the active Agent principal host is invalid'
     if [[ ${record[1]} == status=active ]]; then
       temporary=$(mktemp /etc/palladin/agents.d/.agent.XXXXXX)
       trap 'rm -f "$temporary"' EXIT
@@ -216,5 +240,10 @@ case "$action" in
       remove_runtime_membership
     fi
     ;;
-  *) usage ;;
-esac
+    *) usage ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi
