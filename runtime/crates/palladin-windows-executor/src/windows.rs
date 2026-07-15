@@ -45,7 +45,10 @@ use windows::Win32::System::Threading::{
 use windows::core::{PCWSTR, PWSTR};
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::{ExecutorError, ExecutorRequest, MAX_REQUEST_BYTES, SecretVariable};
+use crate::{
+    ExecutorError, ExecutorRequest, MAX_REQUEST_BYTES, SecretVariable,
+    validate_windows_secret_environment_names,
+};
 
 const APPCONTAINER_NAME_PREFIX: &str = "Palladin.Runtime.Executor.v1";
 const APPCONTAINER_DISPLAY_NAME: &str = "Palladin Hardened Executor";
@@ -642,6 +645,10 @@ fn build_environment(
     secrets: &[SecretVariable],
     profile_root: &Path,
 ) -> Result<Zeroizing<Vec<u16>>, ExecutorError> {
+    validate_windows_secret_environment_names(secrets.iter().map(SecretVariable::name))?;
+    if secrets.iter().any(|secret| secret.value().contains('\0')) {
+        return Err(ExecutorError::InvalidRequest);
+    }
     let windows = known_directory(GetWindowsDirectoryW)?;
     let system = known_directory(GetSystemDirectoryW)?;
     let temp = profile_root.join("Temp");
@@ -666,12 +673,6 @@ fn build_environment(
         "PATH".to_owned(),
         std::env::join_paths(path_entries).map_err(|_| ExecutorError::InvalidRequest)?,
     );
-    for secret in secrets {
-        if secret.name().contains(['=', '\0']) || secret.value().contains('\0') {
-            return Err(ExecutorError::InvalidRequest);
-        }
-    }
-
     enum EnvironmentValue<'a> {
         Public(&'a OsStr),
         Secret(&'a str),

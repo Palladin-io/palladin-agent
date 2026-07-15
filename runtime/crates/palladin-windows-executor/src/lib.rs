@@ -1,5 +1,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[cfg(any(windows, test))]
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretString};
@@ -13,6 +15,41 @@ mod windows;
 pub const EXECUTOR_FILE_NAME: &str = "palladin-executor.exe";
 pub const EXECUTOR_FAILURE_EXIT_CODE: i32 = 125;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+#[cfg(any(windows, test))]
+const WINDOWS_EXECUTOR_PUBLIC_ENVIRONMENT: &[&str] = &[
+    "LOCALAPPDATA",
+    "PATH",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "WINDIR",
+];
+
+#[cfg(any(windows, test))]
+fn validate_windows_secret_environment_names<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<(), ExecutorError> {
+    let mut unique = BTreeSet::new();
+    for name in names {
+        let mut bytes = name.bytes();
+        let valid_start = bytes
+            .next()
+            .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic());
+        if !valid_start
+            || !bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+            || WINDOWS_EXECUTOR_PUBLIC_ENVIRONMENT
+                .iter()
+                .any(|public| public.eq_ignore_ascii_case(name))
+            || !unique.insert(name.to_ascii_uppercase())
+        {
+            return Err(ExecutorError::InvalidRequest);
+        }
+    }
+    Ok(())
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct SecretVariable {
@@ -206,6 +243,55 @@ mod tests {
         assert!(debug.contains("[REDACTED]"));
         let encoded = request.encode().expect("encoded");
         assert!(encoded.len() < MAX_REQUEST_BYTES);
+    }
+
+    #[test]
+    fn windows_secret_environment_names_reject_empty_and_invalid_names() {
+        for names in [
+            vec![""],
+            vec!["9TOKEN"],
+            vec!["BAD-NAME"],
+            vec!["BAD=NAME"],
+            vec!["BAD NAME"],
+            vec!["BAD\0NAME"],
+            vec!["NÄME"],
+        ] {
+            assert_eq!(
+                validate_windows_secret_environment_names(names),
+                Err(ExecutorError::InvalidRequest)
+            );
+        }
+    }
+
+    #[test]
+    fn windows_secret_environment_names_reject_case_insensitive_duplicates() {
+        assert_eq!(
+            validate_windows_secret_environment_names(["PALLADIN_TOKEN", "palladin_token"]),
+            Err(ExecutorError::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn windows_secret_environment_names_reject_public_environment_collisions() {
+        for name in ["path", "SystemRoot", "TEMP", "localappdata"] {
+            assert_eq!(
+                validate_windows_secret_environment_names([name]),
+                Err(ExecutorError::InvalidRequest),
+                "accepted reserved public environment name {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_secret_environment_names_accept_portable_unique_names() {
+        assert_eq!(
+            validate_windows_secret_environment_names([
+                "PALLADIN_API_KEY",
+                "_PALLADIN_PRIVATE_KEY",
+                "agent_secret_2",
+            ]),
+            Ok(())
+        );
     }
 
     #[test]
