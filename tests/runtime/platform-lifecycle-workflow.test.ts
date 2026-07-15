@@ -47,6 +47,9 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(runner).toContain("rejected.stderr !== 'Error: Palladin native runtime version is blocked by signed version policy\\n'");
     expect(runner).toContain("rollbackMode: 'forward-rebuild'");
     expect(runner).toContain("['purge', '--confirm']");
+    expect(runner).toContain("purgeStdout !== 'Native Palladin profiles and secret slots purged.\\n'");
+    expect(runner).toContain("existsSync(join(home, '.palladin'))");
+    expect(runner).not.toContain('if (purged.status === 0)');
     expect(runner).toContain('npm uninstall left the Agent launcher installed');
     expect(runner).toContain('shellCompatibilityCheck(prefix, env, baseline.version)');
     expect(runner).not.toMatch(/readFileSync\(0\)|secretBundle|environment\.apiKey|env\.apiKey|--api-key',/);

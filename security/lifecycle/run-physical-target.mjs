@@ -360,9 +360,14 @@ export async function runPhysicalTarget({ contract, manifest: manifestInput = lo
     npmUninstall(rollback, prefix, env); npmInstall(rollback, prefix, env); const afterReinstall = identityDigest(prefix, env, home);
     if (await mcpCall(prefix, env, contract.vaultId, contract.entryId) !== grants) fail('reinstalled MCP grant binding changed');
     run.steps.push(step(run, 'reinstall', rollback.version, rollback.version, afterRollback, afterReinstall, grants, grants));
-    runCli(prefix, env, ['purge', '--confirm']);
-    const purged = spawnSync(launcher(prefix), ['status'], { env, encoding: 'utf8', shell: false, timeout: 60_000 });
-    if (purged.status === 0) fail('purge left an active Agent identity');
+    const purged = runCli(prefix, env, ['purge', '--confirm']);
+    const purgeStdout = purged.stdout.toString('utf8');
+    const purgeStderr = purged.stderr.toString('utf8');
+    purged.stdout.fill(0); purged.stderr.fill(0);
+    if (purgeStdout !== 'Native Palladin profiles and secret slots purged.\n'
+      || purgeStderr !== '' || existsSync(join(home, '.palladin'))) {
+      fail('purge did not confirm exact secret-slot deletion and remove the public Agent root');
+    }
     run.steps.push(step(run, 'purge', rollback.version, rollback.version, afterReinstall, null, grants, null, { purgeVerified: true }));
     npmUninstall(rollback, prefix, env);
     if (existsSync(launcher(prefix))) fail('npm uninstall left the Agent launcher installed');
