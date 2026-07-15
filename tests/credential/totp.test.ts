@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { generateTotp, base32Encode, base32Decode, TotpError } from '../../src/credential/totp.js';
+import {
+  generateTotp,
+  base32Encode,
+  base32Decode,
+  parseTotpValue,
+  TotpError,
+} from '../../src/credential/totp.js';
 import { expectSensitiveEqual } from '../helpers/sensitive-assert.js';
 
 // RFC 6238 Appendix B test seeds (ASCII), encoded to base32 as the field descriptor stores them.
@@ -44,6 +50,45 @@ describe('generateTotp — defaults and window', () => {
   it('rejects an empty or non-base32 secret', () => {
     expect(() => generateTotp({ secret: '' })).toThrow(TotpError);
     expect(() => generateTotp({ secret: '!!!!' })).toThrow(TotpError);
+  });
+});
+
+describe('parseTotpValue — explicit parameters', () => {
+  it('rejects unsupported algorithms instead of silently defaulting to SHA1', () => {
+    expect(parseTotpValue(JSON.stringify({ secret: SEED_SHA1, algorithm: 'MD5' }))).toBeNull();
+    expect(parseTotpValue(`otpauth://totp/Palladin?secret=${SEED_SHA1}&algorithm=MD5`)).toBeNull();
+  });
+
+  it.each([
+    ['algorithm', null],
+    ['algorithm', 1],
+    ['digits', '6'],
+    ['digits', null],
+    ['digits', 6.5],
+    ['digits', 0],
+    ['digits', 11],
+    ['period', '30'],
+    ['period', null],
+    ['period', 30.5],
+    ['period', 0],
+  ])('rejects an explicitly invalid %s value (%j)', (name, value) => {
+    expect(parseTotpValue(JSON.stringify({ secret: SEED_SHA1, [name]: value }))).toBeNull();
+  });
+
+  it('keeps defaults only when optional parameters are absent', () => {
+    expect(parseTotpValue(JSON.stringify({ secret: SEED_SHA1 }))).toEqual({ secret: SEED_SHA1 });
+    expect(parseTotpValue(`otpauth://totp/Palladin?secret=${SEED_SHA1}`)).toEqual({
+      secret: SEED_SHA1,
+    });
+  });
+
+  it('normalizes supported algorithms and accepts bounded numeric parameters', () => {
+    expect(parseTotpValue(JSON.stringify({
+      secret: SEED_SHA1,
+      algorithm: 'sha256',
+      digits: 8,
+      period: 60,
+    }))).toEqual({ secret: SEED_SHA1, algorithm: 'SHA256', digits: 8, period: 60 });
   });
 });
 

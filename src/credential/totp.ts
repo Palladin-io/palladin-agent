@@ -42,6 +42,7 @@ export function parseTotpValue(value: string): TotpParams | null {
       if (uri.protocol !== 'otpauth:' || uri.hostname !== 'totp' || uri.pathname.length <= 1) return null;
       const secret = uri.searchParams.get('secret');
       if (!secret) return null;
+      const algorithm = uri.searchParams.get('algorithm');
       const digitsRaw = uri.searchParams.get('digits');
       const periodRaw = uri.searchParams.get('period');
       const digits = numeric(digitsRaw);
@@ -49,11 +50,11 @@ export function parseTotpValue(value: string): TotpParams | null {
       if ((digitsRaw !== null && digits === undefined) || (periodRaw !== null && period === undefined)) {
         return null;
       }
-      return normalizedParams(secret, {
-        algorithm: uri.searchParams.get('algorithm'),
-        digits,
-        period,
-      });
+      const record: Record<string, unknown> = {};
+      if (algorithm !== null) record.algorithm = algorithm;
+      if (digits !== undefined) record.digits = digits;
+      if (period !== undefined) record.period = period;
+      return normalizedParams(secret, record);
     } catch {
       return null;
     }
@@ -61,16 +62,25 @@ export function parseTotpValue(value: string): TotpParams | null {
   return trimmed ? { secret: trimmed } : null;
 }
 
-function normalizedParams(secret: string, record: Record<string, unknown>): TotpParams {
+function normalizedParams(secret: string, record: Record<string, unknown>): TotpParams | null {
   const params: TotpParams = { secret };
-  const algorithm = typeof record.algorithm === 'string' ? record.algorithm.toUpperCase() : null;
-  if (algorithm === 'SHA1' || algorithm === 'SHA256' || algorithm === 'SHA512') {
+  if (Object.hasOwn(record, 'algorithm')) {
+    if (typeof record.algorithm !== 'string') return null;
+    const algorithm = record.algorithm.toUpperCase();
+    if (algorithm !== 'SHA1' && algorithm !== 'SHA256' && algorithm !== 'SHA512') return null;
     params.algorithm = algorithm;
   }
-  if (typeof record.digits === 'number' && Number.isSafeInteger(record.digits) && record.digits >= 0) {
+  if (Object.hasOwn(record, 'digits')) {
+    if (typeof record.digits !== 'number'
+      || !Number.isSafeInteger(record.digits)
+      || record.digits < 1
+      || record.digits > 10) return null;
     params.digits = record.digits;
   }
-  if (typeof record.period === 'number' && Number.isSafeInteger(record.period) && record.period >= 0) {
+  if (Object.hasOwn(record, 'period')) {
+    if (typeof record.period !== 'number'
+      || !Number.isSafeInteger(record.period)
+      || record.period < 1) return null;
     params.period = record.period;
   }
   return params;
