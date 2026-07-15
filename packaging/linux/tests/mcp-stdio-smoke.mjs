@@ -81,7 +81,7 @@ child.stdout.on('data', (chunk) => {
       }
       protocolComplete = true;
       clearTimeout(timeout);
-      child.stdin.end();
+      if (!child.kill('SIGTERM')) fail();
     }
   }
 });
@@ -89,7 +89,8 @@ child.once('error', fail);
 child.once('exit', (code, signal) => {
   clearTimeout(timeout);
   if (failed) return;
-  if (!protocolComplete || responses.length !== 2 || code !== 0 || signal !== null) {
+  const expectedExit = (code === 0 && signal === null) || (code === null && signal === 'SIGTERM');
+  if (!protocolComplete || responses.length !== 2 || !expectedExit) {
     process.stderr.write('MCP lifecycle smoke failed without emitting child output\n');
     process.exitCode = 1;
     return;

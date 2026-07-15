@@ -233,6 +233,11 @@ describe('Linux hardened package boundary', () => {
     expect(workflow).toContain('test-hardened-boundary.sh');
     expect(workflow).toContain('test-package-family.sh debian');
     expect(workflow).toContain('test-package-family.sh ubuntu');
+    const mcpSmoke = read('packaging/linux/tests/mcp-stdio-smoke.mjs');
+    expect(mcpSmoke).toContain("message?.result?.protocolVersion !== '2025-11-25'");
+    expect(mcpSmoke).toContain("'report_credential_stale'");
+    expect(mcpSmoke).toContain("child.kill('SIGTERM')");
+    expect(mcpSmoke).toContain("signal === 'SIGTERM'");
     expect(workflow).toContain('test-package-family.sh fedora');
     expect(workflow).toContain('--example package_state_fixture');
     expect(workflow).toContain('Install, enroll, run MCP, update, roll back, reinstall, and purge');
