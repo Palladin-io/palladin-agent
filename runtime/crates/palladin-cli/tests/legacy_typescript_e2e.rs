@@ -12,7 +12,10 @@ use palladin_api::{AgentRegistrationResult, CredentialAccess};
 use palladin_cli::output::{
     RenderedOutput, render_connect, render_legacy_cleanup, render_legacy_cutover, render_status,
 };
-use palladin_cli::{CredentialDelivery, CredentialDeliveryRequest, RuntimeError, RuntimeService};
+use palladin_cli::{
+    CredentialDelivery, CredentialDeliveryRequest, CredentialOutputPolicy, InvocationSurface,
+    OperationConnection, OperationDescriptor, RuntimeError, RuntimeService,
+};
 use palladin_core::host::ApiHost;
 use palladin_core::legacy_typescript::{LegacyTypeScriptRepository, LegacyTypeScriptStatus};
 use palladin_core::profiles::ProfileRepository;
@@ -41,6 +44,10 @@ const LEGACY_CANARIES: &[&str] = &[
     "build_x25519_file_canary_must_never_be_read_or_emitted",
     "build_ed25519_file_canary_must_never_be_read_or_emitted",
 ];
+
+fn operation_connection() -> OperationConnection {
+    OperationConnection::new().expect("operation connection")
+}
 
 #[derive(Clone, Default)]
 struct MemoryStore {
@@ -201,6 +208,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
             None,
             None,
             "e2e-host",
+            &operation_connection(),
         )
         .await
         .expect("transport loss is a clean registration result");
@@ -223,6 +231,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
             None,
             None,
             "e2e-host",
+            &operation_connection(),
         )
         .await
         .expect("default reconnect after response loss");
@@ -235,6 +244,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
             None,
             None,
             "e2e-host",
+            &operation_connection(),
         )
         .await
         .expect("build connect");
@@ -280,7 +290,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
         "Default fresh Agent",
     ));
     let default_status = restarted
-        .status(Some("default"), "e2e-host")
+        .status(Some("default"), "e2e-host", &operation_connection())
         .await
         .expect("default active status");
     api.enqueue(MockResponse::active(
@@ -288,7 +298,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
         "Build fresh Agent",
     ));
     let build_status = restarted
-        .status(Some("build"), "e2e-host")
+        .status(Some("build"), "e2e-host", &operation_connection())
         .await
         .expect("build active status");
     assert!(matches!(
@@ -305,21 +315,55 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
         200,
         r#"{"items":[{"entryId":"entry-e2e","vaultId":"vault-e2e","label":"Synthetic entry","urlDomain":"example.test","description":null,"agentFields":[]}],"nextCursor":null}"#,
     ));
-    let session = restarted
-        .open_session(Some("default"), "e2e-host")
-        .expect("default session");
-    let discovery = session
+    let search_session = restarted
+        .open_session(
+            Some("default"),
+            "e2e-host",
+            &operation_connection(),
+            OperationDescriptor::SearchEntries {
+                surface: InvocationSurface::Cli,
+                query: "synthetic".to_owned(),
+                cursor: None,
+                page_size: Some(10),
+            },
+        )
+        .expect("search session");
+    let discovery = search_session
         .search_entries("synthetic", None, Some(10))
         .await
         .expect("entry discovery");
     assert_eq!(discovery.items.len(), 1);
     assert_eq!(discovery.items[0].entry_id, "entry-e2e");
+    assert!(matches!(
+        search_session
+            .search_entries("synthetic", None, Some(10))
+            .await,
+        Err(RuntimeError::OperationAuthorizationConsumed)
+    ));
 
     api.enqueue(MockResponse::json(
         202,
         r#"{"access":"pending","grantId":"grant-e2e","created":true,"pollIntervalMs":5000,"maxWaitMs":30000}"#,
     ));
-    let pending = session
+    let pending_request = delivery_request(0);
+    let pending_session = restarted
+        .open_session(
+            Some("default"),
+            "e2e-host",
+            &operation_connection(),
+            OperationDescriptor::GetCredential {
+                surface: InvocationSurface::Cli,
+                vault_id: pending_request.vault_id.to_owned(),
+                entry_id: pending_request.entry_id.to_owned(),
+                reason: pending_request.reason.map(str::to_owned),
+                wait: pending_request.wait,
+                field: None,
+                field_id: None,
+                output: CredentialOutputPolicy::CliSecretStdout,
+            },
+        )
+        .expect("pending credential session");
+    let pending = pending_session
         .deliver_for_get(delivery_request(0), &CancellationToken::new(), |_| {})
         .await
         .expect("pending grant");
@@ -350,7 +394,25 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
         })
         .to_string(),
     ));
-    let granted = session
+    let granted_request = delivery_request(0);
+    let granted_session = restarted
+        .open_session(
+            Some("default"),
+            "e2e-host",
+            &operation_connection(),
+            OperationDescriptor::GetCredential {
+                surface: InvocationSurface::Cli,
+                vault_id: granted_request.vault_id.to_owned(),
+                entry_id: granted_request.entry_id.to_owned(),
+                reason: granted_request.reason.map(str::to_owned),
+                wait: granted_request.wait,
+                field: None,
+                field_id: None,
+                output: CredentialOutputPolicy::CliSecretStdout,
+            },
+        )
+        .expect("granted credential session");
+    let granted = granted_session
         .deliver_for_get(delivery_request(0), &CancellationToken::new(), |_| {})
         .await
         .expect("granted delivery");
@@ -417,8 +479,12 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
     assert_rendered_output_is_secretless(&rendered);
     assert_canaries_absent(&read_public_files(&root), LEGACY_CANARIES);
 
-    drop(session);
-    restarted.purge().expect("final native purge");
+    drop(search_session);
+    drop(pending_session);
+    drop(granted_session);
+    restarted
+        .purge("e2e-host", &operation_connection())
+        .expect("final native purge");
     assert!(!root.exists());
     assert_eq!(store.len(), 0);
 }
@@ -477,13 +543,14 @@ async fn concurrent_cutover_and_cleanup_are_serialized_and_idempotent() {
                 None,
                 None,
                 "e2e-host",
+                &operation_connection(),
             )
             .await
             .expect("connect before concurrent cleanup");
     }
     for profile in ["default", "build"] {
         runtime
-            .status(Some(profile), "e2e-host")
+            .status(Some(profile), "e2e-host", &operation_connection())
             .await
             .expect("active status before concurrent cleanup");
     }
@@ -603,13 +670,14 @@ async fn injected_store_and_cleanup_failures_resume_across_process_boundaries() 
                 None,
                 None,
                 "e2e-host",
+                &operation_connection(),
             )
             .await
             .expect("connect resumed profile");
     }
     for profile in ["default", "build"] {
         restarted
-            .status(Some(profile), "e2e-host")
+            .status(Some(profile), "e2e-host", &operation_connection())
             .await
             .expect("active status before resumed cleanup");
     }

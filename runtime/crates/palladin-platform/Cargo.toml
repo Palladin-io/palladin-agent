@@ -21,17 +21,25 @@ keyring-core.workspace = true
 linux-keyutils-keyring-store.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+objc2-local-authentication.workspace = true
 security-framework.workspace = true
 security-framework-sys.workspace = true
 
 [dependencies]
 getrandom.workspace = true
+hmac.workspace = true
 keyring.workspace = true
 rsa.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 zeroize.workspace = true

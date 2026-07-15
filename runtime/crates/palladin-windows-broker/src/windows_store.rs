@@ -3,7 +3,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 
-use palladin_platform::secure_store::{SecretSlot, SecretStore, StoreError};
+use palladin_platform::secure_store::{
+    AuthorizationPrompt, OperationAuthorization, OperationScope, SecretSlot, SecretStore,
+    StoreError,
+};
 use secrecy::SecretSlice;
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Cryptography::{
@@ -91,6 +94,37 @@ impl SecretStore for BrokerSecretStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(_) => Err(StoreError::Unavailable),
         }
+    }
+
+    fn requires_operation_authorization(&self) -> bool {
+        false
+    }
+
+    fn initialize_operation_authorization(&self, identity_id: &str) -> Result<(), StoreError> {
+        if !valid_owner_id(identity_id) {
+            return Err(StoreError::InvalidOwner);
+        }
+        Ok(())
+    }
+
+    fn authorize_operation(
+        &self,
+        scope: &OperationScope,
+        _prompt: AuthorizationPrompt,
+        binding: &[u8],
+    ) -> Result<OperationAuthorization, StoreError> {
+        OperationAuthorization::for_current_platform(scope, binding)
+    }
+
+    fn get_authorized(
+        &self,
+        owner_id: &str,
+        slot: SecretSlot,
+        authorization: &OperationAuthorization,
+        binding: &[u8],
+    ) -> Result<Option<SecretSlice<u8>>, StoreError> {
+        authorization.ensure_read_allowed(owner_id, slot, binding)?;
+        self.get(owner_id, slot)
     }
 }
 

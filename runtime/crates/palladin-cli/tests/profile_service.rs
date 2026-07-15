@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use palladin_cli::{RuntimeError, RuntimeService};
+use palladin_cli::{
+    InvocationSurface, OperationConnection, OperationDescriptor, RuntimeError, RuntimeService,
+};
 use palladin_core::host::ApiHost;
 use palladin_core::profiles::ProfileRepository;
 use palladin_core::secret::OrganizationApiKey;
@@ -12,6 +14,10 @@ use secrecy::{ExposeSecret, SecretSlice};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+
+fn operation_connection() -> OperationConnection {
+    OperationConnection::new().expect("operation connection")
+}
 
 #[derive(Clone, Default)]
 struct MemoryStore {
@@ -224,6 +230,7 @@ async fn multiple_agents_share_one_organization_credential_reference_safely() {
             None,
             None,
             "fixture-host",
+            &operation_connection(),
         )
         .await
         .expect("connect first");
@@ -235,6 +242,7 @@ async fn multiple_agents_share_one_organization_credential_reference_safely() {
             None,
             None,
             "fixture-host",
+            &operation_connection(),
         )
         .await
         .expect("connect second");
@@ -273,7 +281,9 @@ async fn multiple_agents_share_one_organization_credential_reference_safely() {
     service
         .set_default_profile("second")
         .expect("default second");
-    service.delete_profile("first").expect("delete first");
+    service
+        .delete_profile("first", "fixture-host", &operation_connection())
+        .expect("delete first");
     assert!(store.contains(
         &second_config.organization_credential_id,
         SecretSlot::OrganizationApiKey
@@ -281,7 +291,9 @@ async fn multiple_agents_share_one_organization_credential_reference_safely() {
 
     service.create_profile("third", None).expect("third");
     service.set_default_profile("third").expect("default third");
-    service.delete_profile("second").expect("delete second");
+    service
+        .delete_profile("second", "fixture-host", &operation_connection())
+        .expect("delete second");
     assert!(!store.contains(
         &second_config.organization_credential_id,
         SecretSlot::OrganizationApiKey
@@ -311,6 +323,7 @@ async fn explicit_profile_purge_preserves_shared_organization_key_until_last_age
                 None,
                 None,
                 "fixture-host",
+                &operation_connection(),
             )
             .await
             .expect("connect");
@@ -329,7 +342,7 @@ async fn explicit_profile_purge_preserves_shared_organization_key_until_last_age
         .expect("version policy trust fixture");
 
     let removed = service
-        .purge_profile(Some("first"))
+        .purge_profile(Some("first"), "fixture-host", &operation_connection())
         .expect("purge default profile");
     assert_eq!(removed.identity_id, first.identity_id);
     assert!(!store.contains(&first.identity_id, SecretSlot::X25519PrivateKey));
@@ -341,7 +354,9 @@ async fn explicit_profile_purge_preserves_shared_organization_key_until_last_age
     let registry = service.registry().expect("remaining registry");
     assert_eq!(registry.default, "second");
 
-    let removed = service.purge_profile(None).expect("purge last profile");
+    let removed = service
+        .purge_profile(None, "fixture-host", &operation_connection())
+        .expect("purge last profile");
     assert_eq!(removed.identity_id, second.identity_id);
     assert!(!store.contains(&organization_id, SecretSlot::OrganizationApiKey));
     assert!(store.contains(TRUST_OWNER, SecretSlot::VersionPolicyTrustStateV1));
@@ -436,6 +451,7 @@ async fn failed_old_organization_cleanup_is_journaled_and_retried() {
             None,
             None,
             "fixture-host",
+            &operation_connection(),
         )
         .await
         .expect("first connect");
@@ -462,6 +478,7 @@ async fn failed_old_organization_cleanup_is_journaled_and_retried() {
                 None,
                 None,
                 "fixture-host",
+                &operation_connection(),
             )
             .await
             .is_err()
@@ -479,7 +496,7 @@ async fn failed_old_organization_cleanup_is_journaled_and_retried() {
 
     store.clear_failure();
     service
-        .status(Some("build"), "fixture-host")
+        .status(Some("build"), "fixture-host", &operation_connection())
         .await
         .expect("status cleanup");
     let cleaned = service
@@ -508,6 +525,7 @@ async fn failed_reconnect_preserves_working_config_and_removes_unused_candidate_
             None,
             None,
             "fixture-host",
+            &operation_connection(),
         )
         .await
         .expect("initial connect");
@@ -525,6 +543,7 @@ async fn failed_reconnect_preserves_working_config_and_removes_unused_candidate_
             None,
             None,
             "fixture-host",
+            &operation_connection(),
         )
         .await
         .expect("clean unreachable");
@@ -554,7 +573,11 @@ fn rename_changes_only_alias_and_partial_delete_is_recoverable() {
         .set_default_profile("second")
         .expect("default second");
     store.fail_delete(&first.identity_id, SecretSlot::Ed25519SecretKey);
-    assert!(service.delete_profile("renamed").is_err());
+    assert!(
+        service
+            .delete_profile("renamed", "fixture-host", &operation_connection())
+            .is_err()
+    );
     let registry = service.repository().load_registry().expect("registry");
     assert!(!registry.agents.iter().any(|agent| agent.name == "renamed"));
     assert!(!store.contains(&first.identity_id, SecretSlot::X25519PrivateKey));
@@ -617,6 +640,7 @@ async fn failed_candidate_api_key_cleanup_is_durable_and_retryable() {
                 None,
                 None,
                 "fixture-host",
+                &operation_connection(),
             )
             .await
             .is_err()
@@ -648,6 +672,7 @@ async fn invalid_key_is_not_persisted_in_public_or_secure_storage() {
             None,
             None,
             "fixture-host",
+            &operation_connection(),
         )
         .await
         .expect("invalid result");
@@ -674,6 +699,7 @@ async fn every_public_binding_tamper_fails_before_identity_or_api_key_access() {
             None,
             None,
             "fixture-host",
+            &operation_connection(),
         )
         .await
         .expect("connect");
@@ -733,7 +759,19 @@ async fn every_public_binding_tamper_fails_before_identity_or_api_key_access() {
         .expect("tamper config");
         store.clear_operations();
         assert!(
-            service.open_session(Some("build"), "fixture-host").is_err(),
+            service
+                .open_session(
+                    Some("build"),
+                    "fixture-host",
+                    &operation_connection(),
+                    OperationDescriptor::SearchEntries {
+                        surface: InvocationSurface::Cli,
+                        query: "tamper-check".to_owned(),
+                        cursor: None,
+                        page_size: None,
+                    },
+                )
+                .is_err(),
             "field {field} must fail closed"
         );
         assert_only_integrity_reads(&store.operations(), field);
@@ -806,7 +844,11 @@ fn unsafe_unconnected_config_fails_before_identity_access() {
     symlink(&target, &config_path).expect("config symlink");
 
     store.clear_operations();
-    assert!(service.verify_identity(Some("build")).is_err());
+    assert!(
+        service
+            .verify_identity(Some("build"), "fixture-host", &operation_connection())
+            .is_err()
+    );
     assert_only_integrity_reads(&store.operations(), "symlinked unconnected config");
 
     std::fs::remove_file(&config_path).expect("remove symlink");
@@ -814,7 +856,11 @@ fn unsafe_unconnected_config_fails_before_identity_access() {
     std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o644))
         .expect("weak permissions");
     store.clear_operations();
-    assert!(service.verify_identity(Some("build")).is_err());
+    assert!(
+        service
+            .verify_identity(Some("build"), "fixture-host", &operation_connection())
+            .is_err()
+    );
     assert_only_integrity_reads(&store.operations(), "weak unconnected config");
 }
 
@@ -856,7 +902,11 @@ fn authenticated_recovery_rejects_weak_or_symlinked_journal_without_more_deletes
     let service = service(root.path(), store.clone());
     let profile = service.create_profile("build", None).expect("profile");
     store.fail_delete(&profile.identity_id, SecretSlot::Ed25519SecretKey);
-    assert!(service.purge().is_err());
+    assert!(
+        service
+            .purge("fixture-host", &operation_connection())
+            .is_err()
+    );
     assert!(service.integrity_recovery_pending());
     store.clear_failure();
 
@@ -962,7 +1012,7 @@ fn explicit_v2_upgrade_rotates_slots_and_restored_v2_metadata_cannot_downgrade()
     let legacy_cleanup = root.path().join("cleanup-journal.json");
     write_private_fixture(&legacy_cleanup, br#"{"schemaVersion":1,"operations":[]}"#);
     assert!(matches!(
-        service.upgrade_security(Some("build")),
+        service.upgrade_security(Some("build"), "fixture-host", &operation_connection()),
         Err(RuntimeError::LegacyCleanupPending)
     ));
     assert!(
@@ -976,7 +1026,9 @@ fn explicit_v2_upgrade_rotates_slots_and_restored_v2_metadata_cannot_downgrade()
 
     store.fail_set(SecretSlot::Ed25519SecretKey);
     assert!(
-        service.upgrade_security(Some("build")).is_err(),
+        service
+            .upgrade_security(Some("build"), "fixture-host", &operation_connection())
+            .is_err(),
         "interrupted secret copy must leave an authenticated recovery plan"
     );
     assert!(service.integrity_recovery_pending());
@@ -1004,7 +1056,7 @@ fn explicit_v2_upgrade_rotates_slots_and_restored_v2_metadata_cannot_downgrade()
         .recover_pending_operations()
         .expect("replay partially deleted migration");
     let outcome = service
-        .upgrade_security(Some("build"))
+        .upgrade_security(Some("build"), "fixture-host", &operation_connection())
         .expect("completed migration");
     assert!(!outcome.migrated);
     assert!(store.contains(identity_id, SecretSlot::X25519PrivateKey));
@@ -1041,12 +1093,13 @@ async fn existing_agent_requests_use_its_signing_identity_with_the_shared_organi
             None,
             None,
             "fixture-host",
+            &operation_connection(),
         )
         .await
         .expect("connect");
 
     service
-        .status(Some("build"), "fixture-host")
+        .status(Some("build"), "fixture-host", &operation_connection())
         .await
         .expect("status");
 
@@ -1081,6 +1134,7 @@ async fn explicit_purge_removes_native_shared_and_identity_slots() {
                 None,
                 None,
                 "fixture-host",
+                &operation_connection(),
             )
             .await
             .expect("connect");
@@ -1093,7 +1147,9 @@ async fn explicit_purge_removes_native_shared_and_identity_slots() {
             br#"{"schemaVersion":1,"highestSequence":1,"policyDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
         )
         .expect("version policy trust fixture");
-    service.purge().expect("purge");
+    service
+        .purge("fixture-host", &operation_connection())
+        .expect("purge");
     assert_eq!(store.count_slot(SecretSlot::OrganizationApiKey), 0);
     assert_eq!(store.count_slot(SecretSlot::X25519PrivateKey), 0);
     assert_eq!(store.count_slot(SecretSlot::Ed25519SecretKey), 0);
@@ -1110,7 +1166,11 @@ fn purge_rejects_unexpected_public_artifacts_before_any_secret_deletion() {
     write_private_fixture(&root.path().join("unexpected.txt"), b"preserve me");
     store.clear_operations();
 
-    assert!(service.purge().is_err());
+    assert!(
+        service
+            .purge("fixture-host", &operation_connection())
+            .is_err()
+    );
     assert!(store.contains(&profile.identity_id, SecretSlot::X25519PrivateKey));
     assert!(store.contains(&profile.identity_id, SecretSlot::Ed25519SecretKey));
     assert!(
@@ -1133,7 +1193,11 @@ fn purge_recovery_preflights_again_before_replaying_any_mutation() {
     let service = service(root.path(), store.clone());
     let profile = service.create_profile("build", None).expect("profile");
     store.fail_delete(&profile.identity_id, SecretSlot::X25519PrivateKey);
-    assert!(service.purge().is_err());
+    assert!(
+        service
+            .purge("fixture-host", &operation_connection())
+            .is_err()
+    );
     assert!(store.contains(&profile.identity_id, SecretSlot::X25519PrivateKey));
     assert!(store.contains(&profile.identity_id, SecretSlot::Ed25519SecretKey));
 
@@ -1171,12 +1235,17 @@ async fn partial_purge_is_journaled_and_retried_before_public_data_is_removed() 
             None,
             None,
             "fixture-host",
+            &operation_connection(),
         )
         .await
         .expect("connect");
     store.fail_delete(&profile.identity_id, SecretSlot::Ed25519SecretKey);
 
-    assert!(service.purge().is_err());
+    assert!(
+        service
+            .purge("fixture-host", &operation_connection())
+            .is_err()
+    );
     assert!(!store.contains(&profile.identity_id, SecretSlot::X25519PrivateKey));
     assert!(store.contains(&profile.identity_id, SecretSlot::Ed25519SecretKey));
     assert!(service.integrity_recovery_pending());
@@ -1210,6 +1279,7 @@ async fn transaction_lock_serializes_two_runtime_processes_through_connect_commi
                 None,
                 None,
                 "fixture-host",
+                &operation_connection(),
             )
             .await
     });
@@ -1243,7 +1313,11 @@ fn purge_refuses_to_silently_delete_legacy_layout() {
     let legacy = root.path().join("agent.key");
     std::fs::write(&legacy, "synthetic-legacy-material").expect("legacy fixture");
     let service = service(root.path(), MemoryStore::default());
-    assert!(service.purge().is_err());
+    assert!(
+        service
+            .purge("fixture-host", &operation_connection())
+            .is_err()
+    );
     assert!(legacy.exists());
 }
 
@@ -1260,7 +1334,11 @@ fn purge_detects_nested_keychain_only_legacy_profile() {
     let service = service(root.path(), MemoryStore::default());
 
     assert!(service.repository().legacy_artifacts_present());
-    assert!(service.purge().is_err());
+    assert!(
+        service
+            .purge("fixture-host", &operation_connection())
+            .is_err()
+    );
     assert!(legacy.exists());
 }
 
@@ -1368,6 +1446,7 @@ async fn typescript_cutover_creates_fresh_profiles_and_resumes_cleanup_without_r
                 None,
                 None,
                 "fixture-host",
+                &operation_connection(),
             )
             .await
             .expect("connect fresh Agent");
@@ -1403,11 +1482,11 @@ async fn typescript_cutover_creates_fresh_profiles_and_resumes_cleanup_without_r
     assert!(deletion_calls.lock().expect("calls").is_empty());
 
     runtime
-        .status(Some("default"), "fixture-host")
+        .status(Some("default"), "fixture-host", &operation_connection())
         .await
         .expect("active default status");
     runtime
-        .status(Some("build"), "fixture-host")
+        .status(Some("build"), "fixture-host", &operation_connection())
         .await
         .expect("deactivated build status");
     let deactivated_calls = Arc::clone(&deletion_calls);
@@ -1425,7 +1504,7 @@ async fn typescript_cutover_creates_fresh_profiles_and_resumes_cleanup_without_r
 
     for profile in ["default", "build"] {
         let status = runtime
-            .status(Some(profile), "fixture-host")
+            .status(Some(profile), "fixture-host", &operation_connection())
             .await
             .expect("active status before cleanup");
         assert!(matches!(
