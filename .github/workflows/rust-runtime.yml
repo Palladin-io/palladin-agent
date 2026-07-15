@@ -278,10 +278,11 @@ jobs:
           set -euo pipefail
 
           # GitHub-hosted ARM runners occasionally cannot reach the Ubuntu
-          # ports mirror. Use Canonical's immutable snapshot endpoint for that
-          # architecture and let apt recover from transient network failures.
+          # ports mirror. Use a recent immutable Canonical snapshot for that
+          # architecture without disabling APT's Valid-Until verification.
           if [[ "$(uname -m)" == "aarch64" ]]; then
-            ubuntu_mirror="https://snapshot.ubuntu.com/ubuntu/20260714T000000Z"
+            snapshot_id="$(date --utc --date='1 day ago' '+%Y%m%dT000000Z')"
+            ubuntu_mirror="https://snapshot.ubuntu.com/ubuntu/${snapshot_id}"
           else
             ubuntu_mirror="https://ports.ubuntu.com/ubuntu-ports"
           fi

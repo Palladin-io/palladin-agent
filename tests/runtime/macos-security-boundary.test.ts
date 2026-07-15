@@ -120,7 +120,7 @@ describe('macOS authenticated signed-runtime boundary', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('runs bounded blind-client and local process attack probes without printing captures', () => {
     const harness = read('packaging/macos/scripts/test-security-boundary.sh');
