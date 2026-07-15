@@ -9,6 +9,7 @@ use tokio::time::{Instant, timeout_at};
 use tokio_util::sync::CancellationToken;
 
 pub const DEFAULT_WAIT_MS: u64 = 180_000;
+pub const MAX_WAIT_MS: u64 = 300_000;
 pub const DEFAULT_POLL_MS: u64 = 30_000;
 pub const DEFAULT_HEARTBEAT_MS: u64 = 10_000;
 pub const DEFAULT_POLL_TIMEOUT_MS: u64 = 10_000;
@@ -45,25 +46,30 @@ pub struct WaitOptions {
     pub progress: Option<ProgressMode>,
 }
 
-#[must_use]
-pub fn resolve_wait_policy(options: WaitOptions, hints: WaitHints) -> WaitPolicy {
+pub fn resolve_wait_policy(
+    options: WaitOptions,
+    hints: WaitHints,
+) -> Result<WaitPolicy, WaitPolicyError> {
     let wait_ms = options
         .wait_ms
         .or(hints.max_wait_ms)
         .unwrap_or(DEFAULT_WAIT_MS);
+    if wait_ms > MAX_WAIT_MS {
+        return Err(WaitPolicyError::WaitTooLong);
+    }
     let poll_ms = options
         .poll_ms
         .or(hints.poll_interval_ms)
         .unwrap_or(DEFAULT_POLL_MS)
         .max(MIN_POLL_MS);
     let heartbeat_ms = DEFAULT_HEARTBEAT_MS.min(poll_ms).max(MIN_HEARTBEAT_MS);
-    WaitPolicy {
+    Ok(WaitPolicy {
         wait_ms,
         poll_ms,
         heartbeat_ms,
         poll_timeout_ms: DEFAULT_POLL_TIMEOUT_MS.min(heartbeat_ms),
         progress: options.progress.unwrap_or_default(),
-    }
+    })
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -286,6 +292,14 @@ pub fn parse_duration(value: &str) -> Result<u64, DurationParseError> {
     Ok(milliseconds.round() as u64)
 }
 
+pub fn parse_wait_duration(value: &str) -> Result<u64, DurationParseError> {
+    let milliseconds = parse_duration(value)?;
+    if milliseconds > MAX_WAIT_MS {
+        return Err(DurationParseError::WaitTooLong);
+    }
+    Ok(milliseconds)
+}
+
 #[derive(Debug, Error)]
 pub enum WaitError<E> {
     #[error("credential wait was cancelled")]
@@ -298,6 +312,14 @@ pub enum WaitError<E> {
 pub enum DurationParseError {
     #[error("invalid duration; use a number with ms, s, m, or h")]
     Invalid,
+    #[error("wait duration exceeds the five-minute limit")]
+    WaitTooLong,
+}
+
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum WaitPolicyError {
+    #[error("wait duration exceeds the five-minute limit")]
+    WaitTooLong,
 }
 
 #[cfg(test)]
@@ -309,9 +331,9 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        DEFAULT_POLL_MS, DEFAULT_WAIT_MS, DurationParseError, HeartbeatInfo, MIN_POLL_MS,
-        ProgressMode, WaitError, WaitHints, WaitOptions, await_grant, heartbeat_line,
-        parse_duration, resolve_wait_policy,
+        DEFAULT_POLL_MS, DEFAULT_WAIT_MS, DurationParseError, HeartbeatInfo, MAX_WAIT_MS,
+        MIN_POLL_MS, ProgressMode, WaitError, WaitHints, WaitOptions, WaitPolicyError, await_grant,
+        heartbeat_line, parse_duration, parse_wait_duration, resolve_wait_policy,
     };
 
     fn pending(id: &str) -> CredentialAccess {
@@ -325,7 +347,8 @@ mod tests {
 
     #[test]
     fn policy_hierarchy_and_duration_parsing_match_the_cli_contract() {
-        let defaults = resolve_wait_policy(WaitOptions::default(), WaitHints::default());
+        let defaults =
+            resolve_wait_policy(WaitOptions::default(), WaitHints::default()).expect("defaults");
         assert_eq!(defaults.wait_ms, DEFAULT_WAIT_MS);
         assert_eq!(defaults.poll_ms, DEFAULT_POLL_MS);
         let overridden = resolve_wait_policy(
@@ -338,13 +361,54 @@ mod tests {
                 poll_interval_ms: Some(45_000),
                 max_wait_ms: Some(120_000),
             },
-        );
+        )
+        .expect("overrides");
         assert_eq!(overridden.wait_ms, 60_000);
         assert_eq!(overridden.poll_ms, MIN_POLL_MS);
         assert_eq!(parse_duration("3M").expect("duration"), 180_000);
         assert_eq!(parse_duration("500ms").expect("duration"), 500);
         assert_eq!(parse_duration("1.5s").expect("duration"), 1_500);
         assert_eq!(parse_duration("soon"), Err(DurationParseError::Invalid));
+    }
+
+    #[test]
+    fn five_minute_wait_boundary_is_enforced_for_parsed_and_resolved_options() {
+        assert_eq!(parse_wait_duration("5m"), Ok(MAX_WAIT_MS));
+        assert_eq!(parse_wait_duration("300000ms"), Ok(MAX_WAIT_MS));
+        assert_eq!(
+            parse_wait_duration("300001ms"),
+            Err(DurationParseError::WaitTooLong)
+        );
+
+        let accepted = resolve_wait_policy(
+            WaitOptions {
+                wait_ms: Some(MAX_WAIT_MS),
+                ..WaitOptions::default()
+            },
+            WaitHints::default(),
+        )
+        .expect("five-minute boundary");
+        assert_eq!(accepted.wait_ms, MAX_WAIT_MS);
+        assert_eq!(
+            resolve_wait_policy(
+                WaitOptions {
+                    wait_ms: Some(MAX_WAIT_MS + 1),
+                    ..WaitOptions::default()
+                },
+                WaitHints::default(),
+            ),
+            Err(WaitPolicyError::WaitTooLong)
+        );
+        assert_eq!(
+            resolve_wait_policy(
+                WaitOptions::default(),
+                WaitHints {
+                    max_wait_ms: Some(MAX_WAIT_MS + 1),
+                    ..WaitHints::default()
+                },
+            ),
+            Err(WaitPolicyError::WaitTooLong)
+        );
     }
 
     #[tokio::test]
@@ -408,7 +472,8 @@ mod tests {
         cancellation.cancel();
         let result = await_grant(
             pending("grant"),
-            resolve_wait_policy(WaitOptions::default(), WaitHints::default()),
+            resolve_wait_policy(WaitOptions::default(), WaitHints::default())
+                .expect("default policy"),
             &cancellation,
             || async { Ok::<_, Infallible>(CredentialAccess::Denied) },
             |_| async { std::future::pending::<()>().await },

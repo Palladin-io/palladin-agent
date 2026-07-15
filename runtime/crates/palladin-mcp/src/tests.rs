@@ -121,7 +121,13 @@ fn mcp_wait_is_one_shot_unless_explicitly_requested() {
     assert_eq!(explicit.poll_ms, Some(10_000));
     let no_wait = wait_options(Some("30s"), Some(true), None, None).expect("no wait");
     assert_eq!(no_wait.wait_ms, Some(0));
-    assert!(wait_options(Some("6m"), None, None, None).is_err());
+    assert_eq!(
+        wait_options(Some("300000ms"), None, None, None)
+            .expect("five-minute boundary")
+            .wait_ms,
+        Some(300_000)
+    );
+    assert!(wait_options(Some("300001ms"), None, None, None).is_err());
     assert!(wait_options(Some(&"1".repeat(33)), None, None, None).is_err());
 }
 

@@ -17,7 +17,10 @@ use palladin_credential::fields::{
     FieldSelector, ResolvedField, redact_totp_secrets, resolve_field,
 };
 use palladin_credential::secret::parse_secret;
-use palladin_credential::wait::{ProgressMode, WaitOptions, heartbeat_line, parse_duration};
+use palladin_credential::wait::{
+    DurationParseError, ProgressMode, WaitOptions, heartbeat_line, parse_duration,
+    parse_wait_duration,
+};
 use palladin_runtime::{
     CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
     OperatorOutput, RuntimeError, RuntimeSession,
@@ -39,7 +42,6 @@ use tokio_util::sync::CancellationToken;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_PARALLEL_REQUESTS: usize = 8;
 const MAX_PARALLEL_SECRET_OPERATIONS: usize = 1;
-const MAX_MCP_WAIT_MS: u64 = 300_000;
 const MAX_BATCH_ITEMS: usize = 32;
 const MAX_PENDING_BATCHES: usize = 8;
 const MAX_PENDING_BATCH_REQUESTS: usize = 64;
@@ -1403,10 +1405,10 @@ fn wait_options(
     let wait_ms = if no_wait.unwrap_or(false) {
         Some(0)
     } else if let Some(wait) = wait {
-        let wait_ms = parse_duration(wait).map_err(|_| "wait duration is invalid")?;
-        if wait_ms > MAX_MCP_WAIT_MS {
-            return Err("wait duration exceeds the five-minute limit");
-        }
+        let wait_ms = parse_wait_duration(wait).map_err(|error| match error {
+            DurationParseError::Invalid => "wait duration is invalid",
+            DurationParseError::WaitTooLong => "wait duration exceeds the five-minute limit",
+        })?;
         Some(wait_ms)
     } else {
         Some(0)

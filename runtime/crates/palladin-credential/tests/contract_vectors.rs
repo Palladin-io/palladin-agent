@@ -244,7 +244,8 @@ fn grant_state_and_wait_policy_contract_is_exhaustive() {
                 poll_interval_ms: case.hints.poll_interval_ms,
                 max_wait_ms: case.hints.max_wait_ms,
             },
-        );
+        )
+        .expect(&case.name);
         assert_eq!(policy.wait_ms, case.expected.wait_ms, "{}", case.name);
         assert_eq!(policy.poll_ms, case.expected.poll_ms, "{}", case.name);
         assert_eq!(

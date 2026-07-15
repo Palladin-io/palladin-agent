@@ -122,7 +122,7 @@ pub struct GetArgs {
     /// Do not emit the intentional plaintext warning on stderr.
     #[arg(long)]
     pub quiet: bool,
-    /// Maximum approval wait, for example 30s or 2m.
+    /// Maximum approval wait up to five minutes, for example 30s or 2m.
     #[arg(long, overrides_with = "no_wait")]
     pub wait: Option<String>,
     /// Return immediately when approval is pending.
@@ -146,7 +146,7 @@ pub struct ExecArgs {
     /// Map NAME to a credential field selected by label.
     #[arg(long = "env", value_name = "NAME=FIELD")]
     pub env_mappings: Vec<String>,
-    /// Maximum approval wait, for example 30s or 2m.
+    /// Maximum approval wait up to five minutes, for example 30s or 2m.
     #[arg(long, overrides_with = "no_wait")]
     pub wait: Option<String>,
     /// Return immediately when approval is pending.
@@ -200,7 +200,7 @@ pub struct InjectArgs {
     /// Reserved for value-free diagnostics in a future reviewed implementation.
     #[arg(long)]
     pub verbose: bool,
-    /// Reserved for a future reviewed implementation.
+    /// Reserved approval wait up to the five-minute maximum.
     #[arg(long, overrides_with = "no_wait")]
     pub wait: Option<String>,
     /// Reserved for a future reviewed implementation.

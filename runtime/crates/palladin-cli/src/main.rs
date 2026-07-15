@@ -30,7 +30,8 @@ use palladin_credential::access::{access_message, exit_code_for_access};
 use palladin_credential::fields::{FieldSelector, redact_totp_secrets, resolve_field};
 use palladin_credential::secret::parse_secret;
 use palladin_credential::wait::{
-    ProgressMode, WaitOptions, heartbeat_line, parse_duration, signal_cancellation_token,
+    ProgressMode, WaitOptions, heartbeat_line, parse_duration, parse_wait_duration,
+    signal_cancellation_token,
 };
 #[cfg(target_os = "linux")]
 use palladin_linux_broker::store::LinuxBrokerSecretStore;
@@ -697,7 +698,7 @@ async fn get(
     let wait_ms = if args.no_wait {
         Some(0)
     } else {
-        match args.wait.as_deref().map(parse_duration).transpose() {
+        match args.wait.as_deref().map(parse_wait_duration).transpose() {
             Ok(value) => value,
             Err(error) => return fail(&error.to_string()),
         }
@@ -819,7 +820,7 @@ async fn exec(
     let wait_ms = if args.no_wait {
         Some(0)
     } else {
-        match args.wait.as_deref().map(parse_duration).transpose() {
+        match args.wait.as_deref().map(parse_wait_duration).transpose() {
             Ok(value) => value,
             Err(error) => return fail(&error.to_string()),
         }

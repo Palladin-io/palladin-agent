@@ -22,7 +22,8 @@ use palladin_core::public_store::{
 };
 use palladin_core::secret::OrganizationApiKey;
 use palladin_credential::wait::{
-    HeartbeatInfo, WaitError, WaitHints, WaitOptions, await_grant, resolve_wait_policy,
+    HeartbeatInfo, WaitError, WaitHints, WaitOptions, WaitPolicyError, await_grant,
+    resolve_wait_policy,
 };
 use palladin_crypto::{
     DecryptedCredential, Ed25519Identity, X25519Identity, decrypt_credential,
@@ -1890,7 +1891,7 @@ impl RuntimeSession {
             },
             _ => WaitHints::default(),
         };
-        let policy = resolve_wait_policy(request.wait, hints);
+        let policy = resolve_wait_policy(request.wait, hints)?;
         let access = await_grant(
             initial,
             policy,
@@ -2047,6 +2048,8 @@ pub enum RuntimeError {
     Clock,
     #[error("credential wait was cancelled")]
     WaitCancelled,
+    #[error("credential wait policy is invalid: {0}")]
+    InvalidWaitPolicy(#[from] WaitPolicyError),
     #[error("credential execution failed: {0}")]
     Exec(#[from] ExecError),
     #[error("credential execution environment is invalid: {0}")]
