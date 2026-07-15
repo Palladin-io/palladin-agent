@@ -113,10 +113,51 @@ jobs:
           test "$(git rev-parse "$PR_REF")" = "$HEAD_SHA"
           MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
           # Diffing fetched objects never checks out or executes untrusted PR code.
-          git diff --no-ext-diff --no-textconv --binary \
-            "$MERGE_BASE" "$HEAD_SHA" > /tmp/pr_diff.patch
-          test -s /tmp/pr_diff.patch
-          test "$(wc -c < /tmp/pr_diff.patch)" -le 8388608
+          TOTAL_BYTES=$(git diff --no-ext-diff --no-textconv --no-renames --binary \
+            "$MERGE_BASE" "$HEAD_SHA" | wc -c)
+          test "$TOTAL_BYTES" -gt 0
+          test "$TOTAL_BYTES" -le 8388608
+
+          CHUNK_LIMIT=655360
+          CHUNK_INDEX=0
+          CHUNK_BYTES=0
+          CHUNK_FILES=()
+          install -d -m 0700 /tmp/pr_diff_chunks
+
+          flush_chunk() {
+            if [ "${#CHUNK_FILES[@]}" -eq 0 ]; then
+              return
+            fi
+            CHUNK_INDEX=$((CHUNK_INDEX + 1))
+            printf -v CHUNK_NAME 'chunk-%03d.patch' "$CHUNK_INDEX"
+            GIT_LITERAL_PATHSPECS=1 git diff --no-ext-diff --no-textconv --no-renames --binary \
+              "$MERGE_BASE" "$HEAD_SHA" -- "${CHUNK_FILES[@]}" \
+              > "/tmp/pr_diff_chunks/${CHUNK_NAME}"
+            test -s "/tmp/pr_diff_chunks/${CHUNK_NAME}"
+            CHUNK_BYTES=0
+            CHUNK_FILES=()
+          }
+
+          while IFS= read -r -d '' FILE; do
+            FILE_BYTES=$(GIT_LITERAL_PATHSPECS=1 git diff --no-ext-diff --no-textconv --no-renames --binary \
+              "$MERGE_BASE" "$HEAD_SHA" -- "$FILE" | wc -c)
+            test "$FILE_BYTES" -gt 0
+            if [ "$FILE_BYTES" -gt "$CHUNK_LIMIT" ]; then
+              flush_chunk
+              CHUNK_FILES+=("$FILE")
+              CHUNK_BYTES=$FILE_BYTES
+              flush_chunk
+              continue
+            fi
+            if [ "${#CHUNK_FILES[@]}" -gt 0 ] \
+              && [ "$((CHUNK_BYTES + FILE_BYTES))" -gt "$CHUNK_LIMIT" ]; then
+              flush_chunk
+            fi
+            CHUNK_FILES+=("$FILE")
+            CHUNK_BYTES=$((CHUNK_BYTES + FILE_BYTES))
+          done < <(git diff --name-only -z --no-renames "$MERGE_BASE" "$HEAD_SHA")
+          flush_chunk
+          test "$CHUNK_INDEX" -gt 0
           gh api --paginate "repos/${REPO}/pulls/${PR}/files" --jq '.[].filename' > /tmp/pr_files.txt
           gh pr view "$PR" --json reviews > /tmp/pr_reviews.json
           gh api --paginate "repos/${REPO}/pulls/${PR}/comments" > /tmp/pr_inline_comments.json
@@ -124,10 +165,9 @@ jobs:
 
       - name: Build isolated review prompt
         run: |
-          install -d -m 0700 "$RUNNER_TEMP/codex-review"
+          REVIEW_ROOT="$RUNNER_TEMP/codex-review"
+          install -d -m 0700 "$REVIEW_ROOT" "$REVIEW_ROOT/prompts"
           {
-            cat .github/codex/pr-review.md
-            echo ''
             echo '## AGENTS.md'
             cat AGENTS.md
             echo ''
@@ -148,10 +188,27 @@ jobs:
             echo ''
             echo '## Maintainer context'
             cat /tmp/pr_user_context.md
-            echo ''
-            echo '## Pull request diff'
-            cat /tmp/pr_diff.patch
-          } > "$RUNNER_TEMP/codex-review/prompt.md"
+          } > "$REVIEW_ROOT/context.md"
+
+          for PATCH in /tmp/pr_diff_chunks/*.patch; do
+            PROMPT="$REVIEW_ROOT/prompts/$(basename "${PATCH%.patch}").md"
+            {
+              cat .github/codex/pr-review.md
+              echo ''
+              cat "$REVIEW_ROOT/context.md"
+              echo ''
+              echo '## Assigned pull request diff chunk'
+              cat "$PATCH"
+            } > "$PROMPT"
+          done
+          {
+            for PATCH in /tmp/pr_diff_chunks/*.patch; do
+              echo "### $(basename "${PATCH%.patch}")"
+              grep '^diff --git ' "$PATCH" || true
+              echo ''
+            done
+          } > "$REVIEW_ROOT/chunk-manifest.md"
+          test "$(find "$REVIEW_ROOT/prompts" -type f -name 'chunk-*.md' | wc -l)" -gt 0
 
       - name: Set up Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
@@ -173,7 +230,10 @@ jobs:
         env:
           CODEX_AUTH_JSON_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
           CODEX_MODEL: ${{ vars.CODEX_REVIEW_MODEL }}
-          REVIEW_PROMPT: ${{ runner.temp }}/codex-review/prompt.md
+          CROSS_CHUNK_INSTRUCTIONS: ${{ github.workspace }}/.github/codex/cross-chunk-review.md
+          REVIEW_CONTEXT: ${{ runner.temp }}/codex-review/context.md
+          REVIEW_MANIFEST: ${{ runner.temp }}/codex-review/chunk-manifest.md
+          REVIEW_PROMPTS: ${{ runner.temp }}/codex-review/prompts
           REVIEW_SCHEMA: ${{ github.workspace }}/.github/codex/review-output.schema.json
         run: |
           if [ -z "$CODEX_AUTH_JSON_B64" ]; then
@@ -181,17 +241,28 @@ jobs:
             exit 1
           fi
 
-          SOURCE_PROMPT="$REVIEW_PROMPT"
+          SOURCE_PROMPTS="$REVIEW_PROMPTS"
+          SOURCE_CONTEXT="$REVIEW_CONTEXT"
+          SOURCE_MANIFEST="$REVIEW_MANIFEST"
+          SOURCE_CROSS_CHUNK_INSTRUCTIONS="$CROSS_CHUNK_INSTRUCTIONS"
           SOURCE_SCHEMA="$REVIEW_SCHEMA"
           RUNTIME_ROOT="/tmp/palladin-codex-${GITHUB_RUN_ID}"
           AUTH_HOME="$RUNTIME_ROOT/auth"
           EMPTY_WORKSPACE="$RUNTIME_ROOT/workspace"
-          REVIEW_PROMPT="$RUNTIME_ROOT/prompt.md"
+          PROMPT_DIR="$RUNTIME_ROOT/prompts"
+          RESULTS_DIR="$RUNTIME_ROOT/results"
+          REVIEW_CONTEXT="$RUNTIME_ROOT/context.md"
+          REVIEW_MANIFEST="$RUNTIME_ROOT/chunk-manifest.md"
+          CROSS_CHUNK_INSTRUCTIONS="$RUNTIME_ROOT/cross-chunk-review.md"
           REVIEW_SCHEMA="$RUNTIME_ROOT/review-output.schema.json"
           REVIEW_OUTPUT="$RUNTIME_ROOT/result.json"
           trap 'sudo rm -rf "$RUNTIME_ROOT"' EXIT
-          install -d -m 0700 "$AUTH_HOME" "$EMPTY_WORKSPACE" "$EMPTY_WORKSPACE/home"
-          cp "$SOURCE_PROMPT" "$REVIEW_PROMPT"
+          install -d -m 0700 "$AUTH_HOME" "$EMPTY_WORKSPACE" "$EMPTY_WORKSPACE/home" "$RESULTS_DIR"
+          install -d -m 0755 "$PROMPT_DIR"
+          cp "$SOURCE_PROMPTS"/chunk-*.md "$PROMPT_DIR"/
+          cp "$SOURCE_CONTEXT" "$REVIEW_CONTEXT"
+          cp "$SOURCE_MANIFEST" "$REVIEW_MANIFEST"
+          cp "$SOURCE_CROSS_CHUNK_INSTRUCTIONS" "$CROSS_CHUNK_INSTRUCTIONS"
           cp "$SOURCE_SCHEMA" "$REVIEW_SCHEMA"
           printf '%s' "$CODEX_AUTH_JSON_B64" | base64 --decode > "$AUTH_HOME/auth.json"
           chmod 600 "$AUTH_HOME/auth.json"
@@ -199,11 +270,9 @@ jobs:
             .auth_mode == "chatgpt" and
             ((.tokens.refresh_token // "") | type == "string" and length > 0)
           ' "$AUTH_HOME/auth.json" > /dev/null
-          touch "$REVIEW_OUTPUT"
-          sudo chown -R nobody:nogroup "$AUTH_HOME" "$EMPTY_WORKSPACE"
-          sudo chown nobody:nogroup "$REVIEW_OUTPUT"
+          sudo chown -R nobody:nogroup "$AUTH_HOME" "$EMPTY_WORKSPACE" "$RESULTS_DIR"
 
-          ARGS=(
+          BASE_ARGS=(
             exec
             --ephemeral
             --ignore-user-config
@@ -217,34 +286,70 @@ jobs:
             --disable multi_agent
             --cd "$EMPTY_WORKSPACE"
             --output-schema "$REVIEW_SCHEMA"
-            --output-last-message "$REVIEW_OUTPUT"
           )
           if [ -n "$CODEX_MODEL" ]; then
-            ARGS+=(--model "$CODEX_MODEL")
+            BASE_ARGS+=(--model "$CODEX_MODEL")
           fi
 
-          CODEX_EXIT=0
-          # shellcheck disable=SC2024 # The trusted runner shell intentionally owns the redirections; Codex only inherits the open descriptors.
-          sudo -u nobody env -i \
-              HOME="$EMPTY_WORKSPACE/home" \
-              CODEX_HOME="$AUTH_HOME" \
-              PATH="$PATH" \
-              codex "${ARGS[@]}" - < "$REVIEW_PROMPT" \
-              > "$RUNTIME_ROOT/codex-events.log" \
-              2> "$RUNTIME_ROOT/codex-error.log" \
-            || CODEX_EXIT=$?
+          run_codex_review() {
+            local REVIEW_NAME=$1
+            local REVIEW_PROMPT=$2
+            local REVIEW_RESULT=$3
+            local CODEX_EXIT=0
+            touch "$REVIEW_RESULT"
+            sudo chown nobody:nogroup "$REVIEW_RESULT"
+            # shellcheck disable=SC2024 # The trusted runner shell intentionally owns the redirections; Codex only inherits the open descriptors.
+            sudo -u nobody env -i \
+                HOME="$EMPTY_WORKSPACE/home" \
+                CODEX_HOME="$AUTH_HOME" \
+                PATH="$PATH" \
+                codex "${BASE_ARGS[@]}" --output-last-message "$REVIEW_RESULT" - \
+                < "$REVIEW_PROMPT" \
+                > "$RUNTIME_ROOT/${REVIEW_NAME}-events.log" \
+                2> "$RUNTIME_ROOT/${REVIEW_NAME}-error.log" \
+              || CODEX_EXIT=$?
 
-          if [ "$CODEX_EXIT" -ne 0 ]; then
-            if grep -Fq "You've hit your usage limit." "$RUNTIME_ROOT/codex-error.log"; then
-              echo "::error::Codex subscription usage limit reached. Retry after the account limit resets."
-            elif grep -Eq '401 Unauthorized|authentication|not logged in' "$RUNTIME_ROOT/codex-error.log"; then
-              echo "::error::Codex ChatGPT authentication failed. Reseed CODEX_AUTH_JSON_B64."
-            else
-              echo "::error::Codex review failed. Raw CLI output was suppressed because it may contain untrusted PR content."
+            if [ "$CODEX_EXIT" -ne 0 ]; then
+              echo "::error::Codex review failed for ${REVIEW_NAME}. Raw CLI output was suppressed because it may contain untrusted PR content."
+              exit "$CODEX_EXIT"
             fi
-            exit "$CODEX_EXIT"
-          fi
+            jq -e . "$REVIEW_RESULT" > /dev/null
+          }
 
+          for REVIEW_PROMPT in "$PROMPT_DIR"/chunk-*.md; do
+            CHUNK_NAME=$(basename "${REVIEW_PROMPT%.md}")
+            run_codex_review \
+              "$CHUNK_NAME" \
+              "$REVIEW_PROMPT" \
+              "$RESULTS_DIR/${CHUNK_NAME}.json"
+          done
+
+          CHUNK_RESULTS="$RUNTIME_ROOT/chunk-results.json"
+          jq -s . "$RESULTS_DIR"/chunk-*.json > "$CHUNK_RESULTS"
+          CROSS_CHUNK_PROMPT="$RUNTIME_ROOT/cross-chunk-prompt.md"
+          {
+            cat "$CROSS_CHUNK_INSTRUCTIONS"
+            echo ''
+            echo '## Shared pull request context'
+            cat "$REVIEW_CONTEXT"
+            echo ''
+            echo '## Chunk assignments'
+            cat "$REVIEW_MANIFEST"
+            echo ''
+            echo '## Structured chunk review results'
+            cat "$CHUNK_RESULTS"
+          } > "$CROSS_CHUNK_PROMPT"
+          run_codex_review \
+            cross-chunk \
+            "$CROSS_CHUNK_PROMPT" \
+            "$RESULTS_DIR/cross-chunk.json"
+          jq -e '.comments | length == 0' "$RESULTS_DIR/cross-chunk.json" > /dev/null
+
+          jq -s '{
+            verdict: (if any(.verdict == "CHANGES_REQUESTED") then "CHANGES_REQUESTED" else "APPROVED" end),
+            summary: (map(.summary) | join("\n\n")),
+            comments: ([.[].comments[]] | unique_by(.path, .line, .body) | .[:50])
+          }' "$RESULTS_DIR"/*.json > "$REVIEW_OUTPUT"
           jq -e . "$REVIEW_OUTPUT" > /dev/null
           {
             echo 'review<<CODEX_REVIEW_EOF'
