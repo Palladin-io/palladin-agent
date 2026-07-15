@@ -74,7 +74,7 @@ pub fn generate_totp(params: &TotpParams) -> Result<TotpCode, TotpError> {
 }
 
 pub fn generate_totp_at(params: &TotpParams, unix_seconds: u64) -> Result<TotpCode, TotpError> {
-    if !(1..=10).contains(&params.digits) {
+    if !(6..=8).contains(&params.digits) {
         return Err(TotpError::InvalidDigits);
     }
     if params.period == 0 {
@@ -164,7 +164,7 @@ fn base32_encode(bytes: &[u8]) -> String {
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum TotpError {
-    #[error("TOTP digit count must be between 1 and 10")]
+    #[error("TOTP digit count must be between 6 and 8")]
     InvalidDigits,
     #[error("TOTP period must be greater than zero")]
     InvalidPeriod,
@@ -229,6 +229,27 @@ mod tests {
             generate_totp_at(&params, 30).expect("boundary").expires_in,
             30
         );
+    }
+
+    #[test]
+    fn digit_count_is_limited_to_the_frozen_contract_range() {
+        let secret = base32_encode(b"12345678901234567890");
+
+        for digits in [6, 8] {
+            let mut params = TotpParams::new(secret.clone());
+            params.digits = digits;
+            let code = generate_totp_at(&params, 59).expect("supported digit count");
+            assert_eq!(code.code.expose_secret().len(), digits as usize);
+        }
+
+        for digits in [5, 9] {
+            let mut params = TotpParams::new(secret.clone());
+            params.digits = digits;
+            assert_eq!(
+                generate_totp_at(&params, 59).expect_err("unsupported digit count"),
+                TotpError::InvalidDigits
+            );
+        }
     }
 
     #[test]
