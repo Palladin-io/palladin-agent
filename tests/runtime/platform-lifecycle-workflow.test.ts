@@ -59,11 +59,16 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(runner).toContain("existsSync(join(home, '.palladin'))");
     expect(runner).not.toContain('if (purged.status === 0)');
     expect(runner).toContain('npm uninstall left the Agent launcher installed');
-    expect(runner).toContain("verify-bundle.sh'), '--app', app, '--architecture', 'universal'");
+    expect(runner).toContain("repositoryScript('packaging/macos/scripts/verify-bundle.sh'), '--app', app, '--architecture', 'universal'");
     expect(runner).toContain('verifyMacBundle(packagedApp, phase, env)');
     expect(runner).toContain("bounded('/usr/bin/ditto'");
     expect(runner).toContain("bounded('/bin/bash'");
     expect(runner).not.toContain('/usr/local/bin');
+    expect(runner).toContain('const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));');
+    expect(runner).toContain("mkdtempSync(join(SCRIPT_DIRECTORY, '.palladin-physical-'))");
+    expect(runner).not.toContain('dirname(resolve(contract.output))');
+    expect(runner).toContain('dirname(outputPath) !== dirname(contractPath)');
+    expect(runner).toContain('basename(outputPath) !== `lifecycle-${contract.targetId}.json`');
     expect(runner).toContain("return join(dirname(process.execPath), process.platform === 'win32' ? 'npm.cmd' : 'npm');");
     expect(runner).not.toContain("function npmExecutable() { return process.platform === 'win32' ? 'npm.cmd' : 'npm'; }");
     expect(runner).toContain("version.stdout.trim() !== '11.18.0'");
