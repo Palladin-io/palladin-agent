@@ -171,10 +171,25 @@ describe('cross-platform CI gates', () => {
     expect(windows).toContain('Signed install smoke - ${{ matrix.architecture }}');
 
     const fix = read('.github/workflows/fix-pr.yml');
+    expect(fix).toContain('  workflow_dispatch:');
+    expect(fix).not.toContain('pull_request:');
+    expect(fix).not.toContain('pull_request_target:');
+    expect(fix).toContain("github.actor == 'patryk-roguszewski'");
     expect(fix).toContain('ref: ${{ steps.pr.outputs.sha }}');
     expect(fix).toContain('persist-credentials: false');
     expect(fix).toContain('npm ci --ignore-scripts --workspaces=false');
     expect(fix).toContain('push --force-with-lease="refs/heads/${HEAD_BRANCH}:${ORIGINAL_SHA}"');
+    expect(fix).toContain('"${VALIDATED_SHA}:refs/heads/${HEAD_BRANCH}"');
+    expect(fix).toContain('test "$(git rev-parse HEAD)" = "$VALIDATED_SHA"');
+    expect(fix).toContain('git diff --name-only -z "$ORIGINAL_SHA" HEAD');
+    expect(fix).toContain('test -z "$(git status --porcelain --untracked-files=all)"');
+    expect(fix).toContain('rustup run 1.97.0 cargo fmt --all -- --check');
+    expect(fix).toContain('rustup run 1.97.0 cargo clippy --workspace --all-targets --locked -- -D warnings');
+    expect(fix).toContain('rustup run 1.97.0 cargo test --workspace --locked');
+    expect(fix).toContain('ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8');
+    expect(fix).toContain('shellcheck -x "$file"');
+    expect(fix).toContain('[System.Management.Automation.Language.Parser]::ParseFile(');
+    expect(fix).toContain('ET.parse(path)');
     const claudeFixStep = fix
       .split('      - name: Run Claude Code fix\n')[1]
       ?.split('\n      - name: Validate the fix without credentials')[0];
