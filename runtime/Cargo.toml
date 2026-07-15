@@ -57,7 +57,7 @@ objc2-local-authentication = { version = "0.3.2", default-features = false, feat
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha1 = "0.10.6"
-sha2 = { version = "0.10.9", features = ["oid"] }
+sha2 = { version = "0.11.0", features = ["oid"] }
 subtle = "2.6.1"
 tempfile = "3.27.0"
 thiserror = "2.0.18"
