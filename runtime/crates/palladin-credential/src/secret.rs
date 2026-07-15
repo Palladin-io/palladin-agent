@@ -522,7 +522,8 @@ mod tests {
         let default =
             parse_totp_params(r#"{"secret":"  JBSWY3DP  ","period":2147483647}"#).expect("default");
         assert_eq!(default.algorithm, TotpAlgorithm::Sha1);
-        assert_eq!(default.secret.expose_secret(), "JBSWY3DP");
+        let secret_was_trimmed = default.secret.expose_secret() == "JBSWY3DP";
+        assert!(secret_was_trimmed, "TOTP secret normalization diverged");
         assert_eq!(default.period, 2_147_483_647);
 
         for (algorithm, expected) in [
@@ -595,7 +596,8 @@ mod tests {
     fn uppercase_and_percent_encoded_names_allow_duplicate_unknown_parameters() {
         let uri = "otpauth://totp/Palladin?SECRET=%20JBSWY3DP%20&ALGORITHM=sha256&DIGITS=8&PERIOD=60&issuer=one&issuer=two";
         let params = parse_totp_value(uri).expect("forward-compatible URI");
-        assert_eq!(params.secret.expose_secret(), "JBSWY3DP");
+        let secret_was_trimmed = params.secret.expose_secret() == "JBSWY3DP";
+        assert!(secret_was_trimmed, "TOTP URI secret normalization diverged");
         assert_eq!(params.algorithm, TotpAlgorithm::Sha256);
         assert_eq!(params.digits, 8);
         assert_eq!(params.period, 60);
