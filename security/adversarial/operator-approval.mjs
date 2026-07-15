@@ -52,20 +52,14 @@ function timestamp(value, label) {
   return Date.parse(value);
 }
 
-function regularFile(path, label) {
-  const absolute = resolve(path);
-  const metadata = lstatSync(absolute);
-  if (!metadata.isFile() || metadata.isSymbolicLink()) fail(`${label} must be a regular file`);
-  return absolute;
-}
-
 function readRegularFile(path, label, encoding) {
-  const absolute = regularFile(path, label);
-  const expected = lstatSync(absolute);
+  const absolute = resolve(path);
   const descriptor = openSync(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = fstatSync(descriptor);
-    if (!opened.isFile() || opened.dev !== expected.dev || opened.ino !== expected.ino) {
+    const linked = lstatSync(absolute);
+    if (!opened.isFile() || linked.isSymbolicLink()
+      || opened.dev !== linked.dev || opened.ino !== linked.ino) {
       fail(`${label} changed while it was opened`);
     }
     return readFileSync(descriptor, encoding);

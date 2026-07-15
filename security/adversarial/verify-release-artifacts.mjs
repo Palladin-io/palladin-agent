@@ -18,12 +18,12 @@ function fail(message) {
 
 function readJson(path, label) {
   const absolute = resolve(path);
-  const metadata = lstatSync(absolute);
-  if (!metadata.isFile() || metadata.isSymbolicLink()) fail(`${label} must be a regular file`);
   const descriptor = openSync(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = fstatSync(descriptor);
-    if (!opened.isFile() || opened.dev !== metadata.dev || opened.ino !== metadata.ino) {
+    const linked = lstatSync(absolute);
+    if (!opened.isFile() || linked.isSymbolicLink()
+      || opened.dev !== linked.dev || opened.ino !== linked.ino) {
       fail(`${label} changed while it was opened`);
     }
     return JSON.parse(readFileSync(descriptor, 'utf8'));
