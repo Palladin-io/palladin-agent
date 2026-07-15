@@ -108,6 +108,15 @@ jobs:
             --artifacts "$assets" --version "$VERSION" --source-sha "$SOURCE_SHA" \
             --sbom "$assets/sbom-release.spdx.json" \
             --manifest "$assets/release-manifest.json" --checksums "$assets/SHA256SUMS"
+          test -f "$assets/adversarial-report.json"
+          test -f "$assets/adversarial-report.md"
+          node security/adversarial/report.mjs validate \
+            --source-sha "$SOURCE_SHA" \
+            --json "$assets/adversarial-report.json" \
+            --markdown "$assets/adversarial-report.md"
+          node security/adversarial/verify-release-artifacts.mjs \
+            --report "$assets/adversarial-report.json" \
+            --platform-manifest "$assets/release-manifest.json"
           packages=(
             @palladin/runtime-darwin-arm64
             @palladin/runtime-darwin-x64
@@ -664,6 +673,27 @@ jobs:
           mapfile -t assets < <(find "$RUNNER_TEMP/meta-release" -type f -print | sort)
           gh release upload "${{ inputs.release_tag }}" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY"
+
+      - name: Revalidate the adversarial release gate before staging
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          gate="$RUNNER_TEMP/adversarial-release-gate"
+          mkdir -p "$gate"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$gate" \
+            --pattern adversarial-report.json \
+            --pattern adversarial-report.md \
+            --pattern release-manifest.json
+          node security/adversarial/report.mjs validate \
+            --source-sha "$SOURCE_SHA" \
+            --json "$gate/adversarial-report.json" \
+            --markdown "$gate/adversarial-report.md"
+          node security/adversarial/verify-release-artifacts.mjs \
+            --report "$gate/adversarial-report.json" \
+            --platform-manifest "$gate/release-manifest.json"
 
       - name: Stage the meta-package under latest
         run: |

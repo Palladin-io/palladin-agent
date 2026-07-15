@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
-import { chmodSync, lstatSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -22,6 +24,33 @@ mkdirSync(captureDirectoryInput, { recursive: true, mode: 0o700 });
 chmodSync(captureDirectoryInput, 0o700);
 const canary = `palladin-boundary-${randomBytes(24).toString('hex')}`;
 const maximumCaptureBytes = 1024 * 1024;
+const maximumScannedFileBytes = 4 * 1024 * 1024;
+
+function assertTreeDoesNotContainCanary(root, label) {
+  if (!existsSync(root)) return;
+  const rootMetadata = lstatSync(root);
+  if (rootMetadata.isSymbolicLink()) throw new Error(`${label} contains a symbolic link`);
+  const pending = [realpathSync(root)];
+  let scannedBytes = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined) throw new Error('canary scan state is invalid');
+    const metadata = lstatSync(current);
+    if (metadata.isSymbolicLink()) throw new Error(`${label} contains a symbolic link`);
+    if (metadata.isDirectory()) {
+      for (const entry of readdirSync(current)) pending.push(join(current, entry));
+      continue;
+    }
+    if (!metadata.isFile() || metadata.size > maximumScannedFileBytes) {
+      throw new Error(`${label} contains an unsupported file`);
+    }
+    scannedBytes += metadata.size;
+    if (scannedBytes > maximumScannedFileBytes) throw new Error(`${label} exceeded the scan bound`);
+    if (readFileSync(current).includes(Buffer.from(canary))) {
+      throw new Error(`${label} persisted the private boundary canary`);
+    }
+  }
+}
 
 function capture(name, stdout, stderr) {
   if (stdout.length + stderr.length > maximumCaptureBytes) {
@@ -120,4 +149,9 @@ if (mcpResults.some((result) => result.code === 0)) {
 }
 mcpResults.forEach((result, index) => assertAuthorizationDenial(`mcp-connection-${index + 1}`, result));
 
-process.stdout.write('Blind signed-client, cancellation, and second-connection probes failed closed.\n');
+const home = process.env.HOME;
+if (!home) throw new Error('HOME is required for the public-state canary scan');
+assertTreeDoesNotContainCanary(join(home, '.palladin'), 'public Palladin state');
+assertTreeDoesNotContainCanary(captureDirectoryInput, 'bounded probe captures');
+
+process.stdout.write('Blind signed-client, cancellation, second-connection, and public-state probes failed closed.\n');

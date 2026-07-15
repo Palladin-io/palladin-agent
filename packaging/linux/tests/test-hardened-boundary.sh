@@ -10,10 +10,14 @@ agent=palladin-boundary-agent
 attacker=palladin-boundary-attacker
 login_user=palladin-boundary-login
 stale_pid=
+scan_pid=
+scan_launcher=
 cleanup() {
   systemctl unset-environment LD_PRELOAD >/dev/null 2>&1 || true
   rm -f /run/palladin-runtime/ld-preload-hit
   [[ -z $stale_pid ]] || kill "$stale_pid" >/dev/null 2>&1 || true
+  [[ -z $scan_pid ]] || kill "$scan_pid" >/dev/null 2>&1 || true
+  [[ -z $scan_launcher ]] || kill "$scan_launcher" >/dev/null 2>&1 || true
   userdel "$agent" >/dev/null 2>&1 || true
   userdel "$attacker" >/dev/null 2>&1 || true
   userdel --remove "$login_user" >/dev/null 2>&1 || true
@@ -131,6 +135,44 @@ doctor=$(runuser -u "$agent" -- /usr/lib/palladin/runtime/palladin-linux-client 
 grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
 grep -F 'dedicated Agent UID' <<<"$doctor"
 
+chmod 0711 "$root"
+scan_fifo=$root/connect-input
+scan_pid_file=$root/connect.pid
+mkfifo -m 0600 "$scan_fifo"
+chown "$agent:$(id -gn "$agent")" "$scan_fifo"
+install -o "$agent" -g "$(id -gn "$agent")" -m 0600 /dev/null "$scan_pid_file"
+runuser -u "$agent" -- sh -c \
+  "echo \$\$ > '$scan_pid_file'; exec /usr/lib/palladin/runtime/palladin-linux-client connect --api-key-stdin < '$scan_fifo'" \
+  >"$root/connect.out" 2>"$root/connect.err" &
+scan_launcher=$!
+exec 8>"$scan_fifo"
+for _ in $(seq 1 50); do
+  [[ -s $scan_pid_file ]] && break
+  sleep 0.1
+done
+scan_pid=$(cat "$scan_pid_file")
+[[ $scan_pid =~ ^[1-9][0-9]*$ && -d /proc/$scan_pid ]]
+scan_canary="palladin-stdin-$(openssl rand -hex 32)"
+printf '%s' "$scan_canary" >&8
+printf '%s' "$scan_canary" | runuser -u "$agent" -- node \
+  "$(dirname "$0")/process-scan-probe.mjs" --process "$scan_pid" \
+  /usr/lib/palladin/runtime/palladin-linux-client
+exec 8>&-
+for _ in $(seq 1 100); do
+  kill -0 "$scan_pid" >/dev/null 2>&1 || break
+  sleep 0.1
+done
+kill -INT "$scan_pid" >/dev/null 2>&1 || true
+wait "$scan_launcher" >/dev/null 2>&1 || true
+scan_launcher=
+scan_pid=
+printf '%s' "$scan_canary" | runuser -u "$agent" -- node \
+  "$(dirname "$0")/process-scan-probe.mjs" --tree \
+  /etc/palladin/agents.d "$root/connect.out" "$root/connect.err"
+printf '%s' "$scan_canary" | node "$(dirname "$0")/process-scan-probe.mjs" --tree \
+  /var/lib/palladin-runtime/v1
+scan_canary=
+
 broker_pid=$(systemctl show -p MainPID --value palladin-runtime.service)
 [[ $broker_pid =~ ^[1-9][0-9]*$ ]] || { echo 'Error: broker PID unavailable' >&2; exit 1; }
 cc "$(dirname "$0")/security-boundary-probe.c" -o "$root/security-boundary-probe"
@@ -147,11 +189,22 @@ systemctl restart palladin-runtime.service
   exit 1
 }
 echo 'ld-preload=removed-before-broker-start'
+broker_pid=$(systemctl show -p MainPID --value palladin-runtime.service)
+[[ $broker_pid =~ ^[1-9][0-9]*$ && -d /proc/$broker_pid ]] || {
+  echo 'Error: restarted broker PID unavailable' >&2
+  exit 1
+}
 
 principal=$(sed -n 's/^principal=//p' "/etc/palladin/agents.d/$(id -u "$agent")")
 [[ $principal =~ ^[0-9a-f]{32}$ ]]
 state=/var/lib/palladin-runtime/v1/agents/$principal
 [[ $(stat -c '%U:%G:%a' "$state") == 'palladin-runtime:palladin-runtime:700' ]]
+for user in "$agent" "$attacker"; do
+  runuser -u "$user" -- node "$(dirname "$0")/foreign-node-probe.mjs" \
+    --broker-root /var/lib/palladin-runtime/v1 \
+    --agent-state "$state" \
+    --broker-pid "$broker_pid"
+done
 if runuser -u "$agent" -- env \
   PALLADIN_LINUX_HARDENED=1 \
   PALLADIN_LINUX_BROKER_ROOT="$state" \

@@ -1,0 +1,476 @@
+{
+  "schemaVersion": 1,
+  "reportSchemaVersion": 1,
+  "evidenceFreshnessHours": 168,
+  "coverage": {
+    "mode": "cartesian-product",
+    "evidenceRequiredDisposition": "evidence-required",
+    "unsupportedDisposition": "not-applicable"
+  },
+  "adrs": [
+    {
+      "id": "ADR-0004",
+      "href": "runtime/docs/adr/0004-adversarial-local-boundary-evidence.md"
+    }
+  ],
+  "attacks": [
+    {
+      "id": "node-key-enumeration-read",
+      "name": "Foreign Node key enumeration and direct read"
+    },
+    {
+      "id": "node-runtime-spawn",
+      "name": "Foreign Node runtime spawn and secret-operation oracle"
+    },
+    {
+      "id": "unsigned-runtime",
+      "name": "Unsigned runtime substitution"
+    },
+    {
+      "id": "modified-runtime",
+      "name": "Modified runtime substitution"
+    },
+    {
+      "id": "argv-env-config-scan",
+      "name": "Argument, environment and config disclosure scan"
+    },
+    {
+      "id": "symlink-permissions",
+      "name": "Symlink, ownership and permission abuse"
+    },
+    {
+      "id": "core-dump-debugger-ptrace",
+      "name": "Core dump, debugger and process-memory inspection"
+    },
+    {
+      "id": "loader-injection",
+      "name": "LD_PRELOAD, DYLD and equivalent loader injection"
+    },
+    {
+      "id": "operation-replay",
+      "name": "Authorized operation and session replay"
+    },
+    {
+      "id": "fake-browser-cdp-endpoint-forged-caller",
+      "name": "Fake browser/CDP endpoint and forged caller descriptor"
+    },
+    {
+      "id": "malicious-exec",
+      "name": "Malicious exec target and transformed output exfiltration"
+    }
+  ],
+  "residualRisks": [
+    {
+      "id": "RR-CONVENIENCE-SAME-USER",
+      "title": "Convenience does not isolate secrets from the same OS user",
+      "statement": "Convenience protects stored bytes with the platform store but does not make the current user account a process-level security boundary. Same-user enumeration, runtime invocation and process-memory inspection are expected residuals, not successful denial tests.",
+      "owner": "patryk-roguszewski",
+      "reviewDate": "2026-10-15",
+      "adrRefs": [
+        "ADR-0004"
+      ]
+    },
+    {
+      "id": "RR-PRIVILEGED-HOST-COMPROMISE",
+      "title": "A compromised privileged host remains outside the Hardened boundary",
+      "statement": "Hardened tiers fail closed for supported local attacks but do not claim protection after compromise of the operating-system kernel, trusted signing identity or platform root of trust.",
+      "owner": "patryk-roguszewski",
+      "reviewDate": "2026-10-15",
+      "adrRefs": [
+        "ADR-0004"
+      ]
+    },
+    {
+      "id": "RR-LINUX-AGENT-UID",
+      "title": "Linux Hardened trusts the dedicated Agent UID as one workload principal",
+      "statement": "Linux Hardened isolates broker-held identity, the master key, broker memory and broker state from the Agent UID, but it does not isolate sibling processes inside that dedicated workload UID. Agent authority, transient input and client memory are shared residuals, so operators must not run unrelated applications under it.",
+      "owner": "patryk-roguszewski",
+      "reviewDate": "2026-10-15",
+      "adrRefs": [
+        "ADR-0004"
+      ]
+    },
+    {
+      "id": "RR-MUSL-NO-HARDENED",
+      "title": "Linux musl has no Hardened tier",
+      "statement": "Linux musl and Alpine are Convenience-only for the MVP. A musl target must never report Hardened and the absent tier is recorded explicitly as not applicable.",
+      "owner": "patryk-roguszewski",
+      "reviewDate": "2026-10-15",
+      "adrRefs": [
+        "ADR-0004"
+      ]
+    },
+    {
+      "id": "RR-AUTHORIZED-DESTINATION",
+      "title": "An authorized destination can retain a credential it legitimately receives",
+      "statement": "Palladin can constrain which runtime performs an operation, but it cannot revoke plaintext already delivered to an explicitly authorized destination. Tests therefore attack authorization and transport boundaries rather than claiming control over the destination after delivery.",
+      "owner": "patryk-roguszewski",
+      "reviewDate": "2026-10-15",
+      "adrRefs": [
+        "ADR-0004"
+      ]
+    }
+  ],
+  "targetTiers": [
+    {
+      "id": "macos-arm64-convenience-source",
+      "os": "macos",
+      "arch": "arm64",
+      "libc": "none",
+      "tier": "Convenience",
+      "channel": "source-development",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace"
+      ],
+      "expectedResidualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER"
+      ],
+      "manualRequiredAttacks": [],
+      "residualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "macos-x64-convenience-source",
+      "os": "macos",
+      "arch": "x64",
+      "libc": "none",
+      "tier": "Convenience",
+      "channel": "source-development",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace"
+      ],
+      "expectedResidualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER"
+      ],
+      "manualRequiredAttacks": [],
+      "residualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "macos-arm64-hardened",
+      "os": "macos",
+      "arch": "arm64",
+      "libc": "none",
+      "tier": "Hardened",
+      "channel": "public-signed",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [],
+      "expectedResidualRiskIds": [],
+      "manualRequiredAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace",
+        "operation-replay"
+      ],
+      "residualRiskIds": [
+        "RR-PRIVILEGED-HOST-COMPROMISE",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "macos-x64-hardened",
+      "os": "macos",
+      "arch": "x64",
+      "libc": "none",
+      "tier": "Hardened",
+      "channel": "public-signed",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [],
+      "expectedResidualRiskIds": [],
+      "manualRequiredAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace",
+        "operation-replay"
+      ],
+      "residualRiskIds": [
+        "RR-PRIVILEGED-HOST-COMPROMISE",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "windows-arm64-convenience-source",
+      "os": "windows",
+      "arch": "arm64",
+      "libc": "none",
+      "tier": "Convenience",
+      "channel": "source-development",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace"
+      ],
+      "expectedResidualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER"
+      ],
+      "manualRequiredAttacks": [],
+      "residualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "windows-x64-convenience-source",
+      "os": "windows",
+      "arch": "x64",
+      "libc": "none",
+      "tier": "Convenience",
+      "channel": "source-development",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace"
+      ],
+      "expectedResidualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER"
+      ],
+      "manualRequiredAttacks": [],
+      "residualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "windows-arm64-hardened",
+      "os": "windows",
+      "arch": "arm64",
+      "libc": "none",
+      "tier": "Hardened",
+      "channel": "public-signed",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [],
+      "expectedResidualRiskIds": [],
+      "manualRequiredAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace",
+        "operation-replay"
+      ],
+      "residualRiskIds": [
+        "RR-PRIVILEGED-HOST-COMPROMISE",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "windows-x64-hardened",
+      "os": "windows",
+      "arch": "x64",
+      "libc": "none",
+      "tier": "Hardened",
+      "channel": "public-signed",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [],
+      "expectedResidualRiskIds": [],
+      "manualRequiredAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace",
+        "operation-replay"
+      ],
+      "residualRiskIds": [
+        "RR-PRIVILEGED-HOST-COMPROMISE",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "linux-gnu-arm64-convenience",
+      "os": "linux",
+      "arch": "arm64",
+      "libc": "gnu",
+      "tier": "Convenience",
+      "channel": "public-npm",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace"
+      ],
+      "expectedResidualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER"
+      ],
+      "manualRequiredAttacks": [],
+      "residualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "linux-gnu-x64-convenience",
+      "os": "linux",
+      "arch": "x64",
+      "libc": "gnu",
+      "tier": "Convenience",
+      "channel": "public-npm",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace"
+      ],
+      "expectedResidualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER"
+      ],
+      "manualRequiredAttacks": [],
+      "residualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "linux-gnu-arm64-hardened",
+      "os": "linux",
+      "arch": "arm64",
+      "libc": "gnu",
+      "tier": "Hardened",
+      "channel": "deb-rpm-systemd",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace"
+      ],
+      "expectedResidualRiskIds": [
+        "RR-LINUX-AGENT-UID"
+      ],
+      "manualRequiredAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "argv-env-config-scan",
+        "core-dump-debugger-ptrace",
+        "loader-injection",
+        "malicious-exec"
+      ],
+      "residualRiskIds": [
+        "RR-PRIVILEGED-HOST-COMPROMISE",
+        "RR-LINUX-AGENT-UID",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "linux-gnu-x64-hardened",
+      "os": "linux",
+      "arch": "x64",
+      "libc": "gnu",
+      "tier": "Hardened",
+      "channel": "deb-rpm-systemd",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace"
+      ],
+      "expectedResidualRiskIds": [
+        "RR-LINUX-AGENT-UID"
+      ],
+      "manualRequiredAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "argv-env-config-scan",
+        "core-dump-debugger-ptrace",
+        "loader-injection",
+        "malicious-exec"
+      ],
+      "residualRiskIds": [
+        "RR-PRIVILEGED-HOST-COMPROMISE",
+        "RR-LINUX-AGENT-UID",
+        "RR-AUTHORIZED-DESTINATION"
+      ]
+    },
+    {
+      "id": "linux-musl-arm64-convenience",
+      "os": "linux",
+      "arch": "arm64",
+      "libc": "musl",
+      "tier": "Convenience",
+      "channel": "public-npm",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace"
+      ],
+      "expectedResidualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER"
+      ],
+      "manualRequiredAttacks": [],
+      "residualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER",
+        "RR-AUTHORIZED-DESTINATION",
+        "RR-MUSL-NO-HARDENED"
+      ]
+    },
+    {
+      "id": "linux-musl-x64-convenience",
+      "os": "linux",
+      "arch": "x64",
+      "libc": "musl",
+      "tier": "Convenience",
+      "channel": "public-npm",
+      "disposition": "evidence-required",
+      "expectedResidualAttacks": [
+        "node-key-enumeration-read",
+        "node-runtime-spawn",
+        "core-dump-debugger-ptrace"
+      ],
+      "expectedResidualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER"
+      ],
+      "manualRequiredAttacks": [],
+      "residualRiskIds": [
+        "RR-CONVENIENCE-SAME-USER",
+        "RR-AUTHORIZED-DESTINATION",
+        "RR-MUSL-NO-HARDENED"
+      ]
+    },
+    {
+      "id": "linux-musl-arm64-hardened",
+      "os": "linux",
+      "arch": "arm64",
+      "libc": "musl",
+      "tier": "Hardened",
+      "channel": "unsupported",
+      "disposition": "not-applicable",
+      "expectedResidualAttacks": [],
+      "expectedResidualRiskIds": [],
+      "manualRequiredAttacks": [],
+      "residualRiskIds": [
+        "RR-MUSL-NO-HARDENED"
+      ],
+      "adrRefs": [
+        "ADR-0004"
+      ],
+      "rationale": "OpenRC does not provide the per-request isolation required by the Hardened threat model."
+    },
+    {
+      "id": "linux-musl-x64-hardened",
+      "os": "linux",
+      "arch": "x64",
+      "libc": "musl",
+      "tier": "Hardened",
+      "channel": "unsupported",
+      "disposition": "not-applicable",
+      "expectedResidualAttacks": [],
+      "expectedResidualRiskIds": [],
+      "manualRequiredAttacks": [],
+      "residualRiskIds": [
+        "RR-MUSL-NO-HARDENED"
+      ],
+      "adrRefs": [
+        "ADR-0004"
+      ],
+      "rationale": "OpenRC does not provide the per-request isolation required by the Hardened threat model."
+    }
+  ]
+}

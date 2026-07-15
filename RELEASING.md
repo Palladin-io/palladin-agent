@@ -157,23 +157,38 @@ Any mismatch in signature, entitlement, identity, checksum, manifest, SBOM, prov
 
 The `candidate` dist-tag deliberately keeps platform packages away from their default tag. Exact optional dependency versions still allow the meta package to resolve them after the final approval.
 
-### 4. Stage and approve the meta package
+### 4. Collect and approve adversarial evidence
 
-Only after all eight registry smoke tests pass:
+After platform staging and registry smoke tests pass, but before the public meta package is staged, collect the adversarial evidence for the exact tagged source and exact platform artifact digests. Automated evidence is not a substitute for a cell marked `manual-required` in `security/adversarial/coverage-manifest.json`.
+
+1. Run every automated and manual target-tier-attack cell required by the manifest against the staged artifact whose SHA-256 is recorded in that cell. Never copy evidence from another source SHA, artifact, target, or tier.
+2. Record every outcome explicitly. There is no default `passed` outcome. Convenience same-user observations use the manifest's `expected-residual` result and residual-risk reference; a failed cell requires a structured finding.
+3. Manual-required cells use only `manual://operator-attestation/<target>/<attack>/<UTC timestamp>` evidence references. A GitHub Actions artifact reference cannot satisfy a manual boundary.
+4. Keep canaries, credentials, API keys, private keys, process memory, environments, protocol payloads, and all other secret values out of evidence and reports.
+5. Use `node security/adversarial/report.mjs evidence` once with the complete exact target list, source SHA, per-target artifact hashes, observation time, explicit outcome map, evidence-reference map, and findings JSON. Use that complete bundle to generate both reports with `node security/adversarial/report.mjs generate`.
+6. Run `node security/adversarial/report.mjs validate` against both generated files and the exact 40-character source SHA. Missing, stale, incomplete, blocked, mismatched, or overdue evidence must fail.
+7. Patryk alone uploads `adversarial-report.json` and `adversarial-report.md` to the existing draft release after reviewing that both files contain no secrets. Do not replace either file after approval.
+
+An unresolved or accepted Critical/High finding, incomplete target, stale observation, artifact mismatch, overdue residual-risk review, or missing manual attestation stops the workflow before `@palladin/agent` is staged. The protected meta workflow validates this gate once before build and again immediately before `npm stage publish`.
+
+### 5. Stage and approve the meta package
+
+Only after all eight registry smoke tests and the adversarial gate pass:
 
 1. Build the meta tarball from the same tag commit.
 2. Verify its package allowlist contains only the launcher, runtime metadata, documentation, and license files. It must not contain private source, keys, build caches, test fixtures, or lifecycle scripts.
 3. Verify all eight optional dependencies use exact `X.Y.Z` versions and no unsupported platform fallback exists.
 4. Generate and verify its checksum, manifest entry, SBOM, provenance, and attestations.
-5. Stage it through the protected OIDC workflow with `npm stage publish --tag latest`.
-6. Patryk downloads and inspects the staged tarball, verifies the digest and provenance, then approves it with npm 2FA.
-7. Install `@palladin/agent@X.Y.Z` and `@palladin/agent@latest` from npm in clean macOS, Windows, and Linux runners and repeat the end-to-end smoke checks.
+5. Re-download and revalidate the approved adversarial reports against the tagged source and exact platform release manifest.
+6. Stage the meta package through the protected OIDC workflow with `npm stage publish --tag latest`.
+7. Patryk downloads and inspects the staged tarball, verifies the digest, provenance, and recorded adversarial gate, then approves it with npm 2FA.
+8. Install `@palladin/agent@X.Y.Z` and `@palladin/agent@latest` from npm in clean macOS, Windows, and Linux runners and repeat the end-to-end smoke checks.
 
-Publishing the meta package is the consumer-visible commit point. Never approve it while a platform package, registry smoke test, or attestation is missing.
+Publishing the meta package is the consumer-visible commit point. Never approve it while a platform package, registry smoke test, attestation, required adversarial cell, or Critical/High release blocker is missing.
 
-### 5. Finalize the immutable GitHub release
+### 6. Finalize the immutable GitHub release
 
-After npm smoke tests pass, Patryk approves finalization. Create the GitHub release from the existing protected tag and attach only the already verified artifacts:
+After the public meta-package smoke tests pass, Patryk approves finalization. Create the GitHub release from the existing protected tag and attach only the already verified artifacts:
 
 - all npm tarballs
 - `SHA256SUMS`
@@ -181,8 +196,10 @@ After npm smoke tests pass, Patryk approves finalization. Create the GitHub rele
 - SBOMs
 - signature and notarization verification reports without secrets
 - links to npm and GitHub attestations
+- `adversarial-report.json`
+- `adversarial-report.md`
 
-Verify every attachment digest once more, publish the release, and confirm GitHub reports it as immutable. Do not replace assets or move the tag after publication.
+The owner-only finalizer requires the exact draft asset set, revalidates the same JSON and Markdown adversarial reports against each other, the tagged source SHA, both release manifests, exact artifact digests, the canonical coverage manifest, freshness policy, manual-evidence policy, residual-risk reviews, and release blockers before publication. Any extra asset or missing expected asset fails finalization. Verify every attachment digest once more, publish the release, and confirm GitHub reports it as immutable. Do not replace assets or move the tag after publication.
 
 ## Failure and recovery
 
