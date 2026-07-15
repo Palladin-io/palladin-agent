@@ -56,6 +56,7 @@ jobs:
           test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
           test "$GITHUB_SHA" = "$source_sha"
           test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$source_sha"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$source_sha" origin/main
 
@@ -186,9 +187,16 @@ jobs:
           ref: ${{ needs.authorize.outputs.source_sha }}
           persist-credentials: false
 
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
       - name: Download and verify every draft release asset
         env:
           GH_TOKEN: ${{ github.token }}
+          OPERATOR: ${{ github.actor }}
+          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
           VERSION: ${{ inputs.version }}
@@ -207,9 +215,16 @@ jobs:
           test -f "$assets/SHA256SUMS"
           test -f "$assets/release-manifest-agent.json"
           test -f "$assets/SHA256SUMS-agent"
+          test -f "$assets/adversarial-report.json"
+          test -f "$assets/adversarial-report.md"
+          test -f "$assets/adversarial-approval.json"
           test "$(find "$assets" -maxdepth 1 -name 'palladin-agent-*.tgz' | wc -l | tr -d ' ')" = 1
+          platform_packages="$RUNNER_TEMP/platform-packages"
+          mkdir -p "$platform_packages"
+          find "$assets" -maxdepth 1 -type f -name 'palladin-runtime-*.tgz' \
+            -exec cp '{}' "$platform_packages/" \;
           node packaging/npm/verify-platform-release-set.mjs \
-            --directory "$assets" --version "$VERSION"
+            --directory "$platform_packages" --version "$VERSION"
           (cd "$assets" && sha256sum --check SHA256SUMS)
           (cd "$assets" && sha256sum --check SHA256SUMS-agent)
 
@@ -222,9 +237,60 @@ jobs:
           }
           NODE
 
-          while IFS= read -r -d '' asset; do
-            gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY"
-          done < <(find "$assets" -type f -print0)
+          node - "$assets/release-manifest.json" "$assets/release-manifest-agent.json" \
+            >"$RUNNER_TEMP/expected-release-assets.txt" <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const manifestPaths = process.argv.slice(2);
+          const expected = new Set([
+            'release-manifest.json',
+            'SHA256SUMS',
+            'release-manifest-agent.json',
+            'SHA256SUMS-agent',
+            'adversarial-report.json',
+            'adversarial-report.md',
+            'adversarial-approval.json',
+          ]);
+          for (const manifestPath of manifestPaths) {
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            for (const artifact of manifest.artifacts) {
+              for (const filename of [artifact.filename, artifact.sbom.filename]) {
+                if (typeof filename !== 'string' || path.basename(filename) !== filename
+                  || filename.includes('\n') || filename.includes('\r')) process.exit(1);
+                expected.add(filename);
+              }
+            }
+          }
+          process.stdout.write(`${[...expected].sort().join('\n')}\n`);
+          NODE
+          find "$assets" -maxdepth 1 -type f -printf '%f\n' | sort \
+            >"$RUNNER_TEMP/actual-release-assets.txt"
+          cmp --silent "$RUNNER_TEMP/expected-release-assets.txt" \
+            "$RUNNER_TEMP/actual-release-assets.txt"
+
+          node security/adversarial/report.mjs validate \
+            --source-sha "$SOURCE_SHA" \
+            --json "$assets/adversarial-report.json" \
+            --markdown "$assets/adversarial-report.md"
+          node security/adversarial/verify-release-artifacts.mjs \
+            --report "$assets/adversarial-report.json" \
+            --platform-manifest "$assets/release-manifest.json" \
+            --agent-manifest "$assets/release-manifest-agent.json"
+          printf '%s' "$PUBLIC_KEY" \
+            > "$RUNNER_TEMP/adversarial-public-key.txt"
+          node security/adversarial/operator-approval.mjs verify \
+            --report "$assets/adversarial-report.json" \
+            --markdown "$assets/adversarial-report.md" \
+            --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
+            --approval "$assets/adversarial-approval.json" \
+            --public-key "$RUNNER_TEMP/adversarial-public-key.txt"
+
+          while IFS= read -r filename; do
+            case "$filename" in
+              adversarial-report.json|adversarial-report.md|adversarial-approval.json) continue ;;
+            esac
+            gh attestation verify "$assets/$filename" --repo "$GITHUB_REPOSITORY"
+          done <"$RUNNER_TEMP/expected-release-assets.txt"
 
       - name: Publish the verified GitHub release
         env:

@@ -46,6 +46,8 @@ jobs:
           xcrun swiftc -warnings-as-errors -typecheck ../packaging/macos/tests/untrusted-dpk-probe.swift
           xcrun clang -Wall -Wextra -Werror -fsyntax-only ../packaging/macos/tests/dyld-injection-probe.c
           xcrun clang -Wall -Wextra -Werror -fsyntax-only ../packaging/macos/tests/task-port-probe.c
+          xcrun clang -Wall -Wextra -Werror -fsyntax-only ../packaging/macos/tests/process-arguments-probe.c
+          node --check ../packaging/macos/tests/canary-tree-probe.mjs
           fake_root="$(mktemp -d)"
           mkdir -p "$fake_root/PalladinRuntime.app"
           npm_arch=${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'x64' }}
@@ -281,6 +283,8 @@ jobs:
           xmllint --noout packaging/linux/polkit/io.palladin.runtime.policy
           cc -Wall -Wextra -Werror packaging/linux/tests/security-boundary-probe.c -o /tmp/palladin-security-boundary-probe
           cc -Wall -Wextra -Werror -shared -fPIC packaging/linux/tests/ld-preload-probe.c -o /tmp/palladin-ld-preload-probe.so
+          node --check packaging/linux/tests/foreign-node-probe.mjs
+          node --check packaging/linux/tests/process-scan-probe.mjs
       - run: >-
           cargo clippy --workspace --all-targets --locked --target ${{ matrix.gnu_target }}
           --exclude palladin-windows-broker -- -D warnings
@@ -499,7 +503,8 @@ jobs:
           ARCHITECTURE: ${{ matrix.gnu_target == 'x86_64-unknown-linux-gnu' && 'x64' || 'arm64' }}
         run: |
           set -euo pipefail
-          packaging/linux/tests/test-convenience-boundary.sh
+          packaging/linux/tests/test-convenience-boundary.sh \
+            --launcher-root "$RUNNER_TEMP/alpine-launcher"
           sudo sysctl -w kernel.yama.ptrace_scope=0
           deb=$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)
           sudo apt-get install --yes "$deb"

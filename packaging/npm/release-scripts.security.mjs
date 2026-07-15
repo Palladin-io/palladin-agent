@@ -303,6 +303,61 @@ test('release workflows pin actions and isolate the one-time npm token exception
   }
 });
 
+test('release finalization requires the exact fresh adversarial report before publication', () => {
+  const workflow = readFileSync(resolve('.github/workflows/release-finalize.yml'), 'utf8');
+  assert.match(workflow, /if: github\.actor == 'patryk-roguszewski'/);
+  assert.match(workflow, /needs: \[authorize, compatibility, smoke-native, smoke-musl\]/);
+  assert.ok(workflow.includes('[[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]'));
+  assert.match(workflow, /test -f "\$assets\/adversarial-report\.json"/);
+  assert.match(workflow, /test -f "\$assets\/adversarial-report\.md"/);
+  assert.match(workflow, /test -f "\$assets\/adversarial-approval\.json"/);
+  assert.match(workflow, /--directory "\$platform_packages" --version "\$VERSION"/);
+  assert.match(workflow, /expected-release-assets\.txt/);
+  assert.match(workflow, /actual-release-assets\.txt/);
+  assert.match(workflow, /cmp --silent "\$RUNNER_TEMP\/expected-release-assets\.txt"/);
+  assert.match(workflow, /node security\/adversarial\/report\.mjs validate/);
+  assert.match(workflow, /--source-sha "\$SOURCE_SHA"/);
+  assert.match(workflow, /--json "\$assets\/adversarial-report\.json"/);
+  assert.match(workflow, /--markdown "\$assets\/adversarial-report\.md"/);
+  assert.match(workflow, /node security\/adversarial\/verify-release-artifacts\.mjs/);
+  assert.match(workflow, /--platform-manifest "\$assets\/release-manifest\.json"/);
+  assert.match(workflow, /--agent-manifest "\$assets\/release-manifest-agent\.json"/);
+  assert.match(workflow, /node security\/adversarial\/operator-approval\.mjs verify/);
+  assert.match(workflow, /--approval "\$assets\/adversarial-approval\.json"/);
+  assert.match(workflow, /adversarial-report\.json\|adversarial-report\.md\|adversarial-approval\.json\) continue/);
+  assert.doesNotMatch(workflow, /report\.mjs validate[^]*\|\| true/);
+  assert.ok(
+    workflow.indexOf('node security/adversarial/report.mjs validate')
+      < workflow.indexOf('gh release edit "${{ inputs.release_tag }}"'),
+  );
+});
+
+test('meta-package staging is blocked by the exact adversarial release report', () => {
+  const workflow = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8');
+  const reportValidations = [...workflow.matchAll(/node security\/adversarial\/report\.mjs validate/g)];
+  const artifactValidations = [
+    ...workflow.matchAll(/node security\/adversarial\/verify-release-artifacts\.mjs/g),
+  ];
+  const stageOffset = workflow.indexOf('npm stage publish "$package" --tag latest');
+
+  assert.equal(reportValidations.length, 3);
+  assert.equal(artifactValidations.length, 3);
+  assert.ok(stageOffset > 0);
+  assert.ok(reportValidations.every((match) => match.index < stageOffset));
+  assert.ok(artifactValidations.every((match) => match.index < stageOffset));
+  assert.match(workflow, /test -f "\$assets\/adversarial-report\.json"/);
+  assert.match(workflow, /test -f "\$assets\/adversarial-report\.md"/);
+  assert.match(workflow, /name: Revalidate the adversarial release gate before staging/);
+  assert.match(workflow, /--platform-manifest "\$gate\/release-manifest\.json"/);
+  assert.match(workflow, /name: KMS-sign the owner-approved adversarial evidence/);
+  assert.match(workflow, /gcloud kms asymmetric-sign/);
+  assert.match(workflow, /operator-approval\.mjs assemble/);
+  assert.match(workflow, /operator-approval\.mjs verify/);
+  assert.match(workflow, /--approval "\$gate\/adversarial-approval\.json"/);
+  assert.match(workflow, /needs: \[authorize, compatibility, smoke-native, smoke-musl, publish-policy, approve-adversarial\]/);
+  assert.doesNotMatch(workflow, /adversarial\/report\.mjs validate[^]*\|\| true/);
+});
+
 test('signed version policy release is owner-only, KMS-backed, and published after smoke', () => {
   const workflowDirectory = resolve('.github/workflows');
   const platform = readFileSync(join(workflowDirectory, 'release-platforms.yml'), 'utf8');
