@@ -58,7 +58,7 @@ function safeEnvironment(home, prefix) {
   environment.HOME = home;
   environment.USERPROFILE = home;
   environment.PATH = process.platform === 'win32'
-    ? `${prefix};${source.SystemRoot}\\System32;${dirname(process.execPath)}`
+    ? `${source.SystemRoot}\\System32;${dirname(process.execPath)};${prefix}`
     : `/usr/bin:/bin:/usr/sbin:/sbin:${dirname(process.execPath)}:${join(prefix, 'bin')}`;
   environment.npm_config_cache = join(home, '.npm-cache');
   environment.npm_config_loglevel = 'error';
@@ -66,7 +66,7 @@ function safeEnvironment(home, prefix) {
   environment.npm_config_fund = 'false';
   return environment;
 }
-function npmExecutable() { return join(dirname(process.execPath), process.platform === 'win32' ? 'npm.cmd' : 'npm'); }
+function npmExecutable() { return process.platform === 'win32' ? 'npm.cmd' : 'npm'; }
 function bounded(command, args, { cwd, env, input, expected = 0, timeout = 180_000 } = {}) {
   const result = spawnSync(command, args, {
     cwd, env, input, encoding: null, shell: false, windowsHide: true, timeout,
@@ -165,6 +165,10 @@ function versionOutput(capture, expected) {
   const text = capture.stdout.toString('utf8').trim();
   capture.stdout.fill(0); capture.stderr.fill(0);
   if (text !== `palladin ${expected}` && text !== expected) fail('installed runtime version is invalid');
+}
+function requirePinnedNpm(env) {
+  const version = captureText(bounded(npmExecutable(), ['--version'], { env }));
+  if (version.stdout.trim() !== '11.18.0' || version.stderr !== '') fail('physical lifecycle requires npm 11.18.0');
 }
 function verifyMacBundle(app, phase, env) {
   bounded('/bin/bash', [resolve('packaging/macos/scripts/verify-bundle.sh'), '--app', app, '--architecture', 'universal'], {
@@ -463,6 +467,7 @@ export async function runPhysicalTarget({ contract, manifest: manifestInput = lo
   const env = safeEnvironment(home, prefix);
   const run = { targetId: target.id, runId: contract.runId, runAttempt: contract.runAttempt, steps: [] };
   try {
+    requirePinnedNpm(env);
     assertNativeExtraAbsent(target, env);
     installPhase(target, baseline, prefix, env, root); versionCheck(prefix, env, baseline.version);
     shellCompatibilityCheck(prefix, env, baseline.version);

@@ -9,10 +9,12 @@ describe('owner-only physical lifecycle workflow', () => {
   it('has one manual owner-only entry point and twelve fixed native targets', () => {
     expect(workflow).toContain("if: github.actor == 'patryk-roguszewski'");
     expect(workflow).toContain("github.ref == 'refs/heads/main'");
-    expect(workflow).toContain('ref: main');
+    expect(workflow).toContain('ref: ${{ github.sha }}');
     expect(workflow).toContain("test \"$GITHUB_REF\" = refs/heads/main");
+    expect(workflow).toContain('test "$CANDIDATE_SHA" = "$GITHUB_SHA"');
     expect(workflow).toContain('test "$(git rev-parse "$tag^{commit}")" = "$source"');
     expect(workflow).not.toContain("with: { ref: '${{ inputs.candidate_source_sha }}'");
+    expect(workflow).not.toContain("with: { ref: '${{ needs.authorize.outputs.source_sha }}'");
     expect(workflow).toContain('test "$GITHUB_EVENT_NAME" = workflow_dispatch');
     expect(workflow).not.toMatch(/^\s{2}(push|pull_request|schedule|workflow_run):/m);
     expect(workflow.match(/- target: macos-/g)).toHaveLength(2);
@@ -62,6 +64,8 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(runner).toContain("bounded('/usr/bin/ditto'");
     expect(runner).toContain("bounded('/bin/bash'");
     expect(runner).not.toContain('/usr/local/bin');
+    expect(runner).toContain("function npmExecutable() { return process.platform === 'win32' ? 'npm.cmd' : 'npm'; }");
+    expect(runner).toContain("version.stdout.trim() !== '11.18.0'");
     expect(runner).toContain('npm package runtime does not match the verified signed macOS runtime');
     expect(runner).toContain("Remove-AppxPackage -AllUsers -Package $package.PackageFullName");
     expect(runner).toContain("['--non-interactive', 'apt-get', 'purge', '--yes', 'palladin-runtime']");
