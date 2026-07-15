@@ -206,7 +206,7 @@ for path in \
   /run/palladin-runtime/broker.sock; do
   docker exec "$container" test ! -e "$path"
 done
-for unit in palladin-runtime.service palladin-executor.socket palladin-executor@.service; do
+for unit in palladin-runtime.service palladin-executor.socket palladin-executor@uninstall-probe.service; do
   [[ $(docker exec "$container" systemctl show --property=LoadState --value "$unit") == not-found ]]
 done
 docker exec "$container" test -d /var/lib/palladin-runtime

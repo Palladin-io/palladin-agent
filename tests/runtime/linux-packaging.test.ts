@@ -261,6 +261,8 @@ describe('Linux hardened package boundary', () => {
     expect(lifecycle).toContain('apt-get purge --yes palladin-runtime');
     expect(lifecycle).toContain('dnf remove --assumeyes palladin-runtime');
     expect(lifecycle).toContain('systemctl show --property=LoadState --value');
+    expect(lifecycle).toContain('palladin-executor@uninstall-probe.service');
+    expect(lifecycle).not.toContain('palladin-executor.socket palladin-executor@.service');
     expect(lifecycle).toContain('/run/palladin-runtime/broker.sock');
     expect(lifecycle).toContain('uninstall=passed');
     expect(lifecycle).toContain('platform-lifecycle=$family');
