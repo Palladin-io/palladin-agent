@@ -64,7 +64,8 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(runner).toContain("bounded('/usr/bin/ditto'");
     expect(runner).toContain("bounded('/bin/bash'");
     expect(runner).not.toContain('/usr/local/bin');
-    expect(runner).toContain("function npmExecutable() { return process.platform === 'win32' ? 'npm.cmd' : 'npm'; }");
+    expect(runner).toContain("return join(dirname(process.execPath), process.platform === 'win32' ? 'npm.cmd' : 'npm');");
+    expect(runner).not.toContain("function npmExecutable() { return process.platform === 'win32' ? 'npm.cmd' : 'npm'; }");
     expect(runner).toContain("version.stdout.trim() !== '11.18.0'");
     expect(runner).toContain('npm package runtime does not match the verified signed macOS runtime');
     expect(runner).toContain("Remove-AppxPackage -AllUsers -Package $package.PackageFullName");

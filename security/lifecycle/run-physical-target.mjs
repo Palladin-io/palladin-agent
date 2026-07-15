@@ -66,7 +66,9 @@ function safeEnvironment(home, prefix) {
   environment.npm_config_fund = 'false';
   return environment;
 }
-function npmExecutable() { return process.platform === 'win32' ? 'npm.cmd' : 'npm'; }
+function npmExecutable() {
+  return join(dirname(process.execPath), process.platform === 'win32' ? 'npm.cmd' : 'npm');
+}
 function bounded(command, args, { cwd, env, input, expected = 0, timeout = 180_000 } = {}) {
   const result = spawnSync(command, args, {
     cwd, env, input, encoding: null, shell: false, windowsHide: true, timeout,
