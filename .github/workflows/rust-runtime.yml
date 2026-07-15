@@ -272,7 +272,33 @@ jobs:
           cache-key: ${{ matrix.gnu_target }}
       - name: Install the pinned glibc baseline builder
         run: cargo install --locked --version 0.23.0 cargo-zigbuild
-      - run: sudo apt-get update && sudo apt-get install --yes gcc libxml2-utils musl-tools rpm
+      - name: Install Linux packaging dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # GitHub-hosted ARM runners occasionally cannot reach the Ubuntu
+          # ports mirror over plain HTTP. Prefer authenticated transport and
+          # let apt recover from transient mirror or runner-network failures.
+          for source_file in \
+            /etc/apt/sources.list \
+            /etc/apt/sources.list.d/*.list \
+            /etc/apt/sources.list.d/*.sources; do
+            if [[ -f "$source_file" ]]; then
+              sudo sed -i \
+                's|http://ports\.ubuntu\.com|https://ports.ubuntu.com|g' \
+                "$source_file"
+            fi
+          done
+
+          apt_options=(
+            -o Acquire::Retries=5
+            -o Acquire::http::Timeout=30
+            -o Acquire::https::Timeout=30
+          )
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install --yes \
+            gcc libxml2-utils musl-tools rpm
       - run: rustup target add ${{ matrix.gnu_target }} ${{ matrix.musl_target }}
       - name: Validate Linux packaging source
         working-directory: .
