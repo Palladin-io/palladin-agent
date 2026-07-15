@@ -80,6 +80,7 @@ describe('parseTotpValue — explicit parameters', () => {
     ['period', null],
     ['period', 30.5],
     ['period', 0],
+    ['period', 2_147_483_648],
   ])('rejects an explicitly invalid %s value (%j)', (name, value) => {
     expect(parseTotpValue(JSON.stringify({ secret: SEED_SHA1, [name]: value }))).toBeNull();
   });
@@ -108,11 +109,26 @@ describe('parseTotpValue — explicit parameters', () => {
 
   it('normalizes supported algorithms and accepts bounded numeric parameters', () => {
     expect(parseTotpValue(JSON.stringify({
-      secret: SEED_SHA1,
+      secret: `  ${SEED_SHA1}  `,
       algorithm: 'sha256',
       digits: 8,
-      period: 60,
-    }))).toEqual({ secret: SEED_SHA1, algorithm: 'SHA256', digits: 8, period: 60 });
+      period: 2_147_483_647,
+    }))).toEqual({
+      secret: SEED_SHA1,
+      algorithm: 'SHA256',
+      digits: 8,
+      period: 2_147_483_647,
+    });
+  });
+
+  it.each([
+    `secret=${SEED_SHA1}&SeCrEt=${SEED_SHA1}`,
+    `secret=${SEED_SHA1}&algorithm=SHA1&ALGORITHM=SHA256`,
+    `secret=${SEED_SHA1}&digits=6&DIGITS=8`,
+    `secret=${SEED_SHA1}&period=30&Period=60`,
+    `secret=${SEED_SHA1}&se%63ret=${SEED_SHA1}`,
+  ])('rejects duplicate recognized otpauth parameters: %s', (query) => {
+    expect(parseTotpValue(`otpauth://totp/Palladin?${query}`)).toBeNull();
   });
 });
 

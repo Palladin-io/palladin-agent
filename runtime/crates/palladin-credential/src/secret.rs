@@ -8,6 +8,8 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::totp::{TotpAlgorithm, TotpParams};
 
+const MAX_TOTP_PERIOD: u64 = i32::MAX as u64;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CustomFieldType {
     Text,
@@ -269,7 +271,11 @@ pub fn parse_totp_params(value: &str) -> Option<TotpParams> {
 
 fn parse_totp_json(value: &Value) -> Option<TotpParams> {
     let object = value.as_object()?;
-    let secret = object.get("secret")?.as_str()?.to_owned();
+    let secret = object.get("secret")?.as_str()?.trim();
+    if secret.is_empty() {
+        return None;
+    }
+    let secret = secret.to_owned();
     let mut params = TotpParams::new(secret);
     params.algorithm = match object.get("algorithm") {
         None => TotpAlgorithm::Sha1,
@@ -285,7 +291,9 @@ fn parse_totp_json(value: &Value) -> Option<TotpParams> {
     };
     params.period = match object.get("period") {
         None => 30,
-        Some(value) => value.as_u64().filter(|period| *period > 0)?,
+        Some(value) => value
+            .as_u64()
+            .filter(|period| (1..=MAX_TOTP_PERIOD).contains(period))?,
     };
     Some(params)
 }
@@ -324,8 +332,27 @@ fn parse_otpauth_uri(value: &str) -> Option<TotpParams> {
     let mut algorithm = TotpAlgorithm::Sha1;
     let mut digits = 6_u32;
     let mut period = 30_u64;
+    let mut seen_secret = false;
+    let mut seen_algorithm = false;
+    let mut seen_digits = false;
+    let mut seen_period = false;
     for pair in query.split('&') {
         let (name, encoded) = pair.split_once('=').unwrap_or((pair, ""));
+        let name_plus_normalized = name.replace('+', "%20");
+        let decoded_name = percent_decode_str(&name_plus_normalized)
+            .decode_utf8()
+            .ok()?;
+        let recognized_name = if decoded_name.eq_ignore_ascii_case("secret") {
+            "secret"
+        } else if decoded_name.eq_ignore_ascii_case("algorithm") {
+            "algorithm"
+        } else if decoded_name.eq_ignore_ascii_case("digits") {
+            "digits"
+        } else if decoded_name.eq_ignore_ascii_case("period") {
+            "period"
+        } else {
+            continue;
+        };
         let plus_normalized = Zeroizing::new(encoded.replace('+', "%20"));
         let decoded = Zeroizing::new(
             percent_decode_str(&plus_normalized)
@@ -333,17 +360,36 @@ fn parse_otpauth_uri(value: &str) -> Option<TotpParams> {
                 .ok()?
                 .into_owned(),
         );
-        if name.eq_ignore_ascii_case("secret") {
+        if recognized_name == "secret" {
+            if seen_secret {
+                return None;
+            }
+            seen_secret = true;
             secret = Some(decoded);
-        } else if name.eq_ignore_ascii_case("algorithm") {
+        } else if recognized_name == "algorithm" {
+            if seen_algorithm {
+                return None;
+            }
+            seen_algorithm = true;
             algorithm = parse_totp_algorithm(&decoded)?;
-        } else if name.eq_ignore_ascii_case("digits") {
+        } else if recognized_name == "digits" {
+            if seen_digits {
+                return None;
+            }
+            seen_digits = true;
             digits = decoded
                 .parse::<u32>()
                 .ok()
                 .filter(|digits| (6..=8).contains(digits))?;
-        } else if name.eq_ignore_ascii_case("period") {
-            period = decoded.parse::<u64>().ok().filter(|period| *period > 0)?;
+        } else if recognized_name == "period" {
+            if seen_period {
+                return None;
+            }
+            seen_period = true;
+            period = decoded
+                .parse::<u64>()
+                .ok()
+                .filter(|period| (1..=MAX_TOTP_PERIOD).contains(period))?;
         }
     }
     let secret = secret?;
@@ -473,8 +519,11 @@ mod tests {
 
     #[test]
     fn explicit_totp_algorithms_are_validated_instead_of_defaulting_to_sha1() {
-        let default = parse_totp_params(r#"{"secret":"JBSWY3DP"}"#).expect("default");
+        let default =
+            parse_totp_params(r#"{"secret":"  JBSWY3DP  ","period":2147483647}"#).expect("default");
         assert_eq!(default.algorithm, TotpAlgorithm::Sha1);
+        assert_eq!(default.secret.expose_secret(), "JBSWY3DP");
+        assert_eq!(default.period, 2_147_483_647);
 
         for (algorithm, expected) in [
             ("sha1", TotpAlgorithm::Sha1),
@@ -495,6 +544,8 @@ mod tests {
     #[test]
     fn explicit_invalid_totp_parameter_types_and_bounds_fail_closed() {
         for descriptor in [
+            r#"{"secret":""}"#,
+            r#"{"secret":"   "}"#,
             r#"{"secret":1}"#,
             r#"{"secret":"JBSWY3DP","algorithm":null}"#,
             r#"{"secret":"JBSWY3DP","algorithm":1}"#,
@@ -507,6 +558,7 @@ mod tests {
             r#"{"secret":"JBSWY3DP","period":null}"#,
             r#"{"secret":"JBSWY3DP","period":30.5}"#,
             r#"{"secret":"JBSWY3DP","period":0}"#,
+            r#"{"secret":"JBSWY3DP","period":2147483648}"#,
         ] {
             assert!(parse_totp_params(descriptor).is_none(), "{descriptor}");
             assert!(parse_totp_value(descriptor).is_none(), "{descriptor}");
@@ -516,9 +568,41 @@ mod tests {
             "otpauth://totp/Palladin?secret=JBSWY3DP&digits=5",
             "otpauth://totp/Palladin?secret=JBSWY3DP&digits=9",
             "otpauth://totp/Palladin?secret=JBSWY3DP&period=0",
+            "otpauth://totp/Palladin?secret=JBSWY3DP&period=2147483648",
+            "otpauth://totp/Palladin?secret=%20%20",
+            "otpauth://totp/Palladin?secret=JBSWY3DP&algorithm=%20",
+            "otpauth://totp/Palladin?secret=JBSWY3DP&digits=%20",
+            "otpauth://totp/Palladin?secret=JBSWY3DP&period=%20",
         ] {
             assert!(parse_totp_value(uri).is_none(), "{uri}");
         }
+    }
+
+    #[test]
+    fn duplicate_recognized_otpauth_parameters_fail_closed() {
+        for uri in [
+            "otpauth://totp/Palladin?secret=JBSWY3DP&SeCrEt=JBSWY3DP",
+            "otpauth://totp/Palladin?secret=JBSWY3DP&algorithm=SHA1&ALGORITHM=SHA256",
+            "otpauth://totp/Palladin?secret=JBSWY3DP&digits=6&DIGITS=8",
+            "otpauth://totp/Palladin?secret=JBSWY3DP&period=30&Period=60",
+            "otpauth://totp/Palladin?secret=JBSWY3DP&se%63ret=JBSWY3DP",
+        ] {
+            assert!(parse_totp_value(uri).is_none(), "{uri}");
+        }
+    }
+
+    #[test]
+    fn uppercase_and_percent_encoded_names_allow_duplicate_unknown_parameters() {
+        let uri = "otpauth://totp/Palladin?SECRET=%20JBSWY3DP%20&ALGORITHM=sha256&DIGITS=8&PERIOD=60&issuer=one&issuer=two";
+        let params = parse_totp_value(uri).expect("forward-compatible URI");
+        assert_eq!(params.secret.expose_secret(), "JBSWY3DP");
+        assert_eq!(params.algorithm, TotpAlgorithm::Sha256);
+        assert_eq!(params.digits, 8);
+        assert_eq!(params.period, 60);
+
+        let encoded_names =
+            "otpauth://totp/Palladin?se%63ret=JBSWY3DP&algor%69thm=SHA1&dig%69ts=6&per%69od=30";
+        assert!(parse_totp_value(encoded_names).is_some());
     }
 
     #[test]

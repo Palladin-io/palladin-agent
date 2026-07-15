@@ -444,6 +444,35 @@ internal static class SemanticVectors
             ValidateSelection(parsed, vector, totpUnixSeconds);
         }
 
+        foreach (var acceptance in root.GetProperty("totpUriAcceptances").EnumerateArray())
+        {
+            var parsed = ParseTotp(acceptance.GetProperty("uri"));
+            RequireEqual(parsed.Secret, acceptance.GetProperty("expectedSecret").GetString(), ".NET TOTP URI secret");
+            RequireEqual(parsed.Algorithm, acceptance.GetProperty("expectedAlgorithm").GetString(), ".NET TOTP URI algorithm");
+            if (parsed.Digits != acceptance.GetProperty("expectedDigits").GetInt32()
+                || parsed.Period != acceptance.GetProperty("expectedPeriod").GetInt32())
+            {
+                throw new InvalidDataException(".NET TOTP URI numeric parameters diverged");
+            }
+        }
+
+        foreach (var rejection in root.GetProperty("totpUriRejections").EnumerateArray())
+        {
+            var rejected = false;
+            try
+            {
+                _ = ParseTotp(rejection.GetProperty("uri"));
+            }
+            catch (InvalidDataException)
+            {
+                rejected = true;
+            }
+            if (!rejected)
+            {
+                throw new InvalidDataException(".NET accepted a rejected raw TOTP URI");
+            }
+        }
+
         foreach (var rejection in root.GetProperty("totpRejections").EnumerateArray())
         {
             var rejected = false;
@@ -703,12 +732,19 @@ internal static class SemanticVectors
         {
             throw new InvalidDataException("invalid TOTP URI");
         }
-        var query = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
-            .Select(part => part.Split('=', 2))
-            .ToDictionary(
-                part => Uri.UnescapeDataString(part[0]),
-                part => part.Length == 2 ? Uri.UnescapeDataString(part[1]) : string.Empty,
-                StringComparer.OrdinalIgnoreCase);
+        var query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var recognized = new HashSet<string>(["secret", "algorithm", "digits", "period"], StringComparer.OrdinalIgnoreCase);
+        foreach (var encodedPart in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var part = encodedPart.Split('=', 2);
+            var name = DecodeFormComponent(part[0]);
+            if (!recognized.Contains(name)) continue;
+            var queryValue = part.Length == 2 ? DecodeFormComponent(part[1]) : string.Empty;
+            if (!query.TryAdd(name, queryValue))
+            {
+                throw new InvalidDataException("duplicate recognized TOTP parameter");
+            }
+        }
         if (!query.TryGetValue("secret", out var secret)) throw new InvalidDataException("missing TOTP secret");
         var algorithm = query.GetValueOrDefault("algorithm", "SHA1").ToUpperInvariant();
         var digits = ParsePositiveInt(query.GetValueOrDefault("digits", "6"));
@@ -718,12 +754,19 @@ internal static class SemanticVectors
 
     private static TotpDescriptor ValidatedTotp(string secret, string algorithm, int digits, int period)
     {
-        if (algorithm is not ("SHA1" or "SHA256" or "SHA512") || digits is < 6 or > 8 || period <= 0)
+        var normalizedSecret = secret.Trim();
+        if (normalizedSecret.Length == 0
+            || algorithm is not ("SHA1" or "SHA256" or "SHA512")
+            || digits is < 6 or > 8
+            || period <= 0)
         {
             throw new InvalidDataException("unsupported TOTP parameters");
         }
-        return new TotpDescriptor(secret, algorithm, digits, period);
+        return new TotpDescriptor(normalizedSecret, algorithm, digits, period);
     }
+
+    private static string DecodeFormComponent(string value) =>
+        Uri.UnescapeDataString(value.Replace('+', ' '));
 
     private static string Totp(TotpDescriptor descriptor, long timestamp)
     {

@@ -2,6 +2,7 @@ use palladin_api::CredentialAccess;
 use palladin_credential::access::exit_code_for_access;
 use palladin_credential::fields::{FieldSelector, redact_totp_secrets, resolve_field_at};
 use palladin_credential::secret::{parse_secret, parse_totp_value};
+use palladin_credential::totp::TotpAlgorithm;
 use palladin_credential::wait::{
     HeartbeatInfo, ProgressMode, WaitError, WaitHints, WaitOptions, WaitPolicy, await_grant,
     resolve_wait_policy,
@@ -17,7 +18,26 @@ use tokio_util::sync::CancellationToken;
 struct CredentialFixture {
     totp_unix_seconds: u64,
     cases: Vec<CredentialCase>,
+    totp_uri_acceptances: Vec<TotpUriAcceptance>,
+    totp_uri_rejections: Vec<TotpUriRejection>,
     totp_rejections: Vec<TotpRejection>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TotpUriAcceptance {
+    name: String,
+    uri: String,
+    expected_secret: String,
+    expected_algorithm: String,
+    expected_digits: u32,
+    expected_period: u64,
+}
+
+#[derive(Deserialize)]
+struct TotpUriRejection {
+    name: String,
+    uri: String,
 }
 
 #[derive(Deserialize)]
@@ -53,6 +73,41 @@ fn credential_blob_contract_is_consumed_byte_for_byte() {
     let fixture: CredentialFixture =
         serde_json::from_str(include_str!("../../../contracts/v1/credential-blobs.json"))
             .expect("credential fixture");
+    for acceptance in fixture.totp_uri_acceptances {
+        let params = parse_totp_value(&acceptance.uri).expect(&acceptance.name);
+        assert_secret_equal(
+            params.secret.expose_secret(),
+            &acceptance.expected_secret,
+            &acceptance.name,
+        );
+        let algorithm = match params.algorithm {
+            TotpAlgorithm::Sha1 => "SHA1",
+            TotpAlgorithm::Sha256 => "SHA256",
+            TotpAlgorithm::Sha512 => "SHA512",
+        };
+        assert_eq!(
+            algorithm, acceptance.expected_algorithm,
+            "{}",
+            acceptance.name
+        );
+        assert_eq!(
+            params.digits, acceptance.expected_digits,
+            "{}",
+            acceptance.name
+        );
+        assert_eq!(
+            params.period, acceptance.expected_period,
+            "{}",
+            acceptance.name
+        );
+    }
+    for rejection in fixture.totp_uri_rejections {
+        assert!(
+            parse_totp_value(&rejection.uri).is_none(),
+            "{}",
+            rejection.name
+        );
+    }
     for rejection in fixture.totp_rejections {
         let descriptor = serde_json::to_string(&rejection.descriptor).expect("TOTP descriptor");
         assert!(

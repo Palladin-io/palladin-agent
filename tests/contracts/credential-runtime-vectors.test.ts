@@ -11,6 +11,15 @@ import { CredentialAccess } from '../../src/http/agent-api.js';
 
 interface CredentialFixture {
   totpUnixSeconds: number;
+  totpUriAcceptances: Array<{
+    name: string;
+    uri: string;
+    expectedSecret: string;
+    expectedAlgorithm: 'SHA1' | 'SHA256' | 'SHA512';
+    expectedDigits: number;
+    expectedPeriod: number;
+  }>;
+  totpUriRejections: Array<{ name: string; uri: string }>;
   totpRejections: Array<{ name: string; descriptor: unknown }>;
   cases: Array<{
     name: string;
@@ -57,6 +66,28 @@ const credentials = fixture<CredentialFixture>('credential-blobs.json');
 const grants = fixture<GrantFixture>('grant-access.json');
 
 describe('frozen credential runtime vectors', () => {
+  it('accepts and rejects raw TOTP URIs according to the frozen query policy', () => {
+    for (const vector of credentials.totpUriAcceptances) {
+      const parsed = parseTotpValue(vector.uri);
+      expect(parsed, vector.name).not.toBeNull();
+      if (parsed === null) throw new Error(`missing synthetic TOTP URI params: ${vector.name}`);
+      expect({
+        secret: parsed.secret,
+        algorithm: parsed.algorithm ?? 'SHA1',
+        digits: parsed.digits ?? 6,
+        period: parsed.period ?? 30,
+      }, vector.name).toEqual({
+        secret: vector.expectedSecret,
+        algorithm: vector.expectedAlgorithm,
+        digits: vector.expectedDigits,
+        period: vector.expectedPeriod,
+      });
+    }
+    for (const vector of credentials.totpUriRejections) {
+      expect(parseTotpValue(vector.uri), vector.name).toBeNull();
+    }
+  });
+
   it('rejects every frozen invalid TOTP descriptor', () => {
     for (const vector of credentials.totpRejections) {
       expect(parseTotpValue(JSON.stringify(vector.descriptor)), vector.name).toBeNull();

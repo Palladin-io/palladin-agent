@@ -40,11 +40,18 @@ export function parseTotpValue(value: string): TotpParams | null {
     try {
       const uri = new URL(trimmed);
       if (uri.protocol !== 'otpauth:' || uri.hostname !== 'totp' || uri.pathname.length <= 1) return null;
-      const secret = uri.searchParams.get('secret');
+      const query = new Map<string, string>();
+      for (const [name, queryValue] of uri.searchParams) {
+        const normalizedName = name.toLowerCase();
+        if (!['secret', 'algorithm', 'digits', 'period'].includes(normalizedName)) continue;
+        if (query.has(normalizedName)) return null;
+        query.set(normalizedName, queryValue);
+      }
+      const secret = query.get('secret');
       if (!secret) return null;
-      const algorithm = uri.searchParams.get('algorithm');
-      const digitsRaw = uri.searchParams.get('digits');
-      const periodRaw = uri.searchParams.get('period');
+      const algorithm = query.get('algorithm') ?? null;
+      const digitsRaw = query.get('digits') ?? null;
+      const periodRaw = query.get('period') ?? null;
       const digits = numeric(digitsRaw);
       const period = numeric(periodRaw);
       if ((digitsRaw !== null && digits === undefined) || (periodRaw !== null && period === undefined)) {
@@ -62,8 +69,12 @@ export function parseTotpValue(value: string): TotpParams | null {
   return trimmed ? { secret: trimmed } : null;
 }
 
+const MAX_TOTP_PERIOD = 2_147_483_647;
+
 function normalizedParams(secret: string, record: Record<string, unknown>): TotpParams | null {
-  const params: TotpParams = { secret };
+  const normalizedSecret = secret.trim();
+  if (!normalizedSecret) return null;
+  const params: TotpParams = { secret: normalizedSecret };
   if (Object.hasOwn(record, 'algorithm')) {
     if (typeof record.algorithm !== 'string') return null;
     const algorithm = record.algorithm.toUpperCase();
@@ -80,7 +91,8 @@ function normalizedParams(secret: string, record: Record<string, unknown>): Totp
   if (Object.hasOwn(record, 'period')) {
     if (typeof record.period !== 'number'
       || !Number.isSafeInteger(record.period)
-      || record.period < 1) return null;
+      || record.period < 1
+      || record.period > MAX_TOTP_PERIOD) return null;
     params.period = record.period;
   }
   return params;
