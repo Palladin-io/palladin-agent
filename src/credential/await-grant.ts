@@ -8,6 +8,7 @@ export const DEFAULT_POLL_MS = 30_000; // re-check the backend every 30s (POST i
 export const DEFAULT_HEARTBEAT_MS = 10_000; // liveness line every 10s, decoupled from the poll
 export const DEFAULT_POLL_TIMEOUT_MS = 10_000; // one request may never block heartbeat indefinitely
 export const MIN_POLL_MS = 5_000; // local safety floor so nothing can hammer the backend
+export const MAX_WAIT_MS = 300_000; // frozen CLI/MCP contract: five minutes
 
 export type ProgressMode = 'plain' | 'json' | 'none';
 
@@ -33,6 +34,13 @@ export interface WaitCliOptions {
   progress?: ProgressMode; // --progress
 }
 
+export class WaitPolicyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WaitPolicyError';
+  }
+}
+
 /**
  * Resolve the wait policy. Hierarchy is **CLI > Backend > default** — an explicit flag always wins;
  * backend hints fill the gaps; built-in defaults are the floor. A local minimum keeps the poll
@@ -40,7 +48,13 @@ export interface WaitCliOptions {
  * poll (so liveness keeps flowing between backend checks).
  */
 export function resolveWaitPolicy(cli: WaitCliOptions = {}, hints: WaitHints = {}): WaitPolicy {
-  const waitMs = Math.max(0, cli.waitMs ?? hints.maxWaitMs ?? DEFAULT_WAIT_MS);
+  const waitMs = cli.waitMs ?? hints.maxWaitMs ?? DEFAULT_WAIT_MS;
+  if (!Number.isSafeInteger(waitMs) || waitMs < 0) {
+    throw new WaitPolicyError('invalid wait duration');
+  }
+  if (waitMs > MAX_WAIT_MS) {
+    throw new WaitPolicyError('wait duration exceeds the five-minute limit');
+  }
   const pollMs = Math.max(MIN_POLL_MS, cli.pollMs ?? hints.pollIntervalMs ?? DEFAULT_POLL_MS);
   const heartbeatMs = Math.max(1_000, Math.min(DEFAULT_HEARTBEAT_MS, pollMs));
   const pollTimeoutMs = Math.min(DEFAULT_POLL_TIMEOUT_MS, heartbeatMs);

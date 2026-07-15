@@ -5,8 +5,10 @@ import {
   resolveWaitPolicy,
   DEFAULT_WAIT_MS,
   DEFAULT_POLL_MS,
+  MAX_WAIT_MS,
   MIN_POLL_MS,
   HeartbeatInfo,
+  WaitPolicyError,
 } from '../../src/credential/await-grant.js';
 import { CredentialAccess } from '../../src/http/agent-api.js';
 
@@ -60,6 +62,23 @@ describe('resolveWaitPolicy — hierarchy CLI > backend > default', () => {
   it('keeps the heartbeat no slower than a poll', () => {
     const p = resolveWaitPolicy({ pollMs: 6_000 });
     expect(p.heartbeatMs).toBeLessThanOrEqual(p.pollMs);
+  });
+
+  it('accepts exactly five minutes from an explicit option or backend hint', () => {
+    expect(resolveWaitPolicy({ waitMs: MAX_WAIT_MS }).waitMs).toBe(MAX_WAIT_MS);
+    expect(resolveWaitPolicy({}, { maxWaitMs: MAX_WAIT_MS }).waitMs).toBe(MAX_WAIT_MS);
+  });
+
+  it('rejects an explicit option above five minutes with a deterministic error', () => {
+    const resolve = () => resolveWaitPolicy({ waitMs: MAX_WAIT_MS + 1 });
+    expect(resolve).toThrow(WaitPolicyError);
+    expect(resolve).toThrow('wait duration exceeds the five-minute limit');
+  });
+
+  it('rejects a backend hint above five minutes with the same deterministic error', () => {
+    const resolve = () => resolveWaitPolicy({}, { maxWaitMs: MAX_WAIT_MS + 1 });
+    expect(resolve).toThrow(WaitPolicyError);
+    expect(resolve).toThrow('wait duration exceeds the five-minute limit');
   });
 });
 
