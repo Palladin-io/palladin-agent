@@ -312,7 +312,7 @@ jobs:
             packaging/macos/scripts/verify-bundle.sh \
               --app "$packaged_runtime/package/PalladinRuntime.app" \
               --architecture universal
-            /usr/bin/diff -qr \
+            packaging/macos/scripts/compare-bundles.sh \
               "$unpacked/PalladinRuntime.app" \
               "$packaged_runtime/package/PalladinRuntime.app"
           done
@@ -326,7 +326,8 @@ jobs:
           installed_app="$smoke/node_modules/@palladin/runtime-darwin-$runtime_arch/PalladinRuntime.app"
           packaging/macos/scripts/verify-bundle.sh \
             --app "$installed_app" --architecture universal
-          /usr/bin/diff -qr "$unpacked/PalladinRuntime.app" "$installed_app"
+          packaging/macos/scripts/compare-bundles.sh \
+            "$unpacked/PalladinRuntime.app" "$installed_app"
           doctor=$("$installed_app/Contents/MacOS/palladin" doctor)
           grep -F 'platform: macos/aarch64' <<<"$doctor"
           grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
@@ -417,7 +418,8 @@ jobs:
           npm install --prefix "$smoke" --ignore-scripts --no-save "${runtime_matches[0]}"
           app="$smoke/node_modules/@palladin/runtime-darwin-${{ matrix.npm_architecture }}/PalladinRuntime.app"
           packaging/macos/scripts/verify-bundle.sh --app "$app" --architecture universal
-          /usr/bin/diff -qr "$zip_root/PalladinRuntime.app" "$app"
+          packaging/macos/scripts/compare-bundles.sh \
+            "$zip_root/PalladinRuntime.app" "$app"
           binary="$app/Contents/MacOS/palladin"
           doctor=$("$binary" doctor)
           grep -F 'platform: ${{ matrix.platform }}' <<<"$doctor"

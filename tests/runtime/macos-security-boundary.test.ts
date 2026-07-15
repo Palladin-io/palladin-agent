@@ -1,4 +1,15 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const read = (path: string): string => readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
@@ -21,7 +32,7 @@ describe('macOS authenticated signed-runtime boundary', () => {
     expect(signedJob).toContain('palladin-runtime-darwin-${{ matrix.npm_architecture }}-*.tgz');
     expect(signedJob).toContain('/usr/bin/ditto -x -k \\\n            "$release/palladin-runtime-darwin-universal.zip"');
     expect(signedJob).toContain('npm install --prefix "$smoke" --ignore-scripts --no-save');
-    expect(signedJob).toContain('/usr/bin/diff -qr "$zip_root/PalladinRuntime.app" "$app"');
+    expect(signedJob).toContain('compare-bundles.sh \\\n            "$zip_root/PalladinRuntime.app" "$app"');
     expect(signedJob).toContain('test-security-boundary.sh');
     expect(signedJob).toContain("--architecture '${{ matrix.architecture }}'");
     expect(workflow.match(/test-security-boundary\.sh/g)).toHaveLength(1);
@@ -60,6 +71,49 @@ describe('macOS authenticated signed-runtime boundary', () => {
     expect(helpers).toContain('assert_binary_session_contract()');
     expect(read('packaging/macos/scripts/build-bundle.sh')).toContain('assert_binary_session_contract "$binary"');
     expect(read('packaging/macos/scripts/verify-bundle.sh')).toContain('assert_binary_session_contract "$binary"');
+  });
+
+  it('compares signed app contents and security-relevant filesystem metadata', () => {
+    const comparison = read('packaging/macos/scripts/compare-bundles.sh');
+    const workflow = read('.github/workflows/macos-signed-runtime.yml');
+    expect(workflow.match(/compare-bundles\.sh/g)).toHaveLength(3);
+    expect(comparison).toContain("entry_type=\"$(/usr/bin/stat -f '%HT' \"$path\")\"");
+    expect(comparison).toContain("mode=\"$(/usr/bin/stat -f '%Lp' \"$path\")\"");
+    expect(comparison).toContain('/usr/bin/shasum -a 256');
+    expect(comparison).toContain('/usr/bin/readlink');
+    expect(comparison).toContain('/usr/bin/xattr -psx');
+    expect(comparison).toContain('/usr/bin/cmp -s');
+    expect(comparison).not.toContain('/usr/local/bin');
+  });
+
+  it.runIf(process.platform === 'darwin')('rejects mode and extended-attribute drift', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'palladin-bundle-comparison-'));
+    const reference = join(directory, 'reference', 'PalladinRuntime.app');
+    const candidate = join(directory, 'candidate', 'PalladinRuntime.app');
+    const referenceContents = join(reference, 'Contents');
+    const candidateContents = join(candidate, 'Contents');
+    const referenceFile = join(referenceContents, 'README.md');
+    const candidateFile = join(candidateContents, 'README.md');
+    const compare = 'packaging/macos/scripts/compare-bundles.sh';
+    try {
+      mkdirSync(referenceContents, { recursive: true });
+      mkdirSync(candidateContents, { recursive: true });
+      copyFileSync('packaging/macos/README.md', referenceFile);
+      copyFileSync('packaging/macos/README.md', candidateFile);
+      symlinkSync('README.md', join(referenceContents, 'current'));
+      symlinkSync('README.md', join(candidateContents, 'current'));
+      execFileSync('/usr/bin/xattr', ['-w', 'io.palladin.fixture', 'same', referenceFile]);
+      execFileSync('/usr/bin/xattr', ['-w', 'io.palladin.fixture', 'same', candidateFile]);
+      execFileSync(compare, [reference, candidate]);
+
+      chmodSync(candidateFile, 0o600);
+      expect(() => execFileSync(compare, [reference, candidate])).toThrow();
+      chmodSync(candidateFile, 0o644);
+      execFileSync('/usr/bin/xattr', ['-w', 'io.palladin.fixture', 'different', candidateFile]);
+      expect(() => execFileSync(compare, [reference, candidate])).toThrow();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('runs bounded blind-client and local process attack probes without printing captures', () => {
