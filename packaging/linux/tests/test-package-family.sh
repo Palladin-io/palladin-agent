@@ -178,4 +178,37 @@ docker exec "$container" /usr/lib/palladin/runtime/palladin-manage-agent-uid \
   revoke-purge "$compat_agent" --confirm-purge
 docker exec "$container" grep -Fxq 'status=revoked' "/etc/palladin/agents.d/$compat_uid"
 docker exec "$container" test ! -e "/var/lib/palladin-runtime/v1/agents/$compat_principal"
-echo "platform-lifecycle=$family install=passed enroll=synthetic-state mcp=passed update=passed rollback=passed reinstall=passed identity=preserved grants=preserved-by-agent-identity purge=passed"
+case "$family" in
+  ubuntu|debian)
+    docker exec "$container" apt-get purge --yes palladin-runtime
+    if docker exec "$container" dpkg-query --show palladin-runtime >/dev/null 2>&1; then
+      echo 'DEB remained installed after final purge' >&2
+      exit 1
+    fi
+    ;;
+  fedora|rocky9)
+    docker exec "$container" dnf remove --assumeyes palladin-runtime
+    if docker exec "$container" rpm --query --quiet palladin-runtime; then
+      echo 'RPM remained installed after final removal' >&2
+      exit 1
+    fi
+    ;;
+esac
+docker exec "$container" systemctl daemon-reload
+for path in \
+  /usr/lib/palladin/runtime \
+  /usr/lib/systemd/system/palladin-runtime.service \
+  /usr/lib/systemd/system/palladin-executor.socket \
+  /usr/lib/systemd/system/palladin-executor@.service \
+  /usr/lib/sysusers.d/palladin-runtime.conf \
+  /usr/lib/tmpfiles.d/palladin-runtime.conf \
+  /usr/share/polkit-1/actions/io.palladin.runtime.policy \
+  /run/palladin-runtime/broker.sock; do
+  docker exec "$container" test ! -e "$path"
+done
+for unit in palladin-runtime.service palladin-executor.socket palladin-executor@.service; do
+  [[ $(docker exec "$container" systemctl show --property=LoadState --value "$unit") == not-found ]]
+done
+docker exec "$container" test -d /var/lib/palladin-runtime
+docker exec "$container" test -d /etc/palladin
+echo "platform-lifecycle=$family install=passed enroll=synthetic-state mcp=passed update=passed rollback=passed reinstall=passed identity=preserved grants=preserved-by-agent-identity purge=passed uninstall=passed"

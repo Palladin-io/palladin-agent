@@ -474,7 +474,7 @@ jobs:
               test ! -e "$HOME/.palladin/agent.key"
               test ! -e "$HOME/.palladin/config.json"
             '
-      - name: Install, enroll, run MCP, update, roll back, reinstall, and purge
+      - name: Install, enroll, run MCP, update, roll back, reinstall, purge, and uninstall
         working-directory: .
         shell: bash
         env:

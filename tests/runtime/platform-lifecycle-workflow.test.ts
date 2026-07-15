@@ -8,6 +8,11 @@ const release = readFileSync('.github/workflows/release-meta.yml', 'utf8');
 describe('owner-only physical lifecycle workflow', () => {
   it('has one manual owner-only entry point and twelve fixed native targets', () => {
     expect(workflow).toContain("if: github.actor == 'patryk-roguszewski'");
+    expect(workflow).toContain("github.ref == 'refs/heads/main'");
+    expect(workflow).toContain('ref: main');
+    expect(workflow).toContain("test \"$GITHUB_REF\" = refs/heads/main");
+    expect(workflow).toContain('test "$(git rev-parse "$tag^{commit}")" = "$source"');
+    expect(workflow).not.toContain("with: { ref: '${{ inputs.candidate_source_sha }}'");
     expect(workflow).toContain('test "$GITHUB_EVENT_NAME" = workflow_dispatch');
     expect(workflow).not.toMatch(/^\s{2}(push|pull_request|schedule|workflow_run):/m);
     expect(workflow.match(/- target: macos-/g)).toHaveLength(2);
@@ -26,7 +31,8 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(workflow).toContain("--entry-id '${{ vars.PALLADIN_LIFECYCLE_QA_ENTRY_ID }}'");
     expect(workflow).not.toMatch(/PALLADIN_(?:API_KEY|LIFECYCLE_QA_SECRET):\s*\$\{\{\s*secrets\./);
     expect(workflow).toContain("= 12");
-    expect(workflow).toContain('name: physical-release-sets-${{ inputs.candidate_source_sha }}');
+    expect(workflow).toContain('name: physical-release-sets-${{ steps.verify.outputs.source_sha }}');
+    expect(workflow).toContain("name: 'physical-release-sets-${{ needs.authorize.outputs.source_sha }}'");
     expect(workflow).not.toContain('name: lifecycle-release-sets-${{ inputs.candidate_source_sha }}');
     expect(workflow).toContain("pattern: 'lifecycle-*'");
     expect(workflow).toContain('aggregate-shards.mjs');
@@ -51,6 +57,25 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(runner).toContain("existsSync(join(home, '.palladin'))");
     expect(runner).not.toContain('if (purged.status === 0)');
     expect(runner).toContain('npm uninstall left the Agent launcher installed');
+    expect(runner).toContain("verify-bundle.sh'), '--app', app, '--architecture', 'universal'");
+    expect(runner).toContain('verifyMacBundle(packagedApp, phase, env)');
+    expect(runner).toContain("bounded('/usr/bin/ditto'");
+    expect(runner).toContain("bounded('/bin/bash'");
+    expect(runner).not.toContain('/usr/local/bin');
+    expect(runner).toContain('npm package runtime does not match the verified signed macOS runtime');
+    expect(runner).toContain("Remove-AppxPackage -AllUsers -Package $package.PackageFullName");
+    expect(runner).toContain("['--non-interactive', 'apt-get', 'purge', '--yes', 'palladin-runtime']");
+    expect(runner).toContain("['--non-interactive', 'dnf', 'remove', '--assumeyes', 'palladin-runtime']");
+    expect(runner).toContain("Get-AppxPackage -AllUsers -PackageTypeFilter Main -Name $name");
+    expect(runner.indexOf('Palladin.Runtime.Companion')).toBeLessThan(runner.indexOf('Palladin.Runtime.Broker'));
+    expect(runner).toContain(String.raw`Get-CimInstance Win32_Service -Filter \"Name='PalladinRuntime'\"`);
+    expect(runner).toContain("['--show', 'palladin-runtime']");
+    expect(runner).toContain("['--query', '--quiet', 'palladin-runtime']");
+    expect(runner).toContain("result.stdout.trim() !== 'not-found'");
+    expect(runner).toContain("'/run/palladin-runtime/broker.sock'");
+    expect(runner).toContain('uninstallNativeExtra(target, rollback, env)');
+    expect(runner.indexOf('uninstallNativeExtra(target, rollback, env)'))
+      .toBeLessThan(runner.indexOf("run.steps.push(step(run, 'uninstall'"));
     expect(runner).toContain('shellCompatibilityCheck(prefix, env, baseline.version)');
     expect(runner).not.toMatch(/readFileSync\(0\)|secretBundle|environment\.apiKey|env\.apiKey|--api-key',/);
   });
