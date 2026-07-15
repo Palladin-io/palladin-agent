@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { aggregateShards } from '../../security/lifecycle/aggregate-shards.mjs';
-import { lifecycleFixture } from './platform-lifecycle-report.test';
+import { lifecycleFixture } from './platform-lifecycle-fixture';
 
 describe('physical lifecycle shard aggregation', () => {
   it('accepts exactly one shard for every manifest target', () => {

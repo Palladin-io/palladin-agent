@@ -26,6 +26,9 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(workflow).toContain("--entry-id '${{ vars.PALLADIN_LIFECYCLE_QA_ENTRY_ID }}'");
     expect(workflow).not.toMatch(/PALLADIN_(?:API_KEY|LIFECYCLE_QA_SECRET):\s*\$\{\{\s*secrets\./);
     expect(workflow).toContain("= 12");
+    expect(workflow).toContain('name: physical-release-sets-${{ inputs.candidate_source_sha }}');
+    expect(workflow).not.toContain('name: lifecycle-release-sets-${{ inputs.candidate_source_sha }}');
+    expect(workflow).toContain("pattern: 'lifecycle-*'");
     expect(workflow).toContain('aggregate-shards.mjs');
     expect(workflow).toContain('report.mjs generate');
     expect(workflow).toContain('gh release upload');
