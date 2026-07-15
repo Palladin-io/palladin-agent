@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use nix::unistd::{Uid, User};
 use thiserror::Error;
 use tokio::net::UnixStream;
+#[cfg(feature = "local-development")]
 use url::{Host, Url};
 
 const RECORD_VERSION: &str = "1";
@@ -157,6 +158,18 @@ fn valid_authorized_host(value: &str) -> bool {
     if matches!(value, PRODUCTION_ORIGIN | STAGING_ORIGIN) {
         return true;
     }
+
+    #[cfg(feature = "local-development")]
+    {
+        valid_local_development_host(value)
+    }
+
+    #[cfg(not(feature = "local-development"))]
+    false
+}
+
+#[cfg(feature = "local-development")]
+fn valid_local_development_host(value: &str) -> bool {
     let Ok(url) = Url::parse(value) else {
         return false;
     };
@@ -245,7 +258,54 @@ mod tests {
 
     use super::{
         PeerError, parse_principal_record, prepare_principal_profile_root, principal_profile_root,
+        valid_authorized_host,
     };
+
+    #[test]
+    fn accepts_only_exact_pinned_remote_origins() {
+        assert!(valid_authorized_host("https://api.palladin.io"));
+        assert!(valid_authorized_host("https://api.stage.palladin.io"));
+        for untrusted in [
+            "https://api.palladin.io/",
+            "https://api.palladin.io:443",
+            "https://api.palladin.io/path",
+            "https://api.palladin.io?query=value",
+            "https://attacker.example",
+            "http://api.palladin.io",
+        ] {
+            assert!(!valid_authorized_host(untrusted), "{untrusted}");
+        }
+    }
+
+    #[cfg(not(feature = "local-development"))]
+    #[test]
+    fn production_build_rejects_ipv4_and_ipv6_loopback() {
+        assert!(!valid_authorized_host("http://127.0.0.1:5000"));
+        assert!(!valid_authorized_host("http://[::1]:5000"));
+    }
+
+    #[cfg(feature = "local-development")]
+    #[test]
+    fn local_development_build_accepts_only_literal_loopback_http_with_a_port() {
+        assert!(valid_authorized_host("http://127.0.0.1:5000"));
+        assert!(valid_authorized_host("http://[::1]:5000"));
+        for untrusted in [
+            "http://localhost:5000",
+            "http://worker.localhost:5000",
+            "http://127.0.0.2:5000",
+            "http://[::2]:5000",
+            "http://127.0.0.1",
+            "http://[::1]",
+            "http://127.0.0.1:0",
+            "https://127.0.0.1:5000",
+            "http://user@127.0.0.1:5000",
+            "http://127.0.0.1:5000/path",
+            "http://127.0.0.1:5000?query=value",
+            "http://127.0.0.1:5000#fragment",
+        ] {
+            assert!(!valid_authorized_host(untrusted), "{untrusted}");
+        }
+    }
 
     #[test]
     fn immutable_principal_is_the_state_selector_not_reusable_uid() {
