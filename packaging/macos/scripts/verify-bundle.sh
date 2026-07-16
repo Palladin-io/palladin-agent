@@ -5,7 +5,13 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 # shellcheck source=packaging/macos/scripts/lib.sh
-source "$SCRIPT_DIR/lib.sh"
+if [[ -n "${PALLADIN_VERIFIED_LIB_FD:-}" ]]; then
+  [[ "$PALLADIN_VERIFIED_LIB_FD" =~ ^[0-9]+$ ]] || exit 64
+  source "/dev/fd/$PALLADIN_VERIFIED_LIB_FD"
+  unset PALLADIN_VERIFIED_LIB_FD
+else
+  source "$SCRIPT_DIR/lib.sh"
+fi
 
 usage() {
   cat >&2 <<'USAGE'
@@ -13,7 +19,7 @@ Usage: verify-bundle.sh --app PATH --architecture arm64|x86_64|universal
 
 Required environment:
   PALLADIN_APPLICATION_IDENTIFIER  Exact TEAMID.io.palladin.runtime value.
-  PALLADIN_KEYCHAIN_ACCESS_GROUP   Exact TEAMID.io.palladin.runtime value.
+  PALLADIN_KEYCHAIN_ACCESS_GROUP   Exact TEAMID.io.palladin.runtime.session-v2 value.
 
 The command verifies a final Developer ID-signed, notarized and stapled bundle.
 USAGE
@@ -45,6 +51,7 @@ embedded_profile="$app_path/Contents/embedded.provisionprofile"
 require_regular_file "$info_plist" "Info.plist"
 require_regular_file "$embedded_profile" "embedded provisioning profile"
 assert_binary_contract "$binary" "$access_group" "$architecture"
+assert_binary_session_contract "$binary"
 [[ "$(plist_read "$info_plist" 'CFBundleIdentifier')" == "$PALLADIN_BUNDLE_IDENTIFIER" ]] ||
   die "bundle identifier is not $PALLADIN_BUNDLE_IDENTIFIER"
 [[ "$(plist_read "$info_plist" 'CFBundleExecutable')" == "palladin" ]] ||

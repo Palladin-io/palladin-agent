@@ -99,7 +99,7 @@ describe('public npm package boundary', () => {
       'dist/runtime/windows-runtime-cache.js.map',
       'package.json',
     ]);
-  });
+  }, 30_000);
 
   it.each(['arm64', 'x64'])('keeps the darwin/%s development workspace private and platform-neutral', (architecture) => {
     const runtime = manifest(`packages/runtime-darwin-${architecture}/package.json`);

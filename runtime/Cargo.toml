@@ -26,6 +26,7 @@ repository = "https://github.com/Palladin-io/palladin-agent"
 [workspace.dependencies]
 base64 = "0.22.1"
 blake2 = "0.10.6"
+block2 = "0.6.2"
 clap = { version = "4.6.1", features = ["derive"] }
 command-group = { version = "5.0.1", features = ["with-tokio"] }
 crypto_secretbox = "0.1.1"
@@ -49,6 +50,10 @@ salsa20 = "0.10.2"
 secrecy = "0.10.3"
 security-framework = { version = "3.7.0", features = ["OSX_10_15"] }
 security-framework-sys = "2.17.0"
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["block2", "NSDistributedNotificationCenter", "NSNotification", "NSOperation", "NSString"] }
+objc2-local-authentication = { version = "0.3.2", default-features = false, features = ["LAContext", "block2"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha1 = "0.10.6"

@@ -16,7 +16,7 @@ Usage: sign-notarize.sh --bundle-dir PATH --architecture arm64|x86_64|universal
 
 Required environment:
   PALLADIN_APPLICATION_IDENTIFIER  Exact TEAMID.io.palladin.runtime value.
-  PALLADIN_KEYCHAIN_ACCESS_GROUP   Exact TEAMID.io.palladin.runtime value.
+  PALLADIN_KEYCHAIN_ACCESS_GROUP   Exact TEAMID.io.palladin.runtime.session-v2 value.
 USAGE
   exit 64
 }

@@ -3,7 +3,14 @@
 set -euo pipefail
 
 readonly PALLADIN_BUNDLE_IDENTIFIER="io.palladin.runtime"
-readonly PALLADIN_ACCESS_GROUP_SUFFIX=".io.palladin.runtime"
+readonly PALLADIN_APPLICATION_IDENTIFIER_SUFFIX=".io.palladin.runtime"
+readonly PALLADIN_ACCESS_GROUP_SUFFIX=".io.palladin.runtime.session-v2"
+readonly PALLADIN_IDENTITY_KEYCHAIN_SERVICE="io.palladin.runtime.session-v2.identity"
+readonly PALLADIN_STATE_KEYCHAIN_SERVICE="io.palladin.runtime.session-v2.state"
+readonly PALLADIN_ORGANIZATION_SLOT_SUFFIX="organization-api-key-v3"
+readonly PALLADIN_X25519_SLOT_SUFFIX="x25519-private-key-v3"
+readonly PALLADIN_ED25519_SLOT_SUFFIX="ed25519-secret-key-v3"
+readonly PALLADIN_INVOCATION_SLOT_SUFFIX="invocation-authorization-seed-v2"
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -51,16 +58,19 @@ plist_array_contains() {
 validate_contract_identifiers() {
   local application_identifier="$1"
   local access_group="$2"
-  local expected_suffix="$PALLADIN_ACCESS_GROUP_SUFFIX"
+  local expected_application_suffix="$PALLADIN_APPLICATION_IDENTIFIER_SUFFIX"
+  local expected_access_group_suffix="$PALLADIN_ACCESS_GROUP_SUFFIX"
 
   [[ "$application_identifier" =~ ^[A-Z0-9]{10}\.io\.palladin\.runtime$ ]] ||
     die "application identifier must be TEAMID.$PALLADIN_BUNDLE_IDENTIFIER"
-  [[ "$access_group" =~ ^[A-Z0-9]{10}\.io\.palladin\.runtime$ ]] ||
-    die "Keychain access group must be TEAMID.$PALLADIN_BUNDLE_IDENTIFIER"
-  [[ "$application_identifier" == "$access_group" ]] ||
-    die "application identifier and Keychain access group must be identical"
-  [[ "$access_group" == *"$expected_suffix" && "$access_group" != *'*'* ]] ||
+  [[ "$access_group" =~ ^[A-Z0-9]{10}\.io\.palladin\.runtime\.session-v2$ ]] ||
+    die "Keychain access group must be TEAMID$PALLADIN_ACCESS_GROUP_SUFFIX"
+  [[ "$application_identifier" == *"$expected_application_suffix" && "$application_identifier" != *'*'* ]] ||
+    die "application identifier is not app-scoped"
+  [[ "$access_group" == *"$expected_access_group_suffix" && "$access_group" != *'*'* ]] ||
     die "Keychain access group is not app-scoped"
+  [[ "$(contract_team_identifier "$application_identifier")" == "$(contract_team_identifier "$access_group")" ]] ||
+    die "application identifier and Keychain access group must use the same Team ID"
 }
 
 contract_team_identifier() {
@@ -169,4 +179,42 @@ assert_plist_contract() {
   get_task_allow="$(plist_read "$plist" 'com.apple.security.get-task-allow')" ||
     die "signed entitlements must explicitly disable get-task-allow"
   [[ "$get_task_allow" == "false" ]] || die "get-task-allow must be disabled"
+  assert_exact_entitlement_allowlist "$plist"
+}
+
+assert_exact_entitlement_allowlist() {
+  local plist="$1"
+  local key
+  local count=0
+
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    count=$((count + 1))
+    case "$key" in
+      com.apple.application-identifier|com.apple.developer.team-identifier|keychain-access-groups|com.apple.security.get-task-allow) ;;
+      *) die "signed entitlements contain an unexpected key: $key" ;;
+    esac
+  done < <(
+    /usr/libexec/PlistBuddy -c Print "$plist" |
+      sed -n -E 's/^[[:space:]]*([^[:space:]][^=]*) = (Array|Dict|.*)$/\1/p' |
+      sed -E 's/[[:space:]]+$//'
+  )
+  [[ "$count" == "4" ]] || die "signed entitlements must contain exactly four allowlisted keys"
+}
+
+assert_binary_session_contract() {
+  local binary="$1"
+  local marker
+
+  require_regular_file "$binary" "runtime binary"
+  for marker in \
+    "$PALLADIN_IDENTITY_KEYCHAIN_SERVICE" \
+    "$PALLADIN_STATE_KEYCHAIN_SERVICE" \
+    "$PALLADIN_ORGANIZATION_SLOT_SUFFIX" \
+    "$PALLADIN_X25519_SLOT_SUFFIX" \
+    "$PALLADIN_ED25519_SLOT_SUFFIX" \
+    "$PALLADIN_INVOCATION_SLOT_SUFFIX"; do
+    LC_ALL=C strings -a "$binary" | grep -F -- "$marker" >/dev/null ||
+      die "runtime binary is missing the authenticated-session storage contract"
+  done
 }

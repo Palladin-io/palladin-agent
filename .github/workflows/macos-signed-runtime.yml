@@ -282,20 +282,12 @@ jobs:
             --notary-issuer "$NOTARY_ISSUER_ID" \
             --output-archive "$RUNNER_TEMP/palladin-runtime-darwin-universal.zip"
 
-      - name: Zapewnij rzeczywisty Homebrew Node do testu izolacji
-        run: |
-          set -euo pipefail
-          brew list node@22 >/dev/null 2>&1 || brew install node@22
-          homebrew_node="$(realpath "$(brew --prefix node@22)/bin/node")"
-          test -x "$homebrew_node"
-          echo "PALLADIN_HOMEBREW_NODE=$homebrew_node" >>"$GITHUB_ENV"
-
       - name: Zweryfikuj instalację z rzeczywistych tarballi npm
         run: |
           set -euo pipefail
           unpacked="$RUNNER_TEMP/notarized-app"
           mkdir -p "$unpacked"
-          ditto -x -k "$RUNNER_TEMP/palladin-runtime-darwin-universal.zip" "$unpacked"
+          /usr/bin/ditto -x -k "$RUNNER_TEMP/palladin-runtime-darwin-universal.zip" "$unpacked"
           test -d "$unpacked/PalladinRuntime.app"
           for architecture in arm64 x64; do
             runtime_package="$RUNNER_TEMP/runtime-darwin-$architecture-package"
@@ -316,10 +308,13 @@ jobs:
             test -f "$runtime_tgz"
             packaged_runtime="$RUNNER_TEMP/packed-runtime-darwin-$architecture"
             mkdir -p "$packaged_runtime"
-            tar -xzf "$runtime_tgz" -C "$packaged_runtime"
+            /usr/bin/tar -xzf "$runtime_tgz" -C "$packaged_runtime"
             packaging/macos/scripts/verify-bundle.sh \
               --app "$packaged_runtime/package/PalladinRuntime.app" \
               --architecture universal
+            packaging/macos/scripts/compare-bundles.sh \
+              "$unpacked/PalladinRuntime.app" \
+              "$packaged_runtime/package/PalladinRuntime.app"
           done
           runtime_arch=$(node -p 'process.arch')
           runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$runtime_arch-${{ inputs.marketing_version }}.tgz"
@@ -331,25 +326,12 @@ jobs:
           installed_app="$smoke/node_modules/@palladin/runtime-darwin-$runtime_arch/PalladinRuntime.app"
           packaging/macos/scripts/verify-bundle.sh \
             --app "$installed_app" --architecture universal
+          packaging/macos/scripts/compare-bundles.sh \
+            "$unpacked/PalladinRuntime.app" "$installed_app"
           doctor=$("$installed_app/Contents/MacOS/palladin" doctor)
           grep -F 'platform: macos/aarch64' <<<"$doctor"
           grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
           grep -F 'identity-opened: no' <<<"$doctor"
-          echo "PALLADIN_NPM_RUNTIME_ARCH=$runtime_arch" >>"$GITHUB_ENV"
-
-      - name: Przetestuj granicę Keychain na podpisanym runtime
-        if: inputs.release_pipeline != true
-        env:
-          PALLADIN_SECURITY_TEST_CONFIRM: ephemeral-runner
-          SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_IDENTITY }}
-        run: |
-          set -euo pipefail
-          installed_app="$RUNNER_TEMP/npm-smoke/node_modules/@palladin/runtime-darwin-$PALLADIN_NPM_RUNTIME_ARCH/PalladinRuntime.app"
-          packaging/macos/scripts/test-security-boundary.sh \
-            --app "$installed_app" \
-            --entitlements "$RUNNER_TEMP/palladin-universal-bundle/PalladinRuntime.entitlements.plist" \
-            --identity "$SIGNING_IDENTITY" \
-            --homebrew-node "$PALLADIN_HOMEBREW_NODE"
 
       - name: Opublikuj zweryfikowany artefakt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -374,22 +356,34 @@ jobs:
             "${RUNNER_TEMP}/palladin.provisionprofile" \
             "${RUNNER_TEMP}/notary-private-key.p8"
 
-  smoke-signed-intel:
-    name: Test signed artifact natively on Intel
+  smoke-signed:
+    name: Exact signed boundary - ${{ matrix.architecture }}
     needs: [authorize, sign-universal]
-    runs-on: macos-15-intel
-    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+            npm_architecture: arm64
+            platform: macos/aarch64
+          - runner: macos-15-intel
+            architecture: x86_64
+            npm_architecture: x64
+            platform: macos/x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     env:
       PALLADIN_APPLICATION_IDENTIFIER: ${{ vars.PALLADIN_MACOS_APPLICATION_IDENTIFIER }}
       PALLADIN_KEYCHAIN_ACCESS_GROUP: ${{ vars.PALLADIN_MACOS_KEYCHAIN_ACCESS_GROUP }}
-      PALLADIN_SECURITY_TEST_CONFIRM: ephemeral-runner
+      PALLADIN_SECURITY_TEST_CONFIRM: github-hosted-ephemeral-runner
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify source and native Intel execution
+      - name: Verify source and native execution
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
@@ -397,44 +391,72 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$SOURCE_SHA" origin/main
-          test "$(uname -m)" = x86_64
+          test "$(uname -m)" = '${{ matrix.architecture }}'
           translated=$(sysctl -in sysctl.proc_translated 2>/dev/null || echo 0)
           test "$translated" = 0
-          test "$(node -p 'process.arch')" = x64
+          test "$(node -p 'process.arch')" = '${{ matrix.npm_architecture }}'
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: palladin-runtime-darwin
           path: ${{ runner.temp }}/signed-release
-      - name: Install and execute the exact signed Intel npm artifact
+      - name: Install the exact signed npm artifact without lifecycle scripts
         run: |
           set -euo pipefail
           release="$RUNNER_TEMP/signed-release"
           shopt -s nullglob
-          runtime_matches=("$release"/palladin-runtime-darwin-x64-*.tgz)
+          runtime_matches=("$release"/palladin-runtime-darwin-${{ matrix.npm_architecture }}-*.tgz)
           test "${#runtime_matches[@]}" -eq 1
-          smoke="$RUNNER_TEMP/npm-smoke-intel"
+          zip_root="$RUNNER_TEMP/signed-zip-${{ matrix.npm_architecture }}"
+          mkdir -p "$zip_root"
+          /usr/bin/ditto -x -k \
+            "$release/palladin-runtime-darwin-universal.zip" \
+            "$zip_root"
+          packaging/macos/scripts/verify-bundle.sh \
+            --app "$zip_root/PalladinRuntime.app" --architecture universal
+          smoke="$RUNNER_TEMP/npm-smoke-${{ matrix.npm_architecture }}"
           mkdir -p "$smoke"
-          npm install --prefix "$smoke" --ignore-scripts "${runtime_matches[0]}"
-          app="$smoke/node_modules/@palladin/runtime-darwin-x64/PalladinRuntime.app"
+          npm install --prefix "$smoke" --ignore-scripts --no-save "${runtime_matches[0]}"
+          app="$smoke/node_modules/@palladin/runtime-darwin-${{ matrix.npm_architecture }}/PalladinRuntime.app"
           packaging/macos/scripts/verify-bundle.sh --app "$app" --architecture universal
+          packaging/macos/scripts/compare-bundles.sh \
+            "$zip_root/PalladinRuntime.app" "$app"
           binary="$app/Contents/MacOS/palladin"
           doctor=$("$binary" doctor)
-          grep -F 'platform: macos/x86_64' <<<"$doctor"
+          grep -F 'platform: ${{ matrix.platform }}' <<<"$doctor"
           grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
           grep -F 'identity-opened: no' <<<"$doctor"
-          if [[ '${{ inputs.release_pipeline }}' != true ]]; then
-            cleanup() { "$binary" purge --confirm >/dev/null 2>&1 || true; }
-            trap cleanup EXIT
-            "$binary" purge --confirm >/dev/null 2>&1 || true
-            "$binary" init >/dev/null
-            "$binary" --id default security upgrade >/dev/null
-            "$binary" --id default security upgrade >/dev/null
-          fi
+          /usr/bin/codesign -d --entitlements :- "$app" \
+            >"$RUNNER_TEMP/signed-entitlements.plist" 2>/dev/null
+          /usr/bin/plutil -lint "$RUNNER_TEMP/signed-entitlements.plist" >/dev/null
+          {
+            echo "PALLADIN_SIGNED_APP=$app"
+            echo "PALLADIN_SIGNED_ENTITLEMENTS=$RUNNER_TEMP/signed-entitlements.plist"
+          } >>"$GITHUB_ENV"
+
+      - name: Install the untrusted native Node probe dependencies
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --workspaces=false
+          brew list node@22 >/dev/null 2>&1 || brew install node@22
+          homebrew_node="$(/usr/bin/realpath "$(brew --prefix node@22)/bin/node")"
+          test -x "$homebrew_node"
+          echo "PALLADIN_HOMEBREW_NODE=$homebrew_node" >>"$GITHUB_ENV"
+
+      - name: Run the same noninteractive boundary harness on the exact artifact
+        env:
+          PALLADIN_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          packaging/macos/scripts/test-security-boundary.sh \
+            --app "$PALLADIN_SIGNED_APP" \
+            --entitlements "$PALLADIN_SIGNED_ENTITLEMENTS" \
+            --homebrew-node "$PALLADIN_HOMEBREW_NODE" \
+            --architecture '${{ matrix.architecture }}'
 
   macos-signed-gate:
     name: macOS Signed Release Gate
     if: always()
-    needs: [authorize, build-native, sign-universal, smoke-signed-intel]
+    needs: [authorize, build-native, sign-universal, smoke-signed]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -443,9 +465,9 @@ jobs:
           AUTHORIZE: ${{ needs.authorize.result }}
           BUILD_NATIVE: ${{ needs.build-native.result }}
           SIGN_UNIVERSAL: ${{ needs.sign-universal.result }}
-          INTEL_SMOKE: ${{ needs.smoke-signed-intel.result }}
+          SIGNED_BOUNDARY: ${{ needs.smoke-signed.result }}
         run: |
           test "$AUTHORIZE" = success
           test "$BUILD_NATIVE" = success
           test "$SIGN_UNIVERSAL" = success
-          test "$INTEL_SMOKE" = success
+          test "$SIGNED_BOUNDARY" = success

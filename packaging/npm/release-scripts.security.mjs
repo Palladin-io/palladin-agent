@@ -294,13 +294,111 @@ test('release workflows pin actions and isolate the one-time npm token exception
   const finalRelease = readFileSync(join(workflowDirectory, 'release-finalize.yml'), 'utf8');
   assert.doesNotMatch(platformRelease, /secrets:\s+inherit/);
   assert.match(platformRelease, /npm stage publish "\$package" --tag candidate/);
-  assert.match(metaRelease, /npm stage publish "\$package" --tag latest/);
+  assert.match(metaRelease, /npm stage publish "\$RUNNER_TEMP\/stage-assets\/palladin-agent-\$\{\{ inputs\.version \}\}\.tgz" --tag latest/);
   for (const contents of [platformRelease, metaRelease, finalRelease]) {
     assert.match(contents, /github\.actor == 'patryk-roguszewski'/);
     assert.match(contents, /test "\$GITHUB_REF" = "refs\/tags\/\$RELEASE_TAG"/);
     assert.match(contents, /git merge-base --is-ancestor/);
     assert.match(contents, /group: palladin-npm-release/);
   }
+});
+
+test('release finalization requires both exact owner-approved security gates before publication', () => {
+  const workflow = readFileSync(resolve('.github/workflows/release-finalize.yml'), 'utf8');
+  assert.match(workflow, /if: github\.actor == 'patryk-roguszewski'/);
+  assert.match(workflow, /needs: \[authorize, compatibility, smoke-native, smoke-musl\]/);
+  assert.ok(workflow.includes('[[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]'));
+  assert.match(workflow, /test -f "\$assets\/adversarial-report\.json"/);
+  assert.match(workflow, /test -f "\$assets\/adversarial-report\.md"/);
+  assert.match(workflow, /test -f "\$assets\/adversarial-approval\.json"/);
+  assert.match(workflow, /test -f "\$assets\/lifecycle-report\.json"/);
+  assert.match(workflow, /test -f "\$assets\/lifecycle-report\.md"/);
+  assert.match(workflow, /test -f "\$assets\/lifecycle-approval\.json"/);
+  assert.match(workflow, /--directory "\$platform_packages" --version "\$VERSION"/);
+  assert.match(workflow, /expected-release-assets\.txt/);
+  assert.match(workflow, /actual-release-assets\.txt/);
+  assert.match(workflow, /cmp --silent "\$RUNNER_TEMP\/expected-release-assets\.txt"/);
+  assert.match(workflow, /node security\/adversarial\/report\.mjs validate/);
+  assert.match(workflow, /--source-sha "\$SOURCE_SHA"/);
+  assert.match(workflow, /--json "\$assets\/adversarial-report\.json"/);
+  assert.match(workflow, /--markdown "\$assets\/adversarial-report\.md"/);
+  assert.match(workflow, /node security\/adversarial\/verify-release-artifacts\.mjs/);
+  assert.match(workflow, /--platform-manifest "\$assets\/release-manifest\.json"/);
+  assert.match(workflow, /--agent-manifest "\$assets\/release-manifest-agent\.json"/);
+  assert.match(workflow, /node security\/adversarial\/operator-approval\.mjs verify/);
+  assert.match(workflow, /--approval "\$assets\/adversarial-approval\.json"/);
+  assert.match(workflow, /adversarial-report\.json\|adversarial-report\.md\|adversarial-approval\.json\) continue/);
+  assert.match(workflow, /node security\/lifecycle\/report\.mjs validate/);
+  assert.match(workflow, /node security\/lifecycle\/verify-release-artifacts\.mjs/);
+  assert.match(workflow, /node security\/lifecycle\/operator-approval\.mjs verify/);
+  assert.match(workflow, /--approval "\$assets\/lifecycle-approval\.json"/);
+  assert.match(workflow, /lifecycle-report\.json\|lifecycle-report\.md\|lifecycle-approval\.json\) continue/);
+  assert.doesNotMatch(workflow, /report\.mjs validate[^]*\|\| true/);
+  assert.ok(
+    workflow.indexOf('node security/adversarial/report.mjs validate')
+      < workflow.indexOf('gh release edit "${{ inputs.release_tag }}"'),
+  );
+});
+
+test('meta-package staging is blocked by the exact adversarial and physical lifecycle gates', () => {
+  const workflow = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8');
+  const reportValidations = [...workflow.matchAll(/node security\/adversarial\/report\.mjs validate/g)];
+  const artifactValidations = [
+    ...workflow.matchAll(/node security\/adversarial\/verify-release-artifacts\.mjs/g),
+  ];
+  const lifecycleReportValidations = [
+    ...workflow.matchAll(/node security\/lifecycle\/report\.mjs validate/g),
+  ];
+  const lifecycleArtifactValidations = [
+    ...workflow.matchAll(/node security\/lifecycle\/verify-release-artifacts\.mjs/g),
+  ];
+  const stageOffset = workflow.indexOf('npm stage publish "$RUNNER_TEMP/stage-assets/palladin-agent-${{ inputs.version }}.tgz" --tag latest');
+
+  assert.equal(reportValidations.length, 3);
+  assert.equal(artifactValidations.length, 3);
+  assert.equal(lifecycleReportValidations.length, 2);
+  assert.equal(lifecycleArtifactValidations.length, 2);
+  assert.ok(stageOffset > 0);
+  assert.ok(reportValidations.every((match) => match.index < stageOffset));
+  assert.ok(artifactValidations.every((match) => match.index < stageOffset));
+  assert.ok(lifecycleReportValidations.every((match) => match.index < stageOffset));
+  assert.ok(lifecycleArtifactValidations.every((match) => match.index < stageOffset));
+  assert.match(workflow, /test -f "\$assets\/\$filename"/);
+  assert.match(workflow, /--json "\$evidence\/adversarial-report\.json"/);
+  assert.match(workflow, /--markdown "\$evidence\/adversarial-report\.md"/);
+  assert.match(workflow, /for filename in adversarial-report\.json adversarial-report\.md/);
+  assert.match(workflow, /for filename in lifecycle-report\.json lifecycle-report\.md/);
+  assert.match(workflow, /mv "\$assets\/\$filename" "\$evidence\/\$filename"/);
+  assert.match(workflow, /"palladin-agent-\$VERSION\.tgz" release-manifest-agent\.json/);
+  assert.match(workflow, /\[\[ \$meta_count -eq 0 \|\| \$meta_count -eq 4 \]\]/);
+  assert.doesNotMatch(workflow, /rm -f "\$assets"\/palladin-agent-\*\.tgz/);
+  assert.ok(
+    workflow.indexOf('mv "$assets/$filename" "$evidence/$filename"')
+      < workflow.indexOf('node packaging/npm/verify-release-manifest.mjs'),
+  );
+  assert.match(workflow, /name: Revalidate the exact candidate and release gates/);
+  assert.match(workflow, /--platform-manifest "\$assets\/release-manifest\.json"/);
+  assert.match(workflow, /--agent-manifest "\$assets\/release-manifest-agent\.json"/);
+  assert.match(workflow, /name: KMS-sign the owner-approved adversarial evidence/);
+  assert.match(workflow, /name: KMS-sign the owner-approved platform lifecycle evidence/);
+  assert.match(workflow, /gcloud kms asymmetric-sign/);
+  assert.match(workflow, /operator-approval\.mjs assemble/);
+  assert.match(workflow, /operator-approval\.mjs verify/);
+  assert.match(workflow, /--approval "\$approval\/adversarial-approval\.json"/);
+  assert.match(workflow, /--approval "\$approval\/lifecycle-approval\.json"/);
+  assert.match(workflow, /prepare-meta:[^]*needs: \[authorize, compatibility, smoke-native, smoke-musl, approve-adversarial\]/);
+  assert.match(workflow, /stage-meta:[^]*needs: \[authorize, prepare-meta, publish-policy, approve-adversarial, approve-lifecycle\]/);
+  assert.match(workflow, /publish-policy:[^]*needs: \[authorize, smoke-native, smoke-musl, approve-lifecycle\]/);
+  assert.match(workflow, /lifecycle_ready: \$\{\{ steps\.release_set\.outputs\.lifecycle_ready \}\}/);
+  assert.match(workflow, /approve-lifecycle:[^]*if: needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
+  assert.match(workflow, /\[\[ \$lifecycle_count -eq 0 \|\| \$lifecycle_count -eq 2 \]\]/);
+  const prepareOffset = workflow.indexOf('\n  prepare-meta:');
+  const approveLifecycleOffset = workflow.indexOf('\n  approve-lifecycle:');
+  assert.ok(prepareOffset > 0 && approveLifecycleOffset > 0);
+  assert.match(workflow.slice(prepareOffset, workflow.indexOf('\n  stage-meta:')), /The exact `@palladin\/agent` candidate was attached to the draft release but was not published to npm/);
+  assert.doesNotMatch(workflow.slice(prepareOffset, workflow.indexOf('\n  stage-meta:')), /npm stage publish/);
+  assert.doesNotMatch(workflow, /adversarial\/report\.mjs validate[^]*\|\| true/);
+  assert.doesNotMatch(workflow, /lifecycle\/report\.mjs validate[^]*\|\| true/);
 });
 
 test('signed version policy release is owner-only, KMS-backed, and published after smoke', () => {

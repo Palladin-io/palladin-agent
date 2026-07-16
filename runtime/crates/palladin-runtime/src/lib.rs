@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 mod integrity;
 pub mod version_policy;
@@ -33,11 +34,14 @@ use palladin_exec::{
     EnvironmentError, SecretEnvironment, resolve_interpreter, run_command, run_script,
     validate_command, validate_reference_name,
 };
+pub use palladin_platform::secure_store::SecretStore;
 use palladin_platform::secure_store::{
-    SecretSlot, SecretStore, StoreError, delete_identity, delete_legacy_identity,
-    delete_legacy_organization_credential, delete_organization_credential,
+    AuthorizationPrompt, OperationAuthorization, OperationLease, OperationScope, SecretSlot,
+    StoreError, delete_identity, delete_legacy_identity, delete_legacy_organization_credential,
+    delete_organization_credential,
 };
 use secrecy::ExposeSecret;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -58,6 +62,442 @@ pub use palladin_exec::{ExecError, ExecResult, OperatorOutput};
 pub struct RuntimeService<S> {
     repository: ProfileRepository,
     secrets: S,
+}
+
+const OPERATION_BINDING_DOMAIN: &[u8] = b"palladin.runtime.exact-operation.v1";
+const OPERATION_TTL_MS: i128 = 300_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeOperation {
+    Connect,
+    Status,
+    SearchEntries,
+    GetCredential,
+    ExecWithCredential,
+    ReportCredentialStale,
+    VerifyIdentity,
+    DeleteProfile,
+    PurgeProfile,
+    PurgeAll,
+    UpgradeSecurity,
+}
+
+impl RuntimeOperation {
+    const fn protocol_name(self) -> &'static str {
+        match self {
+            Self::Connect => "connect",
+            Self::Status => "status",
+            Self::SearchEntries => "search_entries",
+            Self::GetCredential => "get_credential",
+            Self::ExecWithCredential => "exec_with_credential",
+            Self::ReportCredentialStale => "report_credential_stale",
+            Self::VerifyIdentity => "verify_identity",
+            Self::DeleteProfile => "delete_profile",
+            Self::PurgeProfile => "purge_profile",
+            Self::PurgeAll => "purge_all",
+            Self::UpgradeSecurity => "upgrade_security",
+        }
+    }
+
+    const fn authorization_prompt(self) -> AuthorizationPrompt {
+        match self {
+            Self::Connect => AuthorizationPrompt::Connect,
+            Self::Status => AuthorizationPrompt::Status,
+            Self::SearchEntries => AuthorizationPrompt::SearchEntries,
+            Self::GetCredential => AuthorizationPrompt::GetCredential,
+            Self::ExecWithCredential => AuthorizationPrompt::ExecWithCredential,
+            Self::ReportCredentialStale => AuthorizationPrompt::ReportCredentialStale,
+            Self::VerifyIdentity | Self::UpgradeSecurity => AuthorizationPrompt::IdentityManagement,
+            Self::DeleteProfile | Self::PurgeProfile | Self::PurgeAll => {
+                AuthorizationPrompt::DestructiveIdentityManagement
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InvocationSurface {
+    Cli,
+    Mcp,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialOutputPolicy {
+    CliSecretStdout,
+    McpSecretResponse,
+    CliChildProcess,
+    McpChildProcessWithheld,
+}
+
+pub enum OperationDescriptor {
+    Connect {
+        host: String,
+        display_name: Option<String>,
+        agent_type: Option<String>,
+        api_key_digest: [u8; 32],
+    },
+    Status,
+    SearchEntries {
+        surface: InvocationSurface,
+        query: String,
+        cursor: Option<String>,
+        page_size: Option<u32>,
+    },
+    GetCredential {
+        surface: InvocationSurface,
+        vault_id: String,
+        entry_id: String,
+        reason: Option<String>,
+        wait: WaitOptions,
+        field: Option<String>,
+        field_id: Option<String>,
+        output: CredentialOutputPolicy,
+    },
+    ExecWithCredential {
+        surface: InvocationSurface,
+        vault_id: String,
+        entry_id: String,
+        reason: Option<String>,
+        wait: WaitOptions,
+        command: Vec<String>,
+        env_mappings: Vec<String>,
+        output: CredentialOutputPolicy,
+    },
+    ReportCredentialStale {
+        surface: InvocationSurface,
+        vault_id: String,
+        entry_id: String,
+        code: String,
+        note: Option<String>,
+    },
+    VerifyIdentity,
+    DeleteProfile,
+    PurgeProfile,
+    PurgeAll,
+    UpgradeSecurity,
+}
+
+impl std::fmt::Debug for OperationDescriptor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OperationDescriptor")
+            .field("operation", &self.operation())
+            .field("arguments", &"redacted")
+            .finish_non_exhaustive()
+    }
+}
+
+impl OperationDescriptor {
+    #[must_use]
+    pub const fn operation(&self) -> RuntimeOperation {
+        match self {
+            Self::Connect { .. } => RuntimeOperation::Connect,
+            Self::Status => RuntimeOperation::Status,
+            Self::SearchEntries { .. } => RuntimeOperation::SearchEntries,
+            Self::GetCredential { .. } => RuntimeOperation::GetCredential,
+            Self::ExecWithCredential { .. } => RuntimeOperation::ExecWithCredential,
+            Self::ReportCredentialStale { .. } => RuntimeOperation::ReportCredentialStale,
+            Self::VerifyIdentity => RuntimeOperation::VerifyIdentity,
+            Self::DeleteProfile => RuntimeOperation::DeleteProfile,
+            Self::PurgeProfile => RuntimeOperation::PurgeProfile,
+            Self::PurgeAll => RuntimeOperation::PurgeAll,
+            Self::UpgradeSecurity => RuntimeOperation::UpgradeSecurity,
+        }
+    }
+
+    fn digest(&self) -> [u8; 32] {
+        let mut encoder = BindingEncoder::new(b"descriptor");
+        encoder.field(self.operation().protocol_name().as_bytes());
+        match self {
+            Self::Connect {
+                host,
+                display_name,
+                agent_type,
+                api_key_digest,
+            } => {
+                encoder.field(host.as_bytes());
+                encoder.optional(display_name.as_deref());
+                encoder.optional(agent_type.as_deref());
+                encoder.field(api_key_digest);
+            }
+            Self::Status
+            | Self::VerifyIdentity
+            | Self::DeleteProfile
+            | Self::PurgeProfile
+            | Self::PurgeAll
+            | Self::UpgradeSecurity => {}
+            Self::SearchEntries {
+                surface,
+                query,
+                cursor,
+                page_size,
+            } => {
+                encoder.surface(*surface);
+                encoder.field(query.as_bytes());
+                encoder.optional(cursor.as_deref());
+                encoder.optional_u64(page_size.map(u64::from));
+            }
+            Self::GetCredential {
+                surface,
+                vault_id,
+                entry_id,
+                reason,
+                wait,
+                field,
+                field_id,
+                output,
+            } => {
+                encoder.surface(*surface);
+                encoder.field(vault_id.as_bytes());
+                encoder.field(entry_id.as_bytes());
+                encoder.optional(reason.as_deref());
+                encoder.wait(*wait);
+                encoder.optional(field.as_deref());
+                encoder.optional(field_id.as_deref());
+                encoder.output(*output);
+            }
+            Self::ExecWithCredential {
+                surface,
+                vault_id,
+                entry_id,
+                reason,
+                wait,
+                command,
+                env_mappings,
+                output,
+            } => {
+                encoder.surface(*surface);
+                encoder.field(vault_id.as_bytes());
+                encoder.field(entry_id.as_bytes());
+                encoder.optional(reason.as_deref());
+                encoder.wait(*wait);
+                encoder.strings(command);
+                encoder.strings(env_mappings);
+                encoder.output(*output);
+            }
+            Self::ReportCredentialStale {
+                surface,
+                vault_id,
+                entry_id,
+                code,
+                note,
+            } => {
+                encoder.surface(*surface);
+                encoder.field(vault_id.as_bytes());
+                encoder.field(entry_id.as_bytes());
+                encoder.field(code.as_bytes());
+                encoder.optional(note.as_deref());
+            }
+        }
+        encoder.finish()
+    }
+}
+
+pub struct OperationConnection {
+    nonce: [u8; 32],
+    lifecycle_epoch: [u8; 32],
+    next_sequence: AtomicU64,
+}
+
+impl std::fmt::Debug for OperationConnection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OperationConnection")
+            .field("binding", &"redacted")
+            .finish_non_exhaustive()
+    }
+}
+
+impl OperationConnection {
+    pub fn new() -> Result<Self, RuntimeError> {
+        let mut nonce = [0_u8; 32];
+        let mut lifecycle_epoch = [0_u8; 32];
+        getrandom::fill(&mut nonce).map_err(|_| RuntimeError::RandomGenerationFailed)?;
+        getrandom::fill(&mut lifecycle_epoch).map_err(|_| RuntimeError::RandomGenerationFailed)?;
+        Ok(Self {
+            nonce,
+            lifecycle_epoch,
+            next_sequence: AtomicU64::new(1),
+        })
+    }
+
+    fn request(&self, descriptor: &OperationDescriptor) -> Result<OperationRequest, RuntimeError> {
+        let sequence = self
+            .next_sequence
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| RuntimeError::OperationSequenceExhausted)?;
+        OperationRequest::new(descriptor, self.nonce, sequence, self.lifecycle_epoch)
+    }
+}
+
+/// Exact bounded input for one native identity operation. Semantic arguments
+/// are reduced to a digest immediately and never enter diagnostics.
+struct OperationRequest {
+    operation: RuntimeOperation,
+    request_digest: [u8; 32],
+    connection_nonce: [u8; 32],
+    sequence: u64,
+    lifecycle_epoch: [u8; 32],
+    process_id: u32,
+    not_after_unix_ms: i128,
+}
+
+impl std::fmt::Debug for OperationRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OperationRequest")
+            .field("operation", &self.operation)
+            .field("request", &"redacted")
+            .field("sequence", &self.sequence)
+            .field("lifecycle_epoch", &"redacted")
+            .finish_non_exhaustive()
+    }
+}
+
+impl OperationRequest {
+    fn new(
+        descriptor: &OperationDescriptor,
+        connection_nonce: [u8; 32],
+        sequence: u64,
+        lifecycle_epoch: [u8; 32],
+    ) -> Result<Self, RuntimeError> {
+        if sequence == 0 {
+            return Err(RuntimeError::OperationSequenceExhausted);
+        }
+        let not_after_unix_ms = OffsetDateTime::now_utc()
+            .unix_timestamp_nanos()
+            .checked_div(1_000_000)
+            .and_then(|now| now.checked_add(OPERATION_TTL_MS))
+            .ok_or(RuntimeError::OperationAuthorizationExpired)?;
+        Ok(Self {
+            operation: descriptor.operation(),
+            request_digest: descriptor.digest(),
+            connection_nonce,
+            sequence,
+            lifecycle_epoch,
+            process_id: std::process::id(),
+            not_after_unix_ms,
+        })
+    }
+
+    fn binding(
+        &self,
+        state: &VerifiedState,
+        profile: &PublicAgentEntry,
+        config: Option<&PublicProfileConfig>,
+        hostname: &str,
+        organization_owners: &[String],
+    ) -> Vec<u8> {
+        let mut encoder = BindingEncoder::new(OPERATION_BINDING_DOMAIN);
+        encoder.field(env!("CARGO_PKG_VERSION").as_bytes());
+        encoder.field(
+            option_env!("SOURCE_SHA")
+                .unwrap_or("development")
+                .as_bytes(),
+        );
+        encoder.field(&self.process_id.to_be_bytes());
+        encoder.field(&self.connection_nonce);
+        encoder.field(&self.sequence.to_be_bytes());
+        encoder.field(&self.lifecycle_epoch);
+        encoder.field(&self.not_after_unix_ms.to_be_bytes());
+        encoder.field(&state.generation.to_be_bytes());
+        encoder.field(state.registry_digest.as_bytes());
+        encoder.field(profile.name.as_bytes());
+        encoder.field(profile.identity_id.as_bytes());
+        encoder.optional(profile.config_digest.as_deref());
+        encoder.optional(config.map(|value| value.host.as_str()));
+        encoder.field(hostname.as_bytes());
+        encoder.strings(organization_owners);
+        encoder.field(self.operation.protocol_name().as_bytes());
+        encoder.field(&self.request_digest);
+        encoder.into_bytes()
+    }
+}
+
+struct BindingEncoder {
+    bytes: Vec<u8>,
+}
+
+impl BindingEncoder {
+    fn new(domain: &[u8]) -> Self {
+        let mut encoder = Self { bytes: Vec::new() };
+        encoder.field(domain);
+        encoder
+    }
+
+    fn field(&mut self, value: &[u8]) {
+        self.bytes
+            .extend_from_slice(&u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
+        self.bytes.extend_from_slice(value);
+    }
+
+    fn optional(&mut self, value: Option<&str>) {
+        match value {
+            Some(value) => {
+                self.field(&[1]);
+                self.field(value.as_bytes());
+            }
+            None => self.field(&[0]),
+        }
+    }
+
+    fn optional_u64(&mut self, value: Option<u64>) {
+        match value {
+            Some(value) => {
+                self.field(&[1]);
+                self.field(&value.to_be_bytes());
+            }
+            None => self.field(&[0]),
+        }
+    }
+
+    fn strings(&mut self, values: &[String]) {
+        self.field(
+            &u64::try_from(values.len())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        for value in values {
+            self.field(value.as_bytes());
+        }
+    }
+
+    fn wait(&mut self, wait: WaitOptions) {
+        self.optional_u64(wait.wait_ms);
+        self.optional_u64(wait.poll_ms);
+        self.field(&[match wait.progress {
+            None => 0,
+            Some(palladin_credential::wait::ProgressMode::Plain) => 1,
+            Some(palladin_credential::wait::ProgressMode::Json) => 2,
+            Some(palladin_credential::wait::ProgressMode::None) => 3,
+        }]);
+    }
+
+    fn surface(&mut self, surface: InvocationSurface) {
+        self.field(&[match surface {
+            InvocationSurface::Cli => 1,
+            InvocationSurface::Mcp => 2,
+        }]);
+    }
+
+    fn output(&mut self, output: CredentialOutputPolicy) {
+        self.field(&[match output {
+            CredentialOutputPolicy::CliSecretStdout => 1,
+            CredentialOutputPolicy::McpSecretResponse => 2,
+            CredentialOutputPolicy::CliChildProcess => 3,
+            CredentialOutputPolicy::McpChildProcessWithheld => 4,
+        }]);
+    }
+
+    fn finish(self) -> [u8; 32] {
+        Sha256::digest(self.bytes).into()
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
 }
 
 struct VerifiedState {
@@ -204,6 +644,18 @@ impl<S: SecretStore> RuntimeService<S> {
             )?;
             return Err(error.into());
         }
+        if let Err(error) = self
+            .secrets
+            .initialize_operation_authorization(&identity_id)
+        {
+            self.rollback_allocation(
+                &state,
+                &[SecretAllocation::Identity {
+                    identity_id: identity_id.clone(),
+                }],
+            )?;
+            return Err(error.into());
+        }
 
         let updated = add_profile(
             &state.registry,
@@ -243,13 +695,30 @@ impl<S: SecretStore> RuntimeService<S> {
         Ok(())
     }
 
-    pub fn delete_profile(&self, name: &str) -> Result<(), RuntimeError> {
+    pub fn delete_profile(
+        &self,
+        name: &str,
+        hostname: &str,
+        connection: &OperationConnection,
+    ) -> Result<(), RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
         let name = ProfileName::parse(name)?;
         let state = self.verified_state_locked()?;
+        let profile = resolve_profile_in(&state.registry, Some(name.as_str()))?;
+        let authorization = self.authorize_profile_operation(
+            &state,
+            &profile,
+            hostname,
+            connection,
+            &OperationDescriptor::DeleteProfile,
+        )?;
+        let lease = authorization.into_lease()?;
+        lease
+            .ensure_active()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
         let (updated, deleted) = delete_profile(&state.registry, &name)?;
-        self.commit_profile_removal(&state, updated, deleted)
+        self.commit_profile_removal(&state, updated, deleted, &lease)
     }
 
     /// Deliberately removes the selected local Agent identity.
@@ -260,13 +729,27 @@ impl<S: SecretStore> RuntimeService<S> {
     pub fn purge_profile(
         &self,
         explicit_name: Option<&str>,
+        hostname: &str,
+        connection: &OperationConnection,
     ) -> Result<PublicAgentEntry, RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
         let state = self.verified_state_locked()?;
         let name = ProfileName::parse(explicit_name.unwrap_or(&state.registry.default))?;
+        let profile = resolve_profile_in(&state.registry, Some(name.as_str()))?;
+        let authorization = self.authorize_profile_operation(
+            &state,
+            &profile,
+            hostname,
+            connection,
+            &OperationDescriptor::PurgeProfile,
+        )?;
+        let lease = authorization.into_lease()?;
+        lease
+            .ensure_active()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
         let (updated, deleted) = purge_profile(&state.registry, &name)?;
-        self.commit_profile_removal(&state, updated, deleted.clone())?;
+        self.commit_profile_removal(&state, updated, deleted.clone(), &lease)?;
         Ok(deleted)
     }
 
@@ -275,6 +758,7 @@ impl<S: SecretStore> RuntimeService<S> {
         state: &VerifiedState,
         updated: PublicRegistry,
         deleted: PublicAgentEntry,
+        lease: &OperationLease,
     ) -> Result<(), RuntimeError> {
         let organization_ids = state
             .configs
@@ -302,18 +786,23 @@ impl<S: SecretStore> RuntimeService<S> {
                 });
             }
         }
-        self.commit_transition(
+        self.commit_authorized_transition(
             state,
             updated,
             Vec::new(),
             vec![deleted.identity_id],
             deletions,
             false,
+            lease,
         )?;
         Ok(())
     }
 
-    pub fn purge(&self) -> Result<(), RuntimeError> {
+    pub fn purge(
+        &self,
+        hostname: &str,
+        connection: &OperationConnection,
+    ) -> Result<(), RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
         if self
@@ -333,6 +822,26 @@ impl<S: SecretStore> RuntimeService<S> {
             return Err(RuntimeError::LegacyMigrationRequired);
         }
         let state = self.verified_state_locked()?;
+        let authorization = if state.registry.agents.is_empty() {
+            None
+        } else {
+            let profile = resolve_profile_in(&state.registry, None)?;
+            Some(self.authorize_profile_operation(
+                &state,
+                &profile,
+                hostname,
+                connection,
+                &OperationDescriptor::PurgeAll,
+            )?)
+        };
+        let lease = authorization
+            .map(OperationAuthorization::into_lease)
+            .transpose()?;
+        if let Some(lease) = &lease {
+            lease
+                .ensure_active()
+                .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        }
         let mut organizations = BTreeSet::new();
         let mut identities = Vec::new();
         for agent in &state.registry.agents {
@@ -353,17 +862,33 @@ impl<S: SecretStore> RuntimeService<S> {
                 organization_credential_id,
             }
         }));
-        self.commit_transition(
-            &state,
-            PublicRegistry::default(),
-            Vec::new(),
-            identities,
-            deletions,
-            true,
-        )?;
+        if let Some(lease) = &lease {
+            self.commit_authorized_transition(
+                &state,
+                PublicRegistry::default(),
+                Vec::new(),
+                identities,
+                deletions,
+                true,
+                lease,
+            )?;
+        } else {
+            self.commit_transition(
+                &state,
+                PublicRegistry::default(),
+                Vec::new(),
+                identities,
+                deletions,
+                true,
+            )?;
+        }
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the security boundary binds every typed connect input explicitly"
+    )]
     pub async fn connect(
         &self,
         profile_name: Option<&str>,
@@ -372,6 +897,7 @@ impl<S: SecretStore> RuntimeService<S> {
         display_name: Option<&str>,
         agent_type: Option<&str>,
         hostname: &str,
+        connection: &OperationConnection,
     ) -> Result<ConnectOutcome, RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
@@ -399,10 +925,64 @@ impl<S: SecretStore> RuntimeService<S> {
             state = self.verified_state_locked()?;
         }
         let existing_config = state.configs.get(&agent.identity_id).cloned();
-        let (encryption, signing) =
-            self.load_identity_verified(&agent.identity_id, existing_config.as_ref())?;
-        let (organization_credential_id, created_organization) =
-            self.find_or_create_organization_credential(&state, &organization_api_key)?;
+        let mut organization_owners = state
+            .configs
+            .values()
+            .flat_map(|config| {
+                config
+                    .retired_organization_credential_ids
+                    .iter()
+                    .chain(std::iter::once(&config.organization_credential_id))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        organization_owners.sort();
+        organization_owners.dedup();
+        let api_key_digest: [u8; 32] = Sha256::digest(
+            organization_api_key
+                .expose_for_authorized_request()
+                .as_bytes(),
+        )
+        .into();
+        let descriptor = OperationDescriptor::Connect {
+            host: host.as_url().as_str().trim_end_matches('/').to_owned(),
+            display_name: display_name.map(str::to_owned),
+            agent_type: agent_type.map(str::to_owned),
+            api_key_digest,
+        };
+        let request = connection.request(&descriptor)?;
+        let operation_binding = request.binding(
+            &state,
+            &agent,
+            existing_config.as_ref(),
+            hostname,
+            &organization_owners,
+        );
+        let scope = OperationScope::new(&agent.identity_id, &organization_owners)?;
+        let authorization = self.secrets.authorize_operation(
+            &scope,
+            request.operation.authorization_prompt(),
+            &operation_binding,
+        )?;
+        let (encryption, signing) = self.load_identity_verified_authorized(
+            &agent.identity_id,
+            existing_config.as_ref(),
+            &authorization,
+            &operation_binding,
+        )?;
+        let (_, signing_for_binding) = self.load_identity_verified_authorized(
+            &agent.identity_id,
+            existing_config.as_ref(),
+            &authorization,
+            &operation_binding,
+        )?;
+        let (organization_credential_id, created_organization) = self
+            .find_or_create_organization_credential_authorized(
+                &state,
+                &organization_api_key,
+                &authorization,
+                &operation_binding,
+            )?;
         let host_string = host.as_url().as_str().trim_end_matches('/').to_owned();
         let signing_public_key_bytes = *signing.public_key();
         let signing_public_key = STANDARD.encode(signing_public_key_bytes);
@@ -431,14 +1011,40 @@ impl<S: SecretStore> RuntimeService<S> {
                 return Err(error.into());
             }
         };
-        let registration = match client
-            .register_agent(
+        let lease = authorization.into_lease()?;
+        lease
+            .ensure_active()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        let cancellation = lease.cancellation_token();
+        let remaining = lease
+            .remaining()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        let registration_result = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                None
+            }
+            () = tokio::time::sleep(remaining) => {
+                None
+            }
+            result = client.register_agent(
                 display_name.or_else(|| (agent.name != "default").then_some(agent.name.as_str())),
                 agent_type.or(agent.agent_type.as_deref()),
                 Some(&signing_public_key_bytes),
-            )
-            .await
-        {
+            ) => Some(result),
+        };
+        let Some(registration_result) = registration_result else {
+            self.cleanup_unused_new_organization(
+                &state,
+                &organization_credential_id,
+                created_organization,
+            )?;
+            return Err(RuntimeError::OperationAuthorizationExpired);
+        };
+        lease
+            .ensure_active()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        let registration = match registration_result {
             Ok(registration) => registration,
             Err(error) => {
                 self.cleanup_unused_new_organization(
@@ -471,8 +1077,6 @@ impl<S: SecretStore> RuntimeService<S> {
 
         let should_save = agent_id.is_some() || existing_config.is_none();
         if should_save {
-            let (_, signing) =
-                self.load_identity_verified(&agent.identity_id, existing_config.as_ref())?;
             let mut config = PublicProfileConfig {
                 schema_version: PUBLIC_SCHEMA_VERSION,
                 identity_id: agent.identity_id.clone(),
@@ -499,7 +1103,8 @@ impl<S: SecretStore> RuntimeService<S> {
             };
             let binding =
                 profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
-            config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+            config.binding_signature =
+                STANDARD.encode(signing_for_binding.sign_profile_binding(&binding));
             let digest =
                 profile_config_digest(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
             let mut registry = state.registry.clone();
@@ -521,7 +1126,11 @@ impl<S: SecretStore> RuntimeService<S> {
                 false,
             )?;
             let refreshed = self.verified_state_locked()?;
-            self.cleanup_retired_organizations(&agent.identity_id, &refreshed)?;
+            self.cleanup_retired_organizations_with_signing(
+                &agent.identity_id,
+                &refreshed,
+                &signing_for_binding,
+            )?;
         } else {
             self.cleanup_unused_new_organization(
                 &state,
@@ -540,23 +1149,53 @@ impl<S: SecretStore> RuntimeService<S> {
         &self,
         profile_name: Option<&str>,
         hostname: &str,
+        connection: &OperationConnection,
     ) -> Result<StatusOutcome, RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
-        let mut state = self.verified_state_locked()?;
+        let state = self.verified_state_locked()?;
         let agent = resolve_profile_in(&state.registry, profile_name)?;
-        self.cleanup_retired_organizations(&agent.identity_id, &state)?;
-        state = self.verified_state_locked()?;
         let mut config = state
             .configs
             .get(&agent.identity_id)
             .cloned()
             .ok_or(RuntimeError::InvalidPublicConfig)?;
-        let (encryption, signing) =
-            self.load_identity_verified(&agent.identity_id, Some(&config))?;
+        let mut organization_owners = config.retired_organization_credential_ids.clone();
+        organization_owners.push(config.organization_credential_id.clone());
+        organization_owners.sort();
+        organization_owners.dedup();
+        let request = connection.request(&OperationDescriptor::Status)?;
+        let operation_binding = request.binding(
+            &state,
+            &agent,
+            Some(&config),
+            hostname,
+            &organization_owners,
+        );
+        let scope = OperationScope::new(&agent.identity_id, &organization_owners)?;
+        let authorization = self.secrets.authorize_operation(
+            &scope,
+            request.operation.authorization_prompt(),
+            &operation_binding,
+        )?;
+        let (encryption, signing) = self.load_identity_verified_authorized(
+            &agent.identity_id,
+            Some(&config),
+            &authorization,
+            &operation_binding,
+        )?;
         let signing_public_key = *signing.public_key();
-        let organization_api_key =
-            self.load_organization_api_key(&config.organization_credential_id)?;
+        let organization_api_key = self.load_organization_api_key_authorized(
+            &config.organization_credential_id,
+            &authorization,
+            &operation_binding,
+        )?;
+        let (_, signing_for_binding) = self.load_identity_verified_authorized(
+            &agent.identity_id,
+            Some(&config),
+            &authorization,
+            &operation_binding,
+        )?;
         let host = ApiHost::parse(&config.host).map_err(|_| RuntimeError::InvalidPublicConfig)?;
         let signing_context =
             config
@@ -573,21 +1212,43 @@ impl<S: SecretStore> RuntimeService<S> {
             hostname,
             signing_context,
         )?;
-        let registration = client
-            .register_agent(None, agent.agent_type.as_deref(), Some(&signing_public_key))
-            .await?;
+        let lease = authorization.into_lease()?;
+        lease
+            .ensure_active()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        let cancellation = lease.cancellation_token();
+        let remaining = lease
+            .remaining()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        let registration = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                return Err(RuntimeError::OperationAuthorizationExpired);
+            }
+            () = tokio::time::sleep(remaining) => {
+                return Err(RuntimeError::OperationAuthorizationExpired);
+            }
+            result = client.register_agent(
+                None,
+                agent.agent_type.as_deref(),
+                Some(&signing_public_key),
+            ) => result?,
+        };
+        lease
+            .ensure_active()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
         if let AgentRegistrationResult::Pending { agent_id }
         | AgentRegistrationResult::Active { agent_id, .. }
         | AgentRegistrationResult::Deactivated { agent_id } = &registration
         {
-            let (_, signing) = self.load_identity_verified(&agent.identity_id, Some(&config))?;
             config.agent_id = Some(agent_id.clone());
             config.agent_active = matches!(&registration, AgentRegistrationResult::Active { .. });
             config.encryption_public_key = Some(STANDARD.encode(encryption.public_key()));
             config.signing_public_key = Some(STANDARD.encode(signing_public_key));
             let binding =
                 profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
-            config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+            config.binding_signature =
+                STANDARD.encode(signing_for_binding.sign_profile_binding(&binding));
             let digest =
                 profile_config_digest(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
             let mut registry = state.registry.clone();
@@ -620,22 +1281,48 @@ impl<S: SecretStore> RuntimeService<S> {
         &self,
         profile_name: Option<&str>,
         hostname: &str,
+        connection: &OperationConnection,
+        descriptor: OperationDescriptor,
     ) -> Result<RuntimeSession, RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
-        let mut state = self.verified_state_locked()?;
+        let state = self.verified_state_locked()?;
         let profile = resolve_profile_in(&state.registry, profile_name)?;
-        self.cleanup_retired_organizations(&profile.identity_id, &state)?;
-        state = self.verified_state_locked()?;
         let config = state
             .configs
             .get(&profile.identity_id)
             .cloned()
             .ok_or(RuntimeError::InvalidPublicConfig)?;
-        let (encryption, signing) =
-            self.load_identity_verified(&profile.identity_id, Some(&config))?;
-        let organization_api_key =
-            self.load_organization_api_key(&config.organization_credential_id)?;
+        let mut organization_owners = config.retired_organization_credential_ids.clone();
+        organization_owners.push(config.organization_credential_id.clone());
+        organization_owners.sort();
+        organization_owners.dedup();
+        let request = connection.request(&descriptor)?;
+        let operation = request.operation;
+        let binding = request.binding(
+            &state,
+            &profile,
+            Some(&config),
+            hostname,
+            &organization_owners,
+        );
+        let scope = OperationScope::new(&profile.identity_id, &organization_owners)?;
+        let authorization = self.secrets.authorize_operation(
+            &scope,
+            request.operation.authorization_prompt(),
+            &binding,
+        )?;
+        let (encryption, signing) = self.load_identity_verified_authorized(
+            &profile.identity_id,
+            Some(&config),
+            &authorization,
+            &binding,
+        )?;
+        let organization_api_key = self.load_organization_api_key_authorized(
+            &config.organization_credential_id,
+            &authorization,
+            &binding,
+        )?;
         let host = ApiHost::parse(&config.host).map_err(|_| RuntimeError::InvalidPublicConfig)?;
         let agent_id = config
             .agent_id
@@ -646,26 +1333,45 @@ impl<S: SecretStore> RuntimeService<S> {
             identity: signing,
         });
         let api = ApiClient::new(host, organization_api_key, &encryption, hostname, signing)?;
+        let lease = authorization.into_lease()?;
         Ok(RuntimeSession {
             profile,
             config,
             api,
             encryption,
+            lease,
+            operation,
+            consumed: AtomicBool::new(false),
         })
     }
 
     pub fn verify_identity(
         &self,
         profile_name: Option<&str>,
+        hostname: &str,
+        connection: &OperationConnection,
     ) -> Result<PublicAgentEntry, RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
         let state = self.verified_state_locked()?;
         let profile = resolve_profile_in(&state.registry, profile_name)?;
-        let _identity = self.load_identity_verified(
+        let (authorization, binding) = self.authorize_profile_operation_with_binding(
+            &state,
+            &profile,
+            hostname,
+            connection,
+            &OperationDescriptor::VerifyIdentity,
+        )?;
+        let _identity = self.load_identity_verified_authorized(
             &profile.identity_id,
             state.configs.get(&profile.identity_id),
+            &authorization,
+            &binding,
         )?;
+        let lease = authorization.into_lease()?;
+        lease
+            .ensure_active()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
         Ok(profile)
     }
 
@@ -818,20 +1524,39 @@ impl<S: SecretStore> RuntimeService<S> {
     pub fn upgrade_security(
         &self,
         profile_name: Option<&str>,
+        hostname: &str,
+        connection: &OperationConnection,
     ) -> Result<SecurityUpgradeOutcome, RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         if self.read_trust_state()?.is_some() {
             self.recover_pending_operations_locked()?;
             let state = self.verified_state_locked()?;
             let profile = resolve_profile_in(&state.registry, profile_name)?;
-            self.load_identity_verified(
+            let (authorization, binding) = self.authorize_profile_operation_with_binding(
+                &state,
+                &profile,
+                hostname,
+                connection,
+                &OperationDescriptor::UpgradeSecurity,
+            )?;
+            self.load_identity_verified_authorized(
                 &profile.identity_id,
                 state.configs.get(&profile.identity_id),
+                &authorization,
+                &binding,
             )?;
+            let lease = authorization.into_lease()?;
+            lease
+                .ensure_active()
+                .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
             return Ok(SecurityUpgradeOutcome {
                 profile,
                 migrated: false,
             });
+        }
+
+        if self.secrets.requires_operation_authorization() {
+            return Err(RuntimeError::PreBoundaryIdentityResetRequired);
         }
 
         let legacy = self.repository.load_legacy_registry_v2()?;
@@ -972,6 +1697,48 @@ impl<S: SecretStore> RuntimeService<S> {
         })
     }
 
+    fn authorize_profile_operation(
+        &self,
+        state: &VerifiedState,
+        profile: &PublicAgentEntry,
+        hostname: &str,
+        connection: &OperationConnection,
+        descriptor: &OperationDescriptor,
+    ) -> Result<OperationAuthorization, RuntimeError> {
+        self.authorize_profile_operation_with_binding(
+            state, profile, hostname, connection, descriptor,
+        )
+        .map(|(authorization, _)| authorization)
+    }
+
+    fn authorize_profile_operation_with_binding(
+        &self,
+        state: &VerifiedState,
+        profile: &PublicAgentEntry,
+        hostname: &str,
+        connection: &OperationConnection,
+        descriptor: &OperationDescriptor,
+    ) -> Result<(OperationAuthorization, Vec<u8>), RuntimeError> {
+        let config = state.configs.get(&profile.identity_id);
+        let mut organization_owners = config
+            .map(|config| config.retired_organization_credential_ids.clone())
+            .unwrap_or_default();
+        if let Some(config) = config {
+            organization_owners.push(config.organization_credential_id.clone());
+        }
+        organization_owners.sort();
+        organization_owners.dedup();
+        let request = connection.request(descriptor)?;
+        let binding = request.binding(state, profile, config, hostname, &organization_owners);
+        let scope = OperationScope::new(&profile.identity_id, &organization_owners)?;
+        let authorization = self.secrets.authorize_operation(
+            &scope,
+            request.operation.authorization_prompt(),
+            &binding,
+        )?;
+        Ok((authorization, binding))
+    }
+
     fn load_identity_verified(
         &self,
         identity_id: &str,
@@ -999,13 +1766,59 @@ impl<S: SecretStore> RuntimeService<S> {
         Ok((encryption, signing))
     }
 
-    fn load_organization_api_key(
+    fn load_identity_verified_authorized(
+        &self,
+        identity_id: &str,
+        expected: Option<&PublicProfileConfig>,
+        authorization: &OperationAuthorization,
+        binding: &[u8],
+    ) -> Result<(X25519Identity, Ed25519Identity), RuntimeError> {
+        let encryption = self
+            .secrets
+            .get_authorized(
+                identity_id,
+                SecretSlot::X25519PrivateKey,
+                authorization,
+                binding,
+            )?
+            .ok_or(RuntimeError::MissingIdentity)?;
+        let signing = self
+            .secrets
+            .get_authorized(
+                identity_id,
+                SecretSlot::Ed25519SecretKey,
+                authorization,
+                binding,
+            )?
+            .ok_or(RuntimeError::MissingIdentity)?;
+        let encryption = X25519Identity::from_private_bytes(encryption.expose_secret().to_vec())?;
+        let signing = Ed25519Identity::from_libsodium_secret(signing.expose_secret().to_vec())?;
+        if let Some(expected) = expected {
+            let encryption_public = STANDARD.encode(encryption.public_key());
+            let signing_public = STANDARD.encode(signing.public_key());
+            if expected.encryption_public_key.as_deref() != Some(encryption_public.as_str())
+                || expected.signing_public_key.as_deref() != Some(signing_public.as_str())
+            {
+                return Err(RuntimeError::IntegrityViolation);
+            }
+        }
+        Ok((encryption, signing))
+    }
+
+    fn load_organization_api_key_authorized(
         &self,
         organization_id: &str,
+        authorization: &OperationAuthorization,
+        binding: &[u8],
     ) -> Result<OrganizationApiKey, RuntimeError> {
         let secret = self
             .secrets
-            .get(organization_id, SecretSlot::OrganizationApiKey)?
+            .get_authorized(
+                organization_id,
+                SecretSlot::OrganizationApiKey,
+                authorization,
+                binding,
+            )?
             .ok_or(RuntimeError::MissingOrganizationCredential)?;
         let bytes = Zeroizing::new(secret.expose_secret().to_vec());
         let value = std::str::from_utf8(&bytes)
@@ -1014,10 +1827,12 @@ impl<S: SecretStore> RuntimeService<S> {
         Ok(OrganizationApiKey::new(value))
     }
 
-    fn find_or_create_organization_credential(
+    fn find_or_create_organization_credential_authorized(
         &self,
         state: &VerifiedState,
         candidate: &OrganizationApiKey,
+        authorization: &OperationAuthorization,
+        binding: &[u8],
     ) -> Result<(String, bool), RuntimeError> {
         let candidate = candidate.expose_for_authorized_request().as_bytes();
         let mut visited = BTreeSet::new();
@@ -1028,10 +1843,12 @@ impl<S: SecretStore> RuntimeService<S> {
                 if !visited.insert(organization_id.clone()) {
                     continue;
                 }
-                if let Some(stored) = self
-                    .secrets
-                    .get(&organization_id, SecretSlot::OrganizationApiKey)?
-                    && bool::from(stored.expose_secret().ct_eq(candidate))
+                if let Some(stored) = self.secrets.get_authorized(
+                    &organization_id,
+                    SecretSlot::OrganizationApiKey,
+                    authorization,
+                    binding,
+                )? && bool::from(stored.expose_secret().ct_eq(candidate))
                 {
                     return Ok((organization_id, false));
                 }
@@ -1110,10 +1927,11 @@ impl<S: SecretStore> RuntimeService<S> {
         Ok(())
     }
 
-    fn cleanup_retired_organizations(
+    fn cleanup_retired_organizations_with_signing(
         &self,
         identity_id: &str,
         state: &VerifiedState,
+        signing: &Ed25519Identity,
     ) -> Result<(), RuntimeError> {
         let Some(mut config) = state.configs.get(identity_id).cloned() else {
             return Ok(());
@@ -1122,8 +1940,6 @@ impl<S: SecretStore> RuntimeService<S> {
             return Ok(());
         }
         let retired = std::mem::take(&mut config.retired_organization_credential_ids);
-        let (_, signing) =
-            self.load_identity_verified(identity_id, state.configs.get(identity_id))?;
         let binding =
             profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
         config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
@@ -1374,7 +2190,7 @@ impl<S: SecretStore> RuntimeService<S> {
         secret_deletions: Vec<SecretDeletion>,
         purge_public_root: bool,
     ) -> Result<(), RuntimeError> {
-        self.commit_transition_with_copies(
+        self.commit_transition_with_copies_inner(
             current,
             target_registry,
             config_writes,
@@ -1382,6 +2198,30 @@ impl<S: SecretStore> RuntimeService<S> {
             Vec::new(),
             secret_deletions,
             purge_public_root,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_authorized_transition(
+        &self,
+        current: &VerifiedState,
+        target_registry: PublicRegistry,
+        config_writes: Vec<ConfigWrite>,
+        remove_identity_directories: Vec<String>,
+        secret_deletions: Vec<SecretDeletion>,
+        purge_public_root: bool,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError> {
+        self.commit_transition_with_copies_inner(
+            current,
+            target_registry,
+            config_writes,
+            remove_identity_directories,
+            Vec::new(),
+            secret_deletions,
+            purge_public_root,
+            Some(lease),
         )
     }
 
@@ -1396,6 +2236,30 @@ impl<S: SecretStore> RuntimeService<S> {
         secret_deletions: Vec<SecretDeletion>,
         purge_public_root: bool,
     ) -> Result<(), RuntimeError> {
+        self.commit_transition_with_copies_inner(
+            current,
+            target_registry,
+            config_writes,
+            remove_identity_directories,
+            secret_copies,
+            secret_deletions,
+            purge_public_root,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_transition_with_copies_inner(
+        &self,
+        current: &VerifiedState,
+        target_registry: PublicRegistry,
+        config_writes: Vec<ConfigWrite>,
+        remove_identity_directories: Vec<String>,
+        secret_copies: Vec<SecretCopy>,
+        secret_deletions: Vec<SecretDeletion>,
+        purge_public_root: bool,
+        operation_lease: Option<&OperationLease>,
+    ) -> Result<(), RuntimeError> {
         let journal = IntegrityJournal::new(
             current.generation,
             current.registry_digest.clone(),
@@ -1406,6 +2270,13 @@ impl<S: SecretStore> RuntimeService<S> {
             purge_public_root,
         )?
         .with_secret_copies(secret_copies)?;
+        // Lifecycle revocation and the durable transition marker are linearized
+        // by this guard. Before the marker, revocation aborts with no committed
+        // deletion. After the marker, recovery must finish the atomic journal.
+        let mut commit_guard = operation_lease
+            .map(OperationLease::begin_commit)
+            .transpose()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
         if journal_path(self.repository.root()).exists() {
             remove_journal(self.repository.root())?;
         }
@@ -1417,7 +2288,14 @@ impl<S: SecretStore> RuntimeService<S> {
             journal.to_registry_digest.clone(),
             journal.digest()?,
         );
+        if let Some(guard) = &mut commit_guard
+            && guard.seal().is_err()
+        {
+            remove_journal(self.repository.root())?;
+            return Err(RuntimeError::OperationAuthorizationExpired);
+        }
         self.write_trust_state(&transition)?;
+        drop(commit_guard);
         self.apply_journal(&journal)?;
         let committed = if journal.purge_public_root {
             TrustState::purge_committed(journal.to_generation, journal.to_registry_digest.clone())
@@ -1647,6 +2525,47 @@ pub struct RuntimeSession {
     config: PublicProfileConfig,
     api: ApiClient,
     encryption: X25519Identity,
+    lease: OperationLease,
+    operation: RuntimeOperation,
+    consumed: AtomicBool,
+}
+
+struct OperationCancellation {
+    token: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl OperationCancellation {
+    fn new(
+        caller: &CancellationToken,
+        lease: CancellationToken,
+        remaining: std::time::Duration,
+    ) -> Self {
+        let token = CancellationToken::new();
+        let cancelled = token.clone();
+        let caller = caller.clone();
+        let task = tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                () = lease.cancelled() => {}
+                () = caller.cancelled() => {}
+                () = tokio::time::sleep(remaining) => {}
+            }
+            cancelled.cancel();
+        });
+        Self { token, task }
+    }
+
+    fn token(&self) -> &CancellationToken {
+        &self.token
+    }
+}
+
+impl Drop for OperationCancellation {
+    fn drop(&mut self) {
+        self.token.cancel();
+        self.task.abort();
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1675,26 +2594,92 @@ impl RuntimeSession {
         &self.config
     }
 
+    fn ensure_authorized(&self) -> Result<(), RuntimeError> {
+        self.lease
+            .ensure_active()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)
+    }
+
+    fn ensure_operation(&self, expected: RuntimeOperation) -> Result<(), RuntimeError> {
+        if self.operation != expected {
+            return Err(RuntimeError::OperationAuthorizationMismatch);
+        }
+        self.ensure_authorized()
+    }
+
+    fn begin_operation(&self, expected: RuntimeOperation) -> Result<(), RuntimeError> {
+        self.ensure_operation(expected)?;
+        self.consumed
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| RuntimeError::OperationAuthorizationConsumed)?;
+        Ok(())
+    }
+
+    fn operation_cancellation(
+        &self,
+        caller: &CancellationToken,
+    ) -> Result<OperationCancellation, RuntimeError> {
+        let remaining = self
+            .lease
+            .remaining()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        Ok(OperationCancellation::new(
+            caller,
+            self.lease.cancellation_token(),
+            remaining,
+        ))
+    }
+
     pub async fn search_entries(
         &self,
         query: &str,
         cursor: Option<&str>,
         page_size: Option<u32>,
     ) -> Result<EntrySearchResult, RuntimeError> {
-        self.api
-            .search_entries(query, cursor, page_size)
-            .await
-            .map_err(RuntimeError::Api)
+        self.begin_operation(RuntimeOperation::SearchEntries)?;
+        let cancellation = self.lease.cancellation_token();
+        let remaining = self
+            .lease
+            .remaining()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                Err(RuntimeError::OperationAuthorizationExpired)
+            }
+            () = tokio::time::sleep(remaining) => {
+                Err(RuntimeError::OperationAuthorizationExpired)
+            }
+            result = self.api.search_entries(query, cursor, page_size) => {
+                self.ensure_authorized()?;
+                result.map_err(RuntimeError::Api)
+            }
+        }
     }
 
     pub async fn report_credential_stale(
         &self,
         input: &ReportCredentialStaleInput,
     ) -> Result<(), RuntimeError> {
-        self.api
-            .report_credential_stale(input)
-            .await
-            .map_err(RuntimeError::Api)
+        self.begin_operation(RuntimeOperation::ReportCredentialStale)?;
+        let cancellation = self.lease.cancellation_token();
+        let remaining = self
+            .lease
+            .remaining()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                Err(RuntimeError::OperationAuthorizationExpired)
+            }
+            () = tokio::time::sleep(remaining) => {
+                Err(RuntimeError::OperationAuthorizationExpired)
+            }
+            result = self.api.report_credential_stale(input) => {
+                self.ensure_authorized()?;
+                result.map_err(RuntimeError::Api)
+            }
+        }
     }
 
     /// The only production path from a grant response to credential plaintext.
@@ -1710,33 +2695,8 @@ impl RuntimeSession {
     where
         H: FnMut(HeartbeatInfo),
     {
+        self.begin_operation(RuntimeOperation::GetCredential)?;
         self.deliver_credential(request, CredentialMethod::Get, cancellation, heartbeat)
-            .await
-    }
-
-    pub async fn deliver_for_exec<H>(
-        &self,
-        request: CredentialDeliveryRequest<'_>,
-        cancellation: &CancellationToken,
-        heartbeat: H,
-    ) -> Result<CredentialDelivery, RuntimeError>
-    where
-        H: FnMut(HeartbeatInfo),
-    {
-        self.deliver_credential(request, CredentialMethod::Exec, cancellation, heartbeat)
-            .await
-    }
-
-    pub async fn deliver_for_inject<H>(
-        &self,
-        request: CredentialDeliveryRequest<'_>,
-        cancellation: &CancellationToken,
-        heartbeat: H,
-    ) -> Result<CredentialDelivery, RuntimeError>
-    where
-        H: FnMut(HeartbeatInfo),
-    {
-        self.deliver_credential(request, CredentialMethod::Inject, cancellation, heartbeat)
             .await
     }
 
@@ -1749,11 +2709,19 @@ impl RuntimeSession {
     where
         H: FnMut(HeartbeatInfo),
     {
+        self.begin_operation(RuntimeOperation::ExecWithCredential)?;
+        let operation_cancellation = self.operation_cancellation(cancellation)?;
+        let cancellation = operation_cancellation.token();
         if let Some(command) = request.command.filter(|command| !command.is_empty()) {
             validate_command(command)?;
         }
         let delivery = self
-            .deliver_for_exec(request.delivery, cancellation, &mut heartbeat)
+            .deliver_credential(
+                request.delivery,
+                CredentialMethod::Exec,
+                cancellation,
+                &mut heartbeat,
+            )
             .await?;
         let CredentialDelivery::Granted(credential) = delivery else {
             let CredentialDelivery::NotGranted(access) = delivery else {
@@ -1800,6 +2768,7 @@ impl RuntimeSession {
             drop(parsed);
             run_command(command, environment, request.output, cancellation).await?
         };
+        self.ensure_authorized()?;
         Ok(CredentialExecOutcome::Completed(result))
     }
 
@@ -1818,13 +2787,14 @@ impl RuntimeSession {
         for reference in &script.refs {
             let vault_id = reference.vault_id.as_deref().unwrap_or(main.vault_id);
             let delivery = self
-                .deliver_for_exec(
+                .deliver_credential(
                     CredentialDeliveryRequest {
                         vault_id,
                         entry_id: &reference.entry_id,
                         reason: main.reason,
                         wait: main.wait,
                     },
+                    CredentialMethod::Exec,
                     cancellation,
                     &mut *heartbeat,
                 )
@@ -1867,6 +2837,9 @@ impl RuntimeSession {
     where
         H: FnMut(HeartbeatInfo),
     {
+        self.ensure_authorized()?;
+        let operation_cancellation = self.operation_cancellation(cancellation)?;
+        let cancellation = operation_cancellation.token();
         let options = GetCredentialOptions {
             reason: request
                 .reason
@@ -1877,9 +2850,14 @@ impl RuntimeSession {
             requested_methods: Vec::new(),
         };
         let initial = tokio::select! {
-            () = cancellation.cancelled() => return Err(RuntimeError::WaitCancelled),
+            biased;
+            () = cancellation.cancelled() => {
+                self.ensure_authorized()?;
+                return Err(RuntimeError::WaitCancelled);
+            }
             result = self.api.get_credential(request.vault_id, request.entry_id, &options) => result?,
         };
+        self.ensure_authorized()?;
         let hints = match &initial {
             CredentialAccess::Pending {
                 poll_interval_ms,
@@ -1917,7 +2895,9 @@ impl RuntimeSession {
         else {
             return Ok(CredentialDelivery::NotGranted(access));
         };
+        self.ensure_authorized()?;
         let credential = decrypt_credential(&envelope, &self.encryption)?;
+        self.ensure_authorized()?;
         Ok(CredentialDelivery::Granted(DeliveredCredential {
             entry_id,
             label,
@@ -2044,6 +3024,18 @@ pub enum RuntimeError {
     CleanupFailed,
     #[error("secure random identifier generation failed")]
     RandomGenerationFailed,
+    #[error("operation authorization sequence is exhausted; restart the native runtime")]
+    OperationSequenceExhausted,
+    #[error("fresh operating-system authorization expired or was revoked")]
+    OperationAuthorizationExpired,
+    #[error("operation does not match the exact operating-system authorization")]
+    OperationAuthorizationMismatch,
+    #[error("the exact operating-system authorization was already consumed")]
+    OperationAuthorizationConsumed,
+    #[error(
+        "this pre-boundary macOS identity cannot be migrated in place; purge it and create a fresh Agent identity"
+    )]
+    PreBoundaryIdentityResetRequired,
     #[error("system clock formatting failed")]
     Clock,
     #[error("credential wait was cancelled")]
@@ -2164,6 +3156,104 @@ mod tests {
 
     use super::*;
 
+    fn test_lease() -> OperationLease {
+        let scope = OperationScope::new(
+            "11111111111111111111111111111111",
+            std::iter::empty::<String>(),
+        )
+        .expect("scope");
+        OperationAuthorization::for_current_platform(&scope, b"runtime-test-operation")
+            .expect("authorization")
+            .into_lease()
+            .expect("lease")
+    }
+
+    #[test]
+    fn operation_descriptor_digest_binds_semantic_inputs_and_redacts_debug() {
+        let base = OperationDescriptor::GetCredential {
+            surface: InvocationSurface::Mcp,
+            vault_id: "vault-a".to_owned(),
+            entry_id: "entry-a".to_owned(),
+            reason: Some("approval reason".to_owned()),
+            wait: WaitOptions {
+                wait_ms: Some(1_000),
+                poll_ms: Some(250),
+                progress: Some(palladin_credential::wait::ProgressMode::Json),
+            },
+            field: Some("password".to_owned()),
+            field_id: None,
+            output: CredentialOutputPolicy::McpSecretResponse,
+        };
+        let base_digest = base.digest();
+        let mutations = [
+            OperationDescriptor::GetCredential {
+                surface: InvocationSurface::Cli,
+                vault_id: "vault-a".to_owned(),
+                entry_id: "entry-a".to_owned(),
+                reason: Some("approval reason".to_owned()),
+                wait: WaitOptions {
+                    wait_ms: Some(1_000),
+                    poll_ms: Some(250),
+                    progress: Some(palladin_credential::wait::ProgressMode::Json),
+                },
+                field: Some("password".to_owned()),
+                field_id: None,
+                output: CredentialOutputPolicy::McpSecretResponse,
+            },
+            OperationDescriptor::GetCredential {
+                surface: InvocationSurface::Mcp,
+                vault_id: "vault-b".to_owned(),
+                entry_id: "entry-a".to_owned(),
+                reason: Some("approval reason".to_owned()),
+                wait: WaitOptions {
+                    wait_ms: Some(1_000),
+                    poll_ms: Some(250),
+                    progress: Some(palladin_credential::wait::ProgressMode::Json),
+                },
+                field: Some("password".to_owned()),
+                field_id: None,
+                output: CredentialOutputPolicy::McpSecretResponse,
+            },
+            OperationDescriptor::GetCredential {
+                surface: InvocationSurface::Mcp,
+                vault_id: "vault-a".to_owned(),
+                entry_id: "entry-b".to_owned(),
+                reason: Some("approval reason".to_owned()),
+                wait: WaitOptions {
+                    wait_ms: Some(1_000),
+                    poll_ms: Some(250),
+                    progress: Some(palladin_credential::wait::ProgressMode::Json),
+                },
+                field: Some("password".to_owned()),
+                field_id: None,
+                output: CredentialOutputPolicy::McpSecretResponse,
+            },
+            OperationDescriptor::GetCredential {
+                surface: InvocationSurface::Mcp,
+                vault_id: "vault-a".to_owned(),
+                entry_id: "entry-a".to_owned(),
+                reason: Some("different reason".to_owned()),
+                wait: WaitOptions {
+                    wait_ms: Some(2_000),
+                    poll_ms: Some(250),
+                    progress: Some(palladin_credential::wait::ProgressMode::Json),
+                },
+                field: None,
+                field_id: Some("field-id".to_owned()),
+                output: CredentialOutputPolicy::CliSecretStdout,
+            },
+        ];
+        assert!(
+            mutations
+                .iter()
+                .all(|descriptor| descriptor.digest() != base_digest)
+        );
+        let debug = format!("{base:?}");
+        assert!(debug.contains("redacted"));
+        assert!(!debug.contains("vault-a"));
+        assert!(!debug.contains("approval reason"));
+    }
+
     #[tokio::test]
     async fn delivery_enforces_the_exact_method_and_never_decrypts_before_granted() {
         let non_granted_bodies = [
@@ -2214,16 +3304,34 @@ mod tests {
             },
             api,
             encryption,
+            lease: test_lease(),
+            operation: RuntimeOperation::GetCredential,
+            consumed: AtomicBool::new(false),
         };
 
         let get = session
-            .deliver_for_get(request(), &CancellationToken::new(), |_| {})
+            .deliver_credential(
+                request(),
+                CredentialMethod::Get,
+                &CancellationToken::new(),
+                |_| {},
+            )
             .await;
         let exec = session
-            .deliver_for_exec(request(), &CancellationToken::new(), |_| {})
+            .deliver_credential(
+                request(),
+                CredentialMethod::Exec,
+                &CancellationToken::new(),
+                |_| {},
+            )
             .await;
         let inject = session
-            .deliver_for_inject(request(), &CancellationToken::new(), |_| {})
+            .deliver_credential(
+                request(),
+                CredentialMethod::Inject,
+                &CancellationToken::new(),
+                |_| {},
+            )
             .await;
         for delivery in [get, exec, inject] {
             let delivery = delivery.expect("pending is a valid delivery result");
@@ -2235,7 +3343,12 @@ mod tests {
 
         for _ in non_granted_bodies {
             let delivery = session
-                .deliver_for_get(request(), &CancellationToken::new(), |_| {})
+                .deliver_credential(
+                    request(),
+                    CredentialMethod::Get,
+                    &CancellationToken::new(),
+                    |_| {},
+                )
                 .await
                 .expect("non-granted state is a valid delivery result");
             assert!(matches!(delivery, CredentialDelivery::NotGranted(_)));
@@ -2311,6 +3424,22 @@ mod tests {
                 cancelled: false,
             })
         );
+        let replay = session
+            .execute_with_credential(
+                CredentialExecRequest {
+                    delivery: request(),
+                    command: Some(&command),
+                    env_mappings: &[],
+                    output: OperatorOutput::Discard,
+                },
+                &CancellationToken::new(),
+                |_| {},
+            )
+            .await;
+        assert!(matches!(
+            replay,
+            Err(RuntimeError::OperationAuthorizationConsumed)
+        ));
         let requests = requests.lock().expect("requests");
         assert_eq!(requests.len(), 1);
         assert!(requests[0].contains(r#""method":"Exec""#));
@@ -2466,6 +3595,9 @@ mod tests {
             },
             api,
             encryption,
+            lease: test_lease(),
+            operation: RuntimeOperation::ExecWithCredential,
+            consumed: AtomicBool::new(false),
         }
     }
 
