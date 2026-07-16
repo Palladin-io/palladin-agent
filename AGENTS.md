@@ -48,8 +48,7 @@ Run lint, build, and relevant tests before finishing code changes.
 
 - All changes go through pull requests.
 - PR titles, descriptions, review comments, and commit messages are written in English.
-- Use `.agents/skills/pr-review/SKILL.md` for PR reviews.
-- Use `.agents/skills/fix-pr/SKILL.md` for implementing review feedback.
+- PR review and remediation automation is Codex-only. Use `.agents/skills/pr-review/SKILL.md` for reviews and `.agents/skills/fix-pr/SKILL.md` for feedback implementation. Do not add Claude Code PR workflows or `.claude/skills/pr-review` / `.claude/skills/fix-pr` adapters.
 
 ## Maintaining instruction files
 
