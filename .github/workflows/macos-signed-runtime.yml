@@ -203,13 +203,13 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_SHA" origin/main
 
       - name: Pobierz slice arm64
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unsigned-palladin-arm64-${{ inputs.source_sha }}
           path: ${{ runner.temp }}/slices/arm64
 
       - name: Pobierz slice x86_64
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unsigned-palladin-x86_64-${{ inputs.source_sha }}
           path: ${{ runner.temp }}/slices/x86_64
@@ -395,7 +395,7 @@ jobs:
           translated=$(sysctl -in sysctl.proc_translated 2>/dev/null || echo 0)
           test "$translated" = 0
           test "$(node -p 'process.arch')" = '${{ matrix.npm_architecture }}'
-      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: palladin-runtime-darwin
           path: ${{ runner.temp }}/signed-release
