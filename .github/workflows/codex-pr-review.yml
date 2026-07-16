@@ -476,7 +476,7 @@ jobs:
               review.summary.slice(0, 30000),
               fallbackSection,
               '',
-              '_Codex publishes an advisory summary so it does not overwrite the formal Claude Code verdict._',
+              '_Codex publishes the formal automated review verdict for this pull request._',
             ].join('\n');
 
             const summaryComments = await github.paginate(github.rest.issues.listComments, {
