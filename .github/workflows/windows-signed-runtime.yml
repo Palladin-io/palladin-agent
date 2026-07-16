@@ -202,7 +202,7 @@ jobs:
           git fetch --no-tags origin main
           git merge-base --is-ancestor $env:SOURCE_SHA origin/main
           if ($LASTEXITCODE -ne 0) { throw 'source SHA is not an ancestor of main' }
-      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: unsigned-windows-*-${{ inputs.source_sha }}
           path: ${{ runner.temp }}/native
@@ -375,7 +375,7 @@ jobs:
           if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -cne '${{ matrix.os_architecture }}') {
             throw 'runner architecture does not match signed artifact architecture'
           }
-      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: signed-windows-runtime-${{ inputs.version }}-${{ inputs.source_sha }}
           path: ${{ runner.temp }}/signed-release
