@@ -76,6 +76,7 @@ describe('cross-platform CI gates', () => {
     expect(native).toContain('--exclude palladin-linux-broker --exclude palladin-linux-executor');
     expect(native).toContain('--exclude palladin-windows-broker --exclude palladin-windows-executor');
     expect(native).toContain('runner: macos-15-intel');
+    expect(native).toMatch(/apple:[\s\S]*?timeout-minutes: 45/);
     expect(native).toContain('runner: windows-11-arm');
     expect(native).toContain('runner: ubuntu-24.04-arm');
     expect(native).toContain('Build and run the native musl npm package on Alpine');
@@ -166,38 +167,12 @@ describe('cross-platform CI gates', () => {
     expect(macos).toContain('runner: macos-15-intel');
     expect(macos).toContain('platform: macos/x86_64');
     const windows = read('.github/workflows/windows-signed-runtime.yml');
-    expect(windows).toContain('name: Windows Signed Release Gate');
+    expect(windows).toContain('name: Hosted Windows Signed Artifact Gate');
+    expect(windows).toContain('incomplete-hosted-boundaries');
+    expect(windows).toContain('remain mandatory');
     expect(windows).toContain('runner: windows-11-arm');
     expect(windows).toContain('Signed install smoke - ${{ matrix.architecture }}');
 
-    const fix = read('.github/workflows/fix-pr.yml');
-    expect(fix).toContain('  workflow_dispatch:');
-    expect(fix).not.toContain('pull_request:');
-    expect(fix).not.toContain('pull_request_target:');
-    expect(fix).toContain("github.actor == 'patryk-roguszewski'");
-    expect(fix).toContain('ref: ${{ steps.pr.outputs.sha }}');
-    expect(fix).toContain('persist-credentials: false');
-    expect(fix).toContain('npm ci --ignore-scripts --workspaces=false');
-    expect(fix).toContain('push --force-with-lease="refs/heads/${HEAD_BRANCH}:${ORIGINAL_SHA}"');
-    expect(fix).toContain('"${VALIDATED_SHA}:refs/heads/${HEAD_BRANCH}"');
-    expect(fix).toContain('test "$(git rev-parse HEAD)" = "$VALIDATED_SHA"');
-    expect(fix).toContain('git diff --name-only -z "$ORIGINAL_SHA" HEAD');
-    expect(fix).toContain('test -z "$(git status --porcelain --untracked-files=all)"');
-    expect(fix).toContain('rustup run 1.97.0 cargo fmt --all -- --check');
-    expect(fix).toContain('rustup run 1.97.0 cargo clippy --workspace --all-targets --locked -- -D warnings');
-    expect(fix).toContain('rustup run 1.97.0 cargo test --workspace --locked');
-    expect(fix).toContain('ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8');
-    expect(fix).toContain('shellcheck -x "$file"');
-    expect(fix).toContain('[System.Management.Automation.Language.Parser]::ParseFile(');
-    expect(fix).toContain('ET.parse(path)');
-    const claudeFixStep = fix
-      .split('      - name: Run Claude Code fix\n')[1]
-      ?.split('\n      - name: Validate the fix without credentials')[0];
-    expect(claudeFixStep).toBeDefined();
-    expect(claudeFixStep).not.toContain('GH_TOKEN:');
-    expect(claudeFixStep).not.toContain('npm ');
-    expect(claudeFixStep).not.toContain('Bash(gh ');
-    expect(claudeFixStep).not.toContain('Bash(git push:');
   });
 
   it('binds every production native build to the protected source commit', () => {

@@ -564,7 +564,9 @@ describe('native runtime dispatcher', () => {
     const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     await expect(launchNativeRuntime(['status'], fixture)).resolves.toBe(1);
     expect(fixture.spawnRuntime).not.toHaveBeenCalled();
-    expect(write).toHaveBeenCalledWith(expect.stringContaining('signed version policy'));
+    expect(write).toHaveBeenCalledWith(
+      'Error: Palladin native runtime version is blocked by signed version policy\n',
+    );
     write.mockRestore();
   });
 

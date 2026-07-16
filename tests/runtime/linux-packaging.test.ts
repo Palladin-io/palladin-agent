@@ -232,9 +232,15 @@ describe('Linux hardened package boundary', () => {
     expect(workflow).toContain('init unexpectedly succeeded without Secret Service');
     expect(workflow).toContain('test-hardened-boundary.sh');
     expect(workflow).toContain('test-package-family.sh debian');
+    expect(workflow).toContain('test-package-family.sh ubuntu');
+    const mcpSmoke = read('packaging/linux/tests/mcp-stdio-smoke.mjs');
+    expect(mcpSmoke).toContain("message?.result?.protocolVersion !== '2025-11-25'");
+    expect(mcpSmoke).toContain("'report_credential_stale'");
+    expect(mcpSmoke).toContain("child.kill('SIGTERM')");
+    expect(mcpSmoke).toContain("signal === 'SIGTERM'");
     expect(workflow).toContain('test-package-family.sh fedora');
     expect(workflow).toContain('--example package_state_fixture');
-    expect(workflow).toContain('Install, upgrade, roll back, and reinstall');
+    expect(workflow).toContain('Install, enroll, run MCP, update, roll back, reinstall, purge, and uninstall');
     expect(workflow).toContain('kernel.yama.ptrace_scope=0');
 
     const rpmSpec = read('packaging/linux/rpm/palladin-runtime.spec.in');
@@ -250,6 +256,16 @@ describe('Linux hardened package boundary', () => {
     );
     expect(lifecycle).toContain('/state-fixture seed');
     expect(lifecycle).toContain('/state-fixture verify');
+    expect(lifecycle).toContain('mcp-stdio-smoke.mjs');
+    expect(lifecycle).toContain('revoke-purge "$compat_agent" --confirm-purge');
+    expect(lifecycle).toContain('apt-get purge --yes palladin-runtime');
+    expect(lifecycle).toContain('dnf remove --assumeyes palladin-runtime');
+    expect(lifecycle).toContain('systemctl show --property=LoadState --value');
+    expect(lifecycle).toContain('palladin-executor@uninstall-probe.service');
+    expect(lifecycle).not.toContain('palladin-executor.socket palladin-executor@.service');
+    expect(lifecycle).toContain('/run/palladin-runtime/broker.sock');
+    expect(lifecycle).toContain('uninstall=passed');
+    expect(lifecycle).toContain('platform-lifecycle=$family');
     expect(fixture).toContain('SecretSlot::OrganizationApiKey');
     expect(fixture).not.toContain('env::var');
   });

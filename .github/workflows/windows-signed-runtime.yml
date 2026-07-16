@@ -348,9 +348,10 @@ jobs:
             os_architecture: Arm64
     runs-on: ${{ matrix.runner }}
     environment: windows-signing
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
       RELEASE_VERSION: ${{ inputs.version }}
+      PACKAGE_VERSION: ${{ inputs.package_version }}
       EXPECTED_THUMBPRINT: ${{ vars.PALLADIN_WINDOWS_SIGNER_THUMBPRINT }}
       EXPECTED_PUBLISHER: ${{ vars.PALLADIN_WINDOWS_PUBLISHER }}
     steps:
@@ -359,6 +360,9 @@ jobs:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
       - name: Verify source and native runner architecture
         shell: pwsh
         env:
@@ -440,6 +444,75 @@ jobs:
               throw 'hosted runner did not fail closed at the Windows Hello boundary'
             }
           }
+      - name: Build unsigned adversarial probes
+        shell: pwsh
+        run: |
+          npm ci --ignore-scripts --workspaces=false
+          if ($LASTEXITCODE -ne 0) { throw 'failed to install probe build dependencies' }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'failed to build the exact dispatcher verifier' }
+          if (-not (dotnet --list-sdks | Select-String '^10\.')) { throw '.NET 10 SDK is unavailable' }
+          $probeOutput = Join-Path $env:RUNNER_TEMP 'windows-adversarial-probe'
+          dotnet publish packaging/windows/tests/Palladin.AdversarialProbe/Palladin.AdversarialProbe.csproj `
+            --configuration Release `
+            --no-self-contained `
+            --output $probeOutput
+          if ($LASTEXITCODE -ne 0) { throw 'failed to build the unsigned native adversarial probe' }
+          $probe = Join-Path $probeOutput 'Palladin.AdversarialProbe.exe'
+          $probeSignature = Get-AuthenticodeSignature -LiteralPath $probe
+          if ($probeSignature.Status -eq 'Valid') { throw 'attacker probe must remain unsigned' }
+      - name: Run hosted foreign Node probes and record unsupported cells
+        shell: pwsh
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP 'npm-smoke'
+          $client = Join-Path $smoke 'node_modules/@palladin/runtime-win32-${{ matrix.architecture }}/bin/palladin-client.exe'
+          $cacheModule = Resolve-Path 'dist/runtime/windows-runtime-cache.js'
+          $work = Join-Path $env:RUNNER_TEMP 'foreign-node-boundary'
+          $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          $profileRoot = Join-Path $env:ProgramData "Palladin/Runtime/v1/$currentSid"
+          $profilePresence = if (Test-Path -LiteralPath $profileRoot -PathType Container) { 'present' } else { 'missing' }
+          $nodeEvidence = & node packaging/windows/tests/foreign-node-boundary-probe.mjs `
+            hosted `
+            $client `
+            $cacheModule `
+            $work `
+            $profileRoot `
+            '@palladin/runtime-win32-${{ matrix.architecture }}' `
+            $env:PACKAGE_VERSION `
+            $env:EXPECTED_PUBLISHER `
+            $env:EXPECTED_THUMBPRINT `
+            $profilePresence `
+            2>&1
+          if ($LASTEXITCODE -ne 0) { throw 'foreign Node adversarial boundary probe failed' }
+          $nodeEvidenceText = $nodeEvidence -join "`n"
+          if ($nodeEvidenceText -notmatch 'evidence-status: incomplete-hosted-boundaries') {
+            throw 'hosted foreign Node probe did not report its mandatory dedicated evidence gap'
+          }
+          $nodeEvidence | ForEach-Object { Write-Output $_ }
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value @"
+          ### Windows ${{ matrix.architecture }} foreign-process evidence
+
+          Hosted result: incomplete. A non-elevated dedicated-hardware ProgramData profile cell remains mandatory.
+          "@
+      - name: Run hosted unsigned process probe and record mandatory hardware cells
+        shell: pwsh
+        run: |
+          $service = Get-CimInstance Win32_Service -Filter "Name='PalladinRuntime'"
+          if ($null -eq $service -or $service.ProcessId -le 0) { throw 'secret-bearing service process is unavailable' }
+          $client = Join-Path $env:RUNNER_TEMP 'npm-smoke/node_modules/@palladin/runtime-win32-${{ matrix.architecture }}/bin/palladin-client.exe'
+          $probe = Join-Path $env:RUNNER_TEMP 'windows-adversarial-probe/Palladin.AdversarialProbe.exe'
+          $processEvidence = & $probe --mode hosted --client $client --target "service:$($service.ProcessId)" 2>&1
+          if ($LASTEXITCODE -ne 0) { throw 'unsigned Windows process attack probe failed' }
+          $processEvidenceText = $processEvidence -join "`n"
+          if ($processEvidenceText -notmatch 'evidence-status: incomplete-hosted-(elevated|partial)') {
+            throw 'hosted process probe incorrectly claimed complete dedicated evidence'
+          }
+          $processEvidence | ForEach-Object { Write-Output $_ }
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value @"
+          ### Windows ${{ matrix.architecture }} secret-process evidence
+
+          Hosted result: incomplete. Non-elevated service, companion, and worker cells on dedicated physical hardware remain mandatory.
+          "@
       - name: Remove temporary trust anchor
         if: always()
         shell: pwsh
@@ -448,13 +521,13 @@ jobs:
           Remove-Item -LiteralPath "Cert:\CurrentUser\TrustedPeople\$thumbprint" -Force -ErrorAction SilentlyContinue
 
   windows-signed-gate:
-    name: Windows Signed Release Gate
+    name: Hosted Windows Signed Artifact Gate
     if: always()
     needs: [authorize, build-native, sign-package, signed-install-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Require signed native x64 and ARM64 release
+      - name: Require hosted signed x64 and ARM64 artifact checks
         env:
           AUTHORIZE: ${{ needs.authorize.result }}
           BUILD_NATIVE: ${{ needs.build-native.result }}

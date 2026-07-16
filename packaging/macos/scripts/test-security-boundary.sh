@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+PATH='/usr/bin:/bin:/usr/sbin:/sbin'
+export PATH
+readonly PATH
+
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 PACKAGING_DIR="$(dirname -- "$SCRIPT_DIR")"
@@ -63,6 +67,8 @@ require_regular_file "$PACKAGING_DIR/tests/untrusted-dpk-probe.swift" "Data Prot
 require_regular_file "$PACKAGING_DIR/tests/signed-client-probe.mjs" "signed-client probe"
 require_regular_file "$PACKAGING_DIR/tests/dyld-injection-probe.c" "DYLD injection probe"
 require_regular_file "$PACKAGING_DIR/tests/task-port-probe.c" "task-port probe"
+require_regular_file "$PACKAGING_DIR/tests/process-arguments-probe.c" "process arguments probe"
+require_regular_file "$PACKAGING_DIR/tests/canary-tree-probe.mjs" "canary tree probe"
 assert_plist_contract "$entitlements" "$application_identifier" "$access_group"
 assert_binary_session_contract "$binary"
 test "$(uname -m)" = "$architecture"
@@ -71,8 +77,13 @@ test "$(uname -m)" = "$architecture"
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/palladin-boundary.XXXXXX")"
 target_pid=""
+control_pid=""
 cleanup() {
   set +e
+  if [[ -n "$control_pid" ]]; then
+    kill -KILL "$control_pid" >/dev/null 2>&1 || true
+    wait "$control_pid" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$target_pid" ]]; then
     kill -KILL "$target_pid" >/dev/null 2>&1 || true
     wait "$target_pid" >/dev/null 2>&1 || true
@@ -153,17 +164,36 @@ grep -F -q 'standalone-security-tier: Hardened' "$work_dir/dyld.out" ||
 
 task_probe="$work_dir/task-port-probe"
 xcrun clang -Wall -Wextra -Werror "$PACKAGING_DIR/tests/task-port-probe.c" -o "$task_probe"
+process_arguments_probe="$work_dir/process-arguments-probe"
+xcrun clang -Wall -Wextra -Werror \
+  "$PACKAGING_DIR/tests/process-arguments-probe.c" -o "$process_arguments_probe"
+control_canary="palladin-scan-control-$(openssl rand -hex 32)"
+PALLADIN_SYNTHETIC_SCAN_CONTROL="$control_canary" /bin/sleep 30 &
+control_pid=$!
+set +e
+printf '%s' "$control_canary" | "$process_arguments_probe" "$control_pid" /bin/sleep >/dev/null 2>&1
+control_status=$?
+set -e
+[[ $control_status -eq 2 ]] || die "process argument scanner missed its synthetic positive control"
+kill "$control_pid"
+wait "$control_pid" >/dev/null 2>&1 || true
+control_pid=""
+control_canary=
 input_fifo="$work_dir/connect-input"
 mkfifo -m 0600 "$input_fifo"
 "$binary" connect --api-key-stdin <"$input_fifo" \
   >"$work_dir/attach-target.out" 2>"$work_dir/attach-target.err" &
 target_pid=$!
 exec 9>"$input_fifo"
+process_canary="palladin-stdin-$(openssl rand -hex 32)"
+printf '%s' "$process_canary" >&9
 for _ in {1..50}; do
   kill -0 "$target_pid" >/dev/null 2>&1 && break
   sleep 0.1
 done
 kill -0 "$target_pid" >/dev/null 2>&1 || die "debug target exited before the attack probes"
+printf '%s' "$process_canary" | "$process_arguments_probe" "$target_pid" "$binary" \
+  >"$work_dir/process-arguments.out" 2>"$work_dir/process-arguments.err"
 "$task_probe" "$target_pid" >"$work_dir/task-port.out" 2>"$work_dir/task-port.err"
 
 core_path="$work_dir/palladin.core"
@@ -173,10 +203,23 @@ if xcrun lldb --batch --attach-pid "$target_pid" \
   die "debugger unexpectedly attached to the signed runtime"
 fi
 [[ ! -e "$core_path" ]] || die "debugger unexpectedly created a runtime core file"
+exec 9>&-
+for _ in {1..100}; do
+  kill -0 "$target_pid" >/dev/null 2>&1 || break
+  sleep 0.1
+done
 kill -INT "$target_pid" >/dev/null 2>&1 || true
 wait "$target_pid" >/dev/null 2>&1 || true
 target_pid=""
-exec 9>&-
+printf '%s' "$process_canary" | "$homebrew_node" \
+  "$PACKAGING_DIR/tests/canary-tree-probe.mjs" \
+  "$HOME/.palladin" \
+  "$work_dir/attach-target.out" "$work_dir/attach-target.err" \
+  "$work_dir/process-arguments.out" "$work_dir/process-arguments.err" \
+  "$work_dir/task-port.out" "$work_dir/task-port.err" \
+  "$work_dir/lldb.out" "$work_dir/lldb.err" \
+  >"$work_dir/canary-tree.out" 2>"$work_dir/canary-tree.err"
+process_canary=
 
 "$binary" agents create build >"$work_dir/create-profile.out" 2>"$work_dir/create-profile.err"
 "$binary" agents rename build build-renamed >"$work_dir/rename-profile.out" 2>"$work_dir/rename-profile.err"

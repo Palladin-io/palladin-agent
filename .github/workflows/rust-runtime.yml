@@ -15,7 +15,7 @@ concurrency:
 jobs:
   apple:
     name: Build ${{ matrix.target }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +46,8 @@ jobs:
           xcrun swiftc -warnings-as-errors -typecheck ../packaging/macos/tests/untrusted-dpk-probe.swift
           xcrun clang -Wall -Wextra -Werror -fsyntax-only ../packaging/macos/tests/dyld-injection-probe.c
           xcrun clang -Wall -Wextra -Werror -fsyntax-only ../packaging/macos/tests/task-port-probe.c
+          xcrun clang -Wall -Wextra -Werror -fsyntax-only ../packaging/macos/tests/process-arguments-probe.c
+          node --check ../packaging/macos/tests/canary-tree-probe.mjs
           fake_root="$(mktemp -d)"
           mkdir -p "$fake_root/PalladinRuntime.app"
           npm_arch=${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'x64' }}
@@ -270,7 +272,41 @@ jobs:
           cache-key: ${{ matrix.gnu_target }}
       - name: Install the pinned glibc baseline builder
         run: cargo install --locked --version 0.23.0 cargo-zigbuild
-      - run: sudo apt-get update && sudo apt-get install --yes gcc libxml2-utils musl-tools rpm
+      - name: Install Linux packaging dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # GitHub-hosted ARM runners occasionally cannot reach the Ubuntu
+          # ports mirror. Use a recent immutable Canonical snapshot for that
+          # architecture without disabling APT's Valid-Until verification.
+          if [[ "$(uname -m)" == "aarch64" ]]; then
+            snapshot_id="$(date --utc --date='1 day ago' '+%Y%m%dT000000Z')"
+            ubuntu_mirror="https://snapshot.ubuntu.com/ubuntu/${snapshot_id}"
+          else
+            ubuntu_mirror="https://ports.ubuntu.com/ubuntu-ports"
+          fi
+
+          for source_file in \
+            /etc/apt/sources.list \
+            /etc/apt/sources.list.d/*.list \
+            /etc/apt/sources.list.d/*.sources; do
+            if [[ -f "$source_file" ]]; then
+              sudo sed -i \
+                -e "s|http://ports\\.ubuntu\\.com/ubuntu-ports|${ubuntu_mirror}|g" \
+                -e "s|https://ports\\.ubuntu\\.com/ubuntu-ports|${ubuntu_mirror}|g" \
+                "$source_file"
+            fi
+          done
+
+          apt_options=(
+            -o Acquire::Retries=5
+            -o Acquire::http::Timeout=30
+            -o Acquire::https::Timeout=30
+          )
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install --yes \
+            gcc libxml2-utils musl-tools rpm
       - run: rustup target add ${{ matrix.gnu_target }} ${{ matrix.musl_target }}
       - name: Validate Linux packaging source
         working-directory: .
@@ -281,6 +317,8 @@ jobs:
           xmllint --noout packaging/linux/polkit/io.palladin.runtime.policy
           cc -Wall -Wextra -Werror packaging/linux/tests/security-boundary-probe.c -o /tmp/palladin-security-boundary-probe
           cc -Wall -Wextra -Werror -shared -fPIC packaging/linux/tests/ld-preload-probe.c -o /tmp/palladin-ld-preload-probe.so
+          node --check packaging/linux/tests/foreign-node-probe.mjs
+          node --check packaging/linux/tests/process-scan-probe.mjs
       - run: >-
           cargo clippy --workspace --all-targets --locked --target ${{ matrix.gnu_target }}
           --exclude palladin-windows-broker -- -D warnings
@@ -470,13 +508,18 @@ jobs:
               test ! -e "$HOME/.palladin/agent.key"
               test ! -e "$HOME/.palladin/config.json"
             '
-      - name: Install, upgrade, roll back, and reinstall on Debian, Fedora, and Rocky 9
+      - name: Install, enroll, run MCP, update, roll back, reinstall, purge, and uninstall
         working-directory: .
         shell: bash
         env:
           ARCHITECTURE: ${{ matrix.gnu_target == 'x86_64-unknown-linux-gnu' && 'x64' || 'arm64' }}
         run: |
           set -euo pipefail
+          packaging/linux/tests/test-package-family.sh ubuntu \
+            "$(find "$RUNNER_TEMP/linux-packages/base" -name '*.deb' -print -quit)" \
+            "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)" \
+            "runtime/target/${{ matrix.gnu_target }}/release/examples/package_state_fixture" \
+            "$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
           packaging/linux/tests/test-package-family.sh debian \
             "$(find "$RUNNER_TEMP/linux-packages/base" -name '*.deb' -print -quit)" \
             "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)" \
@@ -499,7 +542,8 @@ jobs:
           ARCHITECTURE: ${{ matrix.gnu_target == 'x86_64-unknown-linux-gnu' && 'x64' || 'arm64' }}
         run: |
           set -euo pipefail
-          packaging/linux/tests/test-convenience-boundary.sh
+          packaging/linux/tests/test-convenience-boundary.sh \
+            --launcher-root "$RUNNER_TEMP/alpine-launcher"
           sudo sysctl -w kernel.yama.ptrace_scope=0
           deb=$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)
           sudo apt-get install --yes "$deb"

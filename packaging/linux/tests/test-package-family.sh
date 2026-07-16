@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo 'Usage: test-package-family.sh <debian|fedora|rocky9> BASE_PACKAGE UPGRADE_PACKAGE STATE_FIXTURE VERSION_POLICY' >&2
+  echo 'Usage: test-package-family.sh <ubuntu|debian|fedora|rocky9> BASE_PACKAGE UPGRADE_PACKAGE STATE_FIXTURE VERSION_POLICY' >&2
   exit 64
 }
 
@@ -11,7 +11,7 @@ base=${2:-}
 upgrade=${3:-}
 state_fixture=${4:-}
 version_policy=${5:-}
-[[ $family == debian || $family == fedora || $family == rocky9 ]] || usage
+[[ $family == ubuntu || $family == debian || $family == fedora || $family == rocky9 ]] || usage
 [[ -f $base && -f $upgrade && -x $state_fixture && -f $version_policy ]] || usage
 
 root=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -130,10 +130,13 @@ verify_compatible_state() {
   current_policy_state_hash=$(docker exec "$container" sh -c \
     "find /var/lib/palladin-runtime/v1/policy /var/lib/palladin-runtime/v1/.policy.palladin-policy-cache-v1 -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1")
   [[ $current_policy_state_hash == "$compat_policy_state_hash" ]]
+  docker exec "$container" runuser -u "$compat_agent" -- \
+    node /source/packaging/linux/tests/mcp-stdio-smoke.mjs \
+    /usr/lib/palladin/runtime/palladin-linux-client
 }
 
 case "$family" in
-  debian)
+  ubuntu|debian)
     docker exec "$container" apt-get install --yes /packages/base.deb
     docker exec "$container" /usr/lib/palladin/runtime/verify-installation
     seed_compatible_state
@@ -158,7 +161,7 @@ verify_compatible_state
 docker exec "$container" /source/packaging/linux/tests/test-hardened-boundary.sh
 
 case "$family" in
-  debian)
+  ubuntu|debian)
     docker exec "$container" apt-get remove --yes palladin-runtime
     docker exec "$container" test -f /var/lib/palladin-runtime/v1/master.key
     docker exec "$container" apt-get install --yes /packages/upgrade.deb
@@ -171,3 +174,41 @@ case "$family" in
 esac
 docker exec "$container" /usr/lib/palladin/runtime/verify-installation
 verify_compatible_state
+docker exec "$container" /usr/lib/palladin/runtime/palladin-manage-agent-uid \
+  revoke-purge "$compat_agent" --confirm-purge
+docker exec "$container" grep -Fxq 'status=revoked' "/etc/palladin/agents.d/$compat_uid"
+docker exec "$container" test ! -e "/var/lib/palladin-runtime/v1/agents/$compat_principal"
+case "$family" in
+  ubuntu|debian)
+    docker exec "$container" apt-get purge --yes palladin-runtime
+    if docker exec "$container" dpkg-query --show palladin-runtime >/dev/null 2>&1; then
+      echo 'DEB remained installed after final purge' >&2
+      exit 1
+    fi
+    ;;
+  fedora|rocky9)
+    docker exec "$container" dnf remove --assumeyes palladin-runtime
+    if docker exec "$container" rpm --query --quiet palladin-runtime; then
+      echo 'RPM remained installed after final removal' >&2
+      exit 1
+    fi
+    ;;
+esac
+docker exec "$container" systemctl daemon-reload
+for path in \
+  /usr/lib/palladin/runtime \
+  /usr/lib/systemd/system/palladin-runtime.service \
+  /usr/lib/systemd/system/palladin-executor.socket \
+  /usr/lib/systemd/system/palladin-executor@.service \
+  /usr/lib/sysusers.d/palladin-runtime.conf \
+  /usr/lib/tmpfiles.d/palladin-runtime.conf \
+  /usr/share/polkit-1/actions/io.palladin.runtime.policy \
+  /run/palladin-runtime/broker.sock; do
+  docker exec "$container" test ! -e "$path"
+done
+for unit in palladin-runtime.service palladin-executor.socket palladin-executor@uninstall-probe.service; do
+  [[ $(docker exec "$container" systemctl show --property=LoadState --value "$unit") == not-found ]]
+done
+docker exec "$container" test -d /var/lib/palladin-runtime
+docker exec "$container" test -d /etc/palladin
+echo "platform-lifecycle=$family install=passed enroll=synthetic-state mcp=passed update=passed rollback=passed reinstall=passed identity=preserved grants=preserved-by-agent-identity purge=passed uninstall=passed"

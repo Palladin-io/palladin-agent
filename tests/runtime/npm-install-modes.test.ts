@@ -59,10 +59,12 @@ function installedPackageNames(directory: string): string[] {
 }
 
 describe('npm installation modes', () => {
-  it('supports global and exact-version npx installs through the package registry', async () => {
+  it('supports global, local, exact-version npx, and cached offline installs through a custom registry', async () => {
     const npmCli = process.env.npm_execpath;
     if (!npmCli) throw new Error('npm_execpath is unavailable');
-    const fixture = mkdtempSync(join(tmpdir(), 'palladin-npm-modes-'));
+    const temporary = mkdtempSync(join(tmpdir(), 'palladin-npm-modes-'));
+    const fixture = join(temporary, 'Palladin npm zażółć with spaces');
+    mkdirSync(fixture);
     const packages = new Map<string, RegistryPackage>();
     const server = createServer((request, response) => {
       const pathname = new URL(request.url ?? '/', 'http://registry.invalid').pathname;
@@ -147,6 +149,7 @@ describe('npm installation modes', () => {
       await once(server, 'listening');
       const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       const prefix = join(fixture, 'global');
+      const globalCache = join(fixture, 'global-cache');
       await run(process.execPath, [
         npmCli,
         'install',
@@ -157,7 +160,7 @@ describe('npm installation modes', () => {
         '--prefix', prefix,
         '--registry', origin,
         '@palladin/agent@0.1.0',
-      ], { env: { ...process.env, npm_config_cache: join(fixture, 'global-cache') } });
+      ], { env: { ...process.env, npm_config_cache: globalCache } });
       const globalRoot = (await run(process.execPath, [
         npmCli,
         'root',
@@ -173,6 +176,27 @@ describe('npm installation modes', () => {
       ))?.[0];
       expect(expectedRuntime).toBeDefined();
       expect(installed).toEqual([expectedRuntime]);
+
+      const local = join(fixture, 'local install');
+      mkdirSync(local);
+      await run(process.execPath, [
+        npmCli,
+        'install',
+        '--ignore-scripts',
+        '--no-audit',
+        '--no-fund',
+        '--prefix', local,
+        '--registry', origin,
+        '@palladin/agent@0.1.0',
+      ], { env: { ...process.env, npm_config_cache: join(fixture, 'local-cache') } });
+      const localRun = await run(process.execPath, [
+        npmCli,
+        'exec',
+        '--prefix', local,
+        '--',
+        'palladin',
+      ], { cwd: local, env: { ...process.env, npm_config_cache: join(fixture, 'local-cache') } });
+      expect(localRun.stdout.trim()).toBe('palladin fixture');
 
       const npxWork = join(fixture, 'npx-work');
       mkdirSync(npxWork);
@@ -190,12 +214,28 @@ describe('npm installation modes', () => {
         env: { ...process.env, npm_config_cache: join(fixture, 'npx-cache') },
       });
       expect(npx.stdout.trim()).toBe('palladin fixture');
+
+      server.closeAllConnections?.();
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+      const offline = join(fixture, 'offline cache install');
+      await run(process.execPath, [
+        npmCli,
+        'install',
+        '--offline',
+        '--ignore-scripts',
+        '--no-audit',
+        '--no-fund',
+        '--prefix', offline,
+        '--registry', origin,
+        '@palladin/agent@0.1.0',
+      ], { env: { ...process.env, npm_config_cache: globalCache } });
+      expect(installedPackageNames(join(offline, 'node_modules'))).toContain('@palladin/agent');
     } finally {
       if (server.listening) {
         server.closeAllConnections?.();
         await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
       }
-      rmSync(fixture, { recursive: true, force: true });
+      rmSync(temporary, { recursive: true, force: true });
     }
   }, 60_000);
 });

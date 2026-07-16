@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "reportSchemaVersion": 1,
+  "evidenceFreshnessHours": 168,
+  "steps": [
+    { "id": "install", "order": 1 },
+    { "id": "enroll", "order": 2 },
+    { "id": "mcp", "order": 3 },
+    { "id": "update", "order": 4 },
+    { "id": "concurrent-mcp", "order": 5 },
+    { "id": "repair", "order": 6 },
+    { "id": "downgrade-rejected", "order": 7 },
+    { "id": "rollback", "order": 8 },
+    { "id": "reinstall", "order": 9 },
+    { "id": "purge", "order": 10 },
+    { "id": "uninstall", "order": 11 }
+  ],
+  "artifactPhases": ["baseline", "candidate", "forward-rollback"],
+  "targets": [
+    { "id": "macos-arm64", "os": "macos", "arch": "arm64", "distribution": "macos", "libc": "none", "requiredArtifactRoles": ["agent-npm", "platform-npm", "signed-runtime"] },
+    { "id": "macos-x64", "os": "macos", "arch": "x64", "distribution": "macos", "libc": "none", "requiredArtifactRoles": ["agent-npm", "platform-npm", "signed-runtime"] },
+    { "id": "windows-arm64", "os": "windows", "arch": "arm64", "distribution": "windows-11", "libc": "none", "requiredArtifactRoles": ["agent-npm", "platform-npm", "signed-installer"] },
+    { "id": "windows-x64", "os": "windows", "arch": "x64", "distribution": "windows-11", "libc": "none", "requiredArtifactRoles": ["agent-npm", "platform-npm", "signed-installer"] },
+    { "id": "ubuntu-24.04-arm64", "os": "linux", "arch": "arm64", "distribution": "ubuntu-24.04", "libc": "gnu", "requiredArtifactRoles": ["agent-npm", "platform-npm", "deb"] },
+    { "id": "ubuntu-24.04-x64", "os": "linux", "arch": "x64", "distribution": "ubuntu-24.04", "libc": "gnu", "requiredArtifactRoles": ["agent-npm", "platform-npm", "deb"] },
+    { "id": "debian-13-arm64", "os": "linux", "arch": "arm64", "distribution": "debian-13", "libc": "gnu", "requiredArtifactRoles": ["agent-npm", "platform-npm", "deb"] },
+    { "id": "debian-13-x64", "os": "linux", "arch": "x64", "distribution": "debian-13", "libc": "gnu", "requiredArtifactRoles": ["agent-npm", "platform-npm", "deb"] },
+    { "id": "fedora-42-arm64", "os": "linux", "arch": "arm64", "distribution": "fedora-42", "libc": "gnu", "requiredArtifactRoles": ["agent-npm", "platform-npm", "rpm"] },
+    { "id": "fedora-42-x64", "os": "linux", "arch": "x64", "distribution": "fedora-42", "libc": "gnu", "requiredArtifactRoles": ["agent-npm", "platform-npm", "rpm"] },
+    { "id": "alpine-3.22-arm64", "os": "linux", "arch": "arm64", "distribution": "alpine-3.22", "libc": "musl", "requiredArtifactRoles": ["agent-npm", "platform-npm"] },
+    { "id": "alpine-3.22-x64", "os": "linux", "arch": "x64", "distribution": "alpine-3.22", "libc": "musl", "requiredArtifactRoles": ["agent-npm", "platform-npm"] }
+  ]
+}
