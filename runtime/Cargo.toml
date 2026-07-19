@@ -46,7 +46,7 @@ reqwest = { version = "0.12.28", default-features = false, features = ["json", "
 rsa = "0.9.10"
 rpassword = "7.5.4"
 rmcp = { version = "2.2.0", default-features = false, features = ["server", "transport-async-rw"] }
-salsa20 = "0.10.2"
+salsa20 = "0.11.0"
 secrecy = "0.10.3"
 security-framework = { version = "3.7.0", features = ["OSX_10_15"] }
 security-framework-sys = "2.17.0"
