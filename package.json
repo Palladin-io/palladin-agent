@@ -44,7 +44,7 @@
     "@noble/curves": "^2.2.0",
     "@types/libsodium-wrappers": "^0.7.14",
     "@types/node": "^22.0.0",
-    "commander": "^13.1.0",
+    "commander": "^15.0.0",
     "libsodium-wrappers": "^0.8.4",
     "linkedom": "^0.18.12",
     "tldts": "^7.4.8",
