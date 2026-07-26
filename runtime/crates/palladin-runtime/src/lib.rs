@@ -69,6 +69,9 @@ use integrity::{
 use palladin_credential::fields::{FieldSelector, resolve_field};
 use palladin_credential::secret::{ScriptPayload, parse_secret};
 
+const DISCOVERY_SYNC_PAGE_SIZE: usize = 200;
+const MAX_DISCOVERY_SYNC_PAGES: usize = 1_000;
+
 pub use palladin_exec::{ExecError, ExecResult, OperatorOutput};
 
 pub struct RuntimeService<S> {
@@ -2934,7 +2937,6 @@ impl RuntimeSession {
         vdk: &SecretBytes,
         index: &mut LocalDiscoveryIndex,
     ) -> Result<(), RuntimeError> {
-        const MAX_SYNC_PAGES: usize = 1_000;
         if index.prepare_vault(vault_id, vdk_version) {
             let after = index
                 .applied_sequence(vault_id)
@@ -2947,11 +2949,18 @@ impl RuntimeSession {
         let mut snapshot_cursor = None;
         let mut snapshot_base = None;
         let mut heads = Vec::new();
-        for _ in 0..MAX_SYNC_PAGES {
+        for _ in 0..MAX_DISCOVERY_SYNC_PAGES {
             let page = self
                 .api
-                .get_agent_discovery_snapshot(vault_id, snapshot_cursor.as_deref(), Some(200))
+                .get_agent_discovery_snapshot(
+                    vault_id,
+                    snapshot_cursor.as_deref(),
+                    Some(DISCOVERY_SYNC_PAGE_SIZE as u32),
+                )
                 .await?;
+            if page.items.len() > DISCOVERY_SYNC_PAGE_SIZE {
+                return Err(RuntimeError::DiscoveryIndexLimitExceeded);
+            }
             validate_sequence(&page.snapshot_base_sequence)?;
             if snapshot_base
                 .as_ref()
@@ -3004,21 +3013,23 @@ impl RuntimeSession {
         vdk: &SecretBytes,
         index: &mut LocalDiscoveryIndex,
     ) -> Result<(), RuntimeError> {
-        const MAX_SYNC_PAGES: usize = 1_000;
         let mut after = initial_after.to_owned();
         let mut applied = validate_sequence(&after)?;
         let mut delta_upper_bound = None;
         let mut continuation = None;
-        for _ in 0..MAX_SYNC_PAGES {
+        for _ in 0..MAX_DISCOVERY_SYNC_PAGES {
             let page = self
                 .api
                 .get_agent_discovery_delta(
                     vault_id,
                     continuation.is_none().then_some(after.as_str()),
                     continuation.as_deref(),
-                    Some(200),
+                    Some(DISCOVERY_SYNC_PAGE_SIZE as u32),
                 )
                 .await?;
+            if page.items.len() > DISCOVERY_SYNC_PAGE_SIZE {
+                return Err(RuntimeError::DiscoveryIndexLimitExceeded);
+            }
             let upper_bound = validate_sequence(&page.delta_upper_bound)?;
             let applied_through = validate_sequence(&page.applied_through_sequence)?;
             if delta_upper_bound.is_some_and(|expected| expected != upper_bound)

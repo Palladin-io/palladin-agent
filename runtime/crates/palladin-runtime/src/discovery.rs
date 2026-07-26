@@ -10,6 +10,7 @@ use zeroize::Zeroize;
 use crate::RuntimeError;
 
 const MAX_INDEX_ENTRIES: usize = 10_000;
+const MAX_LOGICAL_INDEX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PAGE_SIZE: usize = 200;
 const DEFAULT_PAGE_SIZE: usize = 50;
 const CURSOR_BYTES: usize = 49;
@@ -77,10 +78,28 @@ impl Drop for IndexedEntry {
     }
 }
 
+impl IndexedEntry {
+    fn logical_bytes(&self) -> usize {
+        self.vault_id
+            .len()
+            .saturating_add(self.entry_id.len())
+            .saturating_add(self.label.len())
+            .saturating_add(self.url_domain.as_ref().map_or(0, String::len))
+            .saturating_add(self.searchable.len())
+            .saturating_add(
+                self.approved_fields
+                    .iter()
+                    .map(|field| field.label.len().saturating_add(field.value.len()))
+                    .sum::<usize>(),
+            )
+    }
+}
+
 pub(crate) struct LocalDiscoveryIndex {
     entries: BTreeMap<(String, String), IndexedEntry>,
     vault_versions: BTreeMap<String, u32>,
     applied_sequences: BTreeMap<String, String>,
+    logical_bytes: usize,
 }
 
 impl LocalDiscoveryIndex {
@@ -89,6 +108,7 @@ impl LocalDiscoveryIndex {
             entries: BTreeMap::new(),
             vault_versions: BTreeMap::new(),
             applied_sequences: BTreeMap::new(),
+            logical_bytes: 0,
         }
     }
 
@@ -116,18 +136,21 @@ impl LocalDiscoveryIndex {
             .retain(|vault, _| authorized.contains(vault));
         self.applied_sequences
             .retain(|vault, _| authorized.contains(vault));
+        self.recount_logical_bytes();
     }
 
     pub(crate) fn purge(&mut self) {
         self.entries.clear();
         self.vault_versions.clear();
         self.applied_sequences.clear();
+        self.logical_bytes = 0;
     }
 
     pub(crate) fn remove_vault(&mut self, vault_id: &str) {
         self.entries.retain(|(vault, _), _| vault != vault_id);
         self.vault_versions.remove(vault_id);
         self.applied_sequences.remove(vault_id);
+        self.recount_logical_bytes();
     }
 
     pub(crate) fn replace_vault(
@@ -162,26 +185,39 @@ impl LocalDiscoveryIndex {
             searchable.push('\u{0}');
             searchable.push_str(&field.value.to_lowercase());
         }
-        self.entries.insert(
-            (vault_id.to_owned(), entry_id.to_owned()),
-            IndexedEntry {
-                vault_id: vault_id.to_owned(),
-                entry_id: entry_id.to_owned(),
-                label: std::mem::take(&mut plaintext.agent_label),
-                url_domain,
-                approved_fields,
-                searchable,
-            },
-        );
-        if self.entries.len() > MAX_INDEX_ENTRIES {
+        let key = (vault_id.to_owned(), entry_id.to_owned());
+        let entry = IndexedEntry {
+            vault_id: vault_id.to_owned(),
+            entry_id: entry_id.to_owned(),
+            label: std::mem::take(&mut plaintext.agent_label),
+            url_domain,
+            approved_fields,
+            searchable,
+        };
+        let replaced_bytes = self
+            .entries
+            .get(&key)
+            .map_or(0, IndexedEntry::logical_bytes);
+        let next_count = self.entries.len() + usize::from(!self.entries.contains_key(&key));
+        let next_bytes = self
+            .logical_bytes
+            .saturating_sub(replaced_bytes)
+            .saturating_add(entry.logical_bytes());
+        if next_count > MAX_INDEX_ENTRIES || next_bytes > MAX_LOGICAL_INDEX_BYTES {
             return Err(RuntimeError::DiscoveryIndexLimitExceeded);
         }
+        self.entries.insert(key, entry);
+        self.logical_bytes = next_bytes;
         Ok(())
     }
 
     pub(crate) fn remove(&mut self, vault_id: &str, entry_id: &str) {
-        self.entries
-            .remove(&(vault_id.to_owned(), entry_id.to_owned()));
+        if let Some(entry) = self
+            .entries
+            .remove(&(vault_id.to_owned(), entry_id.to_owned()))
+        {
+            self.logical_bytes = self.logical_bytes.saturating_sub(entry.logical_bytes());
+        }
     }
 
     pub(crate) fn search(
@@ -290,13 +326,20 @@ impl LocalDiscoveryIndex {
         );
         Ok((vault_id.to_string(), entry_id.to_string()))
     }
+
+    fn recount_logical_bytes(&mut self) {
+        self.logical_bytes = self.entries.values().map(IndexedEntry::logical_bytes).sum();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{DiscoveryPlaintext, LocalDiscoveryIndex};
+    use super::{
+        DiscoveryPlaintext, LocalDiscoveryIndex, MAX_INDEX_ENTRIES, MAX_LOGICAL_INDEX_BYTES,
+        MAX_PAGE_SIZE,
+    };
 
     fn account(label: &str, username: &str) -> DiscoveryPlaintext {
         DiscoveryPlaintext {
@@ -410,6 +453,84 @@ mod tests {
                 .items
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn ten_thousand_head_snapshot_and_one_percent_delta_stay_bounded() {
+        let mut index = LocalDiscoveryIndex::new();
+        let vault_id = "11111111-1111-4111-8111-111111111111";
+        for position in 1..=MAX_INDEX_ENTRIES {
+            let entry_id = uuid::Uuid::from_u128(position as u128).to_string();
+            index
+                .upsert(
+                    vault_id,
+                    &entry_id,
+                    account("entry", &format!("account-{position}")),
+                )
+                .unwrap();
+        }
+        for position in 1..=(MAX_INDEX_ENTRIES / 100) {
+            let entry_id = uuid::Uuid::from_u128(position as u128).to_string();
+            index
+                .upsert(
+                    vault_id,
+                    &entry_id,
+                    account("entry", &format!("updated-{position}")),
+                )
+                .unwrap();
+        }
+
+        let mut cursor = None;
+        let mut pages = 0;
+        let mut items = 0;
+        loop {
+            let page = index
+                .search("entry", cursor.as_deref(), Some(MAX_PAGE_SIZE as u32))
+                .unwrap();
+            pages += 1;
+            items += page.items.len();
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        let report = format!(
+            "discovery-budget heads={MAX_INDEX_ENTRIES} delta={} pages={pages} logical-bytes={}",
+            MAX_INDEX_ENTRIES / 100,
+            index.logical_bytes
+        );
+        assert_eq!(items, MAX_INDEX_ENTRIES, "{report}");
+        assert_eq!(pages, MAX_INDEX_ENTRIES / MAX_PAGE_SIZE, "{report}");
+        assert!(index.logical_bytes <= MAX_LOGICAL_INDEX_BYTES, "{report}");
+    }
+
+    #[test]
+    fn index_budget_rejection_is_atomic() {
+        let mut index = LocalDiscoveryIndex::new();
+        let vault_id = "11111111-1111-4111-8111-111111111111";
+        for position in 1..=MAX_INDEX_ENTRIES {
+            index
+                .upsert(
+                    vault_id,
+                    &uuid::Uuid::from_u128(position as u128).to_string(),
+                    account("entry", "bounded"),
+                )
+                .unwrap();
+        }
+        let bytes = index.logical_bytes;
+
+        assert!(
+            index
+                .upsert(
+                    vault_id,
+                    &uuid::Uuid::from_u128((MAX_INDEX_ENTRIES + 1) as u128).to_string(),
+                    account("entry", "overflow"),
+                )
+                .is_err()
+        );
+        assert_eq!(index.entries.len(), MAX_INDEX_ENTRIES);
+        assert_eq!(index.logical_bytes, bytes);
     }
 
     #[test]

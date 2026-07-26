@@ -389,7 +389,10 @@ pub(crate) struct StaleRequestBody<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApprovedCredentialMethods, CredentialAccess, GrantedCredential};
+    use super::{
+        AgentDiscoverySnapshotResponse, ApprovedCredentialMethods, CredentialAccess,
+        GrantedCredential,
+    };
 
     const GRANTED: &str = r#"{
         "access":"granted",
@@ -469,5 +472,17 @@ mod tests {
             r#""urlDomain":"example.com","legacyField":"rejected""#,
         );
         assert!(serde_json::from_str::<CredentialAccess>(&unknown).is_err());
+    }
+
+    #[test]
+    fn discovery_snapshot_contract_cannot_embed_entry_history() {
+        let snapshot = serde_json::json!({
+            "snapshotBaseSequence":"10",
+            "items":[],
+            "nextCursor":null,
+            "history":[{"entryId":"secret-history"}]
+        });
+
+        assert!(serde_json::from_value::<AgentDiscoverySnapshotResponse>(snapshot).is_err());
     }
 }

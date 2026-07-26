@@ -16,6 +16,8 @@ use crate::types::{
     InjectFailureUpload, RegistrationBody, ReportCredentialStaleInput, StaleRequestBody,
 };
 
+const MAX_DISCOVERY_SYNC_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+
 const ENCODE_URI_COMPONENT: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
@@ -464,11 +466,24 @@ async fn decode_success<T: serde::de::DeserializeOwned>(
 }
 
 async fn decode_discovery_sync<T: serde::de::DeserializeOwned>(
-    response: reqwest::Response,
+    mut response: reqwest::Response,
 ) -> Result<T, ApiError> {
     match response.status() {
         status if status.is_success() => {
-            response.json().await.map_err(|_| ApiError::InvalidResponse)
+            if response
+                .content_length()
+                .is_some_and(|length| length > MAX_DISCOVERY_SYNC_RESPONSE_BYTES as u64)
+            {
+                return Err(ApiError::SizeLimitExceeded);
+            }
+            let mut body = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(|_| ApiError::Transport)? {
+                if body.len().saturating_add(chunk.len()) > MAX_DISCOVERY_SYNC_RESPONSE_BYTES {
+                    return Err(ApiError::SizeLimitExceeded);
+                }
+                body.extend_from_slice(&chunk);
+            }
+            serde_json::from_slice(&body).map_err(|_| ApiError::InvalidResponse)
         }
         StatusCode::CONFLICT => {
             #[derive(serde::Deserialize)]
@@ -572,7 +587,10 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    use super::{ApiClient, ApiError, SigningContext, diagnostics_enabled_for, encode_component};
+    use super::{
+        ApiClient, ApiError, MAX_DISCOVERY_SYNC_RESPONSE_BYTES, SigningContext,
+        diagnostics_enabled_for, encode_component,
+    };
     use crate::{
         AgentRegistrationResult, CredentialMethod, GetCredentialOptions,
         ReportCredentialStaleInput, StaleReasonCode,
@@ -841,6 +859,23 @@ mod tests {
                 .await
                 .expect_err("404 remains generic"),
             ApiError::Http(404)
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_sync_streaming_decoder_enforces_the_response_byte_budget() {
+        let oversized = Box::leak(
+            "x".repeat(MAX_DISCOVERY_SYNC_RESPONSE_BYTES + 1)
+                .into_boxed_str(),
+        );
+        let (host, _) = response_server(vec![(200, oversized)]).await;
+        let api = client(&host, vec![15; 32], Duration::from_secs(2));
+
+        assert_eq!(
+            api.get_agent_discovery_snapshot("vault", None, Some(200))
+                .await
+                .expect_err("oversized response"),
+            ApiError::SizeLimitExceeded
         );
     }
 
