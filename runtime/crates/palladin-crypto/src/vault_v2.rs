@@ -28,7 +28,7 @@ const MAX_SIGNATURE_PAYLOAD_BYTES: usize = 256 * 1024;
 pub struct SecretBytes(SecretSlice<u8>);
 
 impl SecretBytes {
-    fn new(bytes: Vec<u8>) -> Self {
+    pub(crate) fn new(bytes: Vec<u8>) -> Self {
         Self(bytes.into())
     }
 
