@@ -311,10 +311,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
     ));
     assert_ne!(default_status.config.agent_id, build_status.config.agent_id);
 
-    api.enqueue(MockResponse::json(
-        200,
-        r#"{"items":[{"entryId":"entry-e2e","vaultId":"vault-e2e","label":"Synthetic entry","urlDomain":"example.test","description":null,"agentFields":[]}],"nextCursor":null}"#,
-    ));
+    api.enqueue(MockResponse::json(200, r#"{"items":[]}"#));
     let search_session = restarted
         .open_session(
             Some("default"),
@@ -332,8 +329,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
         .search_entries("synthetic", None, Some(10))
         .await
         .expect("entry discovery");
-    assert_eq!(discovery.items.len(), 1);
-    assert_eq!(discovery.items[0].entry_id, "entry-e2e");
+    assert!(discovery.items.is_empty());
     assert!(matches!(
         search_session
             .search_entries("synthetic", None, Some(10))
@@ -810,7 +806,7 @@ fn assert_signed_lifecycle_requests(
                 .expect("signing public key"),
         );
         let (_, path, _) = request_parts(request);
-        if path.starts_with("/api/agent/entries?") {
+        if path == "/api/agent/vault-manifests" {
             search_requests += 1;
         }
         if path.contains("/credential") {

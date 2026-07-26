@@ -220,6 +220,92 @@ pub struct AgentVaultManifestsResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentDiscoveryEnvelopeHeader {
+    pub protocol_version: u16,
+    pub algorithm_suite: u16,
+    pub resource_kind: u16,
+    pub projection_kind: u16,
+    pub resource_revision: String,
+    pub key_version: u32,
+    pub member_key_generation: u32,
+    pub nonce: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentDiscoveryEnvelope {
+    pub organization_id: String,
+    pub vault_id: String,
+    pub entry_id: String,
+    pub agent_discovery_revision: String,
+    pub vdk_version: u32,
+    pub header: AgentDiscoveryEnvelopeHeader,
+    pub ciphertext: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AgentDiscoverySyncItem {
+    #[serde(rename = "head")]
+    Head {
+        entry_id: String,
+        agent_discovery_revision: String,
+        agent_discovery: AgentDiscoveryEnvelope,
+    },
+    #[serde(rename = "tombstone")]
+    Tombstone {
+        entry_id: String,
+        agent_discovery_revision: Option<String>,
+        agent_discovery: Option<AgentDiscoveryEnvelope>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentDiscoverySnapshotResponse {
+    pub snapshot_base_sequence: String,
+    pub items: Vec<AgentDiscoverySyncItem>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentDiscoveryDeltaResponse {
+    pub delta_upper_bound: String,
+    pub applied_through_sequence: String,
+    pub items: Vec<AgentDiscoverySyncItem>,
+    pub continuation_cursor: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDiscoverySnapshotBody<'a> {
+    pub vault_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<u32>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDiscoveryDeltaBody<'a> {
+    pub vault_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_sequence: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_cursor: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPairingActivationResponse {
     pub activation_id: String,

@@ -1,18 +1,20 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+mod discovery;
 mod integrity;
 pub mod version_policy;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_api::{
-    AgentPairingActivationResponse, AgentPairingStatus, AgentPairingStatusResponse,
-    AgentRegistrationResult, ApiClient, ApiError, CredentialAccess, CredentialMethod,
-    EntrySearchResult, GetCredentialOptions, GrantStatus, ReportCredentialStaleInput,
-    VaultManifest,
+    AgentDiscoveryEnvelope, AgentDiscoverySyncItem, AgentPairingActivationResponse,
+    AgentPairingStatus, AgentPairingStatusResponse, AgentRegistrationResult, ApiClient, ApiError,
+    CredentialAccess, CredentialMethod, EntrySearchResult, GetCredentialOptions, GrantStatus,
+    ReportCredentialStaleInput, VaultManifest,
 };
 use palladin_core::host::ApiHost;
 use palladin_core::legacy_typescript::{LegacyTypeScriptError, LegacyTypeScriptRepository};
@@ -30,10 +32,11 @@ use palladin_credential::wait::{
     resolve_wait_policy,
 };
 use palladin_crypto::{
-    AgentIdentityBinding, DecryptedCredential, Ed25519Identity, EncryptedReasonContext,
-    PairingCandidate, PairingRelayStatus, PinnedVaultTrust, VaultManifestV2, X25519Identity,
-    confirm_pairing_from_relay, decode_base64url, decrypt_credential, key_fingerprint,
-    prepare_pairing, verify_current_manifest, verify_profile_binding,
+    AadField, AadProfile, AadValue, AgentIdentityBinding, DecryptedCredential, Ed25519Identity,
+    EncryptedReasonContext, EnvelopeHeader, HkdfContext, PairingCandidate, PairingRelayStatus,
+    PinnedVaultTrust, SecretBytes, VaultManifestV2, X25519Identity, confirm_pairing_from_relay,
+    decode_base64url, decrypt_credential, decrypt_envelope, derive_projection_key, key_fingerprint,
+    open_sealed_box, prepare_pairing, verify_current_manifest, verify_profile_binding,
 };
 use palladin_exec::{
     EnvironmentError, SecretEnvironment, resolve_interpreter, run_command, run_script,
@@ -54,6 +57,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+use discovery::{DiscoveryPlaintext, LocalDiscoveryIndex};
+
 use integrity::{
     ConfigWrite, IntegrityJournal, SecretAllocation, SecretCopy, SecretDeletion, TRUST_OWNER_ID,
     TrustState, decode_trust_state, encode_trust_state, journal_path, load_journal, remove_journal,
@@ -68,6 +73,7 @@ pub use palladin_exec::{ExecError, ExecResult, OperatorOutput};
 pub struct RuntimeService<S> {
     repository: ProfileRepository,
     secrets: S,
+    discovery: Arc<tokio::sync::Mutex<LocalDiscoveryIndex>>,
 }
 
 const OPERATION_BINDING_DOMAIN: &[u8] = b"palladin.runtime.exact-operation.v1";
@@ -528,6 +534,7 @@ impl<S: SecretStore> RuntimeService<S> {
         Self {
             repository,
             secrets,
+            discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
         }
     }
 
@@ -1290,6 +1297,9 @@ impl<S: SecretStore> RuntimeService<S> {
                 false,
             )?;
         }
+        if !matches!(&registration, AgentRegistrationResult::Active { .. }) {
+            self.discovery.lock().await.purge();
+        }
         Ok(StatusOutcome {
             profile: agent,
             config,
@@ -1362,6 +1372,7 @@ impl<S: SecretStore> RuntimeService<S> {
             lease,
             operation,
             consumed: AtomicBool::new(false),
+            discovery: Arc::clone(&self.discovery),
         })
     }
 
@@ -2614,6 +2625,7 @@ pub struct RuntimeSession {
     lease: OperationLease,
     operation: RuntimeOperation,
     consumed: AtomicBool,
+    discovery: Arc<tokio::sync::Mutex<LocalDiscoveryIndex>>,
 }
 
 struct OperationCancellation {
@@ -2827,11 +2839,333 @@ impl RuntimeSession {
             () = tokio::time::sleep(remaining) => {
                 Err(RuntimeError::OperationAuthorizationExpired)
             }
-            result = self.api.search_entries(query, cursor, page_size) => {
+            result = self.search_local_discovery(query, cursor, page_size) => {
                 self.ensure_authorized()?;
-                result.map_err(RuntimeError::Api)
+                result
             }
         }
+    }
+
+    async fn search_local_discovery(
+        &self,
+        query: &str,
+        cursor: Option<&str>,
+        page_size: Option<u32>,
+    ) -> Result<EntrySearchResult, RuntimeError> {
+        let manifests = match self.api.list_vault_manifests().await {
+            Ok(manifests) => manifests,
+            Err(error) => {
+                self.discovery.lock().await.purge();
+                return Err(error.into());
+            }
+        };
+        let mut index = self.discovery.lock().await;
+        let mut authorized_vaults = BTreeSet::new();
+        for item in manifests.items {
+            let vault_id = item.manifest.vault_id.clone();
+            authorized_vaults.insert(vault_id.clone());
+            let anchor = self
+                .config
+                .vault_trust_anchors
+                .iter()
+                .find(|anchor| anchor.vault_id == vault_id)
+                .ok_or(RuntimeError::UntrustedVaultManifest)?;
+            let identity = self.agent_identity_binding(anchor)?;
+            let manifest = vault_manifest_v2(item.manifest);
+            verify_current_manifest(&manifest, &identity, &pinned_vault_trust(anchor)?)?;
+            let vdk = self.open_manifest_vdk(&manifest, item.envelope)?;
+            if let Err(error) = self
+                .sync_discovery_vault(&vault_id, manifest.vdk_version, &vdk, &mut index)
+                .await
+            {
+                if matches!(error, RuntimeError::Api(ApiError::ResetRequired { .. })) {
+                    index.remove_vault(&vault_id);
+                    self.sync_discovery_vault(&vault_id, manifest.vdk_version, &vdk, &mut index)
+                        .await?;
+                } else {
+                    return Err(error);
+                }
+            }
+        }
+        index.retain_vaults(&authorized_vaults);
+        index.search(query, cursor, page_size)
+    }
+
+    fn open_manifest_vdk(
+        &self,
+        manifest: &VaultManifestV2,
+        envelope: palladin_api::AgentVaultDiscoveryEnvelope,
+    ) -> Result<SecretBytes, RuntimeError> {
+        if envelope.protocol_version != manifest.protocol_version
+            || envelope.organization_id != manifest.organization_id
+            || envelope.vault_id != manifest.vault_id
+            || envelope.agent_id != manifest.agent_id
+            || envelope.vdk_version != manifest.vdk_version
+            || envelope.algorithm_suite != manifest.algorithm_suite
+            || envelope.recipient_agent_key_fingerprint != manifest.agent_x25519_fingerprint
+            || envelope.manifest_revision != manifest.manifest_revision
+            || envelope.manifest_signature != manifest.signature
+            || envelope.recipient_agent_key_version == 0
+        {
+            return Err(RuntimeError::UntrustedVaultManifest);
+        }
+        let wrapped = decode_base64url(&envelope.agent_wrapped_vdk)?;
+        let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(&wrapped));
+        if digest
+            .as_bytes()
+            .ct_eq(manifest.agent_wrapped_vdk_digest.as_bytes())
+            .unwrap_u8()
+            != 1
+        {
+            return Err(RuntimeError::UntrustedVaultManifest);
+        }
+        let vdk = open_sealed_box(&wrapped, &self.encryption)?;
+        if vdk.expose_for_crypto_operation().len() != 32 {
+            return Err(RuntimeError::UntrustedVaultManifest);
+        }
+        Ok(vdk)
+    }
+
+    async fn sync_discovery_vault(
+        &self,
+        vault_id: &str,
+        vdk_version: u32,
+        vdk: &SecretBytes,
+        index: &mut LocalDiscoveryIndex,
+    ) -> Result<(), RuntimeError> {
+        const MAX_SYNC_PAGES: usize = 1_000;
+        if index.prepare_vault(vault_id, vdk_version) {
+            let after = index
+                .applied_sequence(vault_id)
+                .ok_or(RuntimeError::InvalidDiscoveryPayload)?
+                .to_owned();
+            return self
+                .apply_discovery_delta(vault_id, &after, vdk, index)
+                .await;
+        }
+        let mut snapshot_cursor = None;
+        let mut snapshot_base = None;
+        let mut heads = Vec::new();
+        for _ in 0..MAX_SYNC_PAGES {
+            let page = self
+                .api
+                .get_agent_discovery_snapshot(vault_id, snapshot_cursor.as_deref(), Some(200))
+                .await?;
+            validate_sequence(&page.snapshot_base_sequence)?;
+            if snapshot_base
+                .as_ref()
+                .is_some_and(|base| base != &page.snapshot_base_sequence)
+            {
+                return Err(RuntimeError::InvalidDiscoveryPayload);
+            }
+            snapshot_base = Some(page.snapshot_base_sequence);
+            for item in page.items {
+                match item {
+                    AgentDiscoverySyncItem::Head {
+                        entry_id,
+                        agent_discovery_revision,
+                        agent_discovery,
+                    } => heads.push((
+                        entry_id,
+                        self.decrypt_discovery(
+                            vault_id,
+                            &agent_discovery_revision,
+                            agent_discovery,
+                            vdk,
+                        )?,
+                    )),
+                    AgentDiscoverySyncItem::Tombstone { .. } => {
+                        return Err(RuntimeError::InvalidDiscoveryPayload);
+                    }
+                }
+                if heads.len() > 10_000 {
+                    return Err(RuntimeError::DiscoveryIndexLimitExceeded);
+                }
+            }
+            snapshot_cursor = page.next_cursor;
+            if snapshot_cursor.is_none() {
+                break;
+            }
+        }
+        if snapshot_cursor.is_some() {
+            return Err(RuntimeError::DiscoveryIndexLimitExceeded);
+        }
+        index.replace_vault(vault_id, heads)?;
+        let after = snapshot_base.ok_or(RuntimeError::InvalidDiscoveryPayload)?;
+        self.apply_discovery_delta(vault_id, &after, vdk, index)
+            .await
+    }
+
+    async fn apply_discovery_delta(
+        &self,
+        vault_id: &str,
+        initial_after: &str,
+        vdk: &SecretBytes,
+        index: &mut LocalDiscoveryIndex,
+    ) -> Result<(), RuntimeError> {
+        const MAX_SYNC_PAGES: usize = 1_000;
+        let mut after = initial_after.to_owned();
+        let mut applied = validate_sequence(&after)?;
+        let mut delta_upper_bound = None;
+        let mut continuation = None;
+        for _ in 0..MAX_SYNC_PAGES {
+            let page = self
+                .api
+                .get_agent_discovery_delta(
+                    vault_id,
+                    continuation.is_none().then_some(after.as_str()),
+                    continuation.as_deref(),
+                    Some(200),
+                )
+                .await?;
+            let upper_bound = validate_sequence(&page.delta_upper_bound)?;
+            let applied_through = validate_sequence(&page.applied_through_sequence)?;
+            if delta_upper_bound.is_some_and(|expected| expected != upper_bound)
+                || applied_through < applied
+                || applied_through > upper_bound
+            {
+                return Err(RuntimeError::InvalidDiscoveryPayload);
+            }
+            delta_upper_bound = Some(upper_bound);
+            for item in page.items {
+                match item {
+                    AgentDiscoverySyncItem::Head {
+                        entry_id,
+                        agent_discovery_revision,
+                        agent_discovery,
+                    } => index.upsert(
+                        vault_id,
+                        &entry_id,
+                        self.decrypt_discovery(
+                            vault_id,
+                            &agent_discovery_revision,
+                            agent_discovery,
+                            vdk,
+                        )?,
+                    )?,
+                    AgentDiscoverySyncItem::Tombstone {
+                        entry_id,
+                        agent_discovery_revision,
+                        agent_discovery,
+                    } => {
+                        if agent_discovery_revision.is_some() || agent_discovery.is_some() {
+                            return Err(RuntimeError::InvalidDiscoveryPayload);
+                        }
+                        index.remove(vault_id, &entry_id);
+                    }
+                }
+            }
+            after = page.applied_through_sequence;
+            applied = applied_through;
+            continuation = page.continuation_cursor;
+            if continuation.is_none() {
+                if applied != upper_bound {
+                    return Err(RuntimeError::InvalidDiscoveryPayload);
+                }
+                index.mark_applied(vault_id, after);
+                return Ok(());
+            }
+        }
+        Err(RuntimeError::DiscoveryIndexLimitExceeded)
+    }
+
+    fn decrypt_discovery(
+        &self,
+        expected_vault_id: &str,
+        expected_revision: &str,
+        envelope: AgentDiscoveryEnvelope,
+        vdk: &SecretBytes,
+    ) -> Result<DiscoveryPlaintext, RuntimeError> {
+        let organization_id = Uuid::parse_str(&envelope.organization_id)
+            .map_err(|_| RuntimeError::InvalidDiscoveryPayload)?;
+        let vault_id = Uuid::parse_str(&envelope.vault_id)
+            .map_err(|_| RuntimeError::InvalidDiscoveryPayload)?;
+        let entry_id = Uuid::parse_str(&envelope.entry_id)
+            .map_err(|_| RuntimeError::InvalidDiscoveryPayload)?;
+        let revision = validate_sequence(&envelope.agent_discovery_revision)?;
+        let header_revision = validate_sequence(&envelope.header.resource_revision)?;
+        if envelope.vault_id != expected_vault_id
+            || envelope.agent_discovery_revision != expected_revision
+            || revision != header_revision
+            || envelope.vdk_version != envelope.header.key_version
+        {
+            return Err(RuntimeError::InvalidDiscoveryPayload);
+        }
+        let header = EnvelopeHeader {
+            protocol_version: envelope.header.protocol_version,
+            algorithm_suite: envelope.header.algorithm_suite,
+            resource_kind: envelope.header.resource_kind,
+            projection_kind: envelope.header.projection_kind,
+            resource_revision: revision,
+            key_version: envelope.header.key_version,
+            member_key_generation: envelope.header.member_key_generation,
+        };
+        let nonce = decode_base64url(&envelope.header.nonce)?;
+        let ciphertext = decode_base64url(&envelope.ciphertext)?;
+        let key = derive_projection_key(
+            vdk.expose_for_crypto_operation(),
+            HkdfContext {
+                resource_kind: 2,
+                organization_id,
+                vault_id,
+                entry_id: Some(entry_id),
+                key_version: envelope.vdk_version,
+                member_key_generation: envelope.header.member_key_generation,
+                purpose_id: 4,
+            },
+        )?;
+        let aad = [
+            AadField {
+                tag: 1,
+                value: AadValue::U16(header.protocol_version),
+            },
+            AadField {
+                tag: 2,
+                value: AadValue::U16(header.algorithm_suite),
+            },
+            AadField {
+                tag: 3,
+                value: AadValue::U16(header.resource_kind),
+            },
+            AadField {
+                tag: 4,
+                value: AadValue::Uuid(organization_id),
+            },
+            AadField {
+                tag: 5,
+                value: AadValue::Uuid(vault_id),
+            },
+            AadField {
+                tag: 6,
+                value: AadValue::Uuid(entry_id),
+            },
+            AadField {
+                tag: 7,
+                value: AadValue::U16(header.projection_kind),
+            },
+            AadField {
+                tag: 8,
+                value: AadValue::U64(header.resource_revision),
+            },
+            AadField {
+                tag: 9,
+                value: AadValue::U32(header.key_version),
+            },
+            AadField {
+                tag: 10,
+                value: AadValue::U32(header.member_key_generation),
+            },
+        ];
+        let plaintext = decrypt_envelope(
+            AadProfile::AgentDiscovery,
+            header,
+            key.expose_for_crypto_operation(),
+            &nonce,
+            &aad,
+            &ciphertext,
+        )?;
+        serde_json::from_slice(plaintext.expose_for_crypto_operation())
+            .map_err(|_| RuntimeError::InvalidDiscoveryPayload)
     }
 
     pub async fn report_credential_stale(
@@ -3265,6 +3599,18 @@ fn vault_manifest_v2(manifest: VaultManifest) -> VaultManifestV2 {
     }
 }
 
+fn validate_sequence(value: &str) -> Result<u64, RuntimeError> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(RuntimeError::InvalidDiscoveryPayload);
+    }
+    value
+        .parse()
+        .map_err(|_| RuntimeError::InvalidDiscoveryPayload)
+}
+
 fn decode_32_url(value: &str) -> Result<[u8; 32], RuntimeError> {
     decode_base64url(value)?
         .try_into()
@@ -3361,6 +3707,14 @@ pub enum RuntimeError {
     InvalidStoredSecret,
     #[error("public profile configuration is invalid")]
     InvalidPublicConfig,
+    #[error("decrypted Discovery payload is invalid")]
+    InvalidDiscoveryPayload,
+    #[error("local Discovery query is invalid")]
+    InvalidDiscoveryQuery,
+    #[error("local Discovery cursor is invalid or stale")]
+    InvalidDiscoveryCursor,
+    #[error("local Discovery index exceeds its hard entry limit")]
+    DiscoveryIndexLimitExceeded,
     #[error("vault manifest is not bound to an independently paired local trust anchor")]
     UntrustedVaultManifest,
     #[error(
@@ -3679,6 +4033,7 @@ mod tests {
             lease: test_lease(),
             operation: RuntimeOperation::GetCredential,
             consumed: AtomicBool::new(false),
+            discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
         };
 
         let get = session
@@ -3971,6 +4326,7 @@ mod tests {
             lease: test_lease(),
             operation: RuntimeOperation::ExecWithCredential,
             consumed: AtomicBool::new(false),
+            discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
         }
     }
 
