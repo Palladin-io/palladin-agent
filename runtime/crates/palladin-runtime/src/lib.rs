@@ -13,8 +13,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_api::{
     AgentDiscoveryEnvelope, AgentDiscoverySyncItem, AgentPairingActivationResponse,
     AgentPairingStatus, AgentPairingStatusResponse, AgentRegistrationResult, ApiClient, ApiError,
-    CredentialAccess, CredentialMethod, EntrySearchResult, GetCredentialOptions, GrantStatus,
-    ReportCredentialStaleInput, VaultManifest,
+    ApprovedCredentialMethods, CredentialAccess, CredentialMethod, EntrySearchResult,
+    GetCredentialOptions, GrantStatus, ReportCredentialStaleInput, VaultManifest,
 };
 use palladin_core::host::ApiHost;
 use palladin_core::legacy_typescript::{LegacyTypeScriptError, LegacyTypeScriptRepository};
@@ -32,11 +32,12 @@ use palladin_credential::wait::{
     resolve_wait_policy,
 };
 use palladin_crypto::{
-    AadField, AadProfile, AadValue, AgentIdentityBinding, DecryptedCredential, Ed25519Identity,
-    EncryptedReasonContext, EnvelopeHeader, HkdfContext, PairingCandidate, PairingRelayStatus,
-    PinnedVaultTrust, SecretBytes, VaultManifestV2, X25519Identity, confirm_pairing_from_relay,
-    decode_base64url, decrypt_credential, decrypt_envelope, derive_projection_key, key_fingerprint,
-    open_sealed_box, prepare_pairing, verify_current_manifest, verify_profile_binding,
+    AadField, AadProfile, AadValue, AgentIdentityBinding, DecryptedGrantPayload, Ed25519Identity,
+    EncryptedReasonContext, EnvelopeHeader, ExpectedGrantContext, GrantEnvelopeV2, HkdfContext,
+    PairingCandidate, PairingRelayStatus, PinnedVaultTrust, SecretBytes, VaultManifestV2,
+    X25519Identity, confirm_pairing_from_relay, decode_base64url, decrypt_envelope,
+    decrypt_grant_payload, derive_projection_key, key_fingerprint, open_sealed_box,
+    prepare_pairing, verify_current_manifest, verify_profile_binding,
 };
 use palladin_exec::{
     EnvironmentError, SecretEnvironment, resolve_interpreter, run_command, run_script,
@@ -3415,17 +3416,92 @@ impl RuntimeSession {
             WaitError::Cancelled => RuntimeError::WaitCancelled,
             WaitError::Poll(error) => RuntimeError::Api(error),
         })?;
-        let CredentialAccess::Granted {
-            entry_id,
-            label,
-            url_domain,
-            envelope,
-        } = access
-        else {
+        let CredentialAccess::Granted(granted) = access else {
             return Ok(CredentialDelivery::NotGranted(access));
         };
+        let palladin_api::GrantedCredential {
+            organization_id,
+            vault_id,
+            grant_id,
+            agent_id,
+            entry_id,
+            approved_methods,
+            label,
+            grant_envelope_revision,
+            entry_revision,
+            protocol_version,
+            algorithm_suite,
+            grant_key_version,
+            member_key_generation,
+            recipient_agent_key_version,
+            field_ids,
+            ciphertext,
+            nonce,
+            agent_wrapped_grant_dek,
+            agent_wrapper_suite,
+            agent_key_fingerprint,
+            envelope_expires_at,
+            envelope_remaining_uses,
+            url_domain,
+        } = *granted;
         self.ensure_authorized()?;
-        let credential = decrypt_credential(&envelope, &self.encryption)?;
+        if !label.is_empty() || url_domain.is_some() {
+            return Err(RuntimeError::InvalidCredentialPayload);
+        }
+        let anchor = self
+            .config
+            .vault_trust_anchors
+            .iter()
+            .find(|anchor| anchor.vault_id == request.vault_id)
+            .ok_or(RuntimeError::UntrustedVaultManifest)?;
+        let expected_agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        let envelope = GrantEnvelopeV2 {
+            organization_id: parse_uuid(&organization_id)?,
+            vault_id: parse_uuid(&vault_id)?,
+            grant_id: parse_uuid(&grant_id)?,
+            agent_id: parse_uuid(&agent_id)?,
+            entry_id: parse_uuid(&entry_id)?,
+            approved_methods: approved_method_mask(approved_methods),
+            grant_envelope_revision: parse_revision(&grant_envelope_revision)?,
+            entry_revision: parse_revision(&entry_revision)?,
+            protocol_version,
+            algorithm_suite,
+            grant_key_version,
+            member_key_generation,
+            recipient_agent_key_version,
+            field_ids,
+            ciphertext,
+            nonce,
+            agent_wrapped_grant_dek,
+            agent_wrapper_suite,
+            agent_key_fingerprint,
+            envelope_expires_at,
+            envelope_remaining_uses,
+        };
+        let credential = decrypt_grant_payload(
+            &envelope,
+            &self.encryption,
+            ExpectedGrantContext {
+                organization_id: parse_uuid(&anchor.organization_id)?,
+                vault_id: parse_uuid(request.vault_id)?,
+                entry_id: parse_uuid(request.entry_id)?,
+                agent_id: parse_uuid(expected_agent_id)?,
+                requested_method: credential_method_mask(method),
+                now: OffsetDateTime::now_utc(),
+            },
+        )?;
+        let parsed = parse_secret(credential.expose_for_authorized_operation())
+            .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
+        if parsed.script.is_some() && method != CredentialMethod::Exec {
+            return Ok(CredentialDelivery::NotGranted(
+                CredentialAccess::ScriptExecOnly,
+            ));
+        }
+        drop(parsed);
         self.ensure_authorized()?;
         Ok(CredentialDelivery::Granted(DeliveredCredential {
             entry_id,
@@ -3463,7 +3539,7 @@ pub struct DeliveredCredential {
     pub entry_id: String,
     pub label: String,
     pub url_domain: Option<String>,
-    credential: DecryptedCredential,
+    credential: DecryptedGrantPayload,
 }
 
 impl DeliveredCredential {
@@ -3669,6 +3745,35 @@ const fn credential_method_mask(method: CredentialMethod) -> u16 {
         CredentialMethod::Exec => 2,
         CredentialMethod::Inject => 4,
     }
+}
+
+const fn approved_method_mask(methods: ApprovedCredentialMethods) -> u16 {
+    match methods {
+        ApprovedCredentialMethods::Get => 1,
+        ApprovedCredentialMethods::Exec => 2,
+        ApprovedCredentialMethods::GetExec => 3,
+        ApprovedCredentialMethods::Inject => 4,
+        ApprovedCredentialMethods::GetInject => 5,
+        ApprovedCredentialMethods::ExecInject => 6,
+        ApprovedCredentialMethods::GetExecInject => 7,
+    }
+}
+
+fn parse_uuid(value: &str) -> Result<Uuid, RuntimeError> {
+    Uuid::parse_str(value).map_err(|_| RuntimeError::InvalidCredentialPayload)
+}
+
+fn parse_revision(value: &str) -> Result<u64, RuntimeError> {
+    if value.is_empty()
+        || value == "0"
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(RuntimeError::InvalidCredentialPayload);
+    }
+    value
+        .parse()
+        .map_err(|_| RuntimeError::InvalidCredentialPayload)
 }
 
 #[derive(Debug, Error)]
@@ -4092,7 +4197,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_exec_delivers_with_exec_and_runs_without_shell_or_protocol_stdin() {
+    async fn native_exec_rejects_legacy_credential_envelopes_without_spawning() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../contracts/v1/encrypted-envelope.json"
         ))
@@ -4142,15 +4247,11 @@ mod tests {
                 &CancellationToken::new(),
                 |_| {},
             )
-            .await
-            .expect("exec");
-        assert_eq!(
+            .await;
+        assert!(matches!(
             outcome,
-            CredentialExecOutcome::Completed(ExecResult {
-                exit_code: 0,
-                cancelled: false,
-            })
-        );
+            Err(RuntimeError::Api(ApiError::InvalidResponse))
+        ));
         let replay = session
             .execute_with_credential(
                 CredentialExecRequest {
@@ -4176,7 +4277,7 @@ mod tests {
 
     #[cfg(not(windows))]
     #[tokio::test]
-    async fn script_resolves_every_reference_before_spawning_the_allowlisted_interpreter() {
+    async fn script_rejects_legacy_envelopes_before_resolving_references() {
         let main = r#"{"access":"granted","entryId":"script-entry","label":"Fixture Script","urlDomain":null,"nonce":"p4zno4W6mNfd0WESkmk6Kg2IzO9VsLxw","reEncryptedBlob":"sd652QzdkDm9esJ/oNXFj2J5fC1yiVt40hc3KdkrX9oosfMa1mNPQq9uJs0aY+MJlcID+MJpSALUZssy1+4pg3nYTsg0Tg/58BaKvfs34FT3vDZZvBexrh4l+erGCHrxX1ZMuPcz3E1Y5dcXH9hTb9d0imuq0udEc3ggfR5NcTkj9qLTrWUGyUKta0MWzJ10t8GmsJD899XLNnLu/IpmDcLoiUaPICtNrKMQUco=","agentWrappedDek":"7zIytOfJ4bPy68f1zA6o9hCieaMWSV/KbhQlaMQbtXiNP+okqawLXloq78+y7TU+OaldelM2pCAx/bBrw7WKIVq+MRhs/AXtAxHXeIzqgB8="}"#.to_owned();
         let reference = r#"{"access":"granted","entryId":"entry-ref","label":"Fixture Reference","urlDomain":null,"nonce":"ESDpZ93lTBOWJ52IGTpCvMNF76YvF0V7","reEncryptedBlob":"OOLe+QqjuYw/m+64+bzeSsU5T3/G91MQDV5/H+sizDmk4XfZ/77ghOhd2e9P3gKRVO33YZFycDLtzw==","agentWrappedDek":"I3SAjwhivFjXmwGAb2AQgmVsafe1vptGc/HhvGzb2gVn2n+7VykBumldS5PEq3zwH/IL76EUo9vstSOxY+e4BtmpsbcOm1r08la/FFTxyjg="}"#.to_owned();
         let (host, requests) = credential_server_owned(vec![main, reference]).await;
@@ -4202,19 +4303,14 @@ mod tests {
                 &CancellationToken::new(),
                 |_| {},
             )
-            .await
-            .expect("script exec");
-        assert_eq!(
+            .await;
+        assert!(matches!(
             outcome,
-            CredentialExecOutcome::Completed(ExecResult {
-                exit_code: 0,
-                cancelled: false,
-            })
-        );
+            Err(RuntimeError::Api(ApiError::InvalidResponse))
+        ));
         let requests = requests.lock().expect("requests");
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 1);
         assert!(requests[0].contains("/vaults/script-vault/entries/script-entry/credential"));
-        assert!(requests[1].contains("/vaults/script-vault/entries/entry-ref/credential"));
         assert!(
             requests
                 .iter()

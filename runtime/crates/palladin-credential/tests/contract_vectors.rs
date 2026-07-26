@@ -455,12 +455,29 @@ fn access(name: &str) -> CredentialAccess {
     match name {
         "granted" => serde_json::from_value(serde_json::json!({
             "access": "granted",
+            "organizationId": "organization-fixture",
+            "vaultId": "vault-fixture",
+            "grantId": "grant-fixture",
+            "agentId": "agent-fixture",
             "entryId": "entry-fixture",
-            "label": "Fixture",
+            "approvedMethods": "get",
+            "label": "",
+            "grantEnvelopeRevision": "1",
+            "entryRevision": "1",
+            "protocolVersion": 2,
+            "algorithmSuite": 1,
+            "grantKeyVersion": 1,
+            "memberKeyGeneration": 1,
+            "recipientAgentKeyVersion": 1,
+            "fieldIds": ["password"],
+            "ciphertext": "AA",
+            "nonce": "AA",
+            "agentWrappedGrantDek": "AA",
+            "agentWrapperSuite": 1,
+            "agentKeyFingerprint": "AA",
+            "envelopeExpiresAt": null,
+            "envelopeRemainingUses": null,
             "urlDomain": null,
-            "reEncryptedBlob": "AA==",
-            "nonce": "AA==",
-            "agentWrappedDek": "AA=="
         }))
         .expect("granted fixture"),
         "pending" => CredentialAccess::Pending {
@@ -492,7 +509,7 @@ fn pending(id: &str) -> CredentialAccess {
 
 const fn access_name(access: &CredentialAccess) -> &'static str {
     match access {
-        CredentialAccess::Granted { .. } => "granted",
+        CredentialAccess::Granted(..) => "granted",
         CredentialAccess::Pending { .. } => "pending",
         CredentialAccess::Denied => "denied",
         CredentialAccess::Revoked => "revoked",

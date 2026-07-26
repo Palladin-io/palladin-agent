@@ -9,7 +9,8 @@ pub use types::{
     AgentDiscoverySnapshotResponse, AgentDiscoverySyncItem, AgentPairingActivationResponse,
     AgentPairingStatus, AgentPairingStatusResponse, AgentRegistrationResult,
     AgentVaultDiscoveryEnvelope, AgentVaultManifestItem, AgentVaultManifestsResponse,
-    AgentVisibleField, CredentialAccess, CredentialMethod, EntrySearchItem, EntrySearchResult,
-    GetCredentialOptions, GrantStatus, GrantStatusResponse, InjectFailureUpload,
-    ReportCredentialStaleInput, StaleReasonCode, VaultManifest,
+    AgentVisibleField, ApprovedCredentialMethods, CredentialAccess, CredentialMethod,
+    EntrySearchItem, EntrySearchResult, GetCredentialOptions, GrantStatus, GrantStatusResponse,
+    GrantedCredential, InjectFailureUpload, ReportCredentialStaleInput, StaleReasonCode,
+    VaultManifest,
 };

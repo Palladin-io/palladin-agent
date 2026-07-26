@@ -310,7 +310,14 @@ impl ApiClient {
             encode_component(vault_id),
             encode_component(entry_id)
         );
-        let response = self.send(Method::POST, &path, Some(body), &[]).await?;
+        let response = self
+            .send(
+                Method::POST,
+                &path,
+                Some(body),
+                &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
+            )
+            .await?;
         match response.status() {
             StatusCode::OK
             | StatusCode::ACCEPTED
@@ -700,6 +707,7 @@ mod tests {
             "POST /api/agent/vaults/vault%2Fone/entries/entry%20two/credential HTTP/1.1"
         ));
         assert_eq!(header_value(headers, "x-agent-id"), "agent-123");
+        assert_eq!(header_value(headers, "x-palladin-vault-protocol"), "2");
 
         let timestamp = header_value(headers, "x-agent-timestamp")
             .parse::<u64>()

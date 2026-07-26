@@ -1,4 +1,4 @@
-use palladin_crypto::{EncryptedCredential, EncryptedReasonEnvelope};
+use palladin_crypto::EncryptedReasonEnvelope;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -51,18 +51,28 @@ pub struct GetCredentialOptions {
     pub requested_methods: Vec<CredentialMethod>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+pub enum ApprovedCredentialMethods {
+    #[serde(rename = "get")]
+    Get,
+    #[serde(rename = "exec")]
+    Exec,
+    #[serde(rename = "get, exec")]
+    GetExec,
+    #[serde(rename = "inject")]
+    Inject,
+    #[serde(rename = "get, inject")]
+    GetInject,
+    #[serde(rename = "exec, inject")]
+    ExecInject,
+    #[serde(rename = "get, exec, inject")]
+    GetExecInject,
+}
+
 #[derive(Debug, Deserialize, Eq, PartialEq)]
-#[serde(tag = "access", rename_all = "kebab-case")]
+#[serde(tag = "access", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CredentialAccess {
-    Granted {
-        #[serde(rename = "entryId")]
-        entry_id: String,
-        label: String,
-        #[serde(rename = "urlDomain")]
-        url_domain: Option<String>,
-        #[serde(flatten)]
-        envelope: EncryptedCredential,
-    },
+    Granted(Box<GrantedCredential>),
     Pending {
         #[serde(rename = "grantId")]
         grant_id: String,
@@ -80,6 +90,34 @@ pub enum CredentialAccess {
     ScriptExecOnly,
     Unavailable,
     Blocked,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GrantedCredential {
+    pub organization_id: String,
+    pub vault_id: String,
+    pub grant_id: String,
+    pub agent_id: String,
+    pub entry_id: String,
+    pub approved_methods: ApprovedCredentialMethods,
+    pub label: String,
+    pub grant_envelope_revision: String,
+    pub entry_revision: String,
+    pub protocol_version: u16,
+    pub algorithm_suite: u16,
+    pub grant_key_version: u32,
+    pub member_key_generation: u32,
+    pub recipient_agent_key_version: u32,
+    pub field_ids: Vec<String>,
+    pub ciphertext: String,
+    pub nonce: String,
+    pub agent_wrapped_grant_dek: String,
+    pub agent_wrapper_suite: u16,
+    pub agent_key_fingerprint: String,
+    pub envelope_expires_at: Option<String>,
+    pub envelope_remaining_uses: Option<u32>,
+    pub url_domain: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -347,4 +385,89 @@ pub(crate) struct StaleRequestBody<'a> {
     pub code: StaleReasonCode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<&'a str>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApprovedCredentialMethods, CredentialAccess, GrantedCredential};
+
+    const GRANTED: &str = r#"{
+        "access":"granted",
+        "organizationId":"organization",
+        "vaultId":"vault",
+        "grantId":"grant",
+        "agentId":"agent",
+        "entryId":"entry",
+        "approvedMethods":"get, exec, inject",
+        "label":"Example",
+        "grantEnvelopeRevision":"3",
+        "entryRevision":"12",
+        "protocolVersion":2,
+        "algorithmSuite":1,
+        "grantKeyVersion":4,
+        "memberKeyGeneration":5,
+        "recipientAgentKeyVersion":6,
+        "fieldIds":["password","username"],
+        "ciphertext":"ciphertext",
+        "nonce":"nonce",
+        "agentWrappedGrantDek":"wrapped",
+        "agentWrapperSuite":1,
+        "agentKeyFingerprint":"fingerprint",
+        "envelopeExpiresAt":null,
+        "envelopeRemainingUses":5,
+        "urlDomain":"example.com"
+    }"#;
+
+    #[test]
+    fn granted_decodes_the_strict_v2_contract() {
+        let access: CredentialAccess = serde_json::from_str(GRANTED).expect("v2 granted response");
+        assert!(matches!(
+            access,
+            CredentialAccess::Granted(granted)
+                if matches!(*granted, GrantedCredential {
+                approved_methods: ApprovedCredentialMethods::GetExecInject,
+                protocol_version: 2,
+                envelope_remaining_uses: Some(5),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn approved_methods_accepts_only_backend_flag_strings() {
+        let cases = [
+            ("get", ApprovedCredentialMethods::Get),
+            ("exec", ApprovedCredentialMethods::Exec),
+            ("get, exec", ApprovedCredentialMethods::GetExec),
+            ("inject", ApprovedCredentialMethods::Inject),
+            ("get, inject", ApprovedCredentialMethods::GetInject),
+            ("exec, inject", ApprovedCredentialMethods::ExecInject),
+            (
+                "get, exec, inject",
+                ApprovedCredentialMethods::GetExecInject,
+            ),
+        ];
+        for (wire, expected) in cases {
+            let json = format!(r#""{wire}""#);
+            assert_eq!(
+                serde_json::from_str::<ApprovedCredentialMethods>(&json).expect("approved methods"),
+                expected
+            );
+        }
+        for rejected in [r#"""#, r#""Get""#, r#""exec, get""#, "3", r#""delete""#] {
+            assert!(serde_json::from_str::<ApprovedCredentialMethods>(rejected).is_err());
+        }
+    }
+
+    #[test]
+    fn granted_rejects_legacy_or_incomplete_envelopes() {
+        let legacy = r#"{"access":"granted","entryId":"entry","label":"Example","urlDomain":null,"ciphertext":"ciphertext","nonce":"nonce","wrappedDek":"wrapped"}"#;
+        assert!(serde_json::from_str::<CredentialAccess>(legacy).is_err());
+
+        let unknown = GRANTED.replace(
+            r#""urlDomain":"example.com""#,
+            r#""urlDomain":"example.com","legacyField":"rejected""#,
+        );
+        assert!(serde_json::from_str::<CredentialAccess>(&unknown).is_err());
+    }
 }

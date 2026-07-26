@@ -1,12 +1,16 @@
 #![forbid(unsafe_code)]
 
 mod envelope;
+mod grant;
 mod identity;
 mod manifest;
 mod signing;
 mod vault_v2;
 
 pub use envelope::{DecryptedCredential, EncryptedCredential, decrypt_credential};
+pub use grant::{
+    DecryptedGrantPayload, ExpectedGrantContext, GrantEnvelopeV2, decrypt_grant_payload,
+};
 pub use identity::{Ed25519Identity, X25519Identity, verify_profile_binding};
 pub use manifest::{
     AgentIdentityBinding, MemberPairingConfirmation, PairingCandidate, PairingRelayStatus,
