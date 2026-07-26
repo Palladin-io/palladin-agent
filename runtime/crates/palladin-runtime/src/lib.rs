@@ -9,7 +9,7 @@ pub mod version_policy;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_api::{
     AgentRegistrationResult, ApiClient, ApiError, CredentialAccess, CredentialMethod,
-    EntrySearchResult, GetCredentialOptions, ReportCredentialStaleInput,
+    EntrySearchResult, GetCredentialOptions, GrantStatus, ReportCredentialStaleInput,
 };
 use palladin_core::host::ApiHost;
 use palladin_core::legacy_typescript::{LegacyTypeScriptError, LegacyTypeScriptRepository};
@@ -23,7 +23,7 @@ use palladin_core::public_store::{
 };
 use palladin_core::secret::OrganizationApiKey;
 use palladin_credential::wait::{
-    HeartbeatInfo, WaitError, WaitHints, WaitOptions, WaitPolicyError, await_grant,
+    HeartbeatInfo, WaitError, WaitHints, WaitOptions, WaitPolicyError, await_grant_exponential,
     resolve_wait_policy,
 };
 use palladin_crypto::{
@@ -2866,13 +2866,39 @@ impl RuntimeSession {
             _ => WaitHints::default(),
         };
         let policy = resolve_wait_policy(request.wait, hints)?;
-        let access = await_grant(
+        let pending_grant_id = match &initial {
+            CredentialAccess::Pending { grant_id, .. } => Some(grant_id.clone()),
+            _ => None,
+        };
+        let access = await_grant_exponential(
             initial,
             policy,
             cancellation,
-            || {
-                self.api
-                    .get_credential(request.vault_id, request.entry_id, &options)
+            || async {
+                let Some(grant_id) = pending_grant_id.as_deref() else {
+                    return Err(ApiError::InvalidResponse);
+                };
+                let status = self
+                    .api
+                    .get_grant_status(request.vault_id, grant_id)
+                    .await?;
+                match status.status {
+                    GrantStatus::Pending => Ok(CredentialAccess::Pending {
+                        grant_id: status.grant_id,
+                        created: None,
+                        poll_interval_ms: None,
+                        max_wait_ms: None,
+                    }),
+                    GrantStatus::Active => {
+                        self.api
+                            .get_credential(request.vault_id, request.entry_id, &options)
+                            .await
+                    }
+                    GrantStatus::Denied => Ok(CredentialAccess::Denied),
+                    GrantStatus::Revoked => Ok(CredentialAccess::Revoked),
+                    GrantStatus::Expired => Ok(CredentialAccess::Expired),
+                    GrantStatus::Consumed => Ok(CredentialAccess::Consumed),
+                }
             },
             tokio::time::sleep,
             heartbeat,
