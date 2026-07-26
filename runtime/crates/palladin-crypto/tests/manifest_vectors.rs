@@ -1,7 +1,7 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use palladin_crypto::{
-    AgentIdentityBinding, CryptoError, VaultManifestV2, confirm_pairing, prepare_pairing,
-    verify_manifest_update,
+    AgentIdentityBinding, CryptoError, MemberPairingConfirmation, VaultManifestV2, confirm_pairing,
+    prepare_pairing, verify_manifest_update,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -70,10 +70,17 @@ fn pairing_transcript_and_sas_are_byte_identical_to_frozen_fixture() {
         candidate.short_authentication_string(),
         vector.short_authentication_string
     );
+    let digest = candidate.transcript_digest().to_owned();
     assert_eq!(
-        confirm_pairing(candidate, &vector.short_authentication_string)
-            .expect("confirmed")
-            .len(),
+        confirm_pairing(
+            candidate,
+            &MemberPairingConfirmation {
+                transcript_digest: digest,
+                short_authentication_string: vector.short_authentication_string.clone(),
+            },
+        )
+        .expect("confirmed")
+        .len(),
         2
     );
 }
@@ -99,8 +106,32 @@ fn pairing_rejects_wrong_agent_and_wrong_sas() {
         &fixture.signed_manifests,
     )
     .unwrap();
+    let digest = candidate.transcript_digest().to_owned();
     assert!(matches!(
-        confirm_pairing(candidate, "0000-0000-0000"),
+        confirm_pairing(
+            candidate,
+            &MemberPairingConfirmation {
+                transcript_digest: digest,
+                short_authentication_string: "0000-0000-0000".to_owned(),
+            },
+        ),
+        Err(CryptoError::AuthenticationFailed)
+    ));
+
+    let candidate = prepare_pairing(
+        Uuid::parse_str(&vector.transcript.activation_id).unwrap(),
+        &identity(vector),
+        &fixture.signed_manifests,
+    )
+    .unwrap();
+    assert!(matches!(
+        confirm_pairing(
+            candidate,
+            &MemberPairingConfirmation {
+                transcript_digest: URL_SAFE_NO_PAD.encode([0_u8; 32]),
+                short_authentication_string: vector.short_authentication_string.clone(),
+            },
+        ),
         Err(CryptoError::AuthenticationFailed)
     ));
 
@@ -127,7 +158,15 @@ fn pinned_anchor_rejects_replay_and_embedded_key_substitution() {
         &fixture.signed_manifests,
     )
     .unwrap();
-    let anchors = confirm_pairing(candidate, &vector.short_authentication_string).unwrap();
+    let digest = candidate.transcript_digest().to_owned();
+    let anchors = confirm_pairing(
+        candidate,
+        &MemberPairingConfirmation {
+            transcript_digest: digest,
+            short_authentication_string: vector.short_authentication_string.clone(),
+        },
+    )
+    .unwrap();
     let manifest = &fixture.signed_manifests[1];
     let anchor = anchors
         .iter()

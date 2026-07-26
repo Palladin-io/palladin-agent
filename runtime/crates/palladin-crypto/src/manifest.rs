@@ -79,6 +79,7 @@ pub struct PinnedVaultTrust {
 #[derive(Debug)]
 pub struct PairingCandidate {
     transcript: PairingTranscript,
+    transcript_digest: String,
     sas: String,
     anchors: Vec<PinnedVaultTrust>,
 }
@@ -93,6 +94,18 @@ impl PairingCandidate {
     pub fn short_authentication_string(&self) -> &str {
         &self.sas
     }
+
+    #[must_use]
+    pub fn transcript_digest(&self) -> &str {
+        &self.transcript_digest
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemberPairingConfirmation {
+    /// Digest constructed by an independently trusted, unlocked Member client.
+    pub transcript_digest: String,
+    pub short_authentication_string: String,
 }
 
 #[derive(Serialize)]
@@ -298,6 +311,7 @@ pub fn prepare_pairing(
     let sas = format!("{}-{}-{}", &symbols[..4], &symbols[4..8], &symbols[8..]);
     Ok(PairingCandidate {
         transcript,
+        transcript_digest: URL_SAFE_NO_PAD.encode(digest),
         sas,
         anchors,
     })
@@ -305,9 +319,11 @@ pub fn prepare_pairing(
 
 pub fn confirm_pairing(
     candidate: PairingCandidate,
-    confirmed_sas: &str,
+    member_confirmation: &MemberPairingConfirmation,
 ) -> Result<Vec<PinnedVaultTrust>, CryptoError> {
-    if candidate.sas != confirmed_sas {
+    if candidate.transcript_digest != member_confirmation.transcript_digest
+        || candidate.sas != member_confirmation.short_authentication_string
+    {
         return Err(CryptoError::AuthenticationFailed);
     }
     Ok(candidate.anchors)
