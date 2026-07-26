@@ -9,9 +9,9 @@ mod vault_v2;
 pub use envelope::{DecryptedCredential, EncryptedCredential, decrypt_credential};
 pub use identity::{Ed25519Identity, X25519Identity, verify_profile_binding};
 pub use manifest::{
-    AgentIdentityBinding, MemberPairingConfirmation, PairingCandidate, PairingTranscript,
-    PairingVault, PinnedVaultTrust, TrustedVdkSet, VaultManifestV2, confirm_pairing,
-    prepare_pairing, verify_manifest_update,
+    AgentIdentityBinding, MemberPairingConfirmation, PairingCandidate, PairingRelayStatus,
+    PairingTranscript, PairingVault, PinnedVaultTrust, TrustedVdkSet, VaultManifestV2,
+    confirm_pairing, confirm_pairing_from_relay, prepare_pairing, verify_manifest_update,
 };
 pub use signing::{
     SignatureHeaders, body_sha256_base64, canonical_request, generate_nonce_base64, sign_request,

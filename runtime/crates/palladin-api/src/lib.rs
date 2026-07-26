@@ -5,6 +5,7 @@ mod types;
 
 pub use client::{ApiClient, ApiError, SigningContext};
 pub use types::{
+    AgentPairingActivationResponse, AgentPairingStatus, AgentPairingStatusResponse,
     AgentRegistrationResult, AgentVaultDiscoveryEnvelope, AgentVaultManifestItem,
     AgentVaultManifestsResponse, AgentVisibleField, CredentialAccess, CredentialMethod,
     EntrySearchItem, EntrySearchResult, GetCredentialOptions, GrantStatus, GrantStatusResponse,

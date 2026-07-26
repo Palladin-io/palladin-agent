@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::{
@@ -106,6 +107,14 @@ pub struct MemberPairingConfirmation {
     /// Digest constructed by an independently trusted, unlocked Member client.
     pub transcript_digest: String,
     pub short_authentication_string: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PairingRelayStatus {
+    pub activation_id: String,
+    pub status: String,
+    pub expires_at: String,
+    pub confirmed_pairing_digest: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -327,6 +336,33 @@ pub fn confirm_pairing(
         return Err(CryptoError::AuthenticationFailed);
     }
     Ok(candidate.anchors)
+}
+
+pub fn confirm_pairing_from_relay(
+    candidate: PairingCandidate,
+    relay: &PairingRelayStatus,
+    now: OffsetDateTime,
+) -> Result<Vec<PinnedVaultTrust>, CryptoError> {
+    let expiry = OffsetDateTime::parse(&relay.expires_at, &Rfc3339)
+        .map_err(|_| CryptoError::InvalidEncoding)?;
+    if relay.activation_id != candidate.transcript.activation_id
+        || relay.status != "confirmed"
+        || now >= expiry
+    {
+        return Err(CryptoError::StaleInput);
+    }
+    let digest = relay
+        .confirmed_pairing_digest
+        .as_deref()
+        .ok_or(CryptoError::AuthenticationFailed)?;
+    if decode_base64url(digest)?.len() != 32 {
+        return Err(CryptoError::InvalidLength);
+    }
+    let confirmation = MemberPairingConfirmation {
+        transcript_digest: digest.to_owned(),
+        short_authentication_string: candidate.sas.clone(),
+    };
+    confirm_pairing(candidate, &confirmation)
 }
 
 pub fn verify_manifest_update(

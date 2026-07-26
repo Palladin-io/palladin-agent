@@ -1,9 +1,11 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use palladin_crypto::{
-    AgentIdentityBinding, CryptoError, MemberPairingConfirmation, VaultManifestV2, confirm_pairing,
-    prepare_pairing, verify_manifest_update,
+    AgentIdentityBinding, CryptoError, MemberPairingConfirmation, PairingRelayStatus,
+    VaultManifestV2, confirm_pairing, confirm_pairing_from_relay, prepare_pairing,
+    verify_manifest_update,
 };
 use serde::Deserialize;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
@@ -188,4 +190,39 @@ fn pinned_anchor_rejects_replay_and_embedded_key_substitution() {
     substituted.manifest_revision = "15".into();
     substituted.vault_signing_public_key = URL_SAFE_NO_PAD.encode([42_u8; 32]);
     assert!(verify_manifest_update(&substituted, &identity, anchor).is_err());
+}
+
+#[test]
+fn relay_status_is_bound_to_activation_digest_terminal_state_and_expiry() {
+    let fixture = fixture();
+    let vector = &fixture.vectors[0];
+    let activation_id = Uuid::parse_str(&vector.transcript.activation_id).unwrap();
+    let candidate =
+        prepare_pairing(activation_id, &identity(vector), &fixture.signed_manifests).unwrap();
+    let digest = candidate.transcript_digest().to_owned();
+    let relay = PairingRelayStatus {
+        activation_id: activation_id.to_string(),
+        status: "confirmed".to_owned(),
+        expires_at: "2026-07-27T00:00:00Z".to_owned(),
+        confirmed_pairing_digest: Some(digest),
+    };
+    let now = OffsetDateTime::parse(
+        "2026-07-26T23:59:00Z",
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap();
+    assert_eq!(
+        confirm_pairing_from_relay(candidate, &relay, now)
+            .unwrap()
+            .len(),
+        2
+    );
+
+    for mutation in ["pending", "expired", "stale"] {
+        let candidate =
+            prepare_pairing(activation_id, &identity(vector), &fixture.signed_manifests).unwrap();
+        let mut invalid = relay.clone();
+        invalid.status = mutation.to_owned();
+        assert!(confirm_pairing_from_relay(candidate, &invalid, now).is_err());
+    }
 }

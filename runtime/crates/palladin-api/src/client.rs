@@ -11,9 +11,9 @@ use reqwest::{Method, StatusCode, header::HeaderValue};
 use thiserror::Error;
 
 use crate::types::{
-    AgentRegistrationResult, CredentialAccess, CredentialRequestBody, EntrySearchResult,
-    GetCredentialOptions, InjectFailureUpload, RegistrationBody, ReportCredentialStaleInput,
-    StaleRequestBody,
+    AgentRegistrationResult, CreatePairingActivationBody, CredentialAccess, CredentialRequestBody,
+    EntrySearchResult, GetCredentialOptions, InjectFailureUpload, RegistrationBody,
+    ReportCredentialStaleInput, StaleRequestBody,
 };
 
 const ENCODE_URI_COMPONENT: &AsciiSet = &CONTROLS
@@ -204,6 +204,35 @@ impl ApiClient {
                 &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
             )
             .await?;
+        decode_success(response).await
+    }
+
+    pub async fn create_pairing_activation(
+        &self,
+        activation_id: &str,
+    ) -> Result<crate::AgentPairingActivationResponse, ApiError> {
+        let body = serde_json::to_vec(&CreatePairingActivationBody { activation_id })
+            .map_err(|_| ApiError::InvalidInput)?;
+        let response = self
+            .send(
+                Method::POST,
+                "/api/agent/pairing/activations",
+                Some(body),
+                &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
+            )
+            .await?;
+        decode_success(response).await
+    }
+
+    pub async fn get_pairing_status(
+        &self,
+        activation_id: &str,
+    ) -> Result<crate::AgentPairingStatusResponse, ApiError> {
+        let path = format!(
+            "/api/agent/pairing/activations/{}",
+            encode_component(activation_id)
+        );
+        let response = self.send(Method::GET, &path, None, &[]).await?;
         decode_success(response).await
     }
 
@@ -586,6 +615,32 @@ mod tests {
             .expect("public key")
             .verify(canonical.as_bytes(), &signature)
             .expect("valid signature");
+    }
+
+    #[tokio::test]
+    async fn pairing_client_sends_protocol_gate_and_decodes_fail_closed_status() {
+        let activation = r#"{"activationId":"aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa","organizationId":"11111111-1111-4111-8111-111111111111","agentId":"55555555-5555-4555-8555-555555555555","agentAccessEpoch":3,"agentX25519Fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","agentEd25519Fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","expiresAt":"2026-07-26T19:00:00Z","candidateManifests":[]}"#;
+        let status = r#"{"activationId":"aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa","status":"confirmed","expiresAt":"2026-07-26T19:00:00Z","confirmedPairingDigest":"ccccccccccccccccccccccccccccccccccccccccccc"}"#;
+        let (host, requests) = response_server(vec![(200, activation), (200, status)]).await;
+        let api = client(&host, vec![7; 32], Duration::from_secs(1));
+        let created = api
+            .create_pairing_activation("aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa")
+            .await
+            .expect("activation");
+        assert_eq!(created.agent_access_epoch, 3);
+        let polled = api
+            .get_pairing_status("aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa")
+            .await
+            .expect("status");
+        assert_eq!(polled.status, crate::AgentPairingStatus::Confirmed);
+        let requests = requests.lock().expect("requests");
+        assert!(requests[0].contains("x-palladin-vault-protocol: 2"));
+        assert!(
+            requests[0].ends_with(r#"{"activationId":"aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa"}"#)
+        );
+        assert!(requests[1].starts_with(
+            "GET /api/agent/pairing/activations/aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa HTTP/1.1"
+        ));
     }
 
     #[tokio::test]

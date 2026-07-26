@@ -219,6 +219,43 @@ pub struct AgentVaultManifestsResponse {
     pub items: Vec<AgentVaultManifestItem>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPairingActivationResponse {
+    pub activation_id: String,
+    pub organization_id: String,
+    pub agent_id: String,
+    pub agent_access_epoch: u32,
+    pub agent_x25519_fingerprint: String,
+    pub agent_ed25519_fingerprint: String,
+    pub expires_at: String,
+    pub candidate_manifests: Vec<VaultManifest>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentPairingStatus {
+    Pending,
+    Confirmed,
+    Expired,
+    Stale,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPairingStatusResponse {
+    pub activation_id: String,
+    pub status: AgentPairingStatus,
+    pub expires_at: String,
+    pub confirmed_pairing_digest: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreatePairingActivationBody<'a> {
+    pub activation_id: &'a str,
+}
+
 #[derive(Serialize)]
 pub(crate) struct StaleRequestBody<'a> {
     pub code: StaleReasonCode,
