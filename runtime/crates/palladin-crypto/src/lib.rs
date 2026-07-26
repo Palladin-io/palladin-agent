@@ -16,9 +16,10 @@ pub use signing::{
     SignatureHeaders, body_sha256_base64, canonical_request, generate_nonce_base64, sign_request,
 };
 pub use vault_v2::{
-    ALGORITHM_SUITE, AadField, AadProfile, AadValue, EnvelopeHeader, HkdfContext, PROTOCOL_VERSION,
+    ALGORITHM_SUITE, AadField, AadProfile, AadValue, EncryptedReasonContext,
+    EncryptedReasonEnvelope, EncryptedReasonHeader, EnvelopeHeader, HkdfContext, PROTOCOL_VERSION,
     SecretBytes, SignatureProfile, decode_base64url, decrypt_envelope, derive_projection_key,
-    encode_aad, key_fingerprint, open_sealed_box, verify_domain_signature,
+    encode_aad, encrypt_reason, key_fingerprint, open_sealed_box, verify_domain_signature,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

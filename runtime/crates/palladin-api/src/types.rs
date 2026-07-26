@@ -1,4 +1,4 @@
-use palladin_crypto::EncryptedCredential;
+use palladin_crypto::{EncryptedCredential, EncryptedReasonEnvelope};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -46,7 +46,7 @@ impl CredentialMethod {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GetCredentialOptions {
-    pub reason: Option<String>,
+    pub encrypted_reason: Option<EncryptedReasonEnvelope>,
     pub method: Option<CredentialMethod>,
     pub requested_methods: Vec<CredentialMethod>,
 }
@@ -139,11 +139,84 @@ pub(crate) struct RegistrationBody {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CredentialRequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<&'a str>,
+    pub encrypted_reason: Option<&'a EncryptedReasonEnvelope>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requested_methods: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum GrantStatus {
+    Pending,
+    Active,
+    Denied,
+    Revoked,
+    Expired,
+    Consumed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantStatusResponse {
+    pub grant_id: String,
+    pub status: GrantStatus,
+    pub expires_at: Option<String>,
+    pub query_limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentVaultDiscoveryEnvelope {
+    pub protocol_version: u16,
+    pub organization_id: String,
+    pub vault_id: String,
+    pub agent_id: String,
+    pub vdk_version: u32,
+    pub algorithm_suite: u16,
+    pub recipient_agent_key_version: u32,
+    pub recipient_agent_key_fingerprint: String,
+    pub agent_wrapped_vdk: String,
+    pub manifest_revision: String,
+    pub manifest_signature: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultManifest {
+    pub protocol_version: u16,
+    pub algorithm_suite: u16,
+    pub organization_id: String,
+    pub vault_id: String,
+    pub agent_id: String,
+    pub agent_x25519_fingerprint: String,
+    pub agent_ed25519_fingerprint: String,
+    pub vault_signing_public_key: String,
+    pub vault_signing_key_fingerprint: String,
+    pub manifest_signing_key_version: u32,
+    pub vault_agent_message_public_key: String,
+    pub vault_agent_message_key_fingerprint: String,
+    pub agent_message_key_version: u32,
+    pub vdk_version: u32,
+    pub agent_wrapped_vdk_digest: String,
+    pub manifest_revision: String,
+    pub issued_at: String,
+    pub minimum_agent_runtime_protocol: u16,
+    pub signature: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentVaultManifestItem {
+    pub envelope: AgentVaultDiscoveryEnvelope,
+    pub manifest: VaultManifest,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentVaultManifestsResponse {
+    pub items: Vec<AgentVaultManifestItem>,
 }
 
 #[derive(Serialize)]

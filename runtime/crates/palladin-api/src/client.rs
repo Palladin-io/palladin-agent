@@ -2,7 +2,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_core::{host::ApiHost, secret::OrganizationApiKey};
-use palladin_crypto::{Ed25519Identity, X25519Identity, generate_nonce_base64, sign_request};
+use palladin_crypto::{
+    Ed25519Identity, EncryptedReasonContext, EncryptedReasonEnvelope, X25519Identity,
+    encrypt_reason, generate_nonce_base64, sign_request,
+};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use reqwest::{Method, StatusCode, header::HeaderValue};
 use thiserror::Error;
@@ -55,6 +58,15 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
+    pub fn encrypt_access_reason(
+        &self,
+        reason: &str,
+        context: EncryptedReasonContext,
+    ) -> Result<EncryptedReasonEnvelope, ApiError> {
+        let signer = self.signing.as_ref().ok_or(ApiError::InvalidInput)?;
+        encrypt_reason(reason, context, &signer.identity).map_err(|_| ApiError::InvalidInput)
+    }
+
     pub fn new(
         host: ApiHost,
         organization_api_key: OrganizationApiKey,
@@ -181,6 +193,20 @@ impl ApiClient {
         decode_success(response).await
     }
 
+    pub async fn list_vault_manifests(
+        &self,
+    ) -> Result<crate::AgentVaultManifestsResponse, ApiError> {
+        let response = self
+            .send(
+                Method::GET,
+                "/api/agent/vault-manifests",
+                None,
+                &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
+            )
+            .await?;
+        decode_success(response).await
+    }
+
     pub async fn get_credential(
         &self,
         vault_id: &str,
@@ -196,7 +222,7 @@ impl ApiClient {
                 .join(", ")
         });
         let body = serde_json::to_vec(&CredentialRequestBody {
-            reason: options.reason.as_deref(),
+            encrypted_reason: options.encrypted_reason.as_ref(),
             method: options.method.map(|method| method.backend_name()),
             requested_methods,
         })
@@ -217,6 +243,20 @@ impl ApiClient {
             StatusCode::BAD_REQUEST => Err(ApiError::ReasonRequired),
             status => Err(ApiError::Http(status.as_u16())),
         }
+    }
+
+    pub async fn get_grant_status(
+        &self,
+        vault_id: &str,
+        grant_id: &str,
+    ) -> Result<crate::GrantStatusResponse, ApiError> {
+        let path = format!(
+            "/api/agent/vaults/{}/grants/{}/status",
+            encode_component(vault_id),
+            encode_component(grant_id)
+        );
+        let response = self.send(Method::GET, &path, None, &[]).await?;
+        decode_success(response).await
     }
 
     pub async fn report_credential_stale(
@@ -505,7 +545,7 @@ mod tests {
             "vault/one",
             "entry two",
             &GetCredentialOptions {
-                reason: Some("because".to_owned()),
+                encrypted_reason: None,
                 method: Some(CredentialMethod::Exec),
                 requested_methods: vec![CredentialMethod::Get, CredentialMethod::Inject],
             },
@@ -518,8 +558,9 @@ mod tests {
         let (headers, body) = request.split_once("\r\n\r\n").expect("HTTP request");
         assert_eq!(
             body,
-            r#"{"reason":"because","method":"Exec","requestedMethods":"Get, Inject"}"#
+            r#"{"method":"Exec","requestedMethods":"Get, Inject"}"#
         );
+        assert!(!body.contains("reason"));
         assert!(headers.starts_with(
             "POST /api/agent/vaults/vault%2Fone/entries/entry%20two/credential HTTP/1.1"
         ));

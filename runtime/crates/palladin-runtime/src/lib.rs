@@ -2841,11 +2841,7 @@ impl RuntimeSession {
         let operation_cancellation = self.operation_cancellation(cancellation)?;
         let cancellation = operation_cancellation.token();
         let options = GetCredentialOptions {
-            reason: request
-                .reason
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned),
+            encrypted_reason: None,
             method: Some(method),
             requested_methods: Vec::new(),
         };

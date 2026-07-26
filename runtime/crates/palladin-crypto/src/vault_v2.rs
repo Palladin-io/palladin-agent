@@ -9,13 +9,14 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use salsa20::Salsa20;
 use secrecy::{ExposeSecret, SecretSlice};
+use serde::Serialize;
 use sha2::Sha256;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
-use x25519_dalek::PublicKey;
+use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
-use crate::{CryptoError, X25519Identity};
+use crate::{CryptoError, Ed25519Identity, X25519Identity};
 
 pub const PROTOCOL_VERSION: u16 = 2;
 pub const ALGORITHM_SUITE: u16 = 1;
@@ -428,6 +429,316 @@ pub fn open_sealed_box(
     Ok(SecretBytes::new(plaintext))
 }
 
+fn seal_box(
+    plaintext: &[u8],
+    recipient_key: &[u8; 32],
+    ephemeral_key: [u8; 32],
+) -> Result<Vec<u8>, CryptoError> {
+    if plaintext.is_empty() || plaintext.len().saturating_add(48) > MAX_SEALED_BOX_BYTES {
+        return Err(CryptoError::InvalidLength);
+    }
+    let ephemeral_secret = Zeroizing::new(StaticSecret::from(ephemeral_key));
+    let ephemeral_public = PublicKey::from(&*ephemeral_secret).to_bytes();
+    let recipient_public = PublicKey::from(*recipient_key);
+    let shared = Zeroizing::new(ephemeral_secret.diffie_hellman(&recipient_public));
+    let precomputed = Zeroizing::new(<Salsa20 as Kdf>::kdf(
+        shared.as_bytes().into(),
+        &Default::default(),
+    ));
+    let mut hasher = Blake2b::<U24>::new();
+    hasher.update(ephemeral_public);
+    hasher.update(recipient_key);
+    let nonce: [u8; 24] = hasher.finalize().into();
+    let encrypted = XSalsa20Poly1305::new(&precomputed)
+        .encrypt((&nonce).into(), plaintext)
+        .map_err(|_| CryptoError::AuthenticationFailed)?;
+    let mut output = Vec::with_capacity(32 + encrypted.len());
+    output.extend_from_slice(&ephemeral_public);
+    output.extend_from_slice(&encrypted);
+    Ok(output)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedReasonHeader {
+    pub protocol_version: u16,
+    pub algorithm_suite: u16,
+    pub resource_kind: u16,
+    pub projection_kind: u16,
+    pub resource_revision: String,
+    pub key_version: u32,
+    pub member_key_generation: u32,
+    pub nonce: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedReasonEnvelope {
+    pub organization_id: String,
+    pub vault_id: String,
+    pub entry_id: String,
+    pub grant_request_id: String,
+    pub agent_id: String,
+    pub request_revision: String,
+    pub reason_key_version: u32,
+    pub agent_message_key_version: u32,
+    pub recipient_agent_message_key_fingerprint: String,
+    pub requested_methods: u16,
+    pub agent_message_wrapped_reason_dek: String,
+    pub header: EncryptedReasonHeader,
+    pub ciphertext: String,
+    pub agent_signature: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct EncryptedReasonContext {
+    pub organization_id: Uuid,
+    pub vault_id: Uuid,
+    pub entry_id: Uuid,
+    pub grant_request_id: Uuid,
+    pub agent_id: Uuid,
+    pub request_revision: u64,
+    pub reason_key_version: u32,
+    pub agent_message_key_version: u32,
+    pub member_key_generation: u32,
+    pub requested_methods: u16,
+    pub recipient_agent_message_public_key: [u8; 32],
+    pub recipient_agent_message_key_fingerprint: [u8; 32],
+}
+
+#[derive(Serialize)]
+struct ReasonPlaintext<'a> {
+    reason: &'a str,
+}
+
+// Declaration order is RFC 8785 lexicographic property order.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanonicalReasonHeader<'a> {
+    algorithm_suite: u16,
+    key_version: u32,
+    member_key_generation: u32,
+    nonce: &'a str,
+    projection_kind: u16,
+    protocol_version: u16,
+    resource_kind: u16,
+    resource_revision: &'a str,
+}
+
+// Declaration order is RFC 8785 lexicographic property order.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanonicalUnsignedReason<'a> {
+    agent_id: &'a str,
+    agent_message_key_version: u32,
+    agent_message_wrapped_reason_dek: &'a str,
+    ciphertext: &'a str,
+    entry_id: &'a str,
+    grant_request_id: &'a str,
+    header: CanonicalReasonHeader<'a>,
+    organization_id: &'a str,
+    reason_key_version: u32,
+    recipient_agent_message_key_fingerprint: &'a str,
+    request_revision: &'a str,
+    requested_methods: u16,
+    vault_id: &'a str,
+}
+
+pub fn encrypt_reason(
+    reason: &str,
+    context: EncryptedReasonContext,
+    signer: &Ed25519Identity,
+) -> Result<EncryptedReasonEnvelope, CryptoError> {
+    let mut dek = Zeroizing::new([0_u8; 32]);
+    let mut nonce = [0_u8; 24];
+    let mut ephemeral = Zeroizing::new([0_u8; 32]);
+    getrandom::fill(&mut *dek).map_err(|_| CryptoError::RandomGenerationFailed)?;
+    getrandom::fill(&mut nonce).map_err(|_| CryptoError::RandomGenerationFailed)?;
+    getrandom::fill(&mut *ephemeral).map_err(|_| CryptoError::RandomGenerationFailed)?;
+    encrypt_reason_with_material(reason, context, signer, *dek, nonce, *ephemeral)
+}
+
+fn encrypt_reason_with_material(
+    reason: &str,
+    context: EncryptedReasonContext,
+    signer: &Ed25519Identity,
+    dek: [u8; 32],
+    nonce_bytes: [u8; 24],
+    ephemeral: [u8; 32],
+) -> Result<EncryptedReasonEnvelope, CryptoError> {
+    let reason = reason.trim();
+    if reason.is_empty()
+        || context.request_revision == 0
+        || context.reason_key_version == 0
+        || context.agent_message_key_version == 0
+        || context.member_key_generation == 0
+        || context.requested_methods == 0
+        || context
+            .recipient_agent_message_public_key
+            .iter()
+            .all(|b| *b == 0)
+    {
+        return Err(CryptoError::InvalidProfile);
+    }
+    if key_fingerprint(4, &context.recipient_agent_message_public_key)?
+        != context.recipient_agent_message_key_fingerprint
+    {
+        return Err(CryptoError::AuthenticationFailed);
+    }
+    let revision = context.request_revision.to_string();
+    let organization_id = context.organization_id.to_string();
+    let vault_id = context.vault_id.to_string();
+    let entry_id = context.entry_id.to_string();
+    let grant_request_id = context.grant_request_id.to_string();
+    let agent_id = context.agent_id.to_string();
+    let aad = encode_aad(
+        AadProfile::EncryptedReason,
+        &[
+            AadField {
+                tag: 1,
+                value: AadValue::U16(PROTOCOL_VERSION),
+            },
+            AadField {
+                tag: 2,
+                value: AadValue::U16(ALGORITHM_SUITE),
+            },
+            AadField {
+                tag: 3,
+                value: AadValue::U16(3),
+            },
+            AadField {
+                tag: 4,
+                value: AadValue::Uuid(context.organization_id),
+            },
+            AadField {
+                tag: 5,
+                value: AadValue::Uuid(context.vault_id),
+            },
+            AadField {
+                tag: 6,
+                value: AadValue::Uuid(context.entry_id),
+            },
+            AadField {
+                tag: 7,
+                value: AadValue::U16(5),
+            },
+            AadField {
+                tag: 8,
+                value: AadValue::U64(context.request_revision),
+            },
+            AadField {
+                tag: 9,
+                value: AadValue::U32(context.reason_key_version),
+            },
+            AadField {
+                tag: 10,
+                value: AadValue::U32(context.member_key_generation),
+            },
+            AadField {
+                tag: 12,
+                value: AadValue::Uuid(context.grant_request_id),
+            },
+            AadField {
+                tag: 13,
+                value: AadValue::Uuid(context.agent_id),
+            },
+            AadField {
+                tag: 14,
+                value: AadValue::U16(context.requested_methods),
+            },
+            AadField {
+                tag: 17,
+                value: AadValue::U32(context.agent_message_key_version),
+            },
+            AadField {
+                tag: 18,
+                value: AadValue::Bytes(context.recipient_agent_message_key_fingerprint.to_vec()),
+            },
+        ],
+    )?;
+    let plaintext = Zeroizing::new(
+        serde_json::to_vec(&ReasonPlaintext { reason })
+            .map_err(|_| CryptoError::InvalidEncoding)?,
+    );
+    if plaintext.len().saturating_add(16) > AadProfile::EncryptedReason.maximum_ciphertext_bytes() {
+        return Err(CryptoError::InvalidLength);
+    }
+    let ciphertext = XChaCha20Poly1305::new_from_slice(&dek)
+        .map_err(|_| CryptoError::InvalidLength)?
+        .encrypt(
+            XNonce::from_slice(&nonce_bytes),
+            Payload {
+                msg: &plaintext,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| CryptoError::AuthenticationFailed)?;
+    let nonce = URL_SAFE_NO_PAD.encode(nonce_bytes);
+    let ciphertext = URL_SAFE_NO_PAD.encode(ciphertext);
+    let wrapped_dek = URL_SAFE_NO_PAD.encode(seal_box(
+        &dek,
+        &context.recipient_agent_message_public_key,
+        ephemeral,
+    )?);
+    let fingerprint = URL_SAFE_NO_PAD.encode(context.recipient_agent_message_key_fingerprint);
+    let canonical = CanonicalUnsignedReason {
+        agent_id: &agent_id,
+        agent_message_key_version: context.agent_message_key_version,
+        agent_message_wrapped_reason_dek: &wrapped_dek,
+        ciphertext: &ciphertext,
+        entry_id: &entry_id,
+        grant_request_id: &grant_request_id,
+        header: CanonicalReasonHeader {
+            algorithm_suite: ALGORITHM_SUITE,
+            key_version: context.reason_key_version,
+            member_key_generation: context.member_key_generation,
+            nonce: &nonce,
+            projection_kind: 5,
+            protocol_version: PROTOCOL_VERSION,
+            resource_kind: 3,
+            resource_revision: &revision,
+        },
+        organization_id: &organization_id,
+        reason_key_version: context.reason_key_version,
+        recipient_agent_message_key_fingerprint: &fingerprint,
+        request_revision: &revision,
+        requested_methods: context.requested_methods,
+        vault_id: &vault_id,
+    };
+    let canonical = serde_json::to_vec(&canonical).map_err(|_| CryptoError::InvalidEncoding)?;
+    let mut signed = Vec::with_capacity(
+        SignatureProfile::EncryptedReason.domain_prefix().len() + 2 + canonical.len(),
+    );
+    signed.extend_from_slice(SignatureProfile::EncryptedReason.domain_prefix());
+    signed.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+    signed.extend_from_slice(&canonical);
+    Ok(EncryptedReasonEnvelope {
+        organization_id,
+        vault_id,
+        entry_id,
+        grant_request_id,
+        agent_id,
+        request_revision: revision.clone(),
+        reason_key_version: context.reason_key_version,
+        agent_message_key_version: context.agent_message_key_version,
+        recipient_agent_message_key_fingerprint: fingerprint,
+        requested_methods: context.requested_methods,
+        agent_message_wrapped_reason_dek: wrapped_dek,
+        header: EncryptedReasonHeader {
+            protocol_version: PROTOCOL_VERSION,
+            algorithm_suite: ALGORITHM_SUITE,
+            resource_kind: 3,
+            projection_kind: 5,
+            resource_revision: revision,
+            key_version: context.reason_key_version,
+            member_key_generation: context.member_key_generation,
+            nonce,
+        },
+        ciphertext,
+        agent_signature: URL_SAFE_NO_PAD.encode(signer.sign(&signed)),
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SignatureProfile {
     VaultManifest,
@@ -485,8 +796,16 @@ pub fn decode_base64url(value: &str) -> Result<Vec<u8>, CryptoError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EnvelopeHeader, SecretBytes};
-    use crate::CryptoError;
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use uuid::Uuid;
+
+    use super::{
+        AadField, AadProfile, AadValue, CanonicalReasonHeader, CanonicalUnsignedReason,
+        EncryptedReasonContext, EnvelopeHeader, PROTOCOL_VERSION, SecretBytes, SignatureProfile,
+        decode_base64url, decrypt_envelope, encrypt_reason_with_material, key_fingerprint,
+        open_sealed_box, verify_domain_signature,
+    };
+    use crate::{CryptoError, Ed25519Identity, X25519Identity};
 
     #[test]
     fn secret_debug_is_redacted() {
@@ -527,6 +846,196 @@ mod tests {
             }
             .validate_supported(),
             Err(CryptoError::UnsupportedProtocol)
+        );
+    }
+
+    #[test]
+    fn encrypted_reason_round_trips_and_binds_every_security_dimension() {
+        let recipient = X25519Identity::from_private_bytes(vec![7; 32]).expect("recipient");
+        let signer = Ed25519Identity::from_seed(vec![9; 32]).expect("signer");
+        let fingerprint = key_fingerprint(4, recipient.public_key()).expect("fingerprint");
+        let context = EncryptedReasonContext {
+            organization_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+            vault_id: Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
+            entry_id: Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap(),
+            grant_request_id: Uuid::parse_str("77777777-7777-4777-8777-777777777777").unwrap(),
+            agent_id: Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap(),
+            request_revision: 1,
+            reason_key_version: 1,
+            agent_message_key_version: 4,
+            member_key_generation: 4,
+            requested_methods: 1,
+            recipient_agent_message_public_key: *recipient.public_key(),
+            recipient_agent_message_key_fingerprint: fingerprint,
+        };
+        let canary = "Need access to the synthetic credential";
+        let envelope =
+            encrypt_reason_with_material(canary, context, &signer, [3; 32], [5; 24], [11; 32])
+                .expect("encrypt");
+        assert!(!serde_json::to_string(&envelope).unwrap().contains(canary));
+
+        let unwrapped = open_sealed_box(
+            &decode_base64url(&envelope.agent_message_wrapped_reason_dek).unwrap(),
+            &recipient,
+        )
+        .expect("unwrap DEK");
+        let fields = [
+            AadField {
+                tag: 1,
+                value: AadValue::U16(2),
+            },
+            AadField {
+                tag: 2,
+                value: AadValue::U16(1),
+            },
+            AadField {
+                tag: 3,
+                value: AadValue::U16(3),
+            },
+            AadField {
+                tag: 4,
+                value: AadValue::Uuid(context.organization_id),
+            },
+            AadField {
+                tag: 5,
+                value: AadValue::Uuid(context.vault_id),
+            },
+            AadField {
+                tag: 6,
+                value: AadValue::Uuid(context.entry_id),
+            },
+            AadField {
+                tag: 7,
+                value: AadValue::U16(5),
+            },
+            AadField {
+                tag: 8,
+                value: AadValue::U64(1),
+            },
+            AadField {
+                tag: 9,
+                value: AadValue::U32(1),
+            },
+            AadField {
+                tag: 10,
+                value: AadValue::U32(4),
+            },
+            AadField {
+                tag: 12,
+                value: AadValue::Uuid(context.grant_request_id),
+            },
+            AadField {
+                tag: 13,
+                value: AadValue::Uuid(context.agent_id),
+            },
+            AadField {
+                tag: 14,
+                value: AadValue::U16(1),
+            },
+            AadField {
+                tag: 17,
+                value: AadValue::U32(4),
+            },
+            AadField {
+                tag: 18,
+                value: AadValue::Bytes(fingerprint.to_vec()),
+            },
+        ];
+        let plaintext = decrypt_envelope(
+            AadProfile::EncryptedReason,
+            EnvelopeHeader {
+                protocol_version: 2,
+                algorithm_suite: 1,
+                resource_kind: 3,
+                projection_kind: 5,
+                resource_revision: 1,
+                key_version: 1,
+                member_key_generation: 4,
+            },
+            unwrapped.expose_for_crypto_operation(),
+            &decode_base64url(&envelope.header.nonce).unwrap(),
+            &fields,
+            &decode_base64url(&envelope.ciphertext).unwrap(),
+        )
+        .expect("decrypt");
+        assert_eq!(
+            plaintext.expose_for_crypto_operation(),
+            format!(r#"{{"reason":"{canary}"}}"#).as_bytes()
+        );
+
+        let canonical = serde_json::to_vec(&CanonicalUnsignedReason {
+            agent_id: &envelope.agent_id,
+            agent_message_key_version: envelope.agent_message_key_version,
+            agent_message_wrapped_reason_dek: &envelope.agent_message_wrapped_reason_dek,
+            ciphertext: &envelope.ciphertext,
+            entry_id: &envelope.entry_id,
+            grant_request_id: &envelope.grant_request_id,
+            header: CanonicalReasonHeader {
+                algorithm_suite: 1,
+                key_version: 1,
+                member_key_generation: 4,
+                nonce: &envelope.header.nonce,
+                projection_kind: 5,
+                protocol_version: 2,
+                resource_kind: 3,
+                resource_revision: "1",
+            },
+            organization_id: &envelope.organization_id,
+            reason_key_version: 1,
+            recipient_agent_message_key_fingerprint: &envelope
+                .recipient_agent_message_key_fingerprint,
+            request_revision: "1",
+            requested_methods: 1,
+            vault_id: &envelope.vault_id,
+        })
+        .unwrap();
+        verify_domain_signature(
+            SignatureProfile::EncryptedReason,
+            PROTOCOL_VERSION,
+            &canonical,
+            signer.public_key(),
+            &URL_SAFE_NO_PAD.decode(&envelope.agent_signature).unwrap(),
+        )
+        .expect("signature");
+    }
+
+    #[test]
+    fn encrypted_reason_rejects_mismatched_recipient_fingerprint_and_oversize_plaintext() {
+        let recipient = X25519Identity::from_private_bytes(vec![7; 32]).unwrap();
+        let signer = Ed25519Identity::from_seed(vec![9; 32]).unwrap();
+        let base = EncryptedReasonContext {
+            organization_id: Uuid::from_u128(1),
+            vault_id: Uuid::from_u128(2),
+            entry_id: Uuid::from_u128(3),
+            grant_request_id: Uuid::from_u128(4),
+            agent_id: Uuid::from_u128(5),
+            request_revision: 1,
+            reason_key_version: 1,
+            agent_message_key_version: 1,
+            member_key_generation: 1,
+            requested_methods: 1,
+            recipient_agent_message_public_key: *recipient.public_key(),
+            recipient_agent_message_key_fingerprint: [1; 32],
+        };
+        assert_eq!(
+            encrypt_reason_with_material("reason", base, &signer, [3; 32], [5; 24], [11; 32]),
+            Err(CryptoError::AuthenticationFailed)
+        );
+        let valid = EncryptedReasonContext {
+            recipient_agent_message_key_fingerprint: key_fingerprint(4, recipient.public_key())
+                .unwrap(),
+            ..base
+        };
+        assert_eq!(
+            encrypt_reason_with_material(
+                &"x".repeat(4096),
+                valid,
+                &signer,
+                [3; 32],
+                [5; 24],
+                [11; 32]
+            ),
+            Err(CryptoError::InvalidLength)
         );
     }
 }
