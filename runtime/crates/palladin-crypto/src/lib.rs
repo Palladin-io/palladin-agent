@@ -11,7 +11,8 @@ pub use identity::{Ed25519Identity, X25519Identity, verify_profile_binding};
 pub use manifest::{
     AgentIdentityBinding, MemberPairingConfirmation, PairingCandidate, PairingRelayStatus,
     PairingTranscript, PairingVault, PinnedVaultTrust, TrustedVdkSet, VaultManifestV2,
-    confirm_pairing, confirm_pairing_from_relay, prepare_pairing, verify_manifest_update,
+    confirm_pairing, confirm_pairing_from_relay, prepare_pairing, verify_current_manifest,
+    verify_manifest_update,
 };
 pub use signing::{
     SignatureHeaders, body_sha256_base64, canonical_request, generate_nonce_base64, sign_request,

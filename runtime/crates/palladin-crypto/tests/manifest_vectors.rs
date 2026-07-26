@@ -2,7 +2,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use palladin_crypto::{
     AgentIdentityBinding, CryptoError, MemberPairingConfirmation, PairingRelayStatus,
     VaultManifestV2, confirm_pairing, confirm_pairing_from_relay, prepare_pairing,
-    verify_manifest_update,
+    verify_current_manifest, verify_manifest_update,
 };
 use serde::Deserialize;
 use time::OffsetDateTime;
@@ -175,6 +175,10 @@ fn pinned_anchor_rejects_replay_and_embedded_key_substitution() {
         .find(|anchor| anchor.vault_id.to_string() == manifest.vault_id)
         .unwrap();
 
+    let current = verify_current_manifest(manifest, &identity, anchor)
+        .expect("the pinned revision must remain usable after signature verification");
+    assert_eq!(current, *anchor);
+
     let mut previous_anchor = anchor.clone();
     previous_anchor.manifest_revision = 13;
     let advanced = verify_manifest_update(manifest, &identity, &previous_anchor)
@@ -218,6 +222,20 @@ fn relay_status_is_bound_to_activation_digest_terminal_state_and_expiry() {
         2
     );
 
+    let candidate =
+        prepare_pairing(activation_id, &identity(vector), &fixture.signed_manifests).unwrap();
+    let after_deadline = OffsetDateTime::parse(
+        "2026-07-27T00:00:01Z",
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap();
+    assert_eq!(
+        confirm_pairing_from_relay(candidate, &relay, after_deadline)
+            .unwrap()
+            .len(),
+        2
+    );
+
     for mutation in ["pending", "expired", "stale"] {
         let candidate =
             prepare_pairing(activation_id, &identity(vector), &fixture.signed_manifests).unwrap();
@@ -225,4 +243,40 @@ fn relay_status_is_bound_to_activation_digest_terminal_state_and_expiry() {
         invalid.status = mutation.to_owned();
         assert!(confirm_pairing_from_relay(candidate, &invalid, now).is_err());
     }
+}
+
+#[test]
+fn empty_candidate_set_requires_the_same_independent_digest_confirmation() {
+    let fixture = fixture();
+    let vector = &fixture.vectors[0];
+    let candidate = prepare_pairing(
+        Uuid::parse_str(&vector.transcript.activation_id).unwrap(),
+        &identity(vector),
+        &[],
+    )
+    .expect("empty organization pairing");
+    assert!(candidate.transcript().vaults.is_empty());
+    let digest = candidate.transcript_digest().to_owned();
+    assert!(
+        confirm_pairing(
+            candidate,
+            &MemberPairingConfirmation {
+                transcript_digest: digest,
+                short_authentication_string: candidate_sas_for_empty(vector),
+            },
+        )
+        .unwrap()
+        .is_empty()
+    );
+}
+
+fn candidate_sas_for_empty(vector: &PairingVector) -> String {
+    prepare_pairing(
+        Uuid::parse_str(&vector.transcript.activation_id).unwrap(),
+        &identity(vector),
+        &[],
+    )
+    .unwrap()
+    .short_authentication_string()
+    .to_owned()
 }

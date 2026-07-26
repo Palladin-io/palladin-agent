@@ -751,7 +751,9 @@ fn delivery_request(wait_ms: u64) -> CredentialDeliveryRequest<'static> {
     CredentialDeliveryRequest {
         vault_id: "vault-e2e",
         entry_id: "entry-e2e",
-        reason: Some("E2E migration validation"),
+        // Legacy cutover fixtures predate Vault Protocol 2 pairing. A reason is intentionally
+        // absent: the runtime now fails closed instead of sending one without a local trust anchor.
+        reason: None,
         wait: WaitOptions {
             wait_ms: Some(wait_ms),
             ..WaitOptions::default()

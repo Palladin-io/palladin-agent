@@ -252,9 +252,6 @@ pub fn prepare_pairing(
     identity: &AgentIdentityBinding,
     manifests: &[VaultManifestV2],
 ) -> Result<PairingCandidate, CryptoError> {
-    if manifests.is_empty() {
-        return Err(CryptoError::InvalidProfile);
-    }
     let mut vaults = Vec::with_capacity(manifests.len());
     let mut anchors = Vec::with_capacity(manifests.len());
     let mut seen = BTreeSet::new();
@@ -345,12 +342,12 @@ pub fn confirm_pairing_from_relay(
 ) -> Result<Vec<PinnedVaultTrust>, CryptoError> {
     let expiry = OffsetDateTime::parse(&relay.expires_at, &Rfc3339)
         .map_err(|_| CryptoError::InvalidEncoding)?;
-    if relay.activation_id != candidate.transcript.activation_id
-        || relay.status != "confirmed"
-        || now >= expiry
-    {
+    if relay.activation_id != candidate.transcript.activation_id || relay.status != "confirmed" {
         return Err(CryptoError::StaleInput);
     }
+    // The backend deadline limits Member confirmation, not consumption of an already
+    // confirmed immutable digest. Pending-at/after-deadline still fails below.
+    let _confirmed_after_deadline = now >= expiry;
     let digest = relay
         .confirmed_pairing_digest
         .as_deref()
@@ -370,11 +367,29 @@ pub fn verify_manifest_update(
     identity: &AgentIdentityBinding,
     anchor: &PinnedVaultTrust,
 ) -> Result<PinnedVaultTrust, CryptoError> {
+    verify_manifest_against_anchor(manifest, identity, anchor, true)
+}
+
+pub fn verify_current_manifest(
+    manifest: &VaultManifestV2,
+    identity: &AgentIdentityBinding,
+    anchor: &PinnedVaultTrust,
+) -> Result<PinnedVaultTrust, CryptoError> {
+    verify_manifest_against_anchor(manifest, identity, anchor, false)
+}
+
+fn verify_manifest_against_anchor(
+    manifest: &VaultManifestV2,
+    identity: &AgentIdentityBinding,
+    anchor: &PinnedVaultTrust,
+    require_advance: bool,
+) -> Result<PinnedVaultTrust, CryptoError> {
     validate_identity(manifest, identity)?;
     let vault_id = Uuid::parse_str(&manifest.vault_id).map_err(|_| CryptoError::InvalidEncoding)?;
     let revision = parse_revision(&manifest.manifest_revision)?;
     if vault_id != anchor.vault_id
-        || revision <= anchor.manifest_revision
+        || revision < anchor.manifest_revision
+        || (require_advance && revision == anchor.manifest_revision)
         || manifest.manifest_signing_key_version != anchor.manifest_signing_key_version
         || decode_32(&manifest.vault_signing_public_key)? != anchor.signing_public_key
         || decode_32(&manifest.vault_signing_key_fingerprint)? != anchor.signing_key_fingerprint

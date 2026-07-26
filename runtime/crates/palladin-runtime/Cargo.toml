@@ -32,6 +32,7 @@ thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+uuid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

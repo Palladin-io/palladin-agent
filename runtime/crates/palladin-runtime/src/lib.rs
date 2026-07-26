@@ -6,10 +6,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 mod integrity;
 pub mod version_policy;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_api::{
+    AgentPairingActivationResponse, AgentPairingStatus, AgentPairingStatusResponse,
     AgentRegistrationResult, ApiClient, ApiError, CredentialAccess, CredentialMethod,
     EntrySearchResult, GetCredentialOptions, GrantStatus, ReportCredentialStaleInput,
+    VaultManifest,
 };
 use palladin_core::host::ApiHost;
 use palladin_core::legacy_typescript::{LegacyTypeScriptError, LegacyTypeScriptRepository};
@@ -19,7 +22,7 @@ use palladin_core::profiles::{
 };
 use palladin_core::public_store::{
     PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicProfileConfig, PublicRegistry,
-    profile_binding_bytes, profile_config_digest, registry_digest,
+    PublicVaultTrustAnchor, profile_binding_bytes, profile_config_digest, registry_digest,
 };
 use palladin_core::secret::OrganizationApiKey;
 use palladin_credential::wait::{
@@ -27,8 +30,10 @@ use palladin_credential::wait::{
     resolve_wait_policy,
 };
 use palladin_crypto::{
-    DecryptedCredential, Ed25519Identity, X25519Identity, decrypt_credential,
-    verify_profile_binding,
+    AgentIdentityBinding, DecryptedCredential, Ed25519Identity, EncryptedReasonContext,
+    PairingCandidate, PairingRelayStatus, PinnedVaultTrust, VaultManifestV2, X25519Identity,
+    confirm_pairing_from_relay, decode_base64url, decrypt_credential, key_fingerprint,
+    prepare_pairing, verify_current_manifest, verify_profile_binding,
 };
 use palladin_exec::{
     EnvironmentError, SecretEnvironment, resolve_interpreter, run_command, run_script,
@@ -46,6 +51,7 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use integrity::{
@@ -75,6 +81,7 @@ pub enum RuntimeOperation {
     GetCredential,
     ExecWithCredential,
     ReportCredentialStale,
+    PairVaults,
     VerifyIdentity,
     DeleteProfile,
     PurgeProfile,
@@ -91,6 +98,7 @@ impl RuntimeOperation {
             Self::GetCredential => "get_credential",
             Self::ExecWithCredential => "exec_with_credential",
             Self::ReportCredentialStale => "report_credential_stale",
+            Self::PairVaults => "pair_vaults",
             Self::VerifyIdentity => "verify_identity",
             Self::DeleteProfile => "delete_profile",
             Self::PurgeProfile => "purge_profile",
@@ -107,7 +115,9 @@ impl RuntimeOperation {
             Self::GetCredential => AuthorizationPrompt::GetCredential,
             Self::ExecWithCredential => AuthorizationPrompt::ExecWithCredential,
             Self::ReportCredentialStale => AuthorizationPrompt::ReportCredentialStale,
-            Self::VerifyIdentity | Self::UpgradeSecurity => AuthorizationPrompt::IdentityManagement,
+            Self::VerifyIdentity | Self::UpgradeSecurity | Self::PairVaults => {
+                AuthorizationPrompt::IdentityManagement
+            }
             Self::DeleteProfile | Self::PurgeProfile | Self::PurgeAll => {
                 AuthorizationPrompt::DestructiveIdentityManagement
             }
@@ -170,6 +180,9 @@ pub enum OperationDescriptor {
         code: String,
         note: Option<String>,
     },
+    PairVaults {
+        activation_id: String,
+    },
     VerifyIdentity,
     DeleteProfile,
     PurgeProfile,
@@ -197,6 +210,7 @@ impl OperationDescriptor {
             Self::GetCredential { .. } => RuntimeOperation::GetCredential,
             Self::ExecWithCredential { .. } => RuntimeOperation::ExecWithCredential,
             Self::ReportCredentialStale { .. } => RuntimeOperation::ReportCredentialStale,
+            Self::PairVaults { .. } => RuntimeOperation::PairVaults,
             Self::VerifyIdentity => RuntimeOperation::VerifyIdentity,
             Self::DeleteProfile => RuntimeOperation::DeleteProfile,
             Self::PurgeProfile => RuntimeOperation::PurgeProfile,
@@ -288,6 +302,7 @@ impl OperationDescriptor {
                 encoder.field(code.as_bytes());
                 encoder.optional(note.as_deref());
             }
+            Self::PairVaults { activation_id } => encoder.field(activation_id.as_bytes()),
         }
         encoder.finish()
     }
@@ -1095,6 +1110,11 @@ impl<S: SecretStore> RuntimeService<S> {
                         retired
                     })
                     .unwrap_or_default(),
+                vault_trust_anchors: existing_config
+                    .as_ref()
+                    .filter(|config| config.agent_id == agent_id)
+                    .map(|config| config.vault_trust_anchors.clone())
+                    .unwrap_or_default(),
                 agent_id,
                 agent_active,
                 encryption_public_key: Some(encryption_public_key),
@@ -1375,6 +1395,71 @@ impl<S: SecretStore> RuntimeService<S> {
         Ok(profile)
     }
 
+    /// Atomically commits trust anchors produced by a locally verified pairing transcript.
+    /// The caller must retain the in-memory candidate until Member confirmation succeeds; this
+    /// method accepts only the resulting public anchors and binds them to signed profile state.
+    pub fn persist_pairing_anchors(
+        &self,
+        profile_name: Option<&str>,
+        hostname: &str,
+        connection: &OperationConnection,
+        confirmed: ConfirmedRuntimePairing,
+    ) -> Result<PublicProfileConfig, RuntimeError> {
+        let activation_id = confirmed.activation_id;
+        let mut anchors = confirmed.anchors;
+        anchors.sort_by(|left, right| left.vault_id.cmp(&right.vault_id));
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let state = self.verified_state_locked()?;
+        let profile = resolve_profile_in(&state.registry, profile_name)?;
+        let descriptor = OperationDescriptor::PairVaults { activation_id };
+        let (authorization, binding) = self.authorize_profile_operation_with_binding(
+            &state,
+            &profile,
+            hostname,
+            connection,
+            &descriptor,
+        )?;
+        let (_, signing) = self.load_identity_verified_authorized(
+            &profile.identity_id,
+            state.configs.get(&profile.identity_id),
+            &authorization,
+            &binding,
+        )?;
+        let mut config = state
+            .configs
+            .get(&profile.identity_id)
+            .cloned()
+            .ok_or(RuntimeError::InvalidPublicConfig)?;
+        config.vault_trust_anchors = anchors;
+        let profile_binding =
+            profile_binding_bytes(&config).map_err(|_| RuntimeError::InvalidPublicConfig)?;
+        config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&profile_binding));
+        let config_digest =
+            profile_config_digest(&config).map_err(|_| RuntimeError::InvalidPublicConfig)?;
+        let mut registry = state.registry.clone();
+        registry
+            .agents
+            .iter_mut()
+            .find(|entry| entry.identity_id == profile.identity_id)
+            .ok_or(RuntimeError::IntegrityViolation)?
+            .config_digest = Some(config_digest);
+        let lease = authorization.into_lease()?;
+        self.commit_authorized_transition(
+            &state,
+            registry,
+            vec![ConfigWrite {
+                identity_id: profile.identity_id,
+                config: config.clone(),
+            }],
+            Vec::new(),
+            Vec::new(),
+            false,
+            &lease,
+        )?;
+        Ok(config)
+    }
+
     /// Replaces exportable TypeScript identities with fresh native identities.
     ///
     /// This operation never opens a legacy config or private-key slot. The old filesystem is
@@ -1648,6 +1733,7 @@ impl<S: SecretStore> RuntimeService<S> {
                     agent_active: false,
                     encryption_public_key: Some(encryption_public_key),
                     signing_public_key: Some(signing_public_key),
+                    vault_trust_anchors: Vec::new(),
                     binding_signature: STANDARD.encode([0_u8; 64]),
                 };
                 let binding =
@@ -2615,6 +2701,97 @@ impl RuntimeSession {
         Ok(())
     }
 
+    async fn credential_options(
+        &self,
+        request: CredentialDeliveryRequest<'_>,
+        method: CredentialMethod,
+    ) -> Result<GetCredentialOptions, RuntimeError> {
+        let requested_methods = Vec::new();
+        let Some(reason) = request
+            .reason
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(GetCredentialOptions {
+                encrypted_reason: None,
+                method: Some(method),
+                requested_methods,
+            });
+        };
+        let anchor = self
+            .config
+            .vault_trust_anchors
+            .iter()
+            .find(|anchor| anchor.vault_id == request.vault_id)
+            .ok_or(RuntimeError::UntrustedVaultManifest)?;
+        let response = self.api.list_vault_manifests().await?;
+        let manifest = response
+            .items
+            .into_iter()
+            .find(|item| item.manifest.vault_id == request.vault_id)
+            .ok_or(RuntimeError::UntrustedVaultManifest)?
+            .manifest;
+        let manifest = vault_manifest_v2(manifest);
+        let identity = self.agent_identity_binding(anchor)?;
+        let pinned = pinned_vault_trust(anchor)?;
+        verify_current_manifest(&manifest, &identity, &pinned)?;
+
+        let mut request_id = [0_u8; 16];
+        getrandom::fill(&mut request_id).map_err(|_| RuntimeError::RandomGenerationFailed)?;
+        request_id[6] = (request_id[6] & 0x0f) | 0x40;
+        request_id[8] = (request_id[8] & 0x3f) | 0x80;
+        let recipient_key = decode_32_url(&manifest.vault_agent_message_public_key)?;
+        let recipient_fingerprint = decode_32_url(&manifest.vault_agent_message_key_fingerprint)?;
+        let encrypted_reason = self.api.encrypt_access_reason(
+            reason,
+            EncryptedReasonContext {
+                organization_id: identity.organization_id,
+                vault_id: Uuid::parse_str(request.vault_id)
+                    .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+                entry_id: Uuid::parse_str(request.entry_id)
+                    .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+                grant_request_id: Uuid::from_bytes(request_id),
+                agent_id: identity.agent_id,
+                request_revision: 1,
+                reason_key_version: 1,
+                agent_message_key_version: manifest.agent_message_key_version,
+                member_key_generation: manifest.agent_message_key_version,
+                requested_methods: credential_method_mask(method),
+                recipient_agent_message_public_key: recipient_key,
+                recipient_agent_message_key_fingerprint: recipient_fingerprint,
+            },
+        )?;
+        Ok(GetCredentialOptions {
+            encrypted_reason: Some(encrypted_reason),
+            method: Some(method),
+            requested_methods,
+        })
+    }
+
+    fn agent_identity_binding(
+        &self,
+        anchor: &PublicVaultTrustAnchor,
+    ) -> Result<AgentIdentityBinding, RuntimeError> {
+        let agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        let signing_public_key = self
+            .config
+            .signing_public_key
+            .as_deref()
+            .ok_or(RuntimeError::InvalidPublicConfig)
+            .and_then(decode_32_standard)?;
+        Ok(AgentIdentityBinding {
+            organization_id: Uuid::parse_str(&anchor.organization_id)
+                .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+            agent_id: Uuid::parse_str(agent_id).map_err(|_| RuntimeError::InvalidPublicConfig)?,
+            x25519_fingerprint: key_fingerprint(1, self.encryption.public_key())?,
+            ed25519_fingerprint: key_fingerprint(2, &signing_public_key)?,
+        })
+    }
+
     fn operation_cancellation(
         &self,
         caller: &CancellationToken,
@@ -2840,11 +3017,7 @@ impl RuntimeSession {
         self.ensure_authorized()?;
         let operation_cancellation = self.operation_cancellation(cancellation)?;
         let cancellation = operation_cancellation.token();
-        let options = GetCredentialOptions {
-            encrypted_reason: None,
-            method: Some(method),
-            requested_methods: Vec::new(),
-        };
+        let options = self.credential_options(request, method).await?;
         let initial = tokio::select! {
             biased;
             () = cancellation.cancelled() => {
@@ -2978,6 +3151,180 @@ impl std::fmt::Debug for DeliveredCredential {
     }
 }
 
+pub struct RuntimePairingCandidate {
+    organization_id: Uuid,
+    agent_access_epoch: u64,
+    candidate: PairingCandidate,
+}
+
+pub struct ConfirmedRuntimePairing {
+    activation_id: String,
+    anchors: Vec<PublicVaultTrustAnchor>,
+}
+
+impl RuntimePairingCandidate {
+    #[must_use]
+    pub fn transcript_digest(&self) -> &str {
+        self.candidate.transcript_digest()
+    }
+
+    #[must_use]
+    pub fn short_authentication_string(&self) -> &str {
+        self.candidate.short_authentication_string()
+    }
+
+    pub fn confirm_from_relay(
+        self,
+        response: AgentPairingStatusResponse,
+        now: OffsetDateTime,
+    ) -> Result<ConfirmedRuntimePairing, RuntimeError> {
+        let activation_id = self.candidate.transcript().activation_id.clone();
+        let status = match response.status {
+            AgentPairingStatus::Pending => "pending",
+            AgentPairingStatus::Confirmed => "confirmed",
+            AgentPairingStatus::Expired => "expired",
+            AgentPairingStatus::Stale => "stale",
+        };
+        let anchors = confirm_pairing_from_relay(
+            self.candidate,
+            &PairingRelayStatus {
+                activation_id: response.activation_id,
+                status: status.to_owned(),
+                expires_at: response.expires_at,
+                confirmed_pairing_digest: response.confirmed_pairing_digest,
+            },
+            now,
+        )?;
+        Ok(ConfirmedRuntimePairing {
+            activation_id,
+            anchors: public_anchors_from_pairing(
+                self.organization_id,
+                self.agent_access_epoch,
+                anchors,
+            )?,
+        })
+    }
+}
+
+pub fn prepare_runtime_pairing(
+    response: AgentPairingActivationResponse,
+    expected_identity: &AgentIdentityBinding,
+) -> Result<RuntimePairingCandidate, RuntimeError> {
+    let activation_id =
+        Uuid::parse_str(&response.activation_id).map_err(|_| RuntimeError::InvalidPublicConfig)?;
+    let organization_id = Uuid::parse_str(&response.organization_id)
+        .map_err(|_| RuntimeError::InvalidPublicConfig)?;
+    let agent_id =
+        Uuid::parse_str(&response.agent_id).map_err(|_| RuntimeError::InvalidPublicConfig)?;
+    if organization_id != expected_identity.organization_id
+        || agent_id != expected_identity.agent_id
+        || response.agent_access_epoch == 0
+        || decode_32_url(&response.agent_x25519_fingerprint)?
+            != expected_identity.x25519_fingerprint
+        || decode_32_url(&response.agent_ed25519_fingerprint)?
+            != expected_identity.ed25519_fingerprint
+    {
+        return Err(RuntimeError::UntrustedVaultManifest);
+    }
+    OffsetDateTime::parse(&response.expires_at, &Rfc3339)
+        .map_err(|_| RuntimeError::InvalidPublicConfig)?;
+    let manifests = response
+        .candidate_manifests
+        .into_iter()
+        .map(vault_manifest_v2)
+        .collect::<Vec<_>>();
+    let candidate = prepare_pairing(activation_id, expected_identity, &manifests)?;
+    Ok(RuntimePairingCandidate {
+        organization_id,
+        agent_access_epoch: u64::from(response.agent_access_epoch),
+        candidate,
+    })
+}
+
+fn vault_manifest_v2(manifest: VaultManifest) -> VaultManifestV2 {
+    VaultManifestV2 {
+        protocol_version: manifest.protocol_version,
+        algorithm_suite: manifest.algorithm_suite,
+        organization_id: manifest.organization_id,
+        vault_id: manifest.vault_id,
+        agent_id: manifest.agent_id,
+        agent_x25519_fingerprint: manifest.agent_x25519_fingerprint,
+        agent_ed25519_fingerprint: manifest.agent_ed25519_fingerprint,
+        vault_signing_public_key: manifest.vault_signing_public_key,
+        vault_signing_key_fingerprint: manifest.vault_signing_key_fingerprint,
+        manifest_signing_key_version: manifest.manifest_signing_key_version,
+        vault_agent_message_public_key: manifest.vault_agent_message_public_key,
+        vault_agent_message_key_fingerprint: manifest.vault_agent_message_key_fingerprint,
+        agent_message_key_version: manifest.agent_message_key_version,
+        vdk_version: manifest.vdk_version,
+        agent_wrapped_vdk_digest: manifest.agent_wrapped_vdk_digest,
+        manifest_revision: manifest.manifest_revision,
+        issued_at: manifest.issued_at,
+        minimum_agent_runtime_protocol: manifest.minimum_agent_runtime_protocol,
+        signature: manifest.signature,
+    }
+}
+
+fn decode_32_url(value: &str) -> Result<[u8; 32], RuntimeError> {
+    decode_base64url(value)?
+        .try_into()
+        .map_err(|_| RuntimeError::InvalidPublicConfig)
+}
+
+fn decode_32_standard(value: &str) -> Result<[u8; 32], RuntimeError> {
+    STANDARD
+        .decode(value)
+        .map_err(|_| RuntimeError::InvalidPublicConfig)?
+        .try_into()
+        .map_err(|_| RuntimeError::InvalidPublicConfig)
+}
+
+fn pinned_vault_trust(anchor: &PublicVaultTrustAnchor) -> Result<PinnedVaultTrust, RuntimeError> {
+    Ok(PinnedVaultTrust {
+        vault_id: Uuid::parse_str(&anchor.vault_id)
+            .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+        signing_public_key: decode_32_url(&anchor.vault_signing_public_key)?,
+        signing_key_fingerprint: decode_32_url(&anchor.vault_signing_key_fingerprint)?,
+        manifest_revision: anchor
+            .manifest_revision
+            .parse()
+            .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+        manifest_signing_key_version: anchor.manifest_signing_key_version,
+    })
+}
+
+fn public_anchors_from_pairing(
+    organization_id: Uuid,
+    agent_access_epoch: u64,
+    anchors: Vec<PinnedVaultTrust>,
+) -> Result<Vec<PublicVaultTrustAnchor>, RuntimeError> {
+    if agent_access_epoch == 0 {
+        return Err(RuntimeError::InvalidPublicConfig);
+    }
+    let mut public = anchors
+        .into_iter()
+        .map(|anchor| PublicVaultTrustAnchor {
+            organization_id: organization_id.to_string(),
+            vault_id: anchor.vault_id.to_string(),
+            agent_access_epoch,
+            vault_signing_public_key: URL_SAFE_NO_PAD.encode(anchor.signing_public_key),
+            vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(anchor.signing_key_fingerprint),
+            manifest_revision: anchor.manifest_revision.to_string(),
+            manifest_signing_key_version: anchor.manifest_signing_key_version,
+        })
+        .collect::<Vec<_>>();
+    public.sort_by(|left, right| left.vault_id.cmp(&right.vault_id));
+    Ok(public)
+}
+
+const fn credential_method_mask(method: CredentialMethod) -> u16 {
+    match method {
+        CredentialMethod::Get => 1,
+        CredentialMethod::Exec => 2,
+        CredentialMethod::Inject => 4,
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum RuntimeError {
     #[error("signed runtime version policy is not configured; no identity was opened")]
@@ -3014,6 +3361,8 @@ pub enum RuntimeError {
     InvalidStoredSecret,
     #[error("public profile configuration is invalid")]
     InvalidPublicConfig,
+    #[error("vault manifest is not bound to an independently paired local trust anchor")]
+    UntrustedVaultManifest,
     #[error(
         "legacy Agent data requires an explicit migration - use palladin security legacy-status for TypeScript state or palladin security upgrade for native schema v2"
     )]
@@ -3322,6 +3671,7 @@ mod tests {
                 agent_active: false,
                 encryption_public_key: None,
                 signing_public_key: None,
+                vault_trust_anchors: Vec::new(),
                 binding_signature: STANDARD.encode([0_u8; 64]),
             },
             api,
@@ -3483,7 +3833,7 @@ mod tests {
                     delivery: CredentialDeliveryRequest {
                         vault_id: "script-vault",
                         entry_id: "script-entry",
-                        reason: Some("fixture reason"),
+                        reason: None,
                         wait: WaitOptions {
                             wait_ms: Some(0),
                             poll_ms: None,
@@ -3561,7 +3911,7 @@ mod tests {
         CredentialDeliveryRequest {
             vault_id: "vault-fixture",
             entry_id: "entry-fixture",
-            reason: Some("fixture reason"),
+            reason: None,
             wait: WaitOptions {
                 wait_ms: Some(0),
                 poll_ms: None,
@@ -3613,6 +3963,7 @@ mod tests {
                 agent_active: false,
                 encryption_public_key: None,
                 signing_public_key: None,
+                vault_trust_anchors: Vec::new(),
                 binding_signature: STANDARD.encode([0_u8; 64]),
             },
             api,
