@@ -5,6 +5,7 @@ use palladin_api::{AgentVisibleField, EntrySearchItem, EntrySearchResult};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 use crate::RuntimeError;
 
@@ -20,6 +21,16 @@ pub(crate) struct DiscoveryPlaintext {
     pub capabilities: u16,
     pub discovery_fields: BTreeMap<String, String>,
     pub entry_type: u16,
+}
+
+impl Drop for DiscoveryPlaintext {
+    fn drop(&mut self) {
+        self.agent_label.zeroize();
+        for (mut label, mut value) in std::mem::take(&mut self.discovery_fields) {
+            label.zeroize();
+            value.zeroize();
+        }
+    }
 }
 
 impl DiscoveryPlaintext {
@@ -50,6 +61,20 @@ struct IndexedEntry {
     url_domain: Option<String>,
     approved_fields: Vec<AgentVisibleField>,
     searchable: String,
+}
+
+impl Drop for IndexedEntry {
+    fn drop(&mut self) {
+        self.vault_id.zeroize();
+        self.entry_id.zeroize();
+        self.label.zeroize();
+        self.url_domain.zeroize();
+        for field in &mut self.approved_fields {
+            field.label.zeroize();
+            field.value.zeroize();
+        }
+        self.searchable.zeroize();
+    }
 }
 
 pub(crate) struct LocalDiscoveryIndex {
@@ -122,17 +147,13 @@ impl LocalDiscoveryIndex {
         &mut self,
         vault_id: &str,
         entry_id: &str,
-        plaintext: DiscoveryPlaintext,
+        mut plaintext: DiscoveryPlaintext,
     ) -> Result<(), RuntimeError> {
         plaintext.validate()?;
         let url_domain = plaintext.discovery_fields.get("urlDomain").cloned();
-        let approved_fields = plaintext
-            .discovery_fields
-            .iter()
-            .map(|(label, value)| AgentVisibleField {
-                label: label.clone(),
-                value: value.clone(),
-            })
+        let approved_fields = std::mem::take(&mut plaintext.discovery_fields)
+            .into_iter()
+            .map(|(label, value)| AgentVisibleField { label, value })
             .collect::<Vec<_>>();
         let mut searchable = plaintext.agent_label.to_lowercase();
         for field in &approved_fields {
@@ -146,7 +167,7 @@ impl LocalDiscoveryIndex {
             IndexedEntry {
                 vault_id: vault_id.to_owned(),
                 entry_id: entry_id.to_owned(),
-                label: plaintext.agent_label,
+                label: std::mem::take(&mut plaintext.agent_label),
                 url_domain,
                 approved_fields,
                 searchable,
@@ -361,6 +382,34 @@ mod tests {
             "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         );
         assert!(index.search("alice", None, None).unwrap().items.is_empty());
+    }
+
+    #[test]
+    fn deactivation_purge_removes_all_discovery_heads_and_sync_state() {
+        let mut index = LocalDiscoveryIndex::new();
+        let vault_id = "11111111-1111-4111-8111-111111111111";
+        index.prepare_vault(vault_id, 7);
+        index
+            .upsert(
+                vault_id,
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                account("Private account", "sentinel-user"),
+            )
+            .unwrap();
+        index.mark_applied(vault_id, "42".into());
+
+        index.purge();
+
+        assert!(index.entries.is_empty());
+        assert!(index.vault_versions.is_empty());
+        assert!(index.applied_sequences.is_empty());
+        assert!(
+            index
+                .search("sentinel", None, None)
+                .unwrap()
+                .items
+                .is_empty()
+        );
     }
 
     #[test]

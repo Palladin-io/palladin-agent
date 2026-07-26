@@ -591,6 +591,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_api_bodies_are_never_embedded_in_errors() {
+        const CANARY: &str = "api-secret-canary-must-never-be-diagnosed";
+        let (host, _) = response_server(vec![(200, CANARY)]).await;
+        let error = client(&host, vec![1; 32], Duration::from_secs(1))
+            .list_vault_manifests()
+            .await
+            .expect_err("malformed response");
+
+        assert!(matches!(error, ApiError::InvalidResponse));
+        assert!(!format!("{error:?} {error}").contains(CANARY));
+    }
+
+    #[tokio::test]
     async fn shared_organization_key_can_authenticate_distinct_agents() {
         let (host, requests) = response_server(vec![
             (200, r#"{"items":[],"nextCursor":null}"#),

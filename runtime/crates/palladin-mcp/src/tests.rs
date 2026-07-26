@@ -331,6 +331,55 @@ async fn declared_protocol_versions_complete_the_raw_stdio_lifecycle() {
 }
 
 #[tokio::test]
+async fn raw_stdio_validation_errors_never_echo_secret_bearing_arguments() {
+    const CANARY: &str = "mcp-secret-canary-must-never-be-returned";
+    let server = PalladinMcpServer::new(FakeApplication::default()).expect("server");
+    let (client_stream, server_stream) = tokio::io::duplex(128 * 1024);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let server_task = tokio::spawn(serve_io(server, server_read, server_write));
+    let (client_read, mut client_write) = tokio::io::split(client_stream);
+    let mut client_read = BufReader::new(client_read);
+
+    send(
+        &mut client_write,
+        &json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{
+                "protocolVersion":"2025-03-26","capabilities":{},
+                "clientInfo":{"name":"privacy-fixture","version":"synthetic"}
+            }
+        }),
+    )
+    .await;
+    let _ = receive(&mut client_read).await;
+    send(
+        &mut client_write,
+        &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+    send(
+        &mut client_write,
+        &json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{
+                "name":"get_credential",
+                "arguments":{"vaultId":"vault","entryId":"entry","secret":CANARY}
+            }
+        }),
+    )
+    .await;
+    let response = receive(&mut client_read).await;
+    assert!(!response.to_string().contains(CANARY));
+
+    client_write.shutdown().await.expect("shutdown input");
+    drop(client_write);
+    server_task
+        .await
+        .expect("server task")
+        .expect("serve privacy fixture");
+}
+
+#[tokio::test]
 async fn protocol_2025_03_accepts_json_rpc_request_batches() {
     let server = PalladinMcpServer::new(FakeApplication::default()).expect("server");
     let (client_stream, server_stream) = tokio::io::duplex(128 * 1024);
