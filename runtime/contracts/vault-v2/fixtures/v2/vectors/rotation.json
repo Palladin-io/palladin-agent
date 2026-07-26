@@ -1,0 +1,1374 @@
+{
+  "protocolVersion": 2,
+  "plan": {
+    "scopes": [
+      "vault-key",
+      "vdk",
+      "manifest-signing"
+    ],
+    "targetMemberKeyGeneration": 5,
+    "targetVkVersion": 4,
+    "targetVdkVersion": 7,
+    "targetManifestSigningKeyVersion": 10,
+    "unchangedAgentMessageKeyVersion": 4
+  },
+  "pendingAeadVectors": [
+    {
+      "id": "rotation-member-vault-metadata",
+      "type": "MemberVaultMetadataEnvelope",
+      "aadProfile": "member-vault-metadata",
+      "keySource": "HKDF(member-vault-metadata, next VK)",
+      "decryptionKeyHex": "ef80e68a017734a19292321adf83f55317b57a44912776a7c0842641adce7f8d",
+      "plaintextType": "MemberVaultMetadataPayload",
+      "plaintextCanonical": "{\"color\":\"coral\",\"description\":\"Synthetic rotated metadata\",\"iconReference\":\"builtin:shield\",\"name\":\"Engineering Vault\"}",
+      "plaintextHex": "7b22636f6c6f72223a22636f72616c222c226465736372697074696f6e223a2253796e74686574696320726f7461746564206d65746164617461222c2269636f6e5265666572656e6365223a226275696c74696e3a736869656c64222c226e616d65223a22456e67696e656572696e67205661756c74227d",
+      "nonceHex": "e6fcdf0582baf27db2d2b9d865e70a1fcd9a82adbfe5cd10",
+      "aadHex": "504c444e56324144010900000101000200020201000200010301000200010404001011111111111141118111111111111111050400102222222222224222822222222222222207010002000108030008000000000000000809020004000000040a02000400000005",
+      "aadFields": [
+        {
+          "tag": 1,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 2,
+          "valueHex": "0002"
+        },
+        {
+          "tag": 2,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 3,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 4,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "11111111-1111-4111-8111-111111111111",
+          "valueHex": "11111111111141118111111111111111"
+        },
+        {
+          "tag": 5,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "22222222-2222-4222-8222-222222222222",
+          "valueHex": "22222222222242228222222222222222"
+        },
+        {
+          "tag": 7,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 8,
+          "type": "u64",
+          "typeCode": 3,
+          "value": "8",
+          "valueHex": "0000000000000008"
+        },
+        {
+          "tag": 9,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 4,
+          "valueHex": "00000004"
+        },
+        {
+          "tag": 10,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 5,
+          "valueHex": "00000005"
+        }
+      ],
+      "ciphertextField": "ciphertext",
+      "envelope": {
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "vaultId": "22222222-2222-4222-8222-222222222222",
+        "metadataRevision": "8",
+        "header": {
+          "protocolVersion": 2,
+          "algorithmSuite": 1,
+          "resourceKind": 1,
+          "projectionKind": 1,
+          "resourceRevision": "8",
+          "keyVersion": 4,
+          "memberKeyGeneration": 5,
+          "nonce": "5vzfBYK68n2y0rnYZecKH82agq2_5c0Q"
+        },
+        "ciphertext": "XvJ4ExAWsAezLexwdJLQihF1o-Jx8Oc5QQXe-R3eEkj3YlAU5Woh9IxKmuWi5tSDB90T-yhZOiHRl0FLhj2lp1Zc0cevBGzEn_muJWlBcMFxRHDTg4fUIdrC2X1GiWYLpiXoCKcxNUGFgg6Ls9bFXjArBO4TEcTSJO9RR70ORXbGNEPOMFGC_g"
+      }
+    },
+    {
+      "id": "rotation-vault-agent-message-private-key",
+      "type": "VaultPrivateKeyEnvelope",
+      "aadProfile": "vault-private-key",
+      "keySource": "next VK version 4",
+      "decryptionKeyHex": "f956096519e8f5917540ab3e61a77954b8d6d19fd7bb3ec4bd966351d1bc3fdb",
+      "plaintextType": "VaultAgentMessageX25519PrivateKey/raw-32",
+      "plaintextCanonical": null,
+      "plaintextHex": "7568a3d91c72af4b80e359847b03165ff4f197858657a249ead8a3a6b7cc1e13",
+      "nonceHex": "46fda12940c665b6dde876bce6b25203e9049bf2f02e2596",
+      "aadHex": "504c444e56324144010b00000101000200020201000200010301000200010404001011111111111141118111111111111111050400102222222222224222822222222222222207010002000708030008000000000000000a09020004000000040a020004000000051502000400000004160100020001",
+      "aadFields": [
+        {
+          "tag": 1,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 2,
+          "valueHex": "0002"
+        },
+        {
+          "tag": 2,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 3,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 4,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "11111111-1111-4111-8111-111111111111",
+          "valueHex": "11111111111141118111111111111111"
+        },
+        {
+          "tag": 5,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "22222222-2222-4222-8222-222222222222",
+          "valueHex": "22222222222242228222222222222222"
+        },
+        {
+          "tag": 7,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 7,
+          "valueHex": "0007"
+        },
+        {
+          "tag": 8,
+          "type": "u64",
+          "typeCode": 3,
+          "value": "10",
+          "valueHex": "000000000000000a"
+        },
+        {
+          "tag": 9,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 4,
+          "valueHex": "00000004"
+        },
+        {
+          "tag": 10,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 5,
+          "valueHex": "00000005"
+        },
+        {
+          "tag": 21,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 4,
+          "valueHex": "00000004"
+        },
+        {
+          "tag": 22,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        }
+      ],
+      "ciphertextField": "ciphertext",
+      "envelope": {
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "vaultId": "22222222-2222-4222-8222-222222222222",
+        "privateKeyKind": 1,
+        "privateKeyRevision": "10",
+        "privateKeyVersion": 4,
+        "memberKeyGeneration": 5,
+        "wrappingKeyVersion": 4,
+        "header": {
+          "protocolVersion": 2,
+          "algorithmSuite": 1,
+          "resourceKind": 1,
+          "projectionKind": 7,
+          "resourceRevision": "10",
+          "keyVersion": 4,
+          "memberKeyGeneration": 5,
+          "nonce": "Rv2hKUDGZbbd6Ha85rJSA-kEm_LwLiWW"
+        },
+        "ciphertext": "aomYco2E2YjEGh3KZ4MMXoqjUhXAsrtAbdAccCsNslK9zFIG_1uwxI8Bu7l4la1k"
+      }
+    },
+    {
+      "id": "rotation-vault-private-key",
+      "type": "VaultPrivateKeyEnvelope",
+      "aadProfile": "vault-private-key",
+      "keySource": "next VK version 4",
+      "decryptionKeyHex": "f956096519e8f5917540ab3e61a77954b8d6d19fd7bb3ec4bd966351d1bc3fdb",
+      "plaintextType": "VaultManifestSigningSeed/raw-32",
+      "plaintextCanonical": null,
+      "plaintextHex": "2e24a2d65a8a397b471509553e3eaad37f877118fddda449c9185d60eebb06b1",
+      "nonceHex": "5d7b89c8af03d7cbe3a9463c86e8fd916ea74e79eabbaaa5",
+      "aadHex": "504c444e56324144010b000001010002000202010002000103010002000104040010111111111111411181111111111111110504001022222222222242228222222222222222070100020007080300080000000000000009090200040000000a0a020004000000051502000400000004160100020002",
+      "aadFields": [
+        {
+          "tag": 1,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 2,
+          "valueHex": "0002"
+        },
+        {
+          "tag": 2,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 3,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 4,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "11111111-1111-4111-8111-111111111111",
+          "valueHex": "11111111111141118111111111111111"
+        },
+        {
+          "tag": 5,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "22222222-2222-4222-8222-222222222222",
+          "valueHex": "22222222222242228222222222222222"
+        },
+        {
+          "tag": 7,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 7,
+          "valueHex": "0007"
+        },
+        {
+          "tag": 8,
+          "type": "u64",
+          "typeCode": 3,
+          "value": "9",
+          "valueHex": "0000000000000009"
+        },
+        {
+          "tag": 9,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 10,
+          "valueHex": "0000000a"
+        },
+        {
+          "tag": 10,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 5,
+          "valueHex": "00000005"
+        },
+        {
+          "tag": 21,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 4,
+          "valueHex": "00000004"
+        },
+        {
+          "tag": 22,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 2,
+          "valueHex": "0002"
+        }
+      ],
+      "ciphertextField": "ciphertext",
+      "envelope": {
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "vaultId": "22222222-2222-4222-8222-222222222222",
+        "privateKeyKind": 2,
+        "privateKeyRevision": "9",
+        "privateKeyVersion": 10,
+        "memberKeyGeneration": 5,
+        "wrappingKeyVersion": 4,
+        "header": {
+          "protocolVersion": 2,
+          "algorithmSuite": 1,
+          "resourceKind": 1,
+          "projectionKind": 7,
+          "resourceRevision": "9",
+          "keyVersion": 10,
+          "memberKeyGeneration": 5,
+          "nonce": "XXuJyK8D18vjqUY8huj9kW6nTnnqu6ql"
+        },
+        "ciphertext": "VnGm2dSiXUEDsBSNcWtQkcjx5TJQonTbDFeWPSiy-_SPLBoezlbn6jLf_zbxQXRn"
+      }
+    },
+    {
+      "id": "rotation-vault-discovery-key",
+      "type": "VaultDiscoveryKeyEnvelope",
+      "aadProfile": "vault-discovery-key",
+      "keySource": "next VK version 4",
+      "decryptionKeyHex": "f956096519e8f5917540ab3e61a77954b8d6d19fd7bb3ec4bd966351d1bc3fdb",
+      "plaintextType": "VaultDiscoveryKey/raw-32",
+      "plaintextCanonical": null,
+      "plaintextHex": "aca0be26a6b6cfc4a7df9e1e8d454d1d02d575187059a8b28ac616f803e2c69e",
+      "nonceHex": "e61f67589ea557e0171217744768240fa77b9e76feacebfc",
+      "aadHex": "504c444e56324144010a00000101000200020201000200010301000200010404001011111111111141118111111111111111050400102222222222224222822222222222222207010002000c08030008000000000000000609020004000000070a020004000000051502000400000004",
+      "aadFields": [
+        {
+          "tag": 1,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 2,
+          "valueHex": "0002"
+        },
+        {
+          "tag": 2,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 3,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 4,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "11111111-1111-4111-8111-111111111111",
+          "valueHex": "11111111111141118111111111111111"
+        },
+        {
+          "tag": 5,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "22222222-2222-4222-8222-222222222222",
+          "valueHex": "22222222222242228222222222222222"
+        },
+        {
+          "tag": 7,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 12,
+          "valueHex": "000c"
+        },
+        {
+          "tag": 8,
+          "type": "u64",
+          "typeCode": 3,
+          "value": "6",
+          "valueHex": "0000000000000006"
+        },
+        {
+          "tag": 9,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 7,
+          "valueHex": "00000007"
+        },
+        {
+          "tag": 10,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 5,
+          "valueHex": "00000005"
+        },
+        {
+          "tag": 21,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 4,
+          "valueHex": "00000004"
+        }
+      ],
+      "ciphertextField": "ciphertext",
+      "envelope": {
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "vaultId": "22222222-2222-4222-8222-222222222222",
+        "discoveryKeyRevision": "6",
+        "vdkVersion": 7,
+        "memberKeyGeneration": 5,
+        "wrappingKeyVersion": 4,
+        "header": {
+          "protocolVersion": 2,
+          "algorithmSuite": 1,
+          "resourceKind": 1,
+          "projectionKind": 12,
+          "resourceRevision": "6",
+          "keyVersion": 7,
+          "memberKeyGeneration": 5,
+          "nonce": "5h9nWJ6lV-AXEhd0R2gkD6d7nnb-rOv8"
+        },
+        "ciphertext": "Gvam2byIFpDexi0lUk9BiFEt8ZfWjPEymc__v4LyqyYSC7DPyEtaPM0yH4pvPSii"
+      }
+    },
+    {
+      "id": "rotation-vault-entry-key",
+      "type": "VaultEntryKey",
+      "aadProfile": "entry-key-wrapper",
+      "keySource": "next VK version 4",
+      "decryptionKeyHex": "f956096519e8f5917540ab3e61a77954b8d6d19fd7bb3ec4bd966351d1bc3fdb",
+      "plaintextType": "EntryDEK/raw-32",
+      "plaintextCanonical": null,
+      "plaintextHex": "621c1dfa77dc95aca250f8f0a37eff29dacb9ed0b3e065f1c5c23eeaa686e940",
+      "nonceHex": "929a662c7848fdeb16ce984723efdd404e8b89f0bb05641b",
+      "aadHex": "504c444e56324144010b000001010002000202010002000103010002000204040010111111111111411181111111111111110504001022222222222242228222222222222222060400103333333333334333833333333333333307010002000808030008000000000000000309020004000000050a020004000000051502000400000004",
+      "aadFields": [
+        {
+          "tag": 1,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 2,
+          "valueHex": "0002"
+        },
+        {
+          "tag": 2,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 3,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 2,
+          "valueHex": "0002"
+        },
+        {
+          "tag": 4,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "11111111-1111-4111-8111-111111111111",
+          "valueHex": "11111111111141118111111111111111"
+        },
+        {
+          "tag": 5,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "22222222-2222-4222-8222-222222222222",
+          "valueHex": "22222222222242228222222222222222"
+        },
+        {
+          "tag": 6,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "33333333-3333-4333-8333-333333333333",
+          "valueHex": "33333333333343338333333333333333"
+        },
+        {
+          "tag": 7,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 8,
+          "valueHex": "0008"
+        },
+        {
+          "tag": 8,
+          "type": "u64",
+          "typeCode": 3,
+          "value": "3",
+          "valueHex": "0000000000000003"
+        },
+        {
+          "tag": 9,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 5,
+          "valueHex": "00000005"
+        },
+        {
+          "tag": 10,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 5,
+          "valueHex": "00000005"
+        },
+        {
+          "tag": 21,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 4,
+          "valueHex": "00000004"
+        }
+      ],
+      "ciphertextField": "wrappedEntryDekByVk",
+      "envelope": {
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "vaultId": "22222222-2222-4222-8222-222222222222",
+        "entryId": "33333333-3333-4333-8333-333333333333",
+        "wrapperRevision": "3",
+        "keyVersion": 5,
+        "memberKeyGeneration": 5,
+        "wrappingKeyVersion": 4,
+        "header": {
+          "protocolVersion": 2,
+          "algorithmSuite": 1,
+          "resourceKind": 2,
+          "projectionKind": 8,
+          "resourceRevision": "3",
+          "keyVersion": 5,
+          "memberKeyGeneration": 5,
+          "nonce": "kppmLHhI_esWzphHI-_dQE6LifC7BWQb"
+        },
+        "wrappedEntryDekByVk": "Fpp5XqgEjz0KVs327nVTTeuDgAU4UV2xDEsOFrjYrZV7FMdE4ReJJY4hwYHp4W7P"
+      }
+    },
+    {
+      "id": "rotation-agent-discovery",
+      "type": "AgentDiscoveryEnvelope",
+      "aadProfile": "agent-discovery",
+      "keySource": "HKDF(agent-discovery, next VDK)",
+      "decryptionKeyHex": "da74e4815cbb9d0bdf41701b37e9b3ba1d611e02a0add95b9b274cc5068ea58d",
+      "plaintextType": "AgentDiscoveryPayload",
+      "plaintextCanonical": "{\"agentLabel\":\"Database credential\",\"capabilities\":1,\"discoveryFields\":{\"urlDomain\":\"fixture.invalid\",\"username\":\"fixture-user\"},\"entryType\":1}",
+      "plaintextHex": "7b226167656e744c6162656c223a2244617461626173652063726564656e7469616c222c226361706162696c6974696573223a312c22646973636f766572794669656c6473223a7b2275726c446f6d61696e223a22666978747572652e696e76616c6964222c22757365726e616d65223a22666978747572652d75736572227d2c22656e74727954797065223a317d",
+      "nonceHex": "36ad853c2274ee2f5cc1cbefcf1ec3798f89a6d5611da425",
+      "aadHex": "504c444e56324144010a000001010002000202010002000103010002000204040010111111111111411181111111111111110504001022222222222242228222222222222222060400103333333333334333833333333333333307010002000408030008000000000000000d09020004000000070a02000400000005",
+      "aadFields": [
+        {
+          "tag": 1,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 2,
+          "valueHex": "0002"
+        },
+        {
+          "tag": 2,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 3,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 2,
+          "valueHex": "0002"
+        },
+        {
+          "tag": 4,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "11111111-1111-4111-8111-111111111111",
+          "valueHex": "11111111111141118111111111111111"
+        },
+        {
+          "tag": 5,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "22222222-2222-4222-8222-222222222222",
+          "valueHex": "22222222222242228222222222222222"
+        },
+        {
+          "tag": 6,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "33333333-3333-4333-8333-333333333333",
+          "valueHex": "33333333333343338333333333333333"
+        },
+        {
+          "tag": 7,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 4,
+          "valueHex": "0004"
+        },
+        {
+          "tag": 8,
+          "type": "u64",
+          "typeCode": 3,
+          "value": "13",
+          "valueHex": "000000000000000d"
+        },
+        {
+          "tag": 9,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 7,
+          "valueHex": "00000007"
+        },
+        {
+          "tag": 10,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 5,
+          "valueHex": "00000005"
+        }
+      ],
+      "ciphertextField": "ciphertext",
+      "envelope": {
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "vaultId": "22222222-2222-4222-8222-222222222222",
+        "entryId": "33333333-3333-4333-8333-333333333333",
+        "agentDiscoveryRevision": "13",
+        "vdkVersion": 7,
+        "header": {
+          "protocolVersion": 2,
+          "algorithmSuite": 1,
+          "resourceKind": 2,
+          "projectionKind": 4,
+          "resourceRevision": "13",
+          "keyVersion": 7,
+          "memberKeyGeneration": 5,
+          "nonce": "Nq2FPCJ07i9cwcvvzx7DeY-JptVhHaQl"
+        },
+        "ciphertext": "v3V4dkF83Ea1cyWkUExhutE1beUHXOIxVRy5GMgop693IEBtHioJCHW3K9pswFCIB061dfmjnbzhWQe7Ukli6ASqb4lP9WFwRuNaEL1KiOERgX62krUW42IZFhlSWvfh0oJ0YX9pbjpXN04engJkr6klaqPeZeixa6_1TKBBSRwmtKfm6FYRx4zkOJIak4O-8OPdJxUEZPjey8cmfhL9"
+      }
+    },
+    {
+      "id": "rotation-grant-entry",
+      "type": "GrantEntryEnvelope",
+      "aadProfile": "grant-payload",
+      "keySource": "fresh synthetic rotated GrantDEK",
+      "decryptionKeyHex": "d7e4ec9733dca33c3998ff1db3f6e3c8775cea7e4e15b090453e5f012ac58840",
+      "plaintextType": "FixtureGrantPayload",
+      "plaintextCanonical": "{\"approvedMethods\":1,\"entryRevision\":\"12\",\"fields\":{\"password\":\"not-a-real-password\"}}",
+      "plaintextHex": "7b22617070726f7665644d6574686f6473223a312c22656e7472795265766973696f6e223a223132222c226669656c6473223a7b2270617373776f7264223a226e6f742d612d7265616c2d70617373776f7264227d7d",
+      "nonceHex": "9dbfc00eae04907adf8bbd4ea29341e9c79c10bacfb8e534",
+      "aadHex": "504c444e563241440112000001010002000202010002000103010002000404040010111111111111411181111111111111110504001022222222222242228222222222222222060400103333333333334333833333333333333307010002000608030008000000000000000409020004000000030a020004000000050b040010666666666666466686666666666666660d040010555555555555455585555555555555550e01000200010f060014323032362d30372d31375430373a30303a30305a1002000400000003110200040000000312050020e7f4ea587c42269ffc62e5b9a85a474fb1564d1e088e37d4353a15a9e5d2880b13030008000000000000000c",
+      "aadFields": [
+        {
+          "tag": 1,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 2,
+          "valueHex": "0002"
+        },
+        {
+          "tag": 2,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 3,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 4,
+          "valueHex": "0004"
+        },
+        {
+          "tag": 4,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "11111111-1111-4111-8111-111111111111",
+          "valueHex": "11111111111141118111111111111111"
+        },
+        {
+          "tag": 5,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "22222222-2222-4222-8222-222222222222",
+          "valueHex": "22222222222242228222222222222222"
+        },
+        {
+          "tag": 6,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "33333333-3333-4333-8333-333333333333",
+          "valueHex": "33333333333343338333333333333333"
+        },
+        {
+          "tag": 7,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 6,
+          "valueHex": "0006"
+        },
+        {
+          "tag": 8,
+          "type": "u64",
+          "typeCode": 3,
+          "value": "4",
+          "valueHex": "0000000000000004"
+        },
+        {
+          "tag": 9,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 3,
+          "valueHex": "00000003"
+        },
+        {
+          "tag": 10,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 5,
+          "valueHex": "00000005"
+        },
+        {
+          "tag": 11,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "66666666-6666-4666-8666-666666666666",
+          "valueHex": "66666666666646668666666666666666"
+        },
+        {
+          "tag": 13,
+          "type": "uuid",
+          "typeCode": 4,
+          "value": "55555555-5555-4555-8555-555555555555",
+          "valueHex": "55555555555545558555555555555555"
+        },
+        {
+          "tag": 14,
+          "type": "u16",
+          "typeCode": 1,
+          "value": 1,
+          "valueHex": "0001"
+        },
+        {
+          "tag": 15,
+          "type": "instant",
+          "typeCode": 6,
+          "value": "2026-07-17T07:00:00Z",
+          "valueHex": "323032362d30372d31375430373a30303a30305a"
+        },
+        {
+          "tag": 16,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 3,
+          "valueHex": "00000003"
+        },
+        {
+          "tag": 17,
+          "type": "u32",
+          "typeCode": 2,
+          "value": 3,
+          "valueHex": "00000003"
+        },
+        {
+          "tag": 18,
+          "type": "bytes",
+          "typeCode": 5,
+          "value": "5_TqWHxCJp_8YuW5qFpHT7FWTR4IjjfUNToVqeXSiAs",
+          "valueHex": "e7f4ea587c42269ffc62e5b9a85a474fb1564d1e088e37d4353a15a9e5d2880b"
+        },
+        {
+          "tag": 19,
+          "type": "u64",
+          "typeCode": 3,
+          "value": "12",
+          "valueHex": "000000000000000c"
+        }
+      ],
+      "ciphertextField": "ciphertext",
+      "envelope": {
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "vaultId": "22222222-2222-4222-8222-222222222222",
+        "grantId": "66666666-6666-4666-8666-666666666666",
+        "entryId": "33333333-3333-4333-8333-333333333333",
+        "agentId": "55555555-5555-4555-8555-555555555555",
+        "grantEnvelopeRevision": "4",
+        "entryRevision": "12",
+        "grantKeyVersion": 3,
+        "approvedMethods": 1,
+        "expiresAt": "2026-07-17T07:00:00Z",
+        "useLimit": 3,
+        "remainingUses": 3,
+        "recipientAgentKeyVersion": 3,
+        "recipientAgentKeyFingerprint": "5_TqWHxCJp_8YuW5qFpHT7FWTR4IjjfUNToVqeXSiAs",
+        "agentWrappedGrantDek": "TamE-Nspp1ys4-xAfqZGxaHjNpZ26PDkSJIrGXMPAnSF-MdyIgbQS3KRQURa80vVgEltSg2lyoRpAFgvcXKLfbjbOloZNl0LNkorRU3PwE8",
+        "header": {
+          "protocolVersion": 2,
+          "algorithmSuite": 1,
+          "resourceKind": 4,
+          "projectionKind": 6,
+          "resourceRevision": "4",
+          "keyVersion": 3,
+          "memberKeyGeneration": 5,
+          "nonce": "nb_ADq4EkHrfi71OopNB6cecELrPuOU0"
+        },
+        "ciphertext": "nAlYzANF3GzS_NGZ_V4m5dzjaaL0MKByddm-wRaeYpRqqKm34Ql7wOEGqqAqQ81AjuntHBmeKg55H4L1ZsVrp_xcM355OOzdw9h_cYupjM-dLRGF2ClOTXGbWnFnVTiMID6qj3Ub"
+      }
+    }
+  ],
+  "pendingSealedBoxVectors": [
+    {
+      "id": "rotation-member-vault-key",
+      "type": "MemberVaultKeyEnvelope",
+      "plaintextType": "VaultKeyPackagePayload",
+      "recipientPublicKeyHex": "044e05aa8eee253c1f1990665caeebb1f344df5930cb4c8cd3daa1f1d18bd212",
+      "recipientPrivateKeyHex": "09ce645f5e54368105c69780eac7b837e10319632fb882ae62fede025e429999",
+      "plaintextCanonical": "{\"memberId\":\"44444444-4444-4444-8444-444444444444\",\"memberKeyGeneration\":5,\"organizationId\":\"11111111-1111-4111-8111-111111111111\",\"protocolVersion\":2,\"vaultId\":\"22222222-2222-4222-8222-222222222222\",\"vaultKey\":\"-VYJZRno9ZF1QKs-Yad5VLjW0Z_Xuz7EvZZjUdG8P9s\",\"vkVersion\":4}",
+      "envelope": {
+        "protocolVersion": 2,
+        "algorithmSuite": 1,
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "vaultId": "22222222-2222-4222-8222-222222222222",
+        "memberId": "44444444-4444-4444-8444-444444444444",
+        "vkVersion": 4,
+        "memberKeyGeneration": 5,
+        "recipientMemberKeyVersion": 2,
+        "recipientMemberKeyFingerprint": "kMtix1fwHouJJYm3dfCyTe28XAG7lT3aYS18rqPZKBM",
+        "sealedVaultKeyPackage": "ftDnGWEOJMTFnbfiQMI9b_UroUKWlKuN5L0Sq_uhJTq7Muz_35-x3UdagvurkeCiA7eBIRG2iF9uFuZWQj4AeWAEta3kNDP4KpSgLCurs2Q3jiVE789Ulouky0OKcxjQ6oBHbovVHvDd80rFpF0KStCCdxli-Fy4HBZjT2UUxTBA7xdX2QW0vSE_lqyAfOJWy0WngNCW_e2rQx4uZzeSaOkTAKf3M4xPbPTT6HPTkKvGpoos5aogUjqxHDcbg66zwTkE5btRGiEvUpB_gSDPQIUOmhJ4lJmfE8vBi-c_8kNWwM2VBJ83gcE2XHqEDvCeiBeClhAbEqHSz_6HSbEO7gilVQFembdCVVijVp07nCUtnSCcpKvENM1IRJ7GOTSqy-UK41su7E82rTZ-tqIgtQbE0DiIB3jTLOGz5y2FGg"
+      }
+    },
+    {
+      "id": "rotation-agent-vault-discovery",
+      "type": "AgentVaultDiscoveryEnvelope",
+      "plaintextType": "AgentVdkPackagePayload",
+      "recipientPublicKeyHex": "00a1c45c5bb331818c82c133a1cd4140698634be09d8dd0a55b7238155327161",
+      "recipientPrivateKeyHex": "d2bfcbd8f8dadf5996863e0d62d9b6b6906e532aba030b9a82a296865d06c21a",
+      "plaintextCanonical": "{\"agentId\":\"55555555-5555-4555-8555-555555555555\",\"organizationId\":\"11111111-1111-4111-8111-111111111111\",\"protocolVersion\":2,\"vaultId\":\"22222222-2222-4222-8222-222222222222\",\"vdk\":\"rKC-Jqa2z8Sn354ejUVNHQLVdRhwWaiyisYW-APixp4\",\"vdkVersion\":7}",
+      "envelope": {
+        "protocolVersion": 2,
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "vaultId": "22222222-2222-4222-8222-222222222222",
+        "agentId": "55555555-5555-4555-8555-555555555555",
+        "vdkVersion": 7,
+        "algorithmSuite": 1,
+        "recipientAgentKeyVersion": 3,
+        "recipientAgentKeyFingerprint": "5_TqWHxCJp_8YuW5qFpHT7FWTR4IjjfUNToVqeXSiAs",
+        "agentWrappedVdk": "OJ5nAYSQFwTwVUCfXRREeECoelxPtFSSGBNdNHf_qQiFiCeZT_tkiMEuzw8ONw0v2fcyg8oN0ibsXNT1gQN_HIlCCEvRNZZq0ufXZiWJPdn776kES3azQ2JE2QQD-FV117r9B221MmbbjGLngHGNdROqvEGmjbPRApzLIh497TWQupaWJSEX32izR7vFIDEefzKvUnLLyOcfx1Is7tVAeGbA2pviMb58V2V4D6P4o42GS3kchCyV-fyxiDUGk1t7d6mhYbG_FZHG4_kKa6xbsyTDJjzWAsRog14VwK2RKSO37WeqLcpDsjIKzdmj4DrTUJx1_BiAAYvy8pv-qIN6jUo1GipJQL0vVJ2jaC-JlTPXv2qrY9plf0oipvK1x4jxjrc",
+        "manifestRevision": "15",
+        "manifestSignature": "LzcK30yaqnnI4r19g-VYEj_j6A6aGkh2I_phyEiCiQyQ7UcR07pmcUmiX7wxOqJSrjRkM5ZT-dSoBJFlZdz2Ag"
+      }
+    }
+  ],
+  "pendingManifest": {
+    "protocolVersion": 2,
+    "algorithmSuite": 1,
+    "organizationId": "11111111-1111-4111-8111-111111111111",
+    "vaultId": "22222222-2222-4222-8222-222222222222",
+    "agentId": "55555555-5555-4555-8555-555555555555",
+    "agentX25519Fingerprint": "5_TqWHxCJp_8YuW5qFpHT7FWTR4IjjfUNToVqeXSiAs",
+    "agentEd25519Fingerprint": "D6cpTuaLNE0XaYY0vhZ7GBNMr7VE32LS3X0-qBO_824",
+    "vaultSigningPublicKey": "nn1Qipr0ypwJU_gwZDtD3AAqkYnwDOgyJHjsUqkSM4o",
+    "vaultSigningKeyFingerprint": "V38yHQ2xLEZzj6uNxHlfd8iKR6enB_RjpRczpneBdZY",
+    "manifestSigningKeyVersion": 10,
+    "vaultAgentMessagePublicKey": "Mv3gb82XhfM580qeQ0CgjGHwnFs-pkMCX_RrW9zANzw",
+    "vaultAgentMessageKeyFingerprint": "ojHRS-__tD-sMNLFWJ_iiO8fO5gY8Oh16JyAYSG5dsE",
+    "agentMessageKeyVersion": 4,
+    "vdkVersion": 7,
+    "agentWrappedVdkDigest": "fMoDY9-AJMPCHpvVQYHO2m44kuNuGvbDWXs0Wr9M_5M",
+    "manifestRevision": "15",
+    "issuedAt": "2026-07-17T06:05:00Z",
+    "minimumAgentRuntimeProtocol": 2,
+    "signature": "LzcK30yaqnnI4r19g-VYEj_j6A6aGkh2I_phyEiCiQyQ7UcR07pmcUmiX7wxOqJSrjRkM5ZT-dSoBJFlZdz2Ag"
+  },
+  "completenessRecords": {
+    "remainingMemberIds": [
+      "44444444-4444-4444-8444-444444444444"
+    ],
+    "remainingAgentIds": [
+      "55555555-5555-4555-8555-555555555555"
+    ],
+    "entryCoverage": [
+      {
+        "entryId": "33333333-3333-4333-8333-333333333333",
+        "targetEntryKeyVersion": 5,
+        "targetMemberKeyGeneration": 5,
+        "targetVdkVersion": 7
+      }
+    ],
+    "pendingRequestDisposition": [
+      {
+        "grantRequestId": "77777777-7777-4777-8777-777777777777",
+        "disposition": "retain",
+        "agentMessageKeyVersion": 4
+      }
+    ]
+  },
+  "digestVectors": [
+    {
+      "name": "agent-wrapped-vdk",
+      "inputHex": "504c444e563244473a4147454e542d575241505045442d56444b3a0002389e670184901704f055409f5d14447840a87a5c4fb4549218135d3477ffa908858827994ffb6488c12ecf0f0e370d2fd9f73283ca0dd226ec5cd4f581037f1c8942084bd135966ad2e7d76625893dd9fbefa9044b76b3436244d90403f85575d7bafd076db53266db8c62e780718d7513aabc41a68db3d1029ccb221e3ded3590ba9696252117df68b347bbc520311e7f32af5272cbc8e71fc7522ceed5407866c0da9be231be7c5765780fa3f8a38d864b791c842c95f9fcb1883506935b7b77a9a161b1bf1591c6e3f90a6bac5bb324c3263cd602c468835e15c0ad912923b7ed67aa2dca43b2320acdd9a3e03ad3509c75fc1880018bf2f29bfea8837a8d4a351a2a4940bd2f549da3682f899533d7bf6aab63da657f4a22a6f2b5c788f18eb7",
+      "outputHex": "7cca0363df8024c3c21e9bd54181ceda6e3892e36e1af6c3597b345abf4cff93"
+    },
+    {
+      "name": "rotation-batch",
+      "inputHex": "504c444e563244473a524f544154494f4e2d42415443483a00028888888888884888888888888888888800000000000a4ae7c91f70be95bc98f3d8460693bb4018fa6ddd363af19ee8567ad15670f5dab4395d256bda4e8c7c720061932a08daee4dfa70ce6ef9ffe792d81aaace8f4cbc1a7f6b3c8a2ac87ba0996820319554487cdb04023bc86d45f4945c73413cb997bea6873550146295702282172b561458f680003ab44e5883b5f1dcbc1bf79817219509e571f048dc3fd1d2ba5b56294142055c1cc85cea50aa674ae1cf03d8afc595c12e6ce286a1bbbd68116708d49dc13f85f618b0b46791ff779e5ea7c8b6a9b6ec2b225640bd901cb13eedd1fa3783a60520193c9990cba80de235e8846a3c5cbcd832ba8cd877e96efd4f99bc7d14bf4cd6f733858bf10c0035020507c5cc65da02a7a82c7264ee59f201fda4d089788393d6bc0cd93460457721c4ba5100d3ff32820b5a53507fa18b0bbfa9d99443c2b584087908fc10f349215335",
+      "outputHex": "0a2bc2155d5c7258a108b4b9c1bbf081a7b8a53819524e651614b20da39128f9"
+    },
+    {
+      "name": "remaining-member-set",
+      "inputHex": "504c444e563244473a52454d41494e494e472d4d454d424552533a000211111111111141118111111111111111222222222222422282222222222222220000000144444444444444448444444444444444",
+      "outputHex": "bc0ad8d42f66515267e08974dd06711eb16b4d401030ed9da1bf736b3c035a68"
+    },
+    {
+      "name": "remaining-agent-set",
+      "inputHex": "504c444e563244473a52454d41494e494e472d4147454e54533a000211111111111141118111111111111111222222222222422282222222222222220000000155555555555545558555555555555555",
+      "outputHex": "5e98d991f29fdca422e6356518bf6a238e1436104c3ad9203c4dc0fde6e98823"
+    },
+    {
+      "name": "entry-coverage",
+      "inputHex": "504c444e563244473a454e5452592d434f5645524147453a000211111111111141118111111111111111222222222222422282222222222222220000000133333333333343338333333333333333000000050000000500000007",
+      "outputHex": "1a0baa97136f284abec869c9ee4bae06e86d5cf9732cd3734f690a69b7880278"
+    },
+    {
+      "name": "pending-request-disposition",
+      "inputHex": "504c444e563244473a50454e44494e472d52455155455354533a000211111111111141118111111111111111222222222222422282222222222222220000000177777777777747778777777777777777000100000004",
+      "outputHex": "67fdedd6566a490dbb0986588c14a2557dd4c1d6d1e6c63c9424f092e9cd3b23"
+    }
+  ],
+  "batch": {
+    "organizationId": "11111111-1111-4111-8111-111111111111",
+    "vaultId": "22222222-2222-4222-8222-222222222222",
+    "rotationId": "88888888-8888-4888-8888-888888888888",
+    "leaseId": "99999999-9999-4999-8999-999999999999",
+    "fencingToken": "j1T8hWVPXOVraoXw0FyxcmcPAtq7UXyNIWTQ9AqMaiU",
+    "expectedRotationRevision": "21",
+    "batchIndex": 0,
+    "items": [
+      {
+        "itemKind": "member-vault-key",
+        "itemId": "44444444-4444-4444-8444-444444444444",
+        "targetVersion": 5,
+        "payload": {
+          "memberVaultKey": {
+            "protocolVersion": 2,
+            "algorithmSuite": 1,
+            "organizationId": "11111111-1111-4111-8111-111111111111",
+            "vaultId": "22222222-2222-4222-8222-222222222222",
+            "memberId": "44444444-4444-4444-8444-444444444444",
+            "vkVersion": 4,
+            "memberKeyGeneration": 5,
+            "recipientMemberKeyVersion": 2,
+            "recipientMemberKeyFingerprint": "kMtix1fwHouJJYm3dfCyTe28XAG7lT3aYS18rqPZKBM",
+            "sealedVaultKeyPackage": "ftDnGWEOJMTFnbfiQMI9b_UroUKWlKuN5L0Sq_uhJTq7Muz_35-x3UdagvurkeCiA7eBIRG2iF9uFuZWQj4AeWAEta3kNDP4KpSgLCurs2Q3jiVE789Ulouky0OKcxjQ6oBHbovVHvDd80rFpF0KStCCdxli-Fy4HBZjT2UUxTBA7xdX2QW0vSE_lqyAfOJWy0WngNCW_e2rQx4uZzeSaOkTAKf3M4xPbPTT6HPTkKvGpoos5aogUjqxHDcbg66zwTkE5btRGiEvUpB_gSDPQIUOmhJ4lJmfE8vBi-c_8kNWwM2VBJ83gcE2XHqEDvCeiBeClhAbEqHSz_6HSbEO7gilVQFembdCVVijVp07nCUtnSCcpKvENM1IRJ7GOTSqy-UK41su7E82rTZ-tqIgtQbE0DiIB3jTLOGz5y2FGg"
+          }
+        },
+        "payloadDigest": "SufJH3C-lbyY89hGBpO7QBj6bd02OvGe6FZ60VZw9do"
+      },
+      {
+        "itemKind": "member-vault-metadata",
+        "itemId": "22222222-2222-4222-8222-222222222222",
+        "targetVersion": 4,
+        "payload": {
+          "memberVaultMetadata": {
+            "organizationId": "11111111-1111-4111-8111-111111111111",
+            "vaultId": "22222222-2222-4222-8222-222222222222",
+            "metadataRevision": "8",
+            "header": {
+              "protocolVersion": 2,
+              "algorithmSuite": 1,
+              "resourceKind": 1,
+              "projectionKind": 1,
+              "resourceRevision": "8",
+              "keyVersion": 4,
+              "memberKeyGeneration": 5,
+              "nonce": "5vzfBYK68n2y0rnYZecKH82agq2_5c0Q"
+            },
+            "ciphertext": "XvJ4ExAWsAezLexwdJLQihF1o-Jx8Oc5QQXe-R3eEkj3YlAU5Woh9IxKmuWi5tSDB90T-yhZOiHRl0FLhj2lp1Zc0cevBGzEn_muJWlBcMFxRHDTg4fUIdrC2X1GiWYLpiXoCKcxNUGFgg6Ls9bFXjArBO4TEcTSJO9RR70ORXbGNEPOMFGC_g"
+          }
+        },
+        "payloadDigest": "tDldJWvaTox8cgBhkyoI2u5N-nDObvn_55LYGqrOj0w"
+      },
+      {
+        "itemKind": "vault-private-key",
+        "itemId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "targetVersion": 4,
+        "payload": {
+          "vaultPrivateKey": {
+            "organizationId": "11111111-1111-4111-8111-111111111111",
+            "vaultId": "22222222-2222-4222-8222-222222222222",
+            "privateKeyKind": 1,
+            "privateKeyRevision": "10",
+            "privateKeyVersion": 4,
+            "memberKeyGeneration": 5,
+            "wrappingKeyVersion": 4,
+            "header": {
+              "protocolVersion": 2,
+              "algorithmSuite": 1,
+              "resourceKind": 1,
+              "projectionKind": 7,
+              "resourceRevision": "10",
+              "keyVersion": 4,
+              "memberKeyGeneration": 5,
+              "nonce": "Rv2hKUDGZbbd6Ha85rJSA-kEm_LwLiWW"
+            },
+            "ciphertext": "aomYco2E2YjEGh3KZ4MMXoqjUhXAsrtAbdAccCsNslK9zFIG_1uwxI8Bu7l4la1k"
+          }
+        },
+        "payloadDigest": "vBp_azyKKsh7oJloIDGVVEh82wQCO8htRfSUXHNBPLk"
+      },
+      {
+        "itemKind": "vault-private-key",
+        "itemId": "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
+        "targetVersion": 10,
+        "payload": {
+          "vaultPrivateKey": {
+            "organizationId": "11111111-1111-4111-8111-111111111111",
+            "vaultId": "22222222-2222-4222-8222-222222222222",
+            "privateKeyKind": 2,
+            "privateKeyRevision": "9",
+            "privateKeyVersion": 10,
+            "memberKeyGeneration": 5,
+            "wrappingKeyVersion": 4,
+            "header": {
+              "protocolVersion": 2,
+              "algorithmSuite": 1,
+              "resourceKind": 1,
+              "projectionKind": 7,
+              "resourceRevision": "9",
+              "keyVersion": 10,
+              "memberKeyGeneration": 5,
+              "nonce": "XXuJyK8D18vjqUY8huj9kW6nTnnqu6ql"
+            },
+            "ciphertext": "VnGm2dSiXUEDsBSNcWtQkcjx5TJQonTbDFeWPSiy-_SPLBoezlbn6jLf_zbxQXRn"
+          }
+        },
+        "payloadDigest": "l76mhzVQFGKVcCKCFytWFFj2gAA6tE5Yg7Xx3Lwb95g"
+      },
+      {
+        "itemKind": "vault-entry-key",
+        "itemId": "33333333-3333-4333-8333-333333333333",
+        "entryId": "33333333-3333-4333-8333-333333333333",
+        "targetVersion": 4,
+        "payload": {
+          "vaultEntryKey": {
+            "organizationId": "11111111-1111-4111-8111-111111111111",
+            "vaultId": "22222222-2222-4222-8222-222222222222",
+            "entryId": "33333333-3333-4333-8333-333333333333",
+            "wrapperRevision": "3",
+            "keyVersion": 5,
+            "memberKeyGeneration": 5,
+            "wrappingKeyVersion": 4,
+            "header": {
+              "protocolVersion": 2,
+              "algorithmSuite": 1,
+              "resourceKind": 2,
+              "projectionKind": 8,
+              "resourceRevision": "3",
+              "keyVersion": 5,
+              "memberKeyGeneration": 5,
+              "nonce": "kppmLHhI_esWzphHI-_dQE6LifC7BWQb"
+            },
+            "wrappedEntryDekByVk": "Fpp5XqgEjz0KVs327nVTTeuDgAU4UV2xDEsOFrjYrZV7FMdE4ReJJY4hwYHp4W7P"
+          }
+        },
+        "payloadDigest": "FyGVCeVx8EjcP9HSultWKUFCBVwcyFzqUKpnSuHPA9g"
+      },
+      {
+        "itemKind": "agent-discovery",
+        "itemId": "33333333-3333-4333-8333-333333333333",
+        "entryId": "33333333-3333-4333-8333-333333333333",
+        "targetVersion": 7,
+        "payload": {
+          "agentDiscovery": {
+            "organizationId": "11111111-1111-4111-8111-111111111111",
+            "vaultId": "22222222-2222-4222-8222-222222222222",
+            "entryId": "33333333-3333-4333-8333-333333333333",
+            "agentDiscoveryRevision": "13",
+            "vdkVersion": 7,
+            "header": {
+              "protocolVersion": 2,
+              "algorithmSuite": 1,
+              "resourceKind": 2,
+              "projectionKind": 4,
+              "resourceRevision": "13",
+              "keyVersion": 7,
+              "memberKeyGeneration": 5,
+              "nonce": "Nq2FPCJ07i9cwcvvzx7DeY-JptVhHaQl"
+            },
+            "ciphertext": "v3V4dkF83Ea1cyWkUExhutE1beUHXOIxVRy5GMgop693IEBtHioJCHW3K9pswFCIB061dfmjnbzhWQe7Ukli6ASqb4lP9WFwRuNaEL1KiOERgX62krUW42IZFhlSWvfh0oJ0YX9pbjpXN04engJkr6klaqPeZeixa6_1TKBBSRwmtKfm6FYRx4zkOJIak4O-8OPdJxUEZPjey8cmfhL9"
+          }
+        },
+        "payloadDigest": "r8WVwS5s4oahu71oEWcI1J3BP4X2GLC0Z5H_d55ep8g"
+      },
+      {
+        "itemKind": "agent-vault-discovery",
+        "itemId": "55555555-5555-4555-8555-555555555555",
+        "targetVersion": 7,
+        "payload": {
+          "agentVaultDiscovery": {
+            "protocolVersion": 2,
+            "organizationId": "11111111-1111-4111-8111-111111111111",
+            "vaultId": "22222222-2222-4222-8222-222222222222",
+            "agentId": "55555555-5555-4555-8555-555555555555",
+            "vdkVersion": 7,
+            "algorithmSuite": 1,
+            "recipientAgentKeyVersion": 3,
+            "recipientAgentKeyFingerprint": "5_TqWHxCJp_8YuW5qFpHT7FWTR4IjjfUNToVqeXSiAs",
+            "agentWrappedVdk": "OJ5nAYSQFwTwVUCfXRREeECoelxPtFSSGBNdNHf_qQiFiCeZT_tkiMEuzw8ONw0v2fcyg8oN0ibsXNT1gQN_HIlCCEvRNZZq0ufXZiWJPdn776kES3azQ2JE2QQD-FV117r9B221MmbbjGLngHGNdROqvEGmjbPRApzLIh497TWQupaWJSEX32izR7vFIDEefzKvUnLLyOcfx1Is7tVAeGbA2pviMb58V2V4D6P4o42GS3kchCyV-fyxiDUGk1t7d6mhYbG_FZHG4_kKa6xbsyTDJjzWAsRog14VwK2RKSO37WeqLcpDsjIKzdmj4DrTUJx1_BiAAYvy8pv-qIN6jUo1GipJQL0vVJ2jaC-JlTPXv2qrY9plf0oipvK1x4jxjrc",
+            "manifestRevision": "15",
+            "manifestSignature": "LzcK30yaqnnI4r19g-VYEj_j6A6aGkh2I_phyEiCiQyQ7UcR07pmcUmiX7wxOqJSrjRkM5ZT-dSoBJFlZdz2Ag"
+          }
+        },
+        "payloadDigest": "tqm27CsiVkC9kByxPu3R-jeDpgUgGTyZkMuoDeI16IQ"
+      },
+      {
+        "itemKind": "grant-entry",
+        "itemId": "66666666-6666-4666-8666-666666666666",
+        "entryId": "33333333-3333-4333-8333-333333333333",
+        "targetVersion": 3,
+        "payload": {
+          "grantEntry": {
+            "organizationId": "11111111-1111-4111-8111-111111111111",
+            "vaultId": "22222222-2222-4222-8222-222222222222",
+            "grantId": "66666666-6666-4666-8666-666666666666",
+            "entryId": "33333333-3333-4333-8333-333333333333",
+            "agentId": "55555555-5555-4555-8555-555555555555",
+            "grantEnvelopeRevision": "4",
+            "entryRevision": "12",
+            "grantKeyVersion": 3,
+            "approvedMethods": 1,
+            "expiresAt": "2026-07-17T07:00:00Z",
+            "useLimit": 3,
+            "remainingUses": 3,
+            "recipientAgentKeyVersion": 3,
+            "recipientAgentKeyFingerprint": "5_TqWHxCJp_8YuW5qFpHT7FWTR4IjjfUNToVqeXSiAs",
+            "agentWrappedGrantDek": "TamE-Nspp1ys4-xAfqZGxaHjNpZ26PDkSJIrGXMPAnSF-MdyIgbQS3KRQURa80vVgEltSg2lyoRpAFgvcXKLfbjbOloZNl0LNkorRU3PwE8",
+            "header": {
+              "protocolVersion": 2,
+              "algorithmSuite": 1,
+              "resourceKind": 4,
+              "projectionKind": 6,
+              "resourceRevision": "4",
+              "keyVersion": 3,
+              "memberKeyGeneration": 5,
+              "nonce": "nb_ADq4EkHrfi71OopNB6cecELrPuOU0"
+            },
+            "ciphertext": "nAlYzANF3GzS_NGZ_V4m5dzjaaL0MKByddm-wRaeYpRqqKm34Ql7wOEGqqAqQ81AjuntHBmeKg55H4L1ZsVrp_xcM355OOzdw9h_cYupjM-dLRGF2ClOTXGbWnFnVTiMID6qj3Ub"
+          }
+        },
+        "payloadDigest": "ajxcvNgyuozYd-lu_U-ZvH0Uv0zW9zOFi_EMADUCBQc"
+      },
+      {
+        "itemKind": "vault-manifest",
+        "itemId": "55555555-5555-4555-8555-555555555555",
+        "targetVersion": 15,
+        "payload": {
+          "vaultManifest": {
+            "protocolVersion": 2,
+            "algorithmSuite": 1,
+            "organizationId": "11111111-1111-4111-8111-111111111111",
+            "vaultId": "22222222-2222-4222-8222-222222222222",
+            "agentId": "55555555-5555-4555-8555-555555555555",
+            "agentX25519Fingerprint": "5_TqWHxCJp_8YuW5qFpHT7FWTR4IjjfUNToVqeXSiAs",
+            "agentEd25519Fingerprint": "D6cpTuaLNE0XaYY0vhZ7GBNMr7VE32LS3X0-qBO_824",
+            "vaultSigningPublicKey": "nn1Qipr0ypwJU_gwZDtD3AAqkYnwDOgyJHjsUqkSM4o",
+            "vaultSigningKeyFingerprint": "V38yHQ2xLEZzj6uNxHlfd8iKR6enB_RjpRczpneBdZY",
+            "manifestSigningKeyVersion": 10,
+            "vaultAgentMessagePublicKey": "Mv3gb82XhfM580qeQ0CgjGHwnFs-pkMCX_RrW9zANzw",
+            "vaultAgentMessageKeyFingerprint": "ojHRS-__tD-sMNLFWJ_iiO8fO5gY8Oh16JyAYSG5dsE",
+            "agentMessageKeyVersion": 4,
+            "vdkVersion": 7,
+            "agentWrappedVdkDigest": "fMoDY9-AJMPCHpvVQYHO2m44kuNuGvbDWXs0Wr9M_5M",
+            "manifestRevision": "15",
+            "issuedAt": "2026-07-17T06:05:00Z",
+            "minimumAgentRuntimeProtocol": 2,
+            "signature": "LzcK30yaqnnI4r19g-VYEj_j6A6aGkh2I_phyEiCiQyQ7UcR07pmcUmiX7wxOqJSrjRkM5ZT-dSoBJFlZdz2Ag"
+          }
+        },
+        "payloadDigest": "xcxl2gKnqCxyZO5Z8gH9pNCJeIOT1rwM2TRgRXchxLo"
+      },
+      {
+        "itemKind": "vault-discovery-key",
+        "itemId": "22222222-2222-4222-8222-222222222222",
+        "targetVersion": 7,
+        "payload": {
+          "vaultDiscoveryKey": {
+            "organizationId": "11111111-1111-4111-8111-111111111111",
+            "vaultId": "22222222-2222-4222-8222-222222222222",
+            "discoveryKeyRevision": "6",
+            "vdkVersion": 7,
+            "memberKeyGeneration": 5,
+            "wrappingKeyVersion": 4,
+            "header": {
+              "protocolVersion": 2,
+              "algorithmSuite": 1,
+              "resourceKind": 1,
+              "projectionKind": 12,
+              "resourceRevision": "6",
+              "keyVersion": 7,
+              "memberKeyGeneration": 5,
+              "nonce": "5h9nWJ6lV-AXEhd0R2gkD6d7nnb-rOv8"
+            },
+            "ciphertext": "Gvam2byIFpDexi0lUk9BiFEt8ZfWjPEymc__v4LyqyYSC7DPyEtaPM0yH4pvPSii"
+          }
+        },
+        "payloadDigest": "UQDT_zKCC1pTUH-hiwu_qdmUQ8K1hAh5CPwQ80khUzU"
+      }
+    ],
+    "batchDigest": "CivCFV1cclihCLS5wbvwgae4pTgZUk5lFhSyDaORKPk"
+  },
+  "itemDigestInputs": [
+    {
+      "itemKind": "member-vault-key",
+      "inputHex": "504c444e563244473a524f544154494f4e2d4954454d3a000200014444444444444444844444444444444400000000057b226d656d6265725661756c744b6579223a7b22616c676f726974686d5375697465223a312c226d656d6265724964223a2234343434343434342d343434342d343434342d383434342d343434343434343434343434222c226d656d6265724b657947656e65726174696f6e223a352c226f7267616e697a6174696f6e4964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c2270726f746f636f6c56657273696f6e223a322c22726563697069656e744d656d6265724b657946696e6765727072696e74223a226b4d746978316677486f754a4a596d336466437954653238584147376c543361595331387271505a4b424d222c22726563697069656e744d656d6265724b657956657273696f6e223a322c227365616c65645661756c744b65795061636b616765223a226674446e4757454f4a4d54466e626669514d4939625f55726f554b576c4b754e354c3053715f75684a5471374d757a5f33352d7833556461677675726b65436941376542495247326946397546755a57516a3441655741457461336b4e4450344b7053674c437572733251336a695645373839556c6f756b79304f4b63786a51366f4248626f765648764464383072467046304b5374434364786c692d46793448425a6a543255557854424137786458325157307653455f6c717941664f4a577930576e674e43575f653272517834755a7a6553614f6b54414b66334d34785062505454364850546b4b7647706f6f7335616f67556a7178484463626736367a77546b4535627452476945765570425f675344505149554f6d684a346c4a6d6645387642692d635f386b4e57774d3256424a3833676345325848714544764365694265436c684162457148537a5f36485362454f3767696c565146656d6264435656696a567030376e4355746e534363704b76454e4d3149524a37474f545371792d554b343173753745383272545a2d74714967745162453044694942336a544c4f477a357932464767222c227661756c744964223a2232323232323232322d323232322d343232322d383232322d323232323232323232323232222c22766b56657273696f6e223a347d7d"
+    },
+    {
+      "itemKind": "member-vault-metadata",
+      "inputHex": "504c444e563244473a524f544154494f4e2d4954454d3a000200022222222222224222822222222222222200000000047b226d656d6265725661756c744d65746164617461223a7b2263697068657274657874223a2258764a34457841577341657a4c657877644a4c51696846316f2d4a78384f6335515158652d523365456b6a33596c415535576f683949784b6d75576935745344423930542d79685a4f6948526c30464c686a326c70315a633063657642477a456e5f6d754a576c42634d4678524844546734665549647243325831476957594c7069586f434b63784e5547466767364c73396246586a4172424f3454456354534a4f39525237304f525862474e45504f4d4647435f67222c22686561646572223a7b22616c676f726974686d5375697465223a312c226b657956657273696f6e223a342c226d656d6265724b657947656e65726174696f6e223a352c226e6f6e6365223a2235767a6642594b36386e327930726e595a65634b483832616771325f35633051222c2270726f6a656374696f6e4b696e64223a312c2270726f746f636f6c56657273696f6e223a322c227265736f757263654b696e64223a312c227265736f757263655265766973696f6e223a2238227d2c226d657461646174615265766973696f6e223a2238222c226f7267616e697a6174696f6e4964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c227661756c744964223a2232323232323232322d323232322d343232322d383232322d323232323232323232323232227d7d"
+    },
+    {
+      "itemKind": "vault-private-key",
+      "inputHex": "504c444e563244473a524f544154494f4e2d4954454d3a00020003aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa00000000047b227661756c74507269766174654b6579223a7b2263697068657274657874223a22616f6d59636f324532596a454768334b5a344d4d586f716a5568584173727441626441636343734e736c4b397a4649475f3175777849384275376c346c61316b222c22686561646572223a7b22616c676f726974686d5375697465223a312c226b657956657273696f6e223a342c226d656d6265724b657947656e65726174696f6e223a352c226e6f6e6365223a22527632684b5544475a6262643648613835724a53412d6b456d5f4c774c695757222c2270726f6a656374696f6e4b696e64223a372c2270726f746f636f6c56657273696f6e223a322c227265736f757263654b696e64223a312c227265736f757263655265766973696f6e223a223130227d2c226d656d6265724b657947656e65726174696f6e223a352c226f7267616e697a6174696f6e4964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c22707269766174654b65794b696e64223a312c22707269766174654b65795265766973696f6e223a223130222c22707269766174654b657956657273696f6e223a342c227661756c744964223a2232323232323232322d323232322d343232322d383232322d323232323232323232323232222c227772617070696e674b657956657273696f6e223a347d7d"
+    },
+    {
+      "itemKind": "vault-private-key",
+      "inputHex": "504c444e563244473a524f544154494f4e2d4954454d3a00020003bbbbbbbbbbbb4bbbbbbbbbbbbbbbbbbb000000000a7b227661756c74507269766174654b6579223a7b2263697068657274657874223a22566e476d32645369585545447342534e635774516b636a7835544a516f6e546244466557505369792d5f53504c426f657a6c626e366a4c665f7a62785158526e222c22686561646572223a7b22616c676f726974686d5375697465223a312c226b657956657273696f6e223a31302c226d656d6265724b657947656e65726174696f6e223a352c226e6f6e6365223a225858754a794b38443138766a7155593868756a396b57366e546e6e717536716c222c2270726f6a656374696f6e4b696e64223a372c2270726f746f636f6c56657273696f6e223a322c227265736f757263654b696e64223a312c227265736f757263655265766973696f6e223a2239227d2c226d656d6265724b657947656e65726174696f6e223a352c226f7267616e697a6174696f6e4964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c22707269766174654b65794b696e64223a322c22707269766174654b65795265766973696f6e223a2239222c22707269766174654b657956657273696f6e223a31302c227661756c744964223a2232323232323232322d323232322d343232322d383232322d323232323232323232323232222c227772617070696e674b657956657273696f6e223a347d7d"
+    },
+    {
+      "itemKind": "vault-entry-key",
+      "inputHex": "504c444e563244473a524f544154494f4e2d4954454d3a00020004333333333333433383333333333333330133333333333343338333333333333333000000047b227661756c74456e7472794b6579223a7b22656e7472794964223a2233333333333333332d333333332d343333332d383333332d333333333333333333333333222c22686561646572223a7b22616c676f726974686d5375697465223a312c226b657956657273696f6e223a352c226d656d6265724b657947656e65726174696f6e223a352c226e6f6e6365223a226b70706d4c4868495f6573577a706848492d5f645145364c6966433742575162222c2270726f6a656374696f6e4b696e64223a382c2270726f746f636f6c56657273696f6e223a322c227265736f757263654b696e64223a322c227265736f757263655265766973696f6e223a2233227d2c226b657956657273696f6e223a352c226d656d6265724b657947656e65726174696f6e223a352c226f7267616e697a6174696f6e4964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c227661756c744964223a2232323232323232322d323232322d343232322d383232322d323232323232323232323232222c2277726170706564456e74727944656b4279566b223a2246707035587167456a7a304b56733332376e56545465754467415534555632784445734f46726a59725a5637464d64453452654a4a5934687759487034573750222c22777261707065725265766973696f6e223a2233222c227772617070696e674b657956657273696f6e223a347d7d"
+    },
+    {
+      "itemKind": "agent-discovery",
+      "inputHex": "504c444e563244473a524f544154494f4e2d4954454d3a00020005333333333333433383333333333333330133333333333343338333333333333333000000077b226167656e74446973636f76657279223a7b226167656e74446973636f766572795265766973696f6e223a223133222c2263697068657274657874223a2276335634646b4638334561316379576b554578687574453162655548584f497856527935474d676f703639334945427448696f4a434857334b397073774643494230363164666d6a6e627a6857516537556b6c693641537162346c503957467752754e61454c314b694f4552675836326b7255573432495a46686c5357766668306f4a3059583970626a70584e3034656e674a6b72366b6c617150655a65697861365f31544b42425352776d744b666d3646595278347a6b4f4a49616b344f2d384f50644a7855455a506a657938636d66684c39222c22656e7472794964223a2233333333333333332d333333332d343333332d383333332d333333333333333333333333222c22686561646572223a7b22616c676f726974686d5375697465223a312c226b657956657273696f6e223a372c226d656d6265724b657947656e65726174696f6e223a352c226e6f6e6365223a224e71324650434a3037693963776376767a78374465592d4a707456684861516c222c2270726f6a656374696f6e4b696e64223a342c2270726f746f636f6c56657273696f6e223a322c227265736f757263654b696e64223a322c227265736f757263655265766973696f6e223a223133227d2c226f7267616e697a6174696f6e4964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c227661756c744964223a2232323232323232322d323232322d343232322d383232322d323232323232323232323232222c2276646b56657273696f6e223a377d7d"
+    },
+    {
+      "itemKind": "agent-vault-discovery",
+      "inputHex": "504c444e563244473a524f544154494f4e2d4954454d3a000200065555555555554555855555555555555500000000077b226167656e745661756c74446973636f76657279223a7b226167656e744964223a2235353535353535352d353535352d343535352d383535352d353535353535353535353535222c226167656e745772617070656456646b223a224f4a356e415953514677547756554366585252456545436f656c78507446535347424e644e48665f715169466943655a545f746b694d45757a77384f4e7730763266637967386f4e30696273584e543167514e5f48496c43434576524e5a5a71307566585a69574a50646e3737366b455333617a51324a45325151442d46563131377239423232314d6d62626a474c6e6748474e64524f717645476d6a62505241707a4c4968343937545751757061574a5345583332697a5237764649444565667a4b76556e4c4c794f6366783149733774564165476241327076694d62353856325634443650346f34324753336b63684379562d667978694455476b31743764366d685962475f465a4847345f6b4b61367862737954444a6a7a574173526f67313456774b32524b534f33375765714c637044736a494b7a646d6a34447254554a78315f426941415976793870762d71494e366a556f314769704a514c3076564a326a61432d4a6c545058763271725939706c66306f6970764b3178346a786a7263222c22616c676f726974686d5375697465223a312c226d616e69666573745265766973696f6e223a223135222c226d616e69666573745369676e6174757265223a224c7a634b33307961716e6e4934723139672d5659456a5f6a36413661476b6832495f70687945694369517951375563523037706d63556d69583777784f714a53726a526b4d355a542d64536f424a466c5a647a324167222c226f7267616e697a6174696f6e4964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c2270726f746f636f6c56657273696f6e223a322c22726563697069656e744167656e744b657946696e6765727072696e74223a22355f5471574878434a705f38597557357146704854374657545234496a6a66554e546f5671655853694173222c22726563697069656e744167656e744b657956657273696f6e223a332c227661756c744964223a2232323232323232322d323232322d343232322d383232322d323232323232323232323232222c2276646b56657273696f6e223a377d7d"
+    },
+    {
+      "itemKind": "grant-entry",
+      "inputHex": "504c444e563244473a524f544154494f4e2d4954454d3a00020007666666666666466686666666666666660133333333333343338333333333333333000000037b226772616e74456e747279223a7b226167656e744964223a2235353535353535352d353535352d343535352d383535352d353535353535353535353535222c226167656e74577261707065644772616e7444656b223a2254616d452d4e737070317973342d784166715a477861486a4e705a323650446b534a497247584d50416e53462d4d64794967625153334b52515552613830765667456c745367326c796f52704146677663584b4c66626a624f6c6f5a4e6c304c4e6b6f7252553350774538222c22617070726f7665644d6574686f6473223a312c2263697068657274657874223a226e416c597a414e4633477a535f4e475a5f56346d35647a6a61614c304d4b427964646d2d7752616559705271714b6d3334516c37774f454771714171513831416a756e7448426d654b67353548344c315a735672705f78634d3335354f4f7a647739685f635975706a4d2d644c52474632436c4f54584762576e466e5654694d494436716a335562222c22656e7472794964223a2233333333333333332d333333332d343333332d383333332d333333333333333333333333222c22656e7472795265766973696f6e223a223132222c22657870697265734174223a22323032362d30372d31375430373a30303a30305a222c226772616e74456e76656c6f70655265766973696f6e223a2234222c226772616e744964223a2236363636363636362d363636362d343636362d383636362d363636363636363636363636222c226772616e744b657956657273696f6e223a332c22686561646572223a7b22616c676f726974686d5375697465223a312c226b657956657273696f6e223a332c226d656d6265724b657947656e65726174696f6e223a352c226e6f6e6365223a226e625f41447134456b4872666937314f6f704e4236636563454c7250754f5530222c2270726f6a656374696f6e4b696e64223a362c2270726f746f636f6c56657273696f6e223a322c227265736f757263654b696e64223a342c227265736f757263655265766973696f6e223a2234227d2c226f7267616e697a6174696f6e4964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c22726563697069656e744167656e744b657946696e6765727072696e74223a22355f5471574878434a705f38597557357146704854374657545234496a6a66554e546f5671655853694173222c22726563697069656e744167656e744b657956657273696f6e223a332c2272656d61696e696e6755736573223a332c227573654c696d6974223a332c227661756c744964223a2232323232323232322d323232322d343232322d383232322d323232323232323232323232227d7d"
+    },
+    {
+      "itemKind": "vault-manifest",
+      "inputHex": "504c444e563244473a524f544154494f4e2d4954454d3a0002000855555555555545558555555555555555000000000f7b227661756c744d616e6966657374223a7b226167656e744564323535313946696e6765727072696e74223a22443663705475614c4e4530586159593076685a3747424e4d7237564533324c533358302d71424f5f383234222c226167656e744964223a2235353535353535352d353535352d343535352d383535352d353535353535353535353535222c226167656e744d6573736167654b657956657273696f6e223a342c226167656e745772617070656456646b446967657374223a22664d6f4459392d414a4d5043487076565159484f326d34346b754e7547766244575873305772394d5f354d222c226167656e7458323535313946696e6765727072696e74223a22355f5471574878434a705f38597557357146704854374657545234496a6a66554e546f5671655853694173222c22616c676f726974686d5375697465223a312c226973737565644174223a22323032362d30372d31375430363a30353a30305a222c226d616e69666573745265766973696f6e223a223135222c226d616e69666573745369676e696e674b657956657273696f6e223a31302c226d696e696d756d4167656e7452756e74696d6550726f746f636f6c223a322c226f7267616e697a6174696f6e4964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c2270726f746f636f6c56657273696f6e223a322c227369676e6174757265223a224c7a634b33307961716e6e4934723139672d5659456a5f6a36413661476b6832495f70687945694369517951375563523037706d63556d69583777784f714a53726a526b4d355a542d64536f424a466c5a647a324167222c227661756c744167656e744d6573736167654b657946696e6765727072696e74223a226f6a4852532d5f5f74442d734d4e4c46574a5f69694f38664f356759384f6831364a794159534735647345222c227661756c744167656e744d6573736167655075626c69634b6579223a224d7633676238325868664d3538307165513043676a4748776e46732d706b4d43585f527257397a414e7a77222c227661756c744964223a2232323232323232322d323232322d343232322d383232322d323232323232323232323232222c227661756c745369676e696e674b657946696e6765727072696e74223a2256333879485132784c455a7a6a36754e78486c666438694b5236656e425f526a7052637a706e6542645a59222c227661756c745369676e696e675075626c69634b6579223a226e6e3151697072307970774a555f67775a447444334141716b596e77444f67794a486a7355716b534d346f222c2276646b56657273696f6e223a377d7d"
+    },
+    {
+      "itemKind": "vault-discovery-key",
+      "inputHex": "504c444e563244473a524f544154494f4e2d4954454d3a000200092222222222224222822222222222222200000000077b227661756c74446973636f766572794b6579223a7b2263697068657274657874223a224776616d32627949467044657869306c556b394269464574385a66576a5045796d635f5f76344c79717959534337445079457461504d30794834707650536969222c22646973636f766572794b65795265766973696f6e223a2236222c22686561646572223a7b22616c676f726974686d5375697465223a312c226b657956657273696f6e223a372c226d656d6265724b657947656e65726174696f6e223a352c226e6f6e6365223a223568396e574a366c562d4158456864305232676b443664376e6e622d724f7638222c2270726f6a656374696f6e4b696e64223a31322c2270726f746f636f6c56657273696f6e223a322c227265736f757263654b696e64223a312c227265736f757263655265766973696f6e223a2236227d2c226d656d6265724b657947656e65726174696f6e223a352c226f7267616e697a6174696f6e4964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c227661756c744964223a2232323232323232322d323232322d343232322d383232322d323232323232323232323232222c2276646b56657273696f6e223a372c227772617070696e674b657956657273696f6e223a347d7d"
+    }
+  ],
+  "commitRequest": {
+    "organizationId": "11111111-1111-4111-8111-111111111111",
+    "vaultId": "22222222-2222-4222-8222-222222222222",
+    "rotationId": "88888888-8888-4888-8888-888888888888",
+    "leaseId": "99999999-9999-4999-8999-999999999999",
+    "fencingToken": "j1T8hWVPXOVraoXw0FyxcmcPAtq7UXyNIWTQ9AqMaiU",
+    "expectedRotationRevision": "22",
+    "baseVaultRevision": "100",
+    "finalDirtySetSequence": "31",
+    "remainingMemberSetDigest": "vArY1C9mUVJn4Il03QZxHrFrTUAQMO2dob9zazwDWmg",
+    "remainingAgentSetDigest": "XpjZkfKf3KQi5jVlGL9qI44UNhBMOtkgPE3A_ebpiCM",
+    "entryCoverageDigest": "GguqlxNvKEq-yGnJ7kuuBuhtXPlzLNNzT2kKabeIAng",
+    "pendingRequestDispositionDigest": "Z_3t1lZqSQ27CYZYjBSiVX3UwdbR5sY8lCTwkunNOyM",
+    "signedManifest": {
+      "protocolVersion": 2,
+      "algorithmSuite": 1,
+      "organizationId": "11111111-1111-4111-8111-111111111111",
+      "vaultId": "22222222-2222-4222-8222-222222222222",
+      "agentId": "55555555-5555-4555-8555-555555555555",
+      "agentX25519Fingerprint": "5_TqWHxCJp_8YuW5qFpHT7FWTR4IjjfUNToVqeXSiAs",
+      "agentEd25519Fingerprint": "D6cpTuaLNE0XaYY0vhZ7GBNMr7VE32LS3X0-qBO_824",
+      "vaultSigningPublicKey": "nn1Qipr0ypwJU_gwZDtD3AAqkYnwDOgyJHjsUqkSM4o",
+      "vaultSigningKeyFingerprint": "V38yHQ2xLEZzj6uNxHlfd8iKR6enB_RjpRczpneBdZY",
+      "manifestSigningKeyVersion": 10,
+      "vaultAgentMessagePublicKey": "Mv3gb82XhfM580qeQ0CgjGHwnFs-pkMCX_RrW9zANzw",
+      "vaultAgentMessageKeyFingerprint": "ojHRS-__tD-sMNLFWJ_iiO8fO5gY8Oh16JyAYSG5dsE",
+      "agentMessageKeyVersion": 4,
+      "vdkVersion": 7,
+      "agentWrappedVdkDigest": "fMoDY9-AJMPCHpvVQYHO2m44kuNuGvbDWXs0Wr9M_5M",
+      "manifestRevision": "15",
+      "issuedAt": "2026-07-17T06:05:00Z",
+      "minimumAgentRuntimeProtocol": 2,
+      "signature": "LzcK30yaqnnI4r19g-VYEj_j6A6aGkh2I_phyEiCiQyQ7UcR07pmcUmiX7wxOqJSrjRkM5ZT-dSoBJFlZdz2Ag"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "commit-complete-current-switch",
+      "startStatus": "ready-to-commit",
+      "input": "commitRequest",
+      "expected": {
+        "status": "committed",
+        "currentVersionsSwitchAtomically": true,
+        "pendingNeverServed": true,
+        "agentMessageKeyUnchanged": true
+      }
+    },
+    {
+      "id": "rollback-expired-lease",
+      "startStatus": "preparing",
+      "mutation": {
+        "leaseExpired": true
+      },
+      "expected": {
+        "status": "failed-retryable",
+        "lastFailureCode": "lease-expired",
+        "currentEpochUnchanged": true,
+        "stagedRowsNonServable": true
+      }
+    },
+    {
+      "id": "reject-stale-fencing-token",
+      "startStatus": "preparing",
+      "mutation": {
+        "fencingToken": "u8ttSAEUZIDwJr0Lkf3UbZ8VLF_Hzz5CtkGeU7Fv4t4"
+      },
+      "expected": {
+        "status": "failed-retryable",
+        "lastFailureCode": "fence-rejected",
+        "protocolError": "rotation-fence-rejected",
+        "currentEpochUnchanged": true
+      }
+    },
+    {
+      "id": "reset-incomplete-recovery-seed-on-new-fence",
+      "startStatus": "preparing",
+      "mutation": {
+        "newLeaseClaimed": true,
+        "preparedSeedKinds": [
+          "member-vault-key",
+          "vault-discovery-key"
+        ],
+        "missingSeedKinds": [
+          "vault-private-key"
+        ]
+      },
+      "expected": {
+        "status": "preparing",
+        "currentEpochUnchanged": true,
+        "incompleteSeedClearedAtomically": true,
+        "preparedSeedKinds": [],
+        "mixingOldAndNewSeedForbidden": true
+      }
+    },
+    {
+      "id": "reject-dirty-set-race",
+      "startStatus": "ready-to-commit",
+      "mutation": {
+        "finalDirtySetSequence": "30"
+      },
+      "expected": {
+        "status": "preparing",
+        "lastFailureCode": "stale-revision",
+        "currentEpochUnchanged": true,
+        "requiresFinalReconciliation": true
+      }
+    }
+  ]
+}

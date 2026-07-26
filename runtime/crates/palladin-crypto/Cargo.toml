@@ -9,14 +9,18 @@ repository.workspace = true
 [dependencies]
 base64.workspace = true
 blake2.workspace = true
+chacha20poly1305.workspace = true
 crypto_secretbox.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
+hkdf.workspace = true
 salsa20.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
 

@@ -1,0 +1,135 @@
+{
+  "contract": "palladin-vault-v2-key-derivation-fixtures",
+  "schemaVersion": 1,
+  "protocolVersion": 2,
+  "hkdfVectors": [
+    {
+      "id": "hkdf-member-vault-metadata",
+      "purpose": "member-vault-metadata",
+      "purposeId": 1,
+      "baseKeyName": "VK",
+      "baseKeyHex": "7b87efdee655afc73575ef71dd7a8c8fcc7b11c8ca78503c968f97fe516a975d",
+      "resourceKind": "vault",
+      "organizationId": "11111111-1111-4111-8111-111111111111",
+      "vaultId": "22222222-2222-4222-8222-222222222222",
+      "entryId": null,
+      "keyVersion": 3,
+      "memberKeyGeneration": 4,
+      "saltHex": "b5fa174bd6bca9c1d4d3947fc77a8f7c40a55610b1b69c899a532c13e06fc165",
+      "infoHex": "70616c6c6164696e3a7661756c742d76323a0001",
+      "outputHex": "5d0df44711d4b00586a508e8c3e05aa7297a4179ec9100f597929b258aebd775"
+    },
+    {
+      "id": "hkdf-member-index",
+      "purpose": "member-index",
+      "purposeId": 2,
+      "baseKeyName": "EntryDEK",
+      "baseKeyHex": "621c1dfa77dc95aca250f8f0a37eff29dacb9ed0b3e065f1c5c23eeaa686e940",
+      "resourceKind": "entry",
+      "organizationId": "11111111-1111-4111-8111-111111111111",
+      "vaultId": "22222222-2222-4222-8222-222222222222",
+      "entryId": "33333333-3333-4333-8333-333333333333",
+      "keyVersion": 5,
+      "memberKeyGeneration": 4,
+      "saltHex": "91c4df380389b8510053bf4cd842c2998dfed67b3f569c6462732d3e1c76afd9",
+      "infoHex": "70616c6c6164696e3a7661756c742d76323a0002",
+      "outputHex": "7fdbc595d7e8c4596cab35efdbc061cc75b19d9d53bbc3feb8f01fed01abdb9b"
+    },
+    {
+      "id": "hkdf-member-secret",
+      "purpose": "member-secret",
+      "purposeId": 3,
+      "baseKeyName": "EntryDEK",
+      "baseKeyHex": "621c1dfa77dc95aca250f8f0a37eff29dacb9ed0b3e065f1c5c23eeaa686e940",
+      "resourceKind": "entry",
+      "organizationId": "11111111-1111-4111-8111-111111111111",
+      "vaultId": "22222222-2222-4222-8222-222222222222",
+      "entryId": "33333333-3333-4333-8333-333333333333",
+      "keyVersion": 5,
+      "memberKeyGeneration": 4,
+      "saltHex": "91c4df380389b8510053bf4cd842c2998dfed67b3f569c6462732d3e1c76afd9",
+      "infoHex": "70616c6c6164696e3a7661756c742d76323a0003",
+      "outputHex": "dc65228d34161833ec71b92a0baeac661e446ed062e7e6a0c5b1a4e4d583dd30"
+    },
+    {
+      "id": "hkdf-agent-discovery",
+      "purpose": "agent-discovery",
+      "purposeId": 4,
+      "baseKeyName": "VDK",
+      "baseKeyHex": "8510956db3e7ac8054a9bbb75ea8bfb5e8655f2cf6de40fa177558c0a1204b9b",
+      "resourceKind": "entry",
+      "organizationId": "11111111-1111-4111-8111-111111111111",
+      "vaultId": "22222222-2222-4222-8222-222222222222",
+      "entryId": "33333333-3333-4333-8333-333333333333",
+      "keyVersion": 6,
+      "memberKeyGeneration": 4,
+      "saltHex": "90f602c6cd4e0d79d0e7472b727711c8ae0b933981d6d8f359e350a6a2d863e3",
+      "infoHex": "70616c6c6164696e3a7661756c742d76323a0004",
+      "outputHex": "cd9ee4f77197a73140f48634e141a69ae7f85e4e02fb8a99f056e1707563d57d"
+    },
+    {
+      "id": "hkdf-encrypted-asset-vault",
+      "purpose": "encrypted-asset",
+      "purposeId": 5,
+      "baseKeyName": "VK",
+      "baseKeyHex": "7b87efdee655afc73575ef71dd7a8c8fcc7b11c8ca78503c968f97fe516a975d",
+      "resourceKind": "vault",
+      "organizationId": "11111111-1111-4111-8111-111111111111",
+      "vaultId": "22222222-2222-4222-8222-222222222222",
+      "entryId": null,
+      "keyVersion": 3,
+      "memberKeyGeneration": 4,
+      "saltHex": "b5fa174bd6bca9c1d4d3947fc77a8f7c40a55610b1b69c899a532c13e06fc165",
+      "infoHex": "70616c6c6164696e3a7661756c742d76323a0005",
+      "outputHex": "e49506e2a9408fdca9eabae91b250b1c9e5b144882e83226f548e40472c3e222"
+    },
+    {
+      "id": "hkdf-encrypted-asset-entry",
+      "purpose": "encrypted-asset",
+      "purposeId": 5,
+      "baseKeyName": "EntryDEK",
+      "baseKeyHex": "621c1dfa77dc95aca250f8f0a37eff29dacb9ed0b3e065f1c5c23eeaa686e940",
+      "resourceKind": "entry",
+      "organizationId": "11111111-1111-4111-8111-111111111111",
+      "vaultId": "22222222-2222-4222-8222-222222222222",
+      "entryId": "33333333-3333-4333-8333-333333333333",
+      "keyVersion": 5,
+      "memberKeyGeneration": 4,
+      "saltHex": "91c4df380389b8510053bf4cd842c2998dfed67b3f569c6462732d3e1c76afd9",
+      "infoHex": "70616c6c6164696e3a7661756c742d76323a0005",
+      "outputHex": "79552c1f8d457124a84e1af18c4b5d2f924e173e5467d21195d257f8220a54b1"
+    }
+  ],
+  "fingerprintVectors": [
+    {
+      "name": "member-x25519",
+      "keyKind": 5,
+      "publicKeyHex": "044e05aa8eee253c1f1990665caeebb1f344df5930cb4c8cd3daa1f1d18bd212",
+      "fingerprintHex": "90cb62c757f01e8b892589b775f0b24dedbc5c01bb953dda612d7caea3d92813"
+    },
+    {
+      "name": "agent-x25519",
+      "keyKind": 1,
+      "publicKeyHex": "00a1c45c5bb331818c82c133a1cd4140698634be09d8dd0a55b7238155327161",
+      "fingerprintHex": "e7f4ea587c42269ffc62e5b9a85a474fb1564d1e088e37d4353a15a9e5d2880b"
+    },
+    {
+      "name": "agent-ed25519",
+      "keyKind": 2,
+      "publicKeyHex": "0f57fdc1eb05f7df4a144fe572d805c83e811287b7c6af8143df8202de9b019e",
+      "fingerprintHex": "0fa7294ee68b344d17698634be167b18134cafb544df62d2dd7d3ea813bff36e"
+    },
+    {
+      "name": "vault-signing-ed25519",
+      "keyKind": 3,
+      "publicKeyHex": "ed3387590494c628f819c0326c442fa8c407f2262d685e1e6a4596aef1e3330f",
+      "fingerprintHex": "dec19f4d88fcf8cd887c309d0845c7b29bc590e1d0be1e71ea5ff7afd1eeeee3"
+    },
+    {
+      "name": "vault-message-x25519",
+      "keyKind": 4,
+      "publicKeyHex": "32fde06fcd9785f339f34a9e4340a08c61f09c5b3ea643025ff46b5bdcc0373c",
+      "fingerprintHex": "a231d14befffb43fac30d2c5589fe288ef1f3b9818f0e875e89c806121b976c1"
+    }
+  ]
+}
