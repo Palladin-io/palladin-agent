@@ -236,9 +236,6 @@ pub struct ReportStaleArgs {
     /// Machine-readable stale reason.
     #[arg(long, value_enum, default_value_t = StaleCodeArg::Manual)]
     pub code: StaleCodeArg,
-    /// Optional secret-free context for the vault owner.
-    #[arg(long)]
-    pub note: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]

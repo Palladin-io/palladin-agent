@@ -1559,15 +1559,10 @@ async fn report_stale(
         StaleCodeArg::AuthFailed => StaleReasonCode::AuthFailed,
         StaleCodeArg::Manual => StaleReasonCode::Manual,
     };
-    let note = args.note.and_then(|note| {
-        let note = note.trim();
-        (!note.is_empty()).then(|| note.to_owned())
-    });
     let input = ReportCredentialStaleInput {
         vault_id: args.vault_id.trim().to_owned(),
         entry_id: args.entry_id.trim().to_owned(),
         code,
-        note,
     };
     let connection = match OperationConnection::new() {
         Ok(connection) => connection,
@@ -1578,7 +1573,6 @@ async fn report_stale(
         vault_id: input.vault_id.clone(),
         entry_id: input.entry_id.clone(),
         code: stale_reason_code_name(input.code).to_owned(),
-        note: input.note.clone(),
     };
     let session = match service.open_session(profile, &hostname, &connection, descriptor) {
         Ok(session) => session,

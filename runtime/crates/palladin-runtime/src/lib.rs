@@ -217,7 +217,6 @@ pub enum OperationDescriptor {
         vault_id: String,
         entry_id: String,
         code: String,
-        note: Option<String>,
     },
     PairVaults {
         activation_id: String,
@@ -351,13 +350,11 @@ impl OperationDescriptor {
                 vault_id,
                 entry_id,
                 code,
-                note,
             } => {
                 encoder.surface(*surface);
                 encoder.field(vault_id.as_bytes());
                 encoder.field(entry_id.as_bytes());
                 encoder.field(code.as_bytes());
-                encoder.optional(note.as_deref());
             }
             Self::PairVaults { activation_id } => encoder.field(activation_id.as_bytes()),
         }

@@ -264,17 +264,6 @@ pub struct ReportCredentialStaleInput {
     pub vault_id: String,
     pub entry_id: String,
     pub code: StaleReasonCode,
-    pub note: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InjectFailureUpload {
-    pub entry_id: String,
-    pub domain: Option<String>,
-    pub reason: String,
-    pub page_origin: Option<String>,
-    pub controls: Vec<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -544,10 +533,8 @@ pub(crate) struct CreatePairingActivationBody<'a> {
 }
 
 #[derive(Serialize)]
-pub(crate) struct StaleRequestBody<'a> {
+pub(crate) struct StaleRequestBody {
     pub code: StaleReasonCode,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<&'a str>,
 }
 
 #[cfg(test)]

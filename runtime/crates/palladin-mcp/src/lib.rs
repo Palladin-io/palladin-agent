@@ -371,17 +371,12 @@ where
                 vault_id: input.vault_id.trim().to_owned(),
                 entry_id: input.entry_id.trim().to_owned(),
                 code: input.code.unwrap_or_default().into(),
-                note: input
-                    .note
-                    .map(|note| note.trim().to_owned())
-                    .filter(|note| !note.is_empty()),
             };
             let descriptor = OperationDescriptor::ReportCredentialStale {
                 surface: InvocationSurface::Mcp,
                 vault_id: request.vault_id.clone(),
                 entry_id: request.entry_id.clone(),
                 code: stale_reason_code_name(request.code).to_owned(),
-                note: request.note.clone(),
             };
             let session = match self.service.open_session(
                 self.profile.as_deref(),
@@ -1335,13 +1330,7 @@ fn validate_inject(input: &InjectInput) -> Result<(), McpError> {
 }
 
 fn validate_report(input: &ReportStaleInput) -> Result<(), McpError> {
-    if !valid_required(&input.vault_id, 256)
-        || !valid_required(&input.entry_id, 256)
-        || input
-            .note
-            .as_ref()
-            .is_some_and(|value| exceeds_chars(value, 4096))
-    {
+    if !valid_required(&input.vault_id, 256) || !valid_required(&input.entry_id, 256) {
         return Err(McpError::invalid_params(
             "Report arguments are invalid",
             None,
@@ -1464,7 +1453,6 @@ pub struct ReportStaleInput {
     pub vault_id: String,
     pub entry_id: String,
     pub code: Option<StaleCodeInput>,
-    pub note: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
