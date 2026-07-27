@@ -785,6 +785,10 @@ mod tests {
     use super::*;
     use serde::Deserialize;
 
+    fn secrets_equal(left: &[u8], right: &[u8]) -> bool {
+        left.len() == right.len() && bool::from(left.ct_eq(right))
+    }
+
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Vector {
@@ -868,11 +872,11 @@ mod tests {
     #[test]
     fn suite_payload_debug_never_contains_payload_bytes() {
         let payload = EncodedSuitePayload::from_bytes(
-            [vec![0; 24], b"synthetic-secret".to_vec(), vec![0; 16]].concat(),
+            [vec![0; 24], b"confidential-canary".to_vec(), vec![0; 16]].concat(),
         )
         .expect("bounded payload");
         let debug = format!("{payload:?}");
-        assert!(!debug.contains("synthetic-secret"));
+        assert!(!debug.contains("confidential-canary"));
     }
 
     #[test]
@@ -887,7 +891,7 @@ mod tests {
         .expect("seal");
 
         let opened = XChaChaVaultSuite::open(&key, &payload, b"canonical-aad").expect("open");
-        assert_eq!(opened.expose_secret(), b"synthetic-secret");
+        assert!(secrets_equal(opened.expose_secret(), b"synthetic-secret"));
         assert_eq!(
             XChaChaVaultSuite::open(&key, &payload, b"changed-aad").expect_err("AAD tamper"),
             CryptoError::AuthenticationFailed
@@ -903,13 +907,19 @@ mod tests {
         separated_descriptor.key_version += 1;
         let separated =
             XChaChaVaultSuite::derive_key(&[3; 32], &separated_descriptor).expect("derive");
-        assert_eq!(first.expose_secret(), again.expose_secret());
-        assert_ne!(first.expose_secret(), separated.expose_secret());
+        assert!(secrets_equal(first.expose_secret(), again.expose_secret()));
+        assert!(!secrets_equal(
+            first.expose_secret(),
+            separated.expose_secret()
+        ));
 
         let mut next_revision = descriptor(VAULT_XCHACHA_V1);
         next_revision.resource_revision += 1;
         let same_version = XChaChaVaultSuite::derive_key(&[3; 32], &next_revision).expect("derive");
-        assert_eq!(first.expose_secret(), same_version.expose_secret());
+        assert!(secrets_equal(
+            first.expose_secret(),
+            same_version.expose_secret()
+        ));
     }
 
     #[test]
@@ -953,7 +963,7 @@ mod tests {
             X25519SealedBoxSuite::wrap(&key, *recipient.public_key(), &context).expect("wrap");
         assert_eq!(wrapped.as_bytes().len(), 120);
         let opened = X25519SealedBoxSuite::unwrap(&wrapped, &recipient, &context).expect("unwrap");
-        assert_eq!(opened.expose_secret(), key.expose_secret());
+        assert!(secrets_equal(opened.expose_secret(), key.expose_secret()));
 
         let mut changed = context;
         changed.parent_descriptor_hash = Some([0x99; 32]);
@@ -1018,10 +1028,10 @@ mod tests {
         )
         .expect("package");
         let opened = X25519SealedBoxSuite::unwrap(&package, &recipient, &context).expect("unwrap");
-        assert_eq!(
-            hex::encode(opened.expose_secret()),
-            fixture["wrappedKeyHex"].as_str().expect("wrapped key")
-        );
+        let expected_wrapped_key =
+            hex::decode(fixture["wrappedKeyHex"].as_str().expect("wrapped key"))
+                .expect("wrapped key hex");
+        assert!(secrets_equal(opened.expose_secret(), &expected_wrapped_key));
     }
 
     #[test]
@@ -1045,10 +1055,9 @@ mod tests {
 
         assert_eq!(hex::encode(aad), vector.expected.descriptor_aad_hex);
         assert_eq!(hex::encode(kdf_context), vector.expected.kdf_context_hex);
-        assert_eq!(
-            hex::encode(key.expose_secret()),
-            vector.expected.derived_key_hex
-        );
+        let expected_derived_key =
+            hex::decode(vector.expected.derived_key_hex).expect("expected derived key hex");
+        assert!(secrets_equal(key.expose_secret(), &expected_derived_key));
         assert_eq!(
             hex::encode(payload.as_bytes()),
             vector.expected.encoded_suite_payload_hex
