@@ -407,7 +407,12 @@ fn normalize_grant_payload(
                     let object = converted_reference
                         .as_object_mut()
                         .ok_or(CryptoError::InvalidEncoding)?;
-                    if let Some(custom_id) = reference.field_id.strip_prefix("custom:") {
+                    if reference.field_id == "credential.totp" {
+                        object.insert(
+                            "fieldId".to_owned(),
+                            Value::String(reference.field_id.clone()),
+                        );
+                    } else if let Some(custom_id) = reference.field_id.strip_prefix("custom:") {
                         object.insert("fieldId".to_owned(), Value::String(custom_id.to_owned()));
                     } else {
                         let alias = match reference.field_id.as_str() {
@@ -415,7 +420,6 @@ fn normalize_grant_payload(
                             "credential.username" => "username",
                             "credential.password" => "password",
                             "credential.url" => "url",
-                            "credential.totp" => "totp",
                             "notes" => "notes",
                             _ => return Err(CryptoError::InvalidDescriptor),
                         };
@@ -632,9 +636,7 @@ fn to_descriptor(
         .as_deref()
         .map(parse_instant)
         .transpose()?;
-    if (expires_at.is_some() && binding.remaining_uses.is_some())
-        || binding.remaining_uses == Some(0)
-    {
+    if binding.remaining_uses == Some(0) {
         return Err(CryptoError::InvalidDescriptor);
     }
     if expires_at.is_some_and(|expires_at| {
@@ -886,6 +888,17 @@ mod tests {
     }
 
     #[test]
+    fn canonical_totp_script_reference_preserves_its_field_id() {
+        let payload = br#"{"entryType":"script","fields":[{"id":"script.refs","kind":"refs","mode":"runtime","value":[{"entryId":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","env":"TOTP_CODE","fieldId":"credential.totp","vaultId":"11112222-3333-4444-8555-666677778888"}]}],"schema":"palladin.grant-payload.v1"}"#;
+        let normalized = normalize_grant_payload(payload, &["script.refs".to_owned()], 2)
+            .expect("canonical TOTP reference");
+        assert_eq!(
+            normalized.plaintext,
+            br#"{"refs":[{"entryId":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","env":"TOTP_CODE","fieldId":"credential.totp","vaultId":"11112222-3333-4444-8555-666677778888"}]}"#
+        );
+    }
+
+    #[test]
     fn expiry_is_checked_at_use_time_while_positive_server_use_count_is_not_mutated_locally() {
         let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("time");
         let lifetime = wire_envelope(None, None);
@@ -904,9 +917,12 @@ mod tests {
         assert!(to_descriptor(&counted, &outer_context(), now).is_ok());
         assert!(to_descriptor(&counted, &outer_context(), now).is_ok());
 
-        let conflicting = wire_envelope(Some(now + Duration::SECOND), Some(1));
+        let bounded_by_time_and_use_count = wire_envelope(Some(now + Duration::SECOND), Some(1));
+        assert!(to_descriptor(&bounded_by_time_and_use_count, &outer_context(), now).is_ok());
+
+        let exhausted = wire_envelope(Some(now + Duration::SECOND), Some(0));
         assert!(matches!(
-            to_descriptor(&conflicting, &outer_context(), now),
+            to_descriptor(&exhausted, &outer_context(), now),
             Err(CryptoError::InvalidDescriptor)
         ));
     }

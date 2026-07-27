@@ -3581,7 +3581,7 @@ impl RuntimeSession<'_> {
             organization_id,
             vault_id,
             grant_id,
-            agent_id,
+            agent_id: _,
             approved_methods,
             entry_id,
             envelope,
@@ -3590,6 +3590,11 @@ impl RuntimeSession<'_> {
             return Ok(CredentialDelivery::NotGranted(access));
         };
         self.ensure_authorized()?;
+        let expected_agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
         let credential = decrypt_credential(
             &envelope,
             &self.encryption,
@@ -3597,7 +3602,7 @@ impl RuntimeSession<'_> {
                 organization_id: &organization_id,
                 vault_id: &vault_id,
                 grant_id: &grant_id,
-                agent_id: &agent_id,
+                agent_id: expected_agent_id,
                 entry_id: &entry_id,
                 approved_methods,
                 requested_vault_id: request.vault_id,
@@ -4770,8 +4775,8 @@ mod tests {
                 host,
                 organization_credential_id: "22222222222222222222222222222222".to_owned(),
                 retired_organization_credential_ids: Vec::new(),
-                agent_id: None,
-                agent_active: false,
+                agent_id: Some(TEST_AGENT_ID.to_owned()),
+                agent_active: true,
                 encryption_public_key: None,
                 signing_public_key: None,
                 vault_trust_anchors: Vec::new(),

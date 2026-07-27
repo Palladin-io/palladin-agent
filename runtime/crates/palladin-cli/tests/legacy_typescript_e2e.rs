@@ -43,6 +43,7 @@ const VAULT_ID: &str = "11112222-3333-4444-8555-666677778888";
 const ENTRY_ID: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const GRANT_ID: &str = "12345678-1234-4234-8234-1234567890ab";
 const AGENT_ID: &str = "fedcba98-7654-4321-8765-abcdefabcdef";
+const BUILD_AGENT_ID: &str = "abcdefab-cdef-4abc-8def-abcdefabcdef";
 
 const ORGANIZATION_API_KEY: &str = "pl_new_shared_e2e_organization_key";
 const CREDENTIAL_CANARY: &str = "credential_plaintext_output_canary_must_stay_scoped";
@@ -233,7 +234,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
     drop(runtime);
 
     let restarted = service(&root, store.clone());
-    api.enqueue(MockResponse::pending("agent-default-fresh"));
+    api.enqueue(MockResponse::pending(AGENT_ID));
     let default_connect = restarted
         .connect(
             Some("default"),
@@ -246,7 +247,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
         )
         .await
         .expect("default reconnect after response loss");
-    api.enqueue(MockResponse::pending("agent-build-fresh"));
+    api.enqueue(MockResponse::pending(BUILD_AGENT_ID));
     let build_connect = restarted
         .connect(
             Some("build"),
@@ -261,11 +262,11 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
         .expect("build connect");
     assert!(matches!(
         default_connect.registration,
-        AgentRegistrationResult::Pending { ref agent_id } if agent_id == "agent-default-fresh"
+        AgentRegistrationResult::Pending { ref agent_id } if agent_id == AGENT_ID
     ));
     assert!(matches!(
         build_connect.registration,
-        AgentRegistrationResult::Pending { ref agent_id } if agent_id == "agent-build-fresh"
+        AgentRegistrationResult::Pending { ref agent_id } if agent_id == BUILD_AGENT_ID
     ));
     assert!(
         default_x25519_before_restart
@@ -296,29 +297,23 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
     drop(restarted);
 
     let restarted = service(&root, store.clone());
-    api.enqueue(MockResponse::active(
-        "agent-default-fresh",
-        "Default fresh Agent",
-    ));
+    api.enqueue(MockResponse::active(AGENT_ID, "Default fresh Agent"));
     let default_status = restarted
         .status(Some("default"), "e2e-host", &operation_connection())
         .await
         .expect("default active status");
-    api.enqueue(MockResponse::active(
-        "agent-build-fresh",
-        "Build fresh Agent",
-    ));
+    api.enqueue(MockResponse::active(BUILD_AGENT_ID, "Build fresh Agent"));
     let build_status = restarted
         .status(Some("build"), "e2e-host", &operation_connection())
         .await
         .expect("build active status");
     assert!(matches!(
         default_status.registration,
-        AgentRegistrationResult::Active { ref agent_id, .. } if agent_id == "agent-default-fresh"
+        AgentRegistrationResult::Active { ref agent_id, .. } if agent_id == AGENT_ID
     ));
     assert!(matches!(
         build_status.registration,
-        AgentRegistrationResult::Active { ref agent_id, .. } if agent_id == "agent-build-fresh"
+        AgentRegistrationResult::Active { ref agent_id, .. } if agent_id == BUILD_AGENT_ID
     ));
     assert_ne!(default_status.config.agent_id, build_status.config.agent_id);
 
@@ -811,10 +806,10 @@ fn assert_signed_lifecycle_requests(
                     .expect("Agent signature")
                     .to_owned()
             });
-        let config = if agent_id == "agent-default-fresh" {
+        let config = if agent_id == AGENT_ID {
             default_requests += 1;
             default
-        } else if agent_id == "agent-build-fresh" {
+        } else if agent_id == BUILD_AGENT_ID {
             build_requests += 1;
             build
         } else {
@@ -849,10 +844,10 @@ fn assert_signed_lifecycle_requests(
     assert_eq!(credential_requests, 2);
     assert_ne!(
         first_signature_by_agent
-            .get("agent-default-fresh")
+            .get(AGENT_ID)
             .expect("default signature"),
         first_signature_by_agent
-            .get("agent-build-fresh")
+            .get(BUILD_AGENT_ID)
             .expect("build signature")
     );
 }
