@@ -4094,6 +4094,7 @@ mod tests {
     const TEST_ORGANIZATION_ID: &str = "00112233-4455-4677-8899-aabbccddeeff";
     const TEST_VAULT_ID: &str = "11112222-3333-4444-8555-666677778888";
     const TEST_ENTRY_ID: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    #[cfg(not(windows))]
     const TEST_REFERENCE_ENTRY_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const TEST_GRANT_ID: &str = "12345678-1234-4234-8234-1234567890ab";
     const TEST_AGENT_ID: &str = "fedcba98-7654-4321-8765-abcdefabcdef";
