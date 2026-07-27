@@ -689,14 +689,13 @@ fn parse_instant(value: &str) -> Result<InstantBinding, CryptoError> {
 }
 
 fn parse_nonzero_u64(value: &str) -> Result<u64, CryptoError> {
-    value
+    let parsed = value
         .parse::<u64>()
-        .map_err(|_| CryptoError::InvalidEncoding)
-        .and_then(|value| {
-            (value != 0)
-                .then_some(value)
-                .ok_or(CryptoError::InvalidDescriptor)
-        })
+        .map_err(|_| CryptoError::InvalidEncoding)?;
+    if parsed == 0 || parsed.to_string() != value {
+        return Err(CryptoError::InvalidDescriptor);
+    }
+    Ok(parsed)
 }
 
 fn parse_required_uuid(value: Option<&str>) -> Result<[u8; 16], CryptoError> {
@@ -795,7 +794,7 @@ mod tests {
     use super::{
         CredentialEnvelopeContext, CryptoError, DecryptedCredential, EncryptedCredential,
         GrantEnvelopeBinding, GrantEnvelopeDescriptor, GrantEnvelopeScope, WrappedGrantDek,
-        WrappedGrantDekDescriptor, normalize_grant_payload, to_descriptor,
+        WrappedGrantDekDescriptor, normalize_grant_payload, parse_nonzero_u64, to_descriptor,
     };
     use crate::{
         RecipientKeyKind, VAULT_XCHACHA_V1, WrapperPurpose, X25519_WRAPPER_V1,
@@ -925,6 +924,14 @@ mod tests {
             to_descriptor(&exhausted, &outer_context(), now),
             Err(CryptoError::InvalidDescriptor)
         ));
+    }
+
+    #[test]
+    fn revision_strings_are_positive_canonical_decimals() {
+        assert_eq!(parse_nonzero_u64("1"), Ok(1));
+        for invalid in ["0", "01", "+1", " 1"] {
+            assert!(parse_nonzero_u64(invalid).is_err(), "accepted {invalid:?}");
+        }
     }
 
     fn wire_envelope(

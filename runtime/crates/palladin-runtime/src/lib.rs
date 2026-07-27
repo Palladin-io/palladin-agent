@@ -3578,18 +3578,24 @@ impl RuntimeSession<'_> {
             WaitError::Poll(error) => RuntimeError::Api(error),
         })?;
         let CredentialAccess::Granted {
-            organization_id,
-            vault_id,
+            organization_id: _,
+            vault_id: _,
             grant_id,
             agent_id: _,
             approved_methods,
-            entry_id,
+            entry_id: _,
             envelope,
         } = access
         else {
             return Ok(CredentialDelivery::NotGranted(access));
         };
         self.ensure_authorized()?;
+        let anchor = self
+            .config
+            .vault_trust_anchors
+            .iter()
+            .find(|anchor| anchor.vault_id == request.vault_id)
+            .ok_or(RuntimeError::UntrustedVaultManifest)?;
         let expected_agent_id = self
             .config
             .agent_id
@@ -3599,11 +3605,11 @@ impl RuntimeSession<'_> {
             &envelope,
             &self.encryption,
             &CredentialEnvelopeContext {
-                organization_id: &organization_id,
-                vault_id: &vault_id,
+                organization_id: &anchor.organization_id,
+                vault_id: request.vault_id,
                 grant_id: &grant_id,
                 agent_id: expected_agent_id,
-                entry_id: &entry_id,
+                entry_id: request.entry_id,
                 approved_methods,
                 requested_vault_id: request.vault_id,
                 requested_entry_id: request.entry_id,
@@ -3615,6 +3621,7 @@ impl RuntimeSession<'_> {
             },
         )?;
         self.ensure_authorized()?;
+        let entry_id = request.entry_id.to_owned();
         let label = shorten_identifier(&entry_id);
         Ok(CredentialDelivery::Granted(DeliveredCredential {
             entry_id,
@@ -4779,7 +4786,15 @@ mod tests {
                 agent_active: true,
                 encryption_public_key: None,
                 signing_public_key: None,
-                vault_trust_anchors: Vec::new(),
+                vault_trust_anchors: vec![PublicVaultTrustAnchor {
+                    organization_id: TEST_ORGANIZATION_ID.to_owned(),
+                    vault_id: TEST_VAULT_ID.to_owned(),
+                    agent_access_epoch: 1,
+                    vault_signing_public_key: STANDARD.encode([1_u8; 32]),
+                    vault_signing_key_fingerprint: STANDARD.encode([2_u8; 32]),
+                    manifest_revision: "1".to_owned(),
+                    manifest_signing_key_version: 1,
+                }],
                 binding_signature: STANDARD.encode([0_u8; 64]),
             },
             api,

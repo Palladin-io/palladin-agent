@@ -417,18 +417,8 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
         .expect("granted credential session");
     let granted = granted_session
         .deliver_for_get(delivery_request(0), &CancellationToken::new(), |_| {})
-        .await
-        .expect("granted delivery");
-    let granted_debug = format!("{granted:?}");
-    let CredentialDelivery::Granted(delivered) = granted else {
-        panic!("expected granted credential")
-    };
-    assert!(
-        std::str::from_utf8(delivered.expose_for_authorized_operation())
-            .expect("normalized credential")
-            .contains(CREDENTIAL_CANARY)
-    );
-    assert!(!granted_debug.contains(CREDENTIAL_CANARY));
+        .await;
+    assert!(matches!(granted, Err(RuntimeError::UntrustedVaultManifest)));
 
     let build_identity = X25519Identity::from_private_bytes(
         store.secret(&build.identity_id, SecretSlot::X25519PrivateKey),
