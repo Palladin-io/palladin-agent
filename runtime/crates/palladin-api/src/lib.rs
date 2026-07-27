@@ -11,6 +11,5 @@ pub use types::{
     AgentVaultDiscoveryEnvelope, AgentVaultManifestItem, AgentVaultManifestsResponse,
     AgentVisibleField, ApprovedCredentialMethods, CredentialAccess, CredentialMethod,
     EntrySearchItem, EntrySearchResult, GetCredentialOptions, GrantStatus, GrantStatusResponse,
-    GrantedCredential, InjectFailureUpload, ReportCredentialStaleInput, StaleReasonCode,
-    VaultManifest,
+    GrantedCredential, ReportCredentialStaleInput, StaleReasonCode, VaultManifest,
 };

@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::types::{
     AgentDiscoveryDeltaBody, AgentDiscoverySnapshotBody, AgentRegistrationResult,
     CreatePairingActivationBody, CredentialAccess, CredentialRequestBody, GetCredentialOptions,
-    InjectFailureUpload, RegistrationBody, ReportCredentialStaleInput, StaleRequestBody,
+    RegistrationBody, ReportCredentialStaleInput, StaleRequestBody,
 };
 
 const MAX_DISCOVERY_SYNC_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
@@ -355,11 +355,8 @@ impl ApiClient {
             encode_component(&input.vault_id),
             encode_component(&input.entry_id)
         );
-        let body = serde_json::to_vec(&StaleRequestBody {
-            code: input.code,
-            note: input.note.as_deref(),
-        })
-        .map_err(|_| ApiError::InvalidInput)?;
+        let body = serde_json::to_vec(&StaleRequestBody { code: input.code })
+            .map_err(|_| ApiError::InvalidInput)?;
         let response = self.send(Method::POST, &path, Some(body), &[]).await?;
         if response.status().is_success() {
             Ok(())
@@ -370,19 +367,6 @@ impl ApiClient {
 
     pub async fn try_report_credential_stale(&self, input: &ReportCredentialStaleInput) -> bool {
         diagnostics_enabled() && self.report_credential_stale(input).await.is_ok()
-    }
-
-    pub async fn upload_inject_failure(&self, body: &InjectFailureUpload) -> bool {
-        if !diagnostics_enabled() {
-            return false;
-        }
-        let body = match serde_json::to_vec(body) {
-            Ok(body) => body,
-            Err(_) => return false,
-        };
-        self.send(Method::POST, "/api/agent/inject-failures", Some(body), &[])
-            .await
-            .is_ok_and(|response| response.status().is_success())
     }
 
     async fn send(
@@ -926,7 +910,6 @@ mod tests {
             vault_id: "vault".to_owned(),
             entry_id: "entry".to_owned(),
             code: StaleReasonCode::Manual,
-            note: None,
         })
         .await;
         assert!(!reported);

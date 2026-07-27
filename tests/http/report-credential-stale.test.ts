@@ -18,14 +18,14 @@ describe('reportCredentialStale', () => {
     const fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 202 } as Response);
     vi.stubGlobal('fetch', fetchSpy);
 
-    await reportCredentialStale(config, keypair, { vaultId: 'v1', entryId: 'e1', code: 'login_rejected', note: 'sign-in refused' });
+    await reportCredentialStale(config, keypair, { vaultId: 'v1', entryId: 'e1', code: 'login_rejected' });
 
     const url = fetchSpy.mock.calls[0]![0] as string;
     expect(url).toBe('http://localhost:5000/api/agent/vaults/v1/entries/e1/credential-failure');
 
     const init = fetchSpy.mock.calls[0]![1] as RequestInit;
     expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body as string)).toEqual({ code: 'login_rejected', note: 'sign-in refused' });
+    expect(JSON.parse(init.body as string)).toEqual({ code: 'login_rejected' });
 
     const headers = init.headers as Headers;
     expectSensitiveEqual(headers.get('X-Api-Key'), 'test-api-key', 'organization API key header');

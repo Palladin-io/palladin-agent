@@ -126,36 +126,6 @@ export async function searchEntries(
   return await res.json() as EntrySearchResult;
 }
 
-// Redacted inject diagnostic — no field values, no secret, only the origin.
-export interface InjectFailureUpload {
-  entryId: string;
-  domain: string | null;
-  reason: string;
-  pageOrigin: string | null;
-  controls: unknown[];
-}
-
-// Best-effort: never throws (the local JSONL copy is the offline fallback).
-export async function uploadInjectFailure(
-  config: AgentConfig,
-  keypair: Keypair,
-  body: InjectFailureUpload,
-  signing?: SigningContext,
-): Promise<boolean> {
-  if (process.env['PALLADIN_NO_DIAGNOSTICS'] === '1') {
-    return false;
-  }
-  try {
-    const res = await apiFetch('/api/agent/inject-failures', config, keypair, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }, signing);
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 export const STALE_REASON_CODES = ['login_rejected', 'auth_failed', 'manual'] as const;
 
 export type StaleReasonCode = (typeof STALE_REASON_CODES)[number];
@@ -164,8 +134,6 @@ export interface ReportCredentialStaleInput {
   vaultId: string;
   entryId: string;
   code?: StaleReasonCode;
-  // NEVER include the secret or typed values.
-  note?: string;
 }
 
 export async function reportCredentialStale(
@@ -175,9 +143,6 @@ export async function reportCredentialStale(
   signing?: SigningContext,
 ): Promise<void> {
   const body: Record<string, unknown> = { code: input.code ?? 'manual' };
-  if (input.note) {
-    body.note = input.note;
-  }
 
   const res = await apiFetch(
     `/api/agent/vaults/${encodeURIComponent(input.vaultId)}/entries/${encodeURIComponent(input.entryId)}/credential-failure`,

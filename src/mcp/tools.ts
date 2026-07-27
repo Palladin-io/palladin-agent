@@ -173,7 +173,7 @@ export function registerTools(server: LegacyMcpToolRegistry, config: AgentConfig
     {
       description:
         'Report that a stored credential did NOT work (wrong/expired password, login refused). ' +
-        'This notifies the vault owners so they can rotate it. Send NO secret and no typed values — only the entry reference and an optional note. ' +
+        'This notifies the vault owners so they can rotate it. The report contains only the entry reference and a closed failure code. ' +
         'It does NOT create a new credential; issuing a fresh one is a human action in the panel. ' +
         'Use this after a failed authentication attempt. Browser injection is currently unavailable until a reviewed authenticated browser boundary is installed.',
       inputSchema: z.object({
@@ -181,12 +181,11 @@ export function registerTools(server: LegacyMcpToolRegistry, config: AgentConfig
         entryId: z.string().describe('Entry ID'),
         code: z.enum(STALE_REASON_CODES).optional()
           .describe('Cause: login_rejected (a login was refused) | auth_failed (could not authenticate some other way) | manual (default)'),
-        note: z.string().optional().describe('Short note for the owner — NEVER include the secret or any typed value'),
       }),
     },
-    async ({ vaultId, entryId, code, note }) => {
+    async ({ vaultId, entryId, code }) => {
       try {
-        await reportCredentialStale(config, keypair, { vaultId, entryId, code: code ?? 'manual', note: note?.trim() || undefined }, signing);
+        await reportCredentialStale(config, keypair, { vaultId, entryId, code: code ?? 'manual' }, signing);
         return ok('Reported the credential as not working — the vault owners have been notified to rotate it.');
       } catch (err) {
         return fail(errorMessage(err));
