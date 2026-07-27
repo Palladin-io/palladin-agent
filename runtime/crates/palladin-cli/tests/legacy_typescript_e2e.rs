@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Barrier, Mutex};
 
-use base64::{Engine, engine::general_purpose::STANDARD};
-use blake2::{Blake2b, Digest, digest::consts::U24};
-use crypto_secretbox::{Kdf, KeyInit, XSalsa20Poly1305, aead::Aead};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use palladin_api::{AgentRegistrationResult, CredentialAccess};
 use palladin_cli::output::{
@@ -22,16 +23,26 @@ use palladin_core::profiles::ProfileRepository;
 use palladin_core::secret::OrganizationApiKey;
 use palladin_credential::wait::WaitOptions;
 use palladin_crypto::{
-    CryptoError, EncryptedCredential, X25519Identity, canonical_request, decrypt_credential,
+    CredentialEnvelopeContext, CryptoError, EncodedSuitePayload, EncryptedCredential,
+    EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose, EnvelopeScope, GrantEnvelopeBinding,
+    GrantEnvelopeDescriptor, GrantEnvelopeScope, RecipientKeyKind, VAULT_XCHACHA_V1,
+    WrappedGrantDek, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1, X25519Identity,
+    X25519SealedBoxSuite, XChaChaVaultSuite, canonical_request, compute_field_set_commitment,
+    compute_key_fingerprint, decrypt_credential,
 };
 use palladin_platform::secure_store::{SecretSlot, SecretStore, StoreError};
-use salsa20::Salsa20;
-use secrecy::SecretSlice;
+use secrecy::{ExposeSecret, SecretBox, SecretSlice};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use x25519_dalek::{PublicKey, StaticSecret};
+
+const ORGANIZATION_ID: &str = "00112233-4455-4677-8899-aabbccddeeff";
+const VAULT_ID: &str = "11112222-3333-4444-8555-666677778888";
+const ENTRY_ID: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const GRANT_ID: &str = "12345678-1234-4234-8234-1234567890ab";
+const AGENT_ID: &str = "fedcba98-7654-4321-8765-abcdefabcdef";
 
 const ORGANIZATION_API_KEY: &str = "pl_new_shared_e2e_organization_key";
 const CREDENTIAL_CANARY: &str = "credential_plaintext_output_canary_must_stay_scoped";
@@ -385,12 +396,13 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
         200,
         &serde_json::json!({
             "access": "granted",
-            "entryId": "entry-e2e",
-            "label": "Synthetic entry",
-            "urlDomain": "example.test",
-            "reEncryptedBlob": envelope.re_encrypted_blob,
-            "nonce": envelope.nonce,
-            "agentWrappedDek": envelope.agent_wrapped_dek,
+            "organizationId": ORGANIZATION_ID,
+            "vaultId": VAULT_ID,
+            "grantId": GRANT_ID,
+            "agentId": AGENT_ID,
+            "approvedMethods": 1,
+            "entryId": ENTRY_ID,
+            "grantEnvelope": envelope,
         })
         .to_string(),
     ));
@@ -420,7 +432,11 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
     let CredentialDelivery::Granted(delivered) = granted else {
         panic!("expected granted credential")
     };
-    assert!(delivered.expose_for_authorized_operation() == CREDENTIAL_CANARY.as_bytes());
+    assert!(
+        std::str::from_utf8(delivered.expose_for_authorized_operation())
+            .expect("normalized credential")
+            .contains(CREDENTIAL_CANARY)
+    );
     assert!(!granted_debug.contains(CREDENTIAL_CANARY));
 
     let build_identity = X25519Identity::from_private_bytes(
@@ -428,8 +444,22 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
     )
     .expect("build X25519 identity");
     assert_eq!(
-        decrypt_credential(&envelope, &build_identity)
-            .expect_err("one Agent must not decrypt another Agent's envelope"),
+        decrypt_credential(
+            &envelope,
+            &build_identity,
+            &CredentialEnvelopeContext {
+                organization_id: ORGANIZATION_ID,
+                vault_id: VAULT_ID,
+                grant_id: GRANT_ID,
+                agent_id: AGENT_ID,
+                entry_id: ENTRY_ID,
+                approved_methods: 1,
+                requested_vault_id: VAULT_ID,
+                requested_entry_id: ENTRY_ID,
+                requested_method: 1,
+            },
+        )
+        .expect_err("one Agent must not decrypt another Agent's envelope"),
         CryptoError::AuthenticationFailed
     );
 
@@ -749,8 +779,8 @@ fn diagnostic_environment_value_never_reaches_cli_output() {
 
 fn delivery_request(wait_ms: u64) -> CredentialDeliveryRequest<'static> {
     CredentialDeliveryRequest {
-        vault_id: "vault-e2e",
-        entry_id: "entry-e2e",
+        vault_id: VAULT_ID,
+        entry_id: ENTRY_ID,
         reason: Some("E2E migration validation"),
         wait: WaitOptions {
             wait_ms: Some(wait_ms),
@@ -878,35 +908,101 @@ fn encrypt_for_recipient(recipient_public_key: &str, plaintext: &[u8]) -> Encryp
         .expect("recipient public key base64")
         .try_into()
         .expect("X25519 public key length");
-    let recipient = PublicKey::from(recipient_bytes);
-    let ephemeral = StaticSecret::from([0x42; 32]);
-    let ephemeral_public = PublicKey::from(&ephemeral).to_bytes();
-    let shared = ephemeral.diffie_hellman(&recipient);
-    let precomputed = <Salsa20 as Kdf>::kdf(shared.as_bytes().into(), &Default::default());
-    let seal_nonce = seal_nonce(&ephemeral_public, &recipient_bytes);
-    let dek = [0x24; 32];
-    let sealed_dek = XSalsa20Poly1305::new(&precomputed)
-        .encrypt((&seal_nonce).into(), dek.as_slice())
-        .expect("seal DEK");
-    let mut wrapped_dek = ephemeral_public.to_vec();
-    wrapped_dek.extend_from_slice(&sealed_dek);
-
-    let nonce = [0x11; 24];
-    let encrypted = XSalsa20Poly1305::new((&dek).into())
-        .encrypt((&nonce).into(), plaintext)
-        .expect("encrypt credential");
+    let scope = EnvelopeScope {
+        organization_id: uuid_bytes(ORGANIZATION_ID),
+        vault_id: uuid_bytes(VAULT_ID),
+        entry_id: Some(uuid_bytes(ENTRY_ID)),
+        grant_or_request_id: Some(uuid_bytes(GRANT_ID)),
+        agent_id: Some(uuid_bytes(AGENT_ID)),
+        member_id: None,
+    };
+    let fingerprint = compute_key_fingerprint(&recipient_bytes, RecipientKeyKind::AgentX25519);
+    let field_ids = vec!["key.value".to_owned()];
+    let commitment = compute_field_set_commitment(["key.value"]).expect("field commitment");
+    let descriptor = EnvelopeDescriptor {
+        protocol_version: 2,
+        crypto_suite_id: VAULT_XCHACHA_V1.to_owned(),
+        purpose: EnvelopePurpose::GrantPayload,
+        scope: scope.clone(),
+        resource_revision: 1,
+        key_version: 1,
+        member_key_generation: Some(1),
+        binding: EnvelopeBinding::Grant {
+            entry_revision: 1,
+            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+            recipient_agent_key_version: 1,
+            recipient_agent_key_fingerprint: fingerprint,
+            approved_methods: 1,
+            field_set_commitment: commitment,
+            expires_at: None,
+            remaining_uses: Some(1),
+        },
+    };
+    let aad = descriptor.canonical_aad().expect("AAD");
+    let grant_dek = SecretBox::new(Box::new([0x24; 32]));
+    let payload_key = XChaChaVaultSuite::derive_key(grant_dek.expose_secret(), &descriptor)
+        .expect("derive payload key");
+    let secret = std::str::from_utf8(plaintext).expect("synthetic UTF-8 secret");
+    let grant_payload = format!(
+        r#"{{"entryType":"key","fields":[{{"id":"key.value","kind":"concealed","mode":"value","value":{}}}],"schema":"palladin.grant-payload.v1"}}"#,
+        serde_json::to_string(secret).expect("secret JSON")
+    );
+    let payload: EncodedSuitePayload =
+        XChaChaVaultSuite::seal(&payload_key, grant_payload.as_bytes(), &aad)
+            .expect("encrypt credential");
+    let wrapper_context = WrapperContext {
+        protocol_version: 2,
+        wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+        purpose: WrapperPurpose::GrantDek,
+        scope,
+        resource_revision: 1,
+        wrapped_key_version: 1,
+        member_key_generation: Some(1),
+        recipient_key_kind: RecipientKeyKind::AgentX25519,
+        recipient_key_version: 1,
+        recipient_fingerprint: fingerprint,
+        parent_descriptor_hash: Some(Sha256::digest(aad).into()),
+    };
+    let wrapped = X25519SealedBoxSuite::wrap(&grant_dek, recipient_bytes, &wrapper_context)
+        .expect("wrap grant DEK");
     EncryptedCredential {
-        re_encrypted_blob: STANDARD.encode(encrypted),
-        nonce: STANDARD.encode(nonce),
-        agent_wrapped_dek: STANDARD.encode(wrapped_dek),
+        descriptor: GrantEnvelopeDescriptor {
+            protocol_version: 2,
+            crypto_suite_id: VAULT_XCHACHA_V1.to_owned(),
+            purpose: 10,
+            scope: GrantEnvelopeScope {
+                organization_id: ORGANIZATION_ID.to_owned(),
+                vault_id: VAULT_ID.to_owned(),
+                entry_id: Some(ENTRY_ID.to_owned()),
+                grant_or_request_id: Some(GRANT_ID.to_owned()),
+                agent_id: Some(AGENT_ID.to_owned()),
+                member_id: None,
+            },
+            resource_revision: "1".to_owned(),
+            key_version: 1,
+            member_key_generation: Some(1),
+            binding: GrantEnvelopeBinding {
+                entry_revision: "1".to_owned(),
+                wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                recipient_key_version: 1,
+                recipient_key_fingerprint: URL_SAFE_NO_PAD.encode(fingerprint),
+                approved_methods: 1,
+                field_set_commitment: URL_SAFE_NO_PAD.encode(commitment),
+                expires_at: None,
+                remaining_uses: Some(1),
+            },
+        },
+        encoded_suite_payload: URL_SAFE_NO_PAD.encode(payload.as_bytes()),
+        wrapped_grant_dek: WrappedGrantDek::from_context(&wrapper_context, &wrapped),
+        field_ids,
     }
 }
 
-fn seal_nonce(ephemeral_public: &[u8; 32], recipient_public: &[u8; 32]) -> [u8; 24] {
-    let mut hasher = Blake2b::<U24>::new();
-    hasher.update(ephemeral_public);
-    hasher.update(recipient_public);
-    hasher.finalize().into()
+fn uuid_bytes(value: &str) -> [u8; 16] {
+    hex::decode(value.replace('-', ""))
+        .expect("UUID hex")
+        .try_into()
+        .expect("UUID length")
 }
 
 fn assert_rendered_output_is_secretless(outputs: &[RenderedOutput]) {

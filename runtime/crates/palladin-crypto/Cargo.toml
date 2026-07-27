@@ -8,18 +8,21 @@ repository.workspace = true
 
 [dependencies]
 base64.workspace = true
-blake2.workspace = true
-crypto_secretbox.workspace = true
+chacha20poly1305.workspace = true
+crypto_box.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
-salsa20.workspace = true
+hex.workspace = true
+hkdf.workspace = true
+rand_core.workspace = true
 secrecy.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
+subtle.workspace = true
+time.workspace = true
 thiserror.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-hex = "0.4.3"
-serde_json.workspace = true

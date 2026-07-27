@@ -45,6 +45,7 @@ pub struct ScriptRef {
     pub vault_id: Option<String>,
     pub entry_id: String,
     pub field: Option<String>,
+    pub field_id: Option<String>,
 }
 
 impl std::fmt::Debug for ScriptRef {
@@ -259,6 +260,7 @@ fn parse_script_refs(value: Option<&Value>) -> Result<Vec<ScriptRef>, SecretPars
                 vault_id: optional("vaultId"),
                 entry_id: entry_id.to_owned(),
                 field: optional("field"),
+                field_id: optional("fieldId"),
             })
         })
         .collect()

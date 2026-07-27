@@ -52,16 +52,23 @@ pub struct GetCredentialOptions {
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
-#[serde(tag = "access", rename_all = "kebab-case")]
+#[serde(tag = "access", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CredentialAccess {
     Granted {
+        #[serde(rename = "organizationId")]
+        organization_id: String,
+        #[serde(rename = "vaultId")]
+        vault_id: String,
+        #[serde(rename = "grantId")]
+        grant_id: String,
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        #[serde(rename = "approvedMethods")]
+        approved_methods: u16,
         #[serde(rename = "entryId")]
         entry_id: String,
-        label: String,
-        #[serde(rename = "urlDomain")]
-        url_domain: Option<String>,
-        #[serde(flatten)]
-        envelope: EncryptedCredential,
+        #[serde(rename = "grantEnvelope")]
+        envelope: Box<EncryptedCredential>,
     },
     Pending {
         #[serde(rename = "grantId")]

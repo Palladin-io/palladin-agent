@@ -22,13 +22,14 @@ use palladin_core::public_store::{
     profile_binding_bytes, profile_config_digest, registry_digest,
 };
 use palladin_core::secret::OrganizationApiKey;
+use palladin_core::terminal::shorten_identifier;
 use palladin_credential::wait::{
     HeartbeatInfo, WaitError, WaitHints, WaitOptions, WaitPolicyError, await_grant,
     resolve_wait_policy,
 };
 use palladin_crypto::{
-    DecryptedCredential, Ed25519Identity, X25519Identity, decrypt_credential,
-    verify_profile_binding,
+    CredentialEnvelopeContext, DecryptedCredential, Ed25519Identity, X25519Identity,
+    decrypt_credential, verify_profile_binding,
 };
 use palladin_exec::{
     EnvironmentError, SecretEnvironment, resolve_interpreter, run_command, run_script,
@@ -2808,12 +2809,12 @@ impl RuntimeSession {
             let parsed = parse_secret(credential.expose_for_authorized_operation())
                 .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
             drop(credential);
-            let value = if let Some(field) = &reference.field {
+            let value = if reference.field.is_some() || reference.field_id.is_some() {
                 resolve_field(
                     &parsed,
                     &FieldSelector {
-                        field: Some(field.clone()),
-                        field_id: None,
+                        field: reference.field.clone(),
+                        field_id: reference.field_id.clone(),
                     },
                 )
                 .map_err(|_| RuntimeError::InvalidEnvironmentField)?
@@ -2887,21 +2888,42 @@ impl RuntimeSession {
             WaitError::Poll(error) => RuntimeError::Api(error),
         })?;
         let CredentialAccess::Granted {
+            organization_id,
+            vault_id,
+            grant_id,
+            agent_id,
+            approved_methods,
             entry_id,
-            label,
-            url_domain,
             envelope,
         } = access
         else {
             return Ok(CredentialDelivery::NotGranted(access));
         };
         self.ensure_authorized()?;
-        let credential = decrypt_credential(&envelope, &self.encryption)?;
+        let credential = decrypt_credential(
+            &envelope,
+            &self.encryption,
+            &CredentialEnvelopeContext {
+                organization_id: &organization_id,
+                vault_id: &vault_id,
+                grant_id: &grant_id,
+                agent_id: &agent_id,
+                entry_id: &entry_id,
+                approved_methods,
+                requested_vault_id: request.vault_id,
+                requested_entry_id: request.entry_id,
+                requested_method: match method {
+                    CredentialMethod::Get => 1,
+                    CredentialMethod::Exec => 2,
+                    CredentialMethod::Inject => 4,
+                },
+            },
+        )?;
         self.ensure_authorized()?;
+        let label = shorten_identifier(&entry_id);
         Ok(CredentialDelivery::Granted(DeliveredCredential {
             entry_id,
             label,
-            url_domain,
             credential,
         }))
     }
@@ -2933,7 +2955,6 @@ impl std::fmt::Debug for CredentialDelivery {
 pub struct DeliveredCredential {
     pub entry_id: String,
     pub label: String,
-    pub url_domain: Option<String>,
     credential: DecryptedCredential,
 }
 
@@ -2950,7 +2971,6 @@ impl std::fmt::Debug for DeliveredCredential {
             .debug_struct("DeliveredCredential")
             .field("entry_id", &self.entry_id)
             .field("label", &"[REDACTED]")
-            .field("url_domain", &self.url_domain)
             .field("credential", &"[REDACTED]")
             .finish()
     }
@@ -3150,11 +3170,28 @@ mod tests {
     use std::io::Read;
     use std::sync::{Arc, Mutex};
 
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use palladin_crypto::{
+        EncodedSuitePayload, EncryptedCredential, EnvelopeBinding, EnvelopeDescriptor,
+        EnvelopePurpose, EnvelopeScope, GrantEnvelopeBinding, GrantEnvelopeDescriptor,
+        GrantEnvelopeScope, RecipientKeyKind, VAULT_XCHACHA_V1, WrappedGrantDek, WrapperContext,
+        WrapperPurpose, X25519_WRAPPER_V1, X25519SealedBoxSuite, XChaChaVaultSuite,
+        compute_field_set_commitment, compute_key_fingerprint,
+    };
+    use secrecy::{ExposeSecret, SecretBox};
     use serde_json::json;
+    use sha2::{Digest, Sha256};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     use super::*;
+
+    const TEST_ORGANIZATION_ID: &str = "00112233-4455-4677-8899-aabbccddeeff";
+    const TEST_VAULT_ID: &str = "11112222-3333-4444-8555-666677778888";
+    const TEST_ENTRY_ID: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const TEST_REFERENCE_ENTRY_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const TEST_GRANT_ID: &str = "12345678-1234-4234-8234-1234567890ab";
+    const TEST_AGENT_ID: &str = "fedcba98-7654-4321-8765-abcdefabcdef";
 
     fn test_lease() -> OperationLease {
         let scope = OperationScope::new(
@@ -3370,21 +3407,6 @@ mod tests {
             "../../../contracts/v1/encrypted-envelope.json"
         ))
         .expect("envelope fixture");
-        let mut body = json!({
-            "access": "granted",
-            "entryId": "entry-fixture",
-            "label": "Fixture credential",
-            "urlDomain": "example.test",
-        });
-        body.as_object_mut().expect("body").extend(
-            fixture
-                .get("envelope")
-                .and_then(serde_json::Value::as_object)
-                .expect("envelope")
-                .clone(),
-        );
-        let body = body.to_string();
-        let (host, requests) = credential_server_owned(vec![body]).await;
         let private_key = STANDARD
             .decode(
                 fixture
@@ -3394,6 +3416,19 @@ mod tests {
             )
             .expect("private key base64");
         let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-password-not-production"},{"id":"credential.url","kind":"url","mode":"value","value":"https://example.test/login"},{"id":"credential.username","kind":"text","mode":"value","value":"fixture-user"}],"schema":"palladin.grant-payload.v1"}"#;
+        let body = grant_response(
+            &encryption,
+            TEST_ENTRY_ID,
+            payload,
+            &[
+                "credential.password",
+                "credential.url",
+                "credential.username",
+            ],
+            2,
+        );
+        let (host, requests) = credential_server_owned(vec![body]).await;
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
@@ -3450,17 +3485,53 @@ mod tests {
     #[cfg(not(windows))]
     #[tokio::test]
     async fn script_resolves_every_reference_before_spawning_the_allowlisted_interpreter() {
-        let main = r#"{"access":"granted","entryId":"script-entry","label":"Fixture Script","urlDomain":null,"nonce":"p4zno4W6mNfd0WESkmk6Kg2IzO9VsLxw","reEncryptedBlob":"sd652QzdkDm9esJ/oNXFj2J5fC1yiVt40hc3KdkrX9oosfMa1mNPQq9uJs0aY+MJlcID+MJpSALUZssy1+4pg3nYTsg0Tg/58BaKvfs34FT3vDZZvBexrh4l+erGCHrxX1ZMuPcz3E1Y5dcXH9hTb9d0imuq0udEc3ggfR5NcTkj9qLTrWUGyUKta0MWzJ10t8GmsJD899XLNnLu/IpmDcLoiUaPICtNrKMQUco=","agentWrappedDek":"7zIytOfJ4bPy68f1zA6o9hCieaMWSV/KbhQlaMQbtXiNP+okqawLXloq78+y7TU+OaldelM2pCAx/bBrw7WKIVq+MRhs/AXtAxHXeIzqgB8="}"#.to_owned();
-        let reference = r#"{"access":"granted","entryId":"entry-ref","label":"Fixture Reference","urlDomain":null,"nonce":"ESDpZ93lTBOWJ52IGTpCvMNF76YvF0V7","reEncryptedBlob":"OOLe+QqjuYw/m+64+bzeSsU5T3/G91MQDV5/H+sizDmk4XfZ/77ghOhd2e9P3gKRVO33YZFycDLtzw==","agentWrappedDek":"I3SAjwhivFjXmwGAb2AQgmVsafe1vptGc/HhvGzb2gVn2n+7VykBumldS5PEq3zwH/IL76EUo9vstSOxY+e4BtmpsbcOm1r08la/FFTxyjg="}"#.to_owned();
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/v1/encrypted-envelope.json"
+        ))
+        .expect("identity fixture");
+        let private_key = STANDARD
+            .decode(
+                fixture
+                    .pointer("/keyFixture/privateKeyBase64")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("private key"),
+            )
+            .expect("private key base64");
+        let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let main_payload = format!(
+            r#"{{"entryType":"script","fields":[{{"id":"script.interpreter","kind":"interpreter","mode":"runtime","value":"sh"}},{{"id":"script.refs","kind":"refs","mode":"runtime","value":[{{"entryId":"{TEST_REFERENCE_ENTRY_ID}","env":"TEST_SECRET","fieldId":"credential.password","vaultId":"{TEST_VAULT_ID}"}}]}},{{"id":"script.source","kind":"script","mode":"runtime","value":"test \"$TEST_SECRET\" = fixture-password-not-production"}}],"schema":"palladin.grant-payload.v1"}}"#
+        );
+        let reference_payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-password-not-production"}],"schema":"palladin.grant-payload.v1"}"#;
+        let main = grant_response(
+            &encryption,
+            TEST_ENTRY_ID,
+            &main_payload,
+            &["script.interpreter", "script.refs", "script.source"],
+            2,
+        );
+        let reference = grant_response(
+            &encryption,
+            TEST_REFERENCE_ENTRY_ID,
+            reference_payload,
+            &["credential.password"],
+            2,
+        );
         let (host, requests) = credential_server_owned(vec![main, reference]).await;
-        let (api, encryption) = fixture_api(&host);
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
         let session = runtime_session(host, api, encryption);
         let outcome = session
             .execute_with_credential(
                 CredentialExecRequest {
                     delivery: CredentialDeliveryRequest {
-                        vault_id: "script-vault",
-                        entry_id: "script-entry",
+                        vault_id: TEST_VAULT_ID,
+                        entry_id: TEST_ENTRY_ID,
                         reason: Some("fixture reason"),
                         wait: WaitOptions {
                             wait_ms: Some(0),
@@ -3486,8 +3557,12 @@ mod tests {
         );
         let requests = requests.lock().expect("requests");
         assert_eq!(requests.len(), 2);
-        assert!(requests[0].contains("/vaults/script-vault/entries/script-entry/credential"));
-        assert!(requests[1].contains("/vaults/script-vault/entries/entry-ref/credential"));
+        assert!(requests[0].contains(&format!(
+            "/vaults/{TEST_VAULT_ID}/entries/{TEST_ENTRY_ID}/credential"
+        )));
+        assert!(requests[1].contains(&format!(
+            "/vaults/{TEST_VAULT_ID}/entries/{TEST_REFERENCE_ENTRY_ID}/credential"
+        )));
         assert!(
             requests
                 .iter()
@@ -3537,8 +3612,8 @@ mod tests {
 
     fn request() -> CredentialDeliveryRequest<'static> {
         CredentialDeliveryRequest {
-            vault_id: "vault-fixture",
-            entry_id: "entry-fixture",
+            vault_id: TEST_VAULT_ID,
+            entry_id: TEST_ENTRY_ID,
             reason: Some("fixture reason"),
             wait: WaitOptions {
                 wait_ms: Some(0),
@@ -3601,30 +3676,115 @@ mod tests {
         }
     }
 
-    #[cfg(not(windows))]
-    fn fixture_api(host: &str) -> (ApiClient, X25519Identity) {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../contracts/v1/encrypted-envelope.json"
-        ))
-        .expect("envelope fixture");
-        let private_key = STANDARD
-            .decode(
-                fixture
-                    .pointer("/keyFixture/privateKeyBase64")
-                    .and_then(serde_json::Value::as_str)
-                    .expect("private key"),
-            )
-            .expect("private key base64");
-        let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
-        let api = ApiClient::new(
-            ApiHost::parse(host).expect("host"),
-            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
-            "fixture-host",
-            None,
-        )
-        .expect("API client");
-        (api, encryption)
+    fn grant_response(
+        recipient: &X25519Identity,
+        entry_id: &str,
+        plaintext: &str,
+        field_ids: &[&str],
+        approved_methods: u16,
+    ) -> String {
+        let scope = EnvelopeScope {
+            organization_id: test_uuid(TEST_ORGANIZATION_ID),
+            vault_id: test_uuid(TEST_VAULT_ID),
+            entry_id: Some(test_uuid(entry_id)),
+            grant_or_request_id: Some(test_uuid(TEST_GRANT_ID)),
+            agent_id: Some(test_uuid(TEST_AGENT_ID)),
+            member_id: None,
+        };
+        let fingerprint =
+            compute_key_fingerprint(recipient.public_key(), RecipientKeyKind::AgentX25519);
+        let commitment =
+            compute_field_set_commitment(field_ids.iter().copied()).expect("field-set commitment");
+        let descriptor = EnvelopeDescriptor {
+            protocol_version: 2,
+            crypto_suite_id: VAULT_XCHACHA_V1.to_owned(),
+            purpose: EnvelopePurpose::GrantPayload,
+            scope: scope.clone(),
+            resource_revision: 1,
+            key_version: 1,
+            member_key_generation: Some(1),
+            binding: EnvelopeBinding::Grant {
+                entry_revision: 1,
+                wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                recipient_agent_key_version: 1,
+                recipient_agent_key_fingerprint: fingerprint,
+                approved_methods,
+                field_set_commitment: commitment,
+                expires_at: None,
+                remaining_uses: Some(1),
+            },
+        };
+        let aad = descriptor.canonical_aad().expect("AAD");
+        let grant_dek = SecretBox::new(Box::new([0x31; 32]));
+        let payload_key = XChaChaVaultSuite::derive_key(grant_dek.expose_secret(), &descriptor)
+            .expect("payload key");
+        let payload: EncodedSuitePayload =
+            XChaChaVaultSuite::seal(&payload_key, plaintext.as_bytes(), &aad).expect("payload");
+        let wrapper_context = WrapperContext {
+            protocol_version: 2,
+            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+            purpose: WrapperPurpose::GrantDek,
+            scope,
+            resource_revision: 1,
+            wrapped_key_version: 1,
+            member_key_generation: Some(1),
+            recipient_key_kind: RecipientKeyKind::AgentX25519,
+            recipient_key_version: 1,
+            recipient_fingerprint: fingerprint,
+            parent_descriptor_hash: Some(Sha256::digest(aad).into()),
+        };
+        let wrapped =
+            X25519SealedBoxSuite::wrap(&grant_dek, *recipient.public_key(), &wrapper_context)
+                .expect("wrapped DEK");
+        let envelope = EncryptedCredential {
+            descriptor: GrantEnvelopeDescriptor {
+                protocol_version: 2,
+                crypto_suite_id: VAULT_XCHACHA_V1.to_owned(),
+                purpose: 10,
+                scope: GrantEnvelopeScope {
+                    organization_id: TEST_ORGANIZATION_ID.to_owned(),
+                    vault_id: TEST_VAULT_ID.to_owned(),
+                    entry_id: Some(entry_id.to_owned()),
+                    grant_or_request_id: Some(TEST_GRANT_ID.to_owned()),
+                    agent_id: Some(TEST_AGENT_ID.to_owned()),
+                    member_id: None,
+                },
+                resource_revision: "1".to_owned(),
+                key_version: 1,
+                member_key_generation: Some(1),
+                binding: GrantEnvelopeBinding {
+                    entry_revision: "1".to_owned(),
+                    wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                    recipient_key_version: 1,
+                    recipient_key_fingerprint: URL_SAFE_NO_PAD.encode(fingerprint),
+                    approved_methods,
+                    field_set_commitment: URL_SAFE_NO_PAD.encode(commitment),
+                    expires_at: None,
+                    remaining_uses: Some(1),
+                },
+            },
+            encoded_suite_payload: URL_SAFE_NO_PAD.encode(payload.as_bytes()),
+            wrapped_grant_dek: WrappedGrantDek::from_context(&wrapper_context, &wrapped),
+            field_ids: field_ids.iter().map(|value| (*value).to_owned()).collect(),
+        };
+        json!({
+            "access": "granted",
+            "organizationId": TEST_ORGANIZATION_ID,
+            "vaultId": TEST_VAULT_ID,
+            "grantId": TEST_GRANT_ID,
+            "agentId": TEST_AGENT_ID,
+            "approvedMethods": approved_methods,
+            "entryId": entry_id,
+            "grantEnvelope": envelope,
+        })
+        .to_string()
+    }
+
+    fn test_uuid(value: &str) -> [u8; 16] {
+        hex::decode(value.replace('-', ""))
+            .expect("UUID hex")
+            .try_into()
+            .expect("UUID length")
     }
 
     async fn read_request(stream: &mut tokio::net::TcpStream) -> String {

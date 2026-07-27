@@ -35,6 +35,7 @@ tokio-util.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+hex.workspace = true
 tempfile.workspace = true
 
 [build-dependencies]
