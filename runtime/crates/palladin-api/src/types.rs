@@ -1,4 +1,4 @@
-use palladin_crypto::EncryptedReasonEnvelope;
+use palladin_crypto::{EncryptedCredential, EncryptedReasonEnvelope};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -72,7 +72,22 @@ pub enum ApprovedCredentialMethods {
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "access", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CredentialAccess {
-    Granted(Box<GrantedCredential>),
+    Granted {
+        #[serde(rename = "organizationId")]
+        organization_id: String,
+        #[serde(rename = "vaultId")]
+        vault_id: String,
+        #[serde(rename = "grantId")]
+        grant_id: String,
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        #[serde(rename = "approvedMethods")]
+        approved_methods: u16,
+        #[serde(rename = "entryId")]
+        entry_id: String,
+        #[serde(rename = "grantEnvelope")]
+        envelope: Box<EncryptedCredential>,
+    },
     Pending {
         #[serde(rename = "grantId")]
         grant_id: String,
@@ -389,10 +404,7 @@ pub(crate) struct StaleRequestBody<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AgentDiscoverySnapshotResponse, ApprovedCredentialMethods, CredentialAccess,
-        GrantedCredential,
-    };
+    use super::{AgentDiscoverySnapshotResponse, ApprovedCredentialMethods, CredentialAccess};
 
     const GRANTED: &str = r#"{
         "access":"granted",
@@ -422,18 +434,8 @@ mod tests {
     }"#;
 
     #[test]
-    fn granted_decodes_the_strict_v2_contract() {
-        let access: CredentialAccess = serde_json::from_str(GRANTED).expect("v2 granted response");
-        assert!(matches!(
-            access,
-            CredentialAccess::Granted(granted)
-                if matches!(*granted, GrantedCredential {
-                approved_methods: ApprovedCredentialMethods::GetExecInject,
-                protocol_version: 2,
-                envelope_remaining_uses: Some(5),
-                ..
-            })
-        ));
+    fn granted_rejects_the_superseded_flat_v2_contract() {
+        assert!(serde_json::from_str::<CredentialAccess>(GRANTED).is_err());
     }
 
     #[test]

@@ -5,9 +5,14 @@ mod grant;
 mod identity;
 mod manifest;
 mod signing;
+mod suite;
 mod vault_v2;
 
-pub use envelope::{DecryptedCredential, EncryptedCredential, decrypt_credential};
+pub use envelope::{
+    CredentialEnvelopeContext, DecryptedCredential, EncryptedCredential, GrantEnvelopeBinding,
+    GrantEnvelopeDescriptor, GrantEnvelopeScope, WrappedGrantDek, WrappedGrantDekDescriptor,
+    decrypt_credential, decrypt_credential_at,
+};
 pub use grant::{
     DecryptedGrantPayload, ExpectedGrantContext, GrantEnvelopeV2, decrypt_grant_payload,
 };
@@ -20,6 +25,12 @@ pub use manifest::{
 };
 pub use signing::{
     SignatureHeaders, body_sha256_base64, canonical_request, generate_nonce_base64, sign_request,
+};
+pub use suite::{
+    CryptoSuiteRegistry, EncodedSuitePayload, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose,
+    EnvelopeScope, InstantBinding, RecipientKeyKind, SealedWrappedKey, VAULT_XCHACHA_V1,
+    WrapperContext, WrapperPurpose, X25519_WRAPPER_V1, X25519SealedBoxSuite, XChaChaVaultSuite,
+    compute_field_set_commitment, compute_key_fingerprint,
 };
 pub use vault_v2::{
     ALGORITHM_SUITE, AadField, AadProfile, AadValue, EncryptedReasonContext,
@@ -40,6 +51,10 @@ pub enum CryptoError {
     RandomGenerationFailed,
     #[error("request signing input is invalid")]
     InvalidSigningInput,
+    #[error("cryptographic suite is not supported")]
+    UnsupportedSuite,
+    #[error("cryptographic envelope descriptor is invalid")]
+    InvalidDescriptor,
     #[error("unsupported cryptographic protocol")]
     UnsupportedProtocol,
     #[error("cryptographic input is stale")]

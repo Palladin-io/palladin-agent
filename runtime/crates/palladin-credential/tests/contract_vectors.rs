@@ -455,29 +455,46 @@ fn access(name: &str) -> CredentialAccess {
     match name {
         "granted" => serde_json::from_value(serde_json::json!({
             "access": "granted",
-            "organizationId": "organization-fixture",
-            "vaultId": "vault-fixture",
-            "grantId": "grant-fixture",
-            "agentId": "agent-fixture",
+            "organizationId": "00112233-4455-4677-8899-aabbccddeeff",
+            "vaultId": "11112222-3333-4444-8555-666677778888",
+            "grantId": "12345678-1234-4234-8234-1234567890ab",
+            "agentId": "fedcba98-7654-4321-8765-abcdefabcdef",
+            "approvedMethods": 1,
             "entryId": "entry-fixture",
-            "approvedMethods": "get",
-            "label": "",
-            "grantEnvelopeRevision": "1",
-            "entryRevision": "1",
-            "protocolVersion": 2,
-            "algorithmSuite": 1,
-            "grantKeyVersion": 1,
-            "memberKeyGeneration": 1,
-            "recipientAgentKeyVersion": 1,
-            "fieldIds": ["password"],
-            "ciphertext": "AA",
-            "nonce": "AA",
-            "agentWrappedGrantDek": "AA",
-            "agentWrapperSuite": 1,
-            "agentKeyFingerprint": "AA",
-            "envelopeExpiresAt": null,
-            "envelopeRemainingUses": null,
-            "urlDomain": null,
+            "grantEnvelope": {
+                "descriptor": {
+                    "protocolVersion": 2,
+                    "cryptoSuiteId": "palladin-vault-xchacha-v1",
+                    "purpose": 10,
+                    "scope": {"organizationId":"o","vaultId":"v"},
+                    "resourceRevision": "1",
+                    "keyVersion": 1,
+                    "memberKeyGeneration": 1,
+                    "binding": {
+                        "entryRevision":"1","wrapperSuiteId":"palladin-x25519-sealed-box-v1",
+                        "recipientKeyVersion":1,"recipientKeyFingerprint":"AA",
+                        "approvedMethods":1,"fieldSetCommitment":"AA",
+                        "expiresAt":null,"remainingUses":1
+                    }
+                },
+                "encodedSuitePayload":"AA",
+                "wrappedGrantDek": {
+                    "descriptor": {
+                        "protocolVersion":2,"wrapperSuiteId":"palladin-x25519-sealed-box-v1",
+                        "purpose":4,
+                        "scope": {
+                            "organizationId":"org-fixture","vaultId":"vault-fixture",
+                            "entryId":"entry-fixture","grantOrRequestId":"grant-fixture",
+                            "agentId":"agent-fixture","memberId":null
+                        },
+                        "resourceRevision":"1","wrappedKeyVersion":1,"memberKeyGeneration":1,
+                        "recipientKeyKind":1,"recipientKeyVersion":1,"recipientFingerprint":"AA",
+                        "parentDescriptorHash":"AA"
+                    },
+                    "encodedSealedKeyPackage":"AA"
+                },
+                "fieldIds":["username"]
+            }
         }))
         .expect("granted fixture"),
         "pending" => CredentialAccess::Pending {
@@ -509,7 +526,7 @@ fn pending(id: &str) -> CredentialAccess {
 
 const fn access_name(access: &CredentialAccess) -> &'static str {
     match access {
-        CredentialAccess::Granted(..) => "granted",
+        CredentialAccess::Granted { .. } => "granted",
         CredentialAccess::Pending { .. } => "pending",
         CredentialAccess::Denied => "denied",
         CredentialAccess::Revoked => "revoked",

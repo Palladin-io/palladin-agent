@@ -13,8 +13,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_api::{
     AgentDiscoveryEnvelope, AgentDiscoverySyncItem, AgentPairingActivationResponse,
     AgentPairingStatus, AgentPairingStatusResponse, AgentRegistrationResult, ApiClient, ApiError,
-    ApprovedCredentialMethods, CredentialAccess, CredentialMethod, EntrySearchResult,
-    GetCredentialOptions, GrantStatus, ReportCredentialStaleInput, VaultManifest,
+    CredentialAccess, CredentialMethod, EntrySearchResult, GetCredentialOptions, GrantStatus,
+    ReportCredentialStaleInput, VaultManifest,
 };
 use palladin_core::host::ApiHost;
 use palladin_core::legacy_typescript::{LegacyTypeScriptError, LegacyTypeScriptRepository};
@@ -27,17 +27,18 @@ use palladin_core::public_store::{
     PublicVaultTrustAnchor, profile_binding_bytes, profile_config_digest, registry_digest,
 };
 use palladin_core::secret::OrganizationApiKey;
+use palladin_core::terminal::shorten_identifier;
 use palladin_credential::wait::{
     HeartbeatInfo, WaitError, WaitHints, WaitOptions, WaitPolicyError, await_grant_exponential,
     resolve_wait_policy,
 };
 use palladin_crypto::{
-    AadField, AadProfile, AadValue, AgentIdentityBinding, DecryptedGrantPayload, Ed25519Identity,
-    EncryptedReasonContext, EnvelopeHeader, ExpectedGrantContext, GrantEnvelopeV2, HkdfContext,
+    AadField, AadProfile, AadValue, AgentIdentityBinding, CredentialEnvelopeContext,
+    DecryptedCredential, Ed25519Identity, EncryptedReasonContext, EnvelopeHeader, HkdfContext,
     PairingCandidate, PairingRelayStatus, PinnedVaultTrust, SecretBytes, VaultManifestV2,
-    X25519Identity, confirm_pairing_from_relay, decode_base64url, decrypt_envelope,
-    decrypt_grant_payload, derive_projection_key, key_fingerprint, open_sealed_box,
-    prepare_pairing, verify_current_manifest, verify_profile_binding,
+    X25519Identity, confirm_pairing_from_relay, decode_base64url, decrypt_credential,
+    decrypt_envelope, derive_projection_key, key_fingerprint, open_sealed_box, prepare_pairing,
+    verify_current_manifest, verify_profile_binding,
 };
 use palladin_exec::{
     EnvironmentError, SecretEnvironment, resolve_interpreter, run_command, run_script,
@@ -3480,12 +3481,12 @@ impl RuntimeSession<'_> {
             let parsed = parse_secret(credential.expose_for_authorized_operation())
                 .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
             drop(credential);
-            let value = if let Some(field) = &reference.field {
+            let value = if reference.field.is_some() || reference.field_id.is_some() {
                 resolve_field(
                     &parsed,
                     &FieldSelector {
-                        field: Some(field.clone()),
-                        field_id: None,
+                        field: reference.field.clone(),
+                        field_id: reference.field_id.clone(),
                     },
                 )
                 .map_err(|_| RuntimeError::InvalidEnvironmentField)?
@@ -3576,42 +3577,19 @@ impl RuntimeSession<'_> {
             WaitError::Cancelled => RuntimeError::WaitCancelled,
             WaitError::Poll(error) => RuntimeError::Api(error),
         })?;
-        let CredentialAccess::Granted(granted) = access else {
+        let CredentialAccess::Granted {
+            organization_id: _,
+            vault_id: _,
+            grant_id,
+            agent_id: _,
+            approved_methods,
+            entry_id: _,
+            envelope,
+        } = access
+        else {
             return Ok(CredentialDelivery::NotGranted(access));
         };
-        let palladin_api::GrantedCredential {
-            organization_id,
-            vault_id,
-            grant_id,
-            agent_id,
-            entry_id,
-            approved_methods,
-            label,
-            grant_envelope_revision,
-            entry_revision,
-            protocol_version,
-            algorithm_suite,
-            grant_key_version,
-            member_key_generation,
-            recipient_agent_key_version,
-            field_ids,
-            ciphertext,
-            nonce,
-            agent_wrapped_grant_dek,
-            agent_wrapper_suite,
-            agent_key_fingerprint,
-            envelope_expires_at,
-            envelope_remaining_uses,
-            url_domain,
-        } = *granted;
         self.ensure_authorized()?;
-        if !valid_granted_label(&label)
-            || url_domain
-                .as_deref()
-                .is_some_and(|domain| !valid_granted_url_domain(domain))
-        {
-            return Err(RuntimeError::InvalidCredentialPayload);
-        }
         let anchor = self
             .config
             .vault_trust_anchors
@@ -3623,54 +3601,31 @@ impl RuntimeSession<'_> {
             .agent_id
             .as_deref()
             .ok_or(RuntimeError::MissingAgentId)?;
-        let envelope = GrantEnvelopeV2 {
-            organization_id: parse_uuid(&organization_id)?,
-            vault_id: parse_uuid(&vault_id)?,
-            grant_id: parse_uuid(&grant_id)?,
-            agent_id: parse_uuid(&agent_id)?,
-            entry_id: parse_uuid(&entry_id)?,
-            approved_methods: approved_method_mask(approved_methods),
-            grant_envelope_revision: parse_revision(&grant_envelope_revision)?,
-            entry_revision: parse_revision(&entry_revision)?,
-            protocol_version,
-            algorithm_suite,
-            grant_key_version,
-            member_key_generation,
-            recipient_agent_key_version,
-            field_ids,
-            ciphertext,
-            nonce,
-            agent_wrapped_grant_dek,
-            agent_wrapper_suite,
-            agent_key_fingerprint,
-            envelope_expires_at,
-            envelope_remaining_uses,
-        };
-        let credential = decrypt_grant_payload(
+        let credential = decrypt_credential(
             &envelope,
             &self.encryption,
-            ExpectedGrantContext {
-                organization_id: parse_uuid(&anchor.organization_id)?,
-                vault_id: parse_uuid(request.vault_id)?,
-                entry_id: parse_uuid(request.entry_id)?,
-                agent_id: parse_uuid(expected_agent_id)?,
-                requested_method: credential_method_mask(method),
-                now: OffsetDateTime::now_utc(),
+            &CredentialEnvelopeContext {
+                organization_id: &anchor.organization_id,
+                vault_id: request.vault_id,
+                grant_id: &grant_id,
+                agent_id: expected_agent_id,
+                entry_id: request.entry_id,
+                approved_methods,
+                requested_vault_id: request.vault_id,
+                requested_entry_id: request.entry_id,
+                requested_method: match method {
+                    CredentialMethod::Get => 1,
+                    CredentialMethod::Exec => 2,
+                    CredentialMethod::Inject => 4,
+                },
             },
         )?;
-        let parsed = parse_secret(credential.expose_for_authorized_operation())
-            .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
-        if parsed.script.is_some() && method != CredentialMethod::Exec {
-            return Ok(CredentialDelivery::NotGranted(
-                CredentialAccess::ScriptExecOnly,
-            ));
-        }
-        drop(parsed);
         self.ensure_authorized()?;
+        let entry_id = request.entry_id.to_owned();
+        let label = shorten_identifier(&entry_id);
         Ok(CredentialDelivery::Granted(DeliveredCredential {
             entry_id,
             label,
-            url_domain,
             credential,
         }))
     }
@@ -3702,8 +3657,7 @@ impl std::fmt::Debug for CredentialDelivery {
 pub struct DeliveredCredential {
     pub entry_id: String,
     pub label: String,
-    pub url_domain: Option<String>,
-    credential: DecryptedGrantPayload,
+    credential: DecryptedCredential,
 }
 
 impl DeliveredCredential {
@@ -3719,7 +3673,6 @@ impl std::fmt::Debug for DeliveredCredential {
             .debug_struct("DeliveredCredential")
             .field("entry_id", &self.entry_id)
             .field("label", &"[REDACTED]")
-            .field("url_domain", &self.url_domain)
             .field("credential", &"[REDACTED]")
             .finish()
     }
@@ -3930,62 +3883,6 @@ const fn credential_method_mask(method: CredentialMethod) -> u16 {
     }
 }
 
-const fn approved_method_mask(methods: ApprovedCredentialMethods) -> u16 {
-    match methods {
-        ApprovedCredentialMethods::Get => 1,
-        ApprovedCredentialMethods::Exec => 2,
-        ApprovedCredentialMethods::GetExec => 3,
-        ApprovedCredentialMethods::Inject => 4,
-        ApprovedCredentialMethods::GetInject => 5,
-        ApprovedCredentialMethods::ExecInject => 6,
-        ApprovedCredentialMethods::GetExecInject => 7,
-    }
-}
-
-fn parse_uuid(value: &str) -> Result<Uuid, RuntimeError> {
-    Uuid::parse_str(value).map_err(|_| RuntimeError::InvalidCredentialPayload)
-}
-
-fn parse_revision(value: &str) -> Result<u64, RuntimeError> {
-    if value.is_empty()
-        || value == "0"
-        || (value.len() > 1 && value.starts_with('0'))
-        || !value.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return Err(RuntimeError::InvalidCredentialPayload);
-    }
-    value
-        .parse()
-        .map_err(|_| RuntimeError::InvalidCredentialPayload)
-}
-
-fn valid_granted_label(value: &str) -> bool {
-    !value.trim().is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
-}
-
-fn valid_granted_url_domain(value: &str) -> bool {
-    if value.is_empty()
-        || value.len() > 253
-        || value != value.trim()
-        || !value.is_ascii()
-        || value.bytes().any(|byte| byte.is_ascii_uppercase())
-    {
-        return false;
-    }
-    if value.parse::<std::net::IpAddr>().is_ok() {
-        return true;
-    }
-    value.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= 63
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    })
-}
-
 #[derive(Debug, Error)]
 pub enum RuntimeError {
     #[error("signed runtime version policy is not configured; no identity was opened")]
@@ -4190,11 +4087,29 @@ mod tests {
     use std::io::Read;
     use std::sync::{Arc, Mutex};
 
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use palladin_crypto::{
+        EncodedSuitePayload, EncryptedCredential, EnvelopeBinding, EnvelopeDescriptor,
+        EnvelopePurpose, EnvelopeScope, GrantEnvelopeBinding, GrantEnvelopeDescriptor,
+        GrantEnvelopeScope, RecipientKeyKind, VAULT_XCHACHA_V1, WrappedGrantDek, WrapperContext,
+        WrapperPurpose, X25519_WRAPPER_V1, X25519SealedBoxSuite, XChaChaVaultSuite,
+        compute_field_set_commitment, compute_key_fingerprint,
+    };
+    use secrecy::{ExposeSecret, SecretBox};
     use serde_json::json;
+    use sha2::{Digest, Sha256};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     use super::*;
+
+    const TEST_ORGANIZATION_ID: &str = "00112233-4455-4677-8899-aabbccddeeff";
+    const TEST_VAULT_ID: &str = "11112222-3333-4444-8555-666677778888";
+    const TEST_ENTRY_ID: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    #[cfg(not(windows))]
+    const TEST_REFERENCE_ENTRY_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const TEST_GRANT_ID: &str = "12345678-1234-4234-8234-1234567890ab";
+    const TEST_AGENT_ID: &str = "fedcba98-7654-4321-8765-abcdefabcdef";
 
     type MemorySecretValues = BTreeMap<(String, SecretSlot), Vec<u8>>;
 
@@ -4329,29 +4244,6 @@ mod tests {
         assert!(debug.contains("redacted"));
         assert!(!debug.contains("vault-a"));
         assert!(!debug.contains("approval reason"));
-    }
-
-    #[test]
-    fn granted_metadata_accepts_bounded_labels_and_normalized_domains() {
-        assert!(valid_granted_label("Production database"));
-        assert!(valid_granted_label("Zażółć gęślą"));
-        assert!(!valid_granted_label(""));
-        assert!(!valid_granted_label("control\ncharacter"));
-        assert!(!valid_granted_label(&"x".repeat(513)));
-
-        for domain in ["example.com", "api.stage.palladin.io", "127.0.0.1", "::1"] {
-            assert!(valid_granted_url_domain(domain), "{domain}");
-        }
-        for domain in [
-            "",
-            "Example.com",
-            " example.com",
-            "-example.com",
-            "example..com",
-            "example.com/path",
-        ] {
-            assert!(!valid_granted_url_domain(domain), "{domain}");
-        }
     }
 
     #[test]
@@ -4627,26 +4519,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_exec_rejects_legacy_credential_envelopes_without_spawning() {
+    async fn native_exec_consumes_the_canonical_credential_envelope() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../contracts/v1/encrypted-envelope.json"
         ))
         .expect("envelope fixture");
-        let mut body = json!({
-            "access": "granted",
-            "entryId": "entry-fixture",
-            "label": "Fixture credential",
-            "urlDomain": "example.test",
-        });
-        body.as_object_mut().expect("body").extend(
-            fixture
-                .get("envelope")
-                .and_then(serde_json::Value::as_object)
-                .expect("envelope")
-                .clone(),
-        );
-        let body = body.to_string();
-        let (host, requests) = credential_server_owned(vec![body]).await;
         let private_key = STANDARD
             .decode(
                 fixture
@@ -4656,6 +4533,19 @@ mod tests {
             )
             .expect("private key base64");
         let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-password-not-production"},{"id":"credential.url","kind":"url","mode":"value","value":"https://example.test/login"},{"id":"credential.username","kind":"text","mode":"value","value":"fixture-user"}],"schema":"palladin.grant-payload.v1"}"#;
+        let body = grant_response(
+            &encryption,
+            TEST_ENTRY_ID,
+            payload,
+            &[
+                "credential.password",
+                "credential.url",
+                "credential.username",
+            ],
+            2,
+        );
+        let (host, requests) = credential_server_owned(vec![body]).await;
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
@@ -4678,10 +4568,13 @@ mod tests {
                 |_| {},
             )
             .await;
-        assert!(matches!(
-            outcome,
-            Err(RuntimeError::Api(ApiError::InvalidResponse))
-        ));
+        assert_eq!(
+            outcome.expect("native exec"),
+            CredentialExecOutcome::Completed(ExecResult {
+                exit_code: 0,
+                cancelled: false,
+            })
+        );
         let replay = session
             .execute_with_credential(
                 CredentialExecRequest {
@@ -4707,18 +4600,54 @@ mod tests {
 
     #[cfg(not(windows))]
     #[tokio::test]
-    async fn script_rejects_legacy_envelopes_before_resolving_references() {
-        let main = r#"{"access":"granted","entryId":"script-entry","label":"Fixture Script","urlDomain":null,"nonce":"p4zno4W6mNfd0WESkmk6Kg2IzO9VsLxw","reEncryptedBlob":"sd652QzdkDm9esJ/oNXFj2J5fC1yiVt40hc3KdkrX9oosfMa1mNPQq9uJs0aY+MJlcID+MJpSALUZssy1+4pg3nYTsg0Tg/58BaKvfs34FT3vDZZvBexrh4l+erGCHrxX1ZMuPcz3E1Y5dcXH9hTb9d0imuq0udEc3ggfR5NcTkj9qLTrWUGyUKta0MWzJ10t8GmsJD899XLNnLu/IpmDcLoiUaPICtNrKMQUco=","agentWrappedDek":"7zIytOfJ4bPy68f1zA6o9hCieaMWSV/KbhQlaMQbtXiNP+okqawLXloq78+y7TU+OaldelM2pCAx/bBrw7WKIVq+MRhs/AXtAxHXeIzqgB8="}"#.to_owned();
-        let reference = r#"{"access":"granted","entryId":"entry-ref","label":"Fixture Reference","urlDomain":null,"nonce":"ESDpZ93lTBOWJ52IGTpCvMNF76YvF0V7","reEncryptedBlob":"OOLe+QqjuYw/m+64+bzeSsU5T3/G91MQDV5/H+sizDmk4XfZ/77ghOhd2e9P3gKRVO33YZFycDLtzw==","agentWrappedDek":"I3SAjwhivFjXmwGAb2AQgmVsafe1vptGc/HhvGzb2gVn2n+7VykBumldS5PEq3zwH/IL76EUo9vstSOxY+e4BtmpsbcOm1r08la/FFTxyjg="}"#.to_owned();
+    async fn script_resolves_every_reference_before_spawning_the_allowlisted_interpreter() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/v1/encrypted-envelope.json"
+        ))
+        .expect("identity fixture");
+        let private_key = STANDARD
+            .decode(
+                fixture
+                    .pointer("/keyFixture/privateKeyBase64")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("private key"),
+            )
+            .expect("private key base64");
+        let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let main_payload = format!(
+            r#"{{"entryType":"script","fields":[{{"id":"script.interpreter","kind":"interpreter","mode":"runtime","value":"sh"}},{{"id":"script.refs","kind":"refs","mode":"runtime","value":[{{"entryId":"{TEST_REFERENCE_ENTRY_ID}","env":"TEST_SECRET","fieldId":"credential.password","vaultId":"{TEST_VAULT_ID}"}}]}},{{"id":"script.source","kind":"script","mode":"runtime","value":"test \"$TEST_SECRET\" = fixture-password-not-production"}}],"schema":"palladin.grant-payload.v1"}}"#
+        );
+        let reference_payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-password-not-production"}],"schema":"palladin.grant-payload.v1"}"#;
+        let main = grant_response(
+            &encryption,
+            TEST_ENTRY_ID,
+            &main_payload,
+            &["script.interpreter", "script.refs", "script.source"],
+            2,
+        );
+        let reference = grant_response(
+            &encryption,
+            TEST_REFERENCE_ENTRY_ID,
+            reference_payload,
+            &["credential.password"],
+            2,
+        );
         let (host, requests) = credential_server_owned(vec![main, reference]).await;
-        let (api, encryption) = fixture_api(&host);
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
         let session = runtime_session(host, api, encryption);
         let outcome = session
             .execute_with_credential(
                 CredentialExecRequest {
                     delivery: CredentialDeliveryRequest {
-                        vault_id: "script-vault",
-                        entry_id: "script-entry",
+                        vault_id: TEST_VAULT_ID,
+                        entry_id: TEST_ENTRY_ID,
                         reason: None,
                         wait: WaitOptions {
                             wait_ms: Some(0),
@@ -4733,14 +4662,23 @@ mod tests {
                 &CancellationToken::new(),
                 |_| {},
             )
-            .await;
-        assert!(matches!(
+            .await
+            .expect("script exec");
+        assert_eq!(
             outcome,
-            Err(RuntimeError::Api(ApiError::InvalidResponse))
-        ));
+            CredentialExecOutcome::Completed(ExecResult {
+                exit_code: 0,
+                cancelled: false,
+            })
+        );
         let requests = requests.lock().expect("requests");
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].contains("/vaults/script-vault/entries/script-entry/credential"));
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains(&format!(
+            "/vaults/{TEST_VAULT_ID}/entries/{TEST_ENTRY_ID}/credential"
+        )));
+        assert!(requests[1].contains(&format!(
+            "/vaults/{TEST_VAULT_ID}/entries/{TEST_REFERENCE_ENTRY_ID}/credential"
+        )));
         assert!(
             requests
                 .iter()
@@ -4790,8 +4728,8 @@ mod tests {
 
     fn request() -> CredentialDeliveryRequest<'static> {
         CredentialDeliveryRequest {
-            vault_id: "vault-fixture",
-            entry_id: "entry-fixture",
+            vault_id: TEST_VAULT_ID,
+            entry_id: TEST_ENTRY_ID,
             reason: None,
             wait: WaitOptions {
                 wait_ms: Some(0),
@@ -4844,11 +4782,19 @@ mod tests {
                 host,
                 organization_credential_id: "22222222222222222222222222222222".to_owned(),
                 retired_organization_credential_ids: Vec::new(),
-                agent_id: None,
-                agent_active: false,
+                agent_id: Some(TEST_AGENT_ID.to_owned()),
+                agent_active: true,
                 encryption_public_key: None,
                 signing_public_key: None,
-                vault_trust_anchors: Vec::new(),
+                vault_trust_anchors: vec![PublicVaultTrustAnchor {
+                    organization_id: TEST_ORGANIZATION_ID.to_owned(),
+                    vault_id: TEST_VAULT_ID.to_owned(),
+                    agent_access_epoch: 1,
+                    vault_signing_public_key: STANDARD.encode([1_u8; 32]),
+                    vault_signing_key_fingerprint: STANDARD.encode([2_u8; 32]),
+                    manifest_revision: "1".to_owned(),
+                    manifest_signing_key_version: 1,
+                }],
                 binding_signature: STANDARD.encode([0_u8; 64]),
             },
             api,
@@ -4862,30 +4808,115 @@ mod tests {
         }
     }
 
-    #[cfg(not(windows))]
-    fn fixture_api(host: &str) -> (ApiClient, X25519Identity) {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../contracts/v1/encrypted-envelope.json"
-        ))
-        .expect("envelope fixture");
-        let private_key = STANDARD
-            .decode(
-                fixture
-                    .pointer("/keyFixture/privateKeyBase64")
-                    .and_then(serde_json::Value::as_str)
-                    .expect("private key"),
-            )
-            .expect("private key base64");
-        let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
-        let api = ApiClient::new(
-            ApiHost::parse(host).expect("host"),
-            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
-            "fixture-host",
-            None,
-        )
-        .expect("API client");
-        (api, encryption)
+    fn grant_response(
+        recipient: &X25519Identity,
+        entry_id: &str,
+        plaintext: &str,
+        field_ids: &[&str],
+        approved_methods: u16,
+    ) -> String {
+        let scope = EnvelopeScope {
+            organization_id: test_uuid(TEST_ORGANIZATION_ID),
+            vault_id: test_uuid(TEST_VAULT_ID),
+            entry_id: Some(test_uuid(entry_id)),
+            grant_or_request_id: Some(test_uuid(TEST_GRANT_ID)),
+            agent_id: Some(test_uuid(TEST_AGENT_ID)),
+            member_id: None,
+        };
+        let fingerprint =
+            compute_key_fingerprint(recipient.public_key(), RecipientKeyKind::AgentX25519);
+        let commitment =
+            compute_field_set_commitment(field_ids.iter().copied()).expect("field-set commitment");
+        let descriptor = EnvelopeDescriptor {
+            protocol_version: 2,
+            crypto_suite_id: VAULT_XCHACHA_V1.to_owned(),
+            purpose: EnvelopePurpose::GrantPayload,
+            scope: scope.clone(),
+            resource_revision: 1,
+            key_version: 1,
+            member_key_generation: Some(1),
+            binding: EnvelopeBinding::Grant {
+                entry_revision: 1,
+                wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                recipient_agent_key_version: 1,
+                recipient_agent_key_fingerprint: fingerprint,
+                approved_methods,
+                field_set_commitment: commitment,
+                expires_at: None,
+                remaining_uses: Some(1),
+            },
+        };
+        let aad = descriptor.canonical_aad().expect("AAD");
+        let grant_dek = SecretBox::new(Box::new([0x31; 32]));
+        let payload_key = XChaChaVaultSuite::derive_key(grant_dek.expose_secret(), &descriptor)
+            .expect("payload key");
+        let payload: EncodedSuitePayload =
+            XChaChaVaultSuite::seal(&payload_key, plaintext.as_bytes(), &aad).expect("payload");
+        let wrapper_context = WrapperContext {
+            protocol_version: 2,
+            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+            purpose: WrapperPurpose::GrantDek,
+            scope,
+            resource_revision: 1,
+            wrapped_key_version: 1,
+            member_key_generation: Some(1),
+            recipient_key_kind: RecipientKeyKind::AgentX25519,
+            recipient_key_version: 1,
+            recipient_fingerprint: fingerprint,
+            parent_descriptor_hash: Some(Sha256::digest(aad).into()),
+        };
+        let wrapped =
+            X25519SealedBoxSuite::wrap(&grant_dek, *recipient.public_key(), &wrapper_context)
+                .expect("wrapped DEK");
+        let envelope = EncryptedCredential {
+            descriptor: GrantEnvelopeDescriptor {
+                protocol_version: 2,
+                crypto_suite_id: VAULT_XCHACHA_V1.to_owned(),
+                purpose: 10,
+                scope: GrantEnvelopeScope {
+                    organization_id: TEST_ORGANIZATION_ID.to_owned(),
+                    vault_id: TEST_VAULT_ID.to_owned(),
+                    entry_id: Some(entry_id.to_owned()),
+                    grant_or_request_id: Some(TEST_GRANT_ID.to_owned()),
+                    agent_id: Some(TEST_AGENT_ID.to_owned()),
+                    member_id: None,
+                },
+                resource_revision: "1".to_owned(),
+                key_version: 1,
+                member_key_generation: Some(1),
+                binding: GrantEnvelopeBinding {
+                    entry_revision: "1".to_owned(),
+                    wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                    recipient_key_version: 1,
+                    recipient_key_fingerprint: URL_SAFE_NO_PAD.encode(fingerprint),
+                    approved_methods,
+                    field_set_commitment: URL_SAFE_NO_PAD.encode(commitment),
+                    expires_at: None,
+                    remaining_uses: Some(1),
+                },
+            },
+            encoded_suite_payload: URL_SAFE_NO_PAD.encode(payload.as_bytes()),
+            wrapped_grant_dek: WrappedGrantDek::from_context(&wrapper_context, &wrapped),
+            field_ids: field_ids.iter().map(|value| (*value).to_owned()).collect(),
+        };
+        json!({
+            "access": "granted",
+            "organizationId": TEST_ORGANIZATION_ID,
+            "vaultId": TEST_VAULT_ID,
+            "grantId": TEST_GRANT_ID,
+            "agentId": TEST_AGENT_ID,
+            "approvedMethods": approved_methods,
+            "entryId": entry_id,
+            "grantEnvelope": envelope,
+        })
+        .to_string()
+    }
+
+    fn test_uuid(value: &str) -> [u8; 16] {
+        hex::decode(value.replace('-', ""))
+            .expect("UUID hex")
+            .try_into()
+            .expect("UUID length")
     }
 
     async fn read_request(stream: &mut tokio::net::TcpStream) -> String {

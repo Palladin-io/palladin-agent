@@ -26,16 +26,18 @@ repository = "https://github.com/Palladin-io/palladin-agent"
 [workspace.dependencies]
 base64 = "0.22.1"
 blake2 = "0.10.6"
-chacha20poly1305 = "0.10.1"
 block2 = "0.6.2"
+chacha20poly1305 = "0.10.1"
 clap = { version = "4.6.1", features = ["derive"] }
 command-group = { version = "5.0.1", features = ["with-tokio"] }
 crypto_secretbox = "0.1.1"
+crypto_box = { version = "0.9.1", features = ["seal"] }
 directories = "6.0.0"
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 fs2 = "0.4.3"
 getrandom = "0.4.3"
 hostname = "0.4.1"
+hex = "0.4.3"
 hmac = "0.12.1"
 hkdf = "0.12.4"
 keyring = "4.1.4"
@@ -44,6 +46,7 @@ libc = "0.2.180"
 linux-keyutils-keyring-store = "1.0.0"
 nix = { version = "0.31.3", default-features = false, features = ["fs", "process", "socket", "user"] }
 percent-encoding = "2.3.2"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 rsa = "0.9.10"
 rpassword = "7.5.4"
@@ -57,7 +60,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWo
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["block2", "NSDistributedNotificationCenter", "NSNotification", "NSOperation", "NSString"] }
 objc2-local-authentication = { version = "0.3.2", default-features = false, features = ["LAContext", "block2"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+serde_json = { version = "1.0.150", features = ["raw_value"] }
 sha1 = "0.10.6"
 sha2 = { version = "0.10.9", features = ["oid"] }
 subtle = "2.6.1"
