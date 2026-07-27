@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -112,9 +113,10 @@ describe('macOS authenticated signed-runtime boundary', () => {
       execFileSync('/usr/bin/xattr', ['-w', 'io.palladin.fixture', 'same', candidateFile]);
       execFileSync(compare, [reference, candidate]);
 
-      chmodSync(candidateFile, 0o600);
+      const originalMode = statSync(referenceFile).mode & 0o777;
+      chmodSync(candidateFile, originalMode ^ 0o100);
       expect(() => execFileSync(compare, [reference, candidate])).toThrow();
-      chmodSync(candidateFile, 0o644);
+      chmodSync(candidateFile, originalMode);
       execFileSync('/usr/bin/xattr', ['-w', 'io.palladin.fixture', 'different', candidateFile]);
       expect(() => execFileSync(compare, [reference, candidate])).toThrow();
     } finally {
