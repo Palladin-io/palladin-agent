@@ -580,6 +580,7 @@ mod tests {
             agent_active: false,
             encryption_public_key: Some(STANDARD.encode([3_u8; 32])),
             signing_public_key: Some(STANDARD.encode([4_u8; 32])),
+            vault_trust_anchors: Vec::new(),
             binding_signature: STANDARD.encode([5_u8; 64]),
         };
         let registry = PublicRegistry {

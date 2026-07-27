@@ -2,7 +2,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
@@ -19,6 +22,8 @@ const SHA256_HEX_LENGTH: usize = 64;
 const ED25519_PUBLIC_KEY_BYTES: usize = 32;
 const ED25519_SIGNATURE_BYTES: usize = 64;
 const X25519_PUBLIC_KEY_BYTES: usize = 32;
+const SHA256_BYTES: usize = 32;
+const MAX_VAULT_TRUST_ANCHORS: usize = 256;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -109,7 +114,41 @@ pub struct PublicProfileConfig {
     pub encryption_public_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signing_public_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vault_trust_anchors: Vec<PublicVaultTrustAnchor>,
     pub binding_signature: String,
+}
+
+/// Public, integrity-bound trust state established through an independently confirmed pairing.
+///
+/// The signing key is public. Persisting it here is intentional; the profile binding signature
+/// prevents an untrusted relay or local file mutation from silently substituting an anchor.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicVaultTrustAnchor {
+    pub organization_id: String,
+    pub vault_id: String,
+    pub agent_access_epoch: u64,
+    pub vault_signing_public_key: String,
+    pub vault_signing_key_fingerprint: String,
+    pub manifest_revision: String,
+    pub manifest_signing_key_version: u32,
+}
+
+impl PublicVaultTrustAnchor {
+    fn validate(&self) -> bool {
+        is_canonical_uuid(&self.organization_id)
+            && is_canonical_uuid(&self.vault_id)
+            && self.agent_access_epoch > 0
+            && is_canonical_base64url(&self.vault_signing_public_key, ED25519_PUBLIC_KEY_BYTES)
+            && is_canonical_base64url(&self.vault_signing_key_fingerprint, SHA256_BYTES)
+            && signing_key_fingerprint_matches(
+                &self.vault_signing_public_key,
+                &self.vault_signing_key_fingerprint,
+            )
+            && is_canonical_positive_revision(&self.manifest_revision)
+            && self.manifest_signing_key_version > 0
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -186,6 +225,15 @@ impl PublicProfileConfig {
                 self.signing_public_key.as_deref(),
                 ED25519_PUBLIC_KEY_BYTES,
             )
+            || self.vault_trust_anchors.len() > MAX_VAULT_TRUST_ANCHORS
+            || self
+                .vault_trust_anchors
+                .iter()
+                .any(|anchor| !anchor.validate())
+            || !self
+                .vault_trust_anchors
+                .windows(2)
+                .all(|pair| pair[0].vault_id < pair[1].vault_id)
         {
             return Err(PublicStoreError::InvalidPublicData);
         }
@@ -347,6 +395,7 @@ pub fn profile_config_digest(config: &PublicProfileConfig) -> Result<String, Pub
     if config.agent_active {
         digest.u32(1);
     }
+    append_trust_anchors_digest(&mut digest, &config.vault_trust_anchors);
     digest.text(&config.binding_signature);
     Ok(digest.finish())
 }
@@ -372,7 +421,43 @@ pub fn profile_binding_bytes(config: &PublicProfileConfig) -> Result<Vec<u8>, Pu
     if config.agent_active {
         bytes.u32(1);
     }
+    append_trust_anchors_bytes(&mut bytes, &config.vault_trust_anchors);
     Ok(bytes.finish())
+}
+
+fn append_trust_anchors_digest(digest: &mut CanonicalDigest, anchors: &[PublicVaultTrustAnchor]) {
+    // Preserve the existing v3 commitment byte-for-byte until a pairing establishes an anchor.
+    if anchors.is_empty() {
+        return;
+    }
+    digest.u32(2);
+    digest.u64(anchors.len() as u64);
+    for anchor in anchors {
+        digest.text(&anchor.organization_id);
+        digest.text(&anchor.vault_id);
+        digest.u64(anchor.agent_access_epoch);
+        digest.text(&anchor.vault_signing_public_key);
+        digest.text(&anchor.vault_signing_key_fingerprint);
+        digest.text(&anchor.manifest_revision);
+        digest.u32(anchor.manifest_signing_key_version);
+    }
+}
+
+fn append_trust_anchors_bytes(bytes: &mut CanonicalBytes, anchors: &[PublicVaultTrustAnchor]) {
+    if anchors.is_empty() {
+        return;
+    }
+    bytes.u32(2);
+    bytes.u64(anchors.len() as u64);
+    for anchor in anchors {
+        bytes.text(&anchor.organization_id);
+        bytes.text(&anchor.vault_id);
+        bytes.u64(anchor.agent_access_epoch);
+        bytes.text(&anchor.vault_signing_public_key);
+        bytes.text(&anchor.vault_signing_key_fingerprint);
+        bytes.text(&anchor.manifest_revision);
+        bytes.u32(anchor.manifest_signing_key_version);
+    }
 }
 
 pub(crate) fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T, PublicStoreError> {
@@ -513,6 +598,44 @@ fn is_canonical_base64(value: &str, expected_bytes: usize) -> bool {
     STANDARD
         .decode(value)
         .is_ok_and(|decoded| decoded.len() == expected_bytes && STANDARD.encode(decoded) == value)
+}
+
+fn is_canonical_base64url(value: &str, expected_bytes: usize) -> bool {
+    URL_SAFE_NO_PAD.decode(value).is_ok_and(|decoded| {
+        decoded.len() == expected_bytes && URL_SAFE_NO_PAD.encode(decoded) == value
+    })
+}
+
+fn is_canonical_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            }
+        })
+}
+
+fn is_canonical_positive_revision(value: &str) -> bool {
+    value
+        .parse::<u64>()
+        .is_ok_and(|revision| revision > 0 && revision.to_string() == value)
+}
+
+fn signing_key_fingerprint_matches(public_key: &str, fingerprint: &str) -> bool {
+    let (Ok(public_key), Ok(fingerprint)) = (
+        URL_SAFE_NO_PAD.decode(public_key),
+        URL_SAFE_NO_PAD.decode(fingerprint),
+    ) else {
+        return false;
+    };
+    let mut digest = Sha256::new();
+    digest.update(b"PLDNV2FP");
+    digest.update(2_u16.to_be_bytes());
+    digest.update(3_u16.to_be_bytes());
+    digest.update(public_key);
+    digest.finalize().as_slice() == fingerprint
 }
 
 fn legacy_host_is_valid(value: &str) -> bool {
@@ -674,11 +797,12 @@ fn sync_parent(_parent: &Path) -> Result<(), std::io::Error> {
 #[cfg(test)]
 mod tests {
     use base64::Engine;
+    use sha2::Digest;
 
     use super::{
         PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicProfileConfig, PublicRegistry,
-        load_profile_config, load_registry, profile_binding_bytes, profile_config_digest,
-        registry_digest, save_profile_config, save_registry,
+        PublicVaultTrustAnchor, load_profile_config, load_registry, profile_binding_bytes,
+        profile_config_digest, registry_digest, save_profile_config, save_registry,
     };
 
     fn fixture_config(host: &str) -> PublicProfileConfig {
@@ -694,7 +818,27 @@ mod tests {
                 base64::engine::general_purpose::STANDARD.encode([3_u8; 32]),
             ),
             signing_public_key: Some(base64::engine::general_purpose::STANDARD.encode([5_u8; 32])),
+            vault_trust_anchors: Vec::new(),
             binding_signature: base64::engine::general_purpose::STANDARD.encode([7_u8; 64]),
+        }
+    }
+
+    fn fixture_anchor(vault_id: &str) -> PublicVaultTrustAnchor {
+        let signing_public_key = [11_u8; 32];
+        let mut fingerprint_input = Vec::from(b"PLDNV2FP".as_slice());
+        fingerprint_input.extend_from_slice(&2_u16.to_be_bytes());
+        fingerprint_input.extend_from_slice(&3_u16.to_be_bytes());
+        fingerprint_input.extend_from_slice(&signing_public_key);
+        PublicVaultTrustAnchor {
+            organization_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
+            vault_id: vault_id.to_owned(),
+            agent_access_epoch: 7,
+            vault_signing_public_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(signing_public_key),
+            vault_signing_key_fingerprint: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(sha2::Sha256::digest(fingerprint_input)),
+            manifest_revision: "14".to_owned(),
+            manifest_signing_key_version: 2,
         }
     }
 
@@ -826,6 +970,122 @@ mod tests {
             load_profile_config(&path).expect("load public config"),
             config
         );
+        let serialized = std::fs::read_to_string(path).expect("read config");
+        assert!(
+            !serialized.contains("vaultTrustAnchors"),
+            "empty anchors must preserve the legacy v3 representation"
+        );
+    }
+
+    #[test]
+    fn trust_anchor_fields_are_integrity_bound() {
+        type AnchorMutation = (&'static str, Box<dyn Fn(&mut PublicVaultTrustAnchor)>);
+
+        let mut config = fixture_config("https://api.palladin.io");
+        config.vault_trust_anchors = vec![fixture_anchor("11111111-1111-4111-8111-111111111111")];
+        let binding = profile_binding_bytes(&config).expect("binding");
+        let digest = profile_config_digest(&config).expect("digest");
+        let mutations: Vec<AnchorMutation> = vec![
+            (
+                "organizationId",
+                Box::new(|anchor| {
+                    anchor.organization_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_owned();
+                }),
+            ),
+            (
+                "vaultId",
+                Box::new(|anchor| {
+                    anchor.vault_id = "22222222-2222-4222-8222-222222222222".to_owned();
+                }),
+            ),
+            (
+                "agentAccessEpoch",
+                Box::new(|anchor| anchor.agent_access_epoch += 1),
+            ),
+            (
+                "vaultSigningPublicKey",
+                Box::new(|anchor| {
+                    let signing_public_key = [17_u8; 32];
+                    let mut input = Vec::from(b"PLDNV2FP".as_slice());
+                    input.extend_from_slice(&2_u16.to_be_bytes());
+                    input.extend_from_slice(&3_u16.to_be_bytes());
+                    input.extend_from_slice(&signing_public_key);
+                    anchor.vault_signing_public_key =
+                        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signing_public_key);
+                    anchor.vault_signing_key_fingerprint =
+                        base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .encode(sha2::Sha256::digest(input));
+                }),
+            ),
+            (
+                "manifestRevision",
+                Box::new(|anchor| anchor.manifest_revision = "15".to_owned()),
+            ),
+            (
+                "manifestSigningKeyVersion",
+                Box::new(|anchor| anchor.manifest_signing_key_version += 1),
+            ),
+        ];
+
+        for (field, mutation) in mutations {
+            let mut changed = config.clone();
+            mutation(&mut changed.vault_trust_anchors[0]);
+            assert_ne!(
+                profile_binding_bytes(&changed).expect(field),
+                binding,
+                "binding omitted {field}"
+            );
+            assert_ne!(
+                profile_config_digest(&changed).expect(field),
+                digest,
+                "digest omitted {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_noncanonical_duplicate_or_unbounded_trust_anchors() {
+        type InvalidAnchorMutation = Box<dyn Fn(&mut PublicVaultTrustAnchor)>;
+
+        let valid = fixture_anchor("11111111-1111-4111-8111-111111111111");
+        let invalid_mutations: Vec<InvalidAnchorMutation> = vec![
+            Box::new(|anchor| anchor.organization_id.make_ascii_uppercase()),
+            Box::new(|anchor| {
+                anchor.vault_id = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA".to_owned();
+            }),
+            Box::new(|anchor| anchor.agent_access_epoch = 0),
+            Box::new(|anchor| anchor.vault_signing_public_key.push('=')),
+            Box::new(|anchor| anchor.vault_signing_key_fingerprint.push('=')),
+            Box::new(|anchor| {
+                anchor.vault_signing_key_fingerprint =
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([19_u8; 32]);
+            }),
+            Box::new(|anchor| anchor.manifest_revision = "014".to_owned()),
+            Box::new(|anchor| anchor.manifest_revision = "0".to_owned()),
+            Box::new(|anchor| anchor.manifest_signing_key_version = 0),
+        ];
+        for mutation in invalid_mutations {
+            let mut config = fixture_config("https://api.palladin.io");
+            let mut anchor = valid.clone();
+            mutation(&mut anchor);
+            config.vault_trust_anchors.push(anchor);
+            assert!(profile_binding_bytes(&config).is_err());
+        }
+
+        let mut duplicate = fixture_config("https://api.palladin.io");
+        duplicate.vault_trust_anchors = vec![valid.clone(), valid.clone()];
+        assert!(profile_binding_bytes(&duplicate).is_err());
+
+        let later = fixture_anchor("22222222-2222-4222-8222-222222222222");
+        let mut reversed = fixture_config("https://api.palladin.io");
+        reversed.vault_trust_anchors = vec![later, valid.clone()];
+        assert!(profile_binding_bytes(&reversed).is_err());
+
+        let mut excessive = fixture_config("https://api.palladin.io");
+        excessive.vault_trust_anchors = (0..=super::MAX_VAULT_TRUST_ANCHORS)
+            .map(|index| fixture_anchor(&format!("00000000-0000-4000-8000-{index:012x}")))
+            .collect();
+        assert!(profile_binding_bytes(&excessive).is_err());
     }
 
     #[test]
