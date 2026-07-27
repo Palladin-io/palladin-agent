@@ -532,7 +532,7 @@ struct VerifiedState {
     configs: BTreeMap<String, PublicProfileConfig>,
 }
 
-impl<S: SecretStore> RuntimeService<S> {
+impl<S: SecretStore + Sync> RuntimeService<S> {
     #[must_use]
     pub fn new(repository: ProfileRepository, secrets: S) -> Self {
         Self {
@@ -1317,7 +1317,7 @@ impl<S: SecretStore> RuntimeService<S> {
         hostname: &str,
         connection: &OperationConnection,
         descriptor: OperationDescriptor,
-    ) -> Result<RuntimeSession, RuntimeError> {
+    ) -> Result<RuntimeSession<'_>, RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
         let state = self.verified_state_locked()?;
@@ -1362,6 +1362,12 @@ impl<S: SecretStore> RuntimeService<S> {
             .agent_id
             .as_ref()
             .ok_or(RuntimeError::MissingAgentId)?;
+        let profile_signing = Ed25519Identity::from_libsodium_secret(
+            signing
+                .libsodium_secret_for_secure_storage()
+                .expose_secret()
+                .to_vec(),
+        )?;
         let signing = Some(palladin_api::SigningContext {
             agent_id: agent_id.clone(),
             identity: signing,
@@ -1377,7 +1383,76 @@ impl<S: SecretStore> RuntimeService<S> {
             operation,
             consumed: AtomicBool::new(false),
             discovery: Arc::clone(&self.discovery),
+            manifest_persistence: Some(self),
+            profile_signing: Some(profile_signing),
         })
+    }
+
+    fn persist_advanced_manifest_revision(
+        &self,
+        identity_id: &str,
+        expected_anchor: &PublicVaultTrustAnchor,
+        advanced: &PinnedVaultTrust,
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let state = self.verified_state_locked()?;
+        let mut config = state
+            .configs
+            .get(identity_id)
+            .cloned()
+            .ok_or(RuntimeError::InvalidPublicConfig)?;
+        let anchor = config
+            .vault_trust_anchors
+            .iter_mut()
+            .find(|anchor| anchor.vault_id == expected_anchor.vault_id)
+            .ok_or(RuntimeError::UntrustedVaultManifest)?;
+        let current_revision = anchor
+            .manifest_revision
+            .parse::<u64>()
+            .map_err(|_| RuntimeError::InvalidPublicConfig)?;
+        let expected_profile_signing_key = STANDARD.encode(signing.public_key());
+        if advanced.manifest_revision < current_revision
+            || anchor.organization_id != expected_anchor.organization_id
+            || anchor.vault_signing_public_key
+                != URL_SAFE_NO_PAD.encode(advanced.signing_public_key)
+            || anchor.vault_signing_key_fingerprint
+                != URL_SAFE_NO_PAD.encode(advanced.signing_key_fingerprint)
+            || anchor.manifest_signing_key_version != advanced.manifest_signing_key_version
+            || config.signing_public_key.as_deref() != Some(expected_profile_signing_key.as_str())
+        {
+            return Err(RuntimeError::UntrustedVaultManifest);
+        }
+        if advanced.manifest_revision == current_revision {
+            return Ok(());
+        }
+        anchor.manifest_revision = advanced.manifest_revision.to_string();
+        let binding =
+            profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+        let digest =
+            profile_config_digest(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        let mut registry = state.registry.clone();
+        registry
+            .agents
+            .iter_mut()
+            .find(|entry| entry.identity_id == identity_id)
+            .ok_or(RuntimeError::IntegrityViolation)?
+            .config_digest = Some(digest);
+        self.commit_authorized_transition(
+            &state,
+            registry,
+            vec![ConfigWrite {
+                identity_id: identity_id.to_owned(),
+                config,
+            }],
+            Vec::new(),
+            Vec::new(),
+            false,
+            lease,
+        )
     }
 
     pub fn verify_identity(
@@ -2621,7 +2696,7 @@ pub struct LegacyCleanupOutcome {
     pub profiles: usize,
 }
 
-pub struct RuntimeSession {
+pub struct RuntimeSession<'a> {
     profile: PublicAgentEntry,
     config: PublicProfileConfig,
     api: ApiClient,
@@ -2630,6 +2705,39 @@ pub struct RuntimeSession {
     operation: RuntimeOperation,
     consumed: AtomicBool,
     discovery: Arc<tokio::sync::Mutex<LocalDiscoveryIndex>>,
+    manifest_persistence: Option<&'a dyn ManifestRevisionPersistence>,
+    profile_signing: Option<Ed25519Identity>,
+}
+
+trait ManifestRevisionPersistence: Sync {
+    fn persist_advanced_manifest_revision(
+        &self,
+        identity_id: &str,
+        expected_anchor: &PublicVaultTrustAnchor,
+        advanced: &PinnedVaultTrust,
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError>;
+}
+
+impl<S: SecretStore + Sync> ManifestRevisionPersistence for RuntimeService<S> {
+    fn persist_advanced_manifest_revision(
+        &self,
+        identity_id: &str,
+        expected_anchor: &PublicVaultTrustAnchor,
+        advanced: &PinnedVaultTrust,
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError> {
+        RuntimeService::persist_advanced_manifest_revision(
+            self,
+            identity_id,
+            expected_anchor,
+            advanced,
+            signing,
+            lease,
+        )
+    }
 }
 
 struct OperationCancellation {
@@ -2685,7 +2793,7 @@ pub struct CredentialExecRequest<'a> {
     pub output: OperatorOutput,
 }
 
-impl RuntimeSession {
+impl RuntimeSession<'_> {
     #[must_use]
     pub fn profile(&self) -> &PublicAgentEntry {
         &self.profile
@@ -2750,7 +2858,8 @@ impl RuntimeSession {
         let manifest = vault_manifest_v2(manifest);
         let identity = self.agent_identity_binding(anchor)?;
         let pinned = pinned_vault_trust(anchor)?;
-        verify_current_manifest(&manifest, &identity, &pinned)?;
+        let advanced = verify_current_manifest(&manifest, &identity, &pinned)?;
+        self.persist_manifest_revision(anchor, &advanced)?;
 
         let mut request_id = [0_u8; 16];
         getrandom::fill(&mut request_id).map_err(|_| RuntimeError::RandomGenerationFailed)?;
@@ -2806,6 +2915,40 @@ impl RuntimeSession {
             x25519_fingerprint: key_fingerprint(1, self.encryption.public_key())?,
             ed25519_fingerprint: key_fingerprint(2, &signing_public_key)?,
         })
+    }
+
+    fn persist_manifest_revision(
+        &self,
+        anchor: &PublicVaultTrustAnchor,
+        advanced: &PinnedVaultTrust,
+    ) -> Result<(), RuntimeError> {
+        let pinned = anchor
+            .manifest_revision
+            .parse::<u64>()
+            .map_err(|_| RuntimeError::InvalidPublicConfig)?;
+        if advanced.manifest_revision < pinned {
+            return Err(RuntimeError::UntrustedVaultManifest);
+        }
+        let Some(persistence) = self.manifest_persistence else {
+            return if advanced.manifest_revision == pinned {
+                Ok(())
+            } else {
+                Err(RuntimeError::IntegrityViolation)
+            };
+        };
+        let signing = self
+            .profile_signing
+            .as_ref()
+            .ok_or(RuntimeError::IntegrityViolation)?;
+        self.ensure_authorized()?;
+        persistence.persist_advanced_manifest_revision(
+            &self.profile.identity_id,
+            anchor,
+            advanced,
+            signing,
+            &self.lease,
+        )?;
+        self.ensure_authorized()
     }
 
     fn operation_cancellation(
@@ -2876,7 +3019,9 @@ impl RuntimeSession {
                 .ok_or(RuntimeError::UntrustedVaultManifest)?;
             let identity = self.agent_identity_binding(anchor)?;
             let manifest = vault_manifest_v2(item.manifest);
-            verify_current_manifest(&manifest, &identity, &pinned_vault_trust(anchor)?)?;
+            let advanced =
+                verify_current_manifest(&manifest, &identity, &pinned_vault_trust(anchor)?)?;
+            self.persist_manifest_revision(anchor, &advanced)?;
             let vdk = self.open_manifest_vdk(&manifest, item.envelope)?;
             if let Err(error) = self
                 .sync_discovery_vault(&vault_id, manifest.vdk_version, &vdk, &mut index)
@@ -2975,15 +3120,16 @@ impl RuntimeSession {
                         entry_id,
                         agent_discovery_revision,
                         agent_discovery,
-                    } => heads.push((
-                        entry_id,
-                        self.decrypt_discovery(
+                    } => {
+                        let plaintext = self.decrypt_discovery(
                             vault_id,
+                            &entry_id,
                             &agent_discovery_revision,
                             agent_discovery,
                             vdk,
-                        )?,
-                    )),
+                        )?;
+                        heads.push((entry_id, plaintext));
+                    }
                     AgentDiscoverySyncItem::Tombstone { .. } => {
                         return Err(RuntimeError::InvalidDiscoveryPayload);
                     }
@@ -3050,6 +3196,7 @@ impl RuntimeSession {
                         &entry_id,
                         self.decrypt_discovery(
                             vault_id,
+                            &entry_id,
                             &agent_discovery_revision,
                             agent_discovery,
                             vdk,
@@ -3084,6 +3231,7 @@ impl RuntimeSession {
     fn decrypt_discovery(
         &self,
         expected_vault_id: &str,
+        expected_entry_id: &str,
         expected_revision: &str,
         envelope: AgentDiscoveryEnvelope,
         vdk: &SecretBytes,
@@ -3096,13 +3244,14 @@ impl RuntimeSession {
             .map_err(|_| RuntimeError::InvalidDiscoveryPayload)?;
         let revision = validate_sequence(&envelope.agent_discovery_revision)?;
         let header_revision = validate_sequence(&envelope.header.resource_revision)?;
-        if envelope.vault_id != expected_vault_id
-            || envelope.agent_discovery_revision != expected_revision
-            || revision != header_revision
-            || envelope.vdk_version != envelope.header.key_version
-        {
-            return Err(RuntimeError::InvalidDiscoveryPayload);
-        }
+        validate_discovery_envelope_scope(
+            expected_vault_id,
+            expected_entry_id,
+            expected_revision,
+            &envelope,
+            revision,
+            header_revision,
+        )?;
         let header = EnvelopeHeader {
             protocol_version: envelope.header.protocol_version,
             algorithm_suite: envelope.header.algorithm_suite,
@@ -3456,7 +3605,11 @@ impl RuntimeSession {
             url_domain,
         } = *granted;
         self.ensure_authorized()?;
-        if !label.is_empty() || url_domain.is_some() {
+        if !valid_granted_label(&label)
+            || url_domain
+                .as_deref()
+                .is_some_and(|domain| !valid_granted_url_domain(domain))
+        {
             return Err(RuntimeError::InvalidCredentialPayload);
         }
         let anchor = self
@@ -3698,6 +3851,25 @@ fn validate_sequence(value: &str) -> Result<u64, RuntimeError> {
         .map_err(|_| RuntimeError::InvalidDiscoveryPayload)
 }
 
+fn validate_discovery_envelope_scope(
+    expected_vault_id: &str,
+    expected_entry_id: &str,
+    expected_revision: &str,
+    envelope: &AgentDiscoveryEnvelope,
+    revision: u64,
+    header_revision: u64,
+) -> Result<(), RuntimeError> {
+    if envelope.vault_id != expected_vault_id
+        || envelope.entry_id != expected_entry_id
+        || envelope.agent_discovery_revision != expected_revision
+        || revision != header_revision
+        || envelope.vdk_version != envelope.header.key_version
+    {
+        return Err(RuntimeError::InvalidDiscoveryPayload);
+    }
+    Ok(())
+}
+
 fn decode_32_url(value: &str) -> Result<[u8; 32], RuntimeError> {
     decode_base64url(value)?
         .try_into()
@@ -3785,6 +3957,33 @@ fn parse_revision(value: &str) -> Result<u64, RuntimeError> {
     value
         .parse()
         .map_err(|_| RuntimeError::InvalidCredentialPayload)
+}
+
+fn valid_granted_label(value: &str) -> bool {
+    !value.trim().is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
+}
+
+fn valid_granted_url_domain(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 253
+        || value != value.trim()
+        || !value.is_ascii()
+        || value.bytes().any(|byte| byte.is_ascii_uppercase())
+    {
+        return false;
+    }
+    if value.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
 }
 
 #[derive(Debug, Error)]
@@ -3997,6 +4196,43 @@ mod tests {
 
     use super::*;
 
+    type MemorySecretValues = BTreeMap<(String, SecretSlot), Vec<u8>>;
+
+    #[derive(Clone, Default)]
+    struct MemorySecretStore(Arc<Mutex<MemorySecretValues>>);
+
+    impl SecretStore for MemorySecretStore {
+        fn get(
+            &self,
+            owner_id: &str,
+            slot: SecretSlot,
+        ) -> Result<Option<secrecy::SecretSlice<u8>>, StoreError> {
+            Ok(self
+                .0
+                .lock()
+                .expect("store")
+                .get(&(owner_id.to_owned(), slot))
+                .cloned()
+                .map(Into::into))
+        }
+
+        fn set(&self, owner_id: &str, slot: SecretSlot, secret: &[u8]) -> Result<(), StoreError> {
+            self.0
+                .lock()
+                .expect("store")
+                .insert((owner_id.to_owned(), slot), secret.to_vec());
+            Ok(())
+        }
+
+        fn delete(&self, owner_id: &str, slot: SecretSlot) -> Result<(), StoreError> {
+            self.0
+                .lock()
+                .expect("store")
+                .remove(&(owner_id.to_owned(), slot));
+            Ok(())
+        }
+    }
+
     fn test_lease() -> OperationLease {
         let scope = OperationScope::new(
             "11111111111111111111111111111111",
@@ -4095,6 +4331,187 @@ mod tests {
         assert!(!debug.contains("approval reason"));
     }
 
+    #[test]
+    fn granted_metadata_accepts_bounded_labels_and_normalized_domains() {
+        assert!(valid_granted_label("Production database"));
+        assert!(valid_granted_label("Zażółć gęślą"));
+        assert!(!valid_granted_label(""));
+        assert!(!valid_granted_label("control\ncharacter"));
+        assert!(!valid_granted_label(&"x".repeat(513)));
+
+        for domain in ["example.com", "api.stage.palladin.io", "127.0.0.1", "::1"] {
+            assert!(valid_granted_url_domain(domain), "{domain}");
+        }
+        for domain in [
+            "",
+            "Example.com",
+            " example.com",
+            "-example.com",
+            "example..com",
+            "example.com/path",
+        ] {
+            assert!(!valid_granted_url_domain(domain), "{domain}");
+        }
+    }
+
+    #[test]
+    fn discovery_outer_entry_id_must_match_authenticated_envelope_scope() {
+        let envelope = AgentDiscoveryEnvelope {
+            organization_id: "11111111-1111-4111-8111-111111111111".to_owned(),
+            vault_id: "22222222-2222-4222-8222-222222222222".to_owned(),
+            entry_id: "33333333-3333-4333-8333-333333333333".to_owned(),
+            agent_discovery_revision: "7".to_owned(),
+            vdk_version: 2,
+            header: palladin_api::AgentDiscoveryEnvelopeHeader {
+                protocol_version: 2,
+                algorithm_suite: 1,
+                resource_kind: 2,
+                projection_kind: 3,
+                resource_revision: "7".to_owned(),
+                key_version: 2,
+                member_key_generation: 1,
+                nonce: "unused".to_owned(),
+            },
+            ciphertext: "unused".to_owned(),
+        };
+
+        assert!(
+            validate_discovery_envelope_scope(
+                &envelope.vault_id,
+                &envelope.entry_id,
+                "7",
+                &envelope,
+                7,
+                7,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            validate_discovery_envelope_scope(
+                &envelope.vault_id,
+                "44444444-4444-4444-8444-444444444444",
+                "7",
+                &envelope,
+                7,
+                7,
+            ),
+            Err(RuntimeError::InvalidDiscoveryPayload)
+        ));
+    }
+
+    #[test]
+    fn manifest_revision_advance_survives_restart_and_rejects_regression() {
+        let root = tempfile::tempdir().expect("root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("private root");
+        }
+        let store = MemorySecretStore::default();
+        let repository = ProfileRepository::new(root.path().to_path_buf()).expect("repository");
+        let service = RuntimeService::new(repository, store.clone());
+        let created = service.create_profile("default", None).expect("profile");
+        let signing_secret = store
+            .get(&created.identity_id, SecretSlot::Ed25519SecretKey)
+            .expect("read signing key")
+            .expect("signing key");
+        let signing =
+            Ed25519Identity::from_libsodium_secret(signing_secret.expose_secret().to_vec())
+                .expect("signing identity");
+        let vault_signing_key = [3_u8; 32];
+        let vault_signing_fingerprint =
+            key_fingerprint(3, &vault_signing_key).expect("fingerprint");
+        let anchor = PublicVaultTrustAnchor {
+            organization_id: "11111111-1111-4111-8111-111111111111".to_owned(),
+            vault_id: "22222222-2222-4222-8222-222222222222".to_owned(),
+            agent_access_epoch: 1,
+            vault_signing_public_key: URL_SAFE_NO_PAD.encode(vault_signing_key),
+            vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(vault_signing_fingerprint),
+            manifest_revision: "7".to_owned(),
+            manifest_signing_key_version: 2,
+        };
+        {
+            let _lock = service
+                .repository
+                .acquire_transaction_lock()
+                .expect("transaction lock");
+            let state = service.verified_state_locked().expect("verified state");
+            let mut config = PublicProfileConfig {
+                schema_version: PUBLIC_SCHEMA_VERSION,
+                identity_id: created.identity_id.clone(),
+                host: "https://api.stage.palladin.io".to_owned(),
+                organization_credential_id: "44444444444444444444444444444444".to_owned(),
+                retired_organization_credential_ids: Vec::new(),
+                agent_id: Some("55555555-5555-4555-8555-555555555555".to_owned()),
+                agent_active: true,
+                encryption_public_key: Some(created.encryption_public_key.clone()),
+                signing_public_key: Some(created.signing_public_key.clone()),
+                vault_trust_anchors: vec![anchor.clone()],
+                binding_signature: STANDARD.encode([0_u8; 64]),
+            };
+            let binding = profile_binding_bytes(&config).expect("binding");
+            config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+            let digest = profile_config_digest(&config).expect("config digest");
+            let mut registry = state.registry.clone();
+            registry.agents[0].config_digest = Some(digest);
+            service
+                .commit_transition(
+                    &state,
+                    registry,
+                    vec![ConfigWrite {
+                        identity_id: created.identity_id.clone(),
+                        config,
+                    }],
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                )
+                .expect("seed paired profile");
+        }
+        let advanced = PinnedVaultTrust {
+            vault_id: Uuid::parse_str(&anchor.vault_id).expect("vault id"),
+            signing_public_key: vault_signing_key,
+            signing_key_fingerprint: vault_signing_fingerprint,
+            manifest_revision: 8,
+            manifest_signing_key_version: 2,
+        };
+        service
+            .persist_advanced_manifest_revision(
+                &created.identity_id,
+                &anchor,
+                &advanced,
+                &signing,
+                &test_lease(),
+            )
+            .expect("persist manifest advance");
+
+        let restarted = RuntimeService::new(
+            ProfileRepository::new(root.path().to_path_buf()).expect("restart repository"),
+            store,
+        );
+        restarted.registry().expect("restart verification");
+        let persisted = restarted
+            .repository
+            .load_config(&created.identity_id)
+            .expect("persisted config");
+        assert_eq!(persisted.vault_trust_anchors[0].manifest_revision, "8");
+        let regressed = PinnedVaultTrust {
+            manifest_revision: 7,
+            ..advanced
+        };
+        assert!(matches!(
+            restarted.persist_advanced_manifest_revision(
+                &created.identity_id,
+                &anchor,
+                &regressed,
+                &signing,
+                &test_lease(),
+            ),
+            Err(RuntimeError::UntrustedVaultManifest)
+        ));
+    }
+
     #[tokio::test]
     async fn delivery_enforces_the_exact_method_and_never_decrypts_before_granted() {
         let non_granted_bodies = [
@@ -4150,6 +4567,8 @@ mod tests {
             operation: RuntimeOperation::GetCredential,
             consumed: AtomicBool::new(false),
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
+            manifest_persistence: None,
+            profile_signing: None,
         };
 
         let get = session
@@ -4406,7 +4825,11 @@ mod tests {
         (format!("http://{address}"), requests)
     }
 
-    fn runtime_session(host: String, api: ApiClient, encryption: X25519Identity) -> RuntimeSession {
+    fn runtime_session(
+        host: String,
+        api: ApiClient,
+        encryption: X25519Identity,
+    ) -> RuntimeSession<'static> {
         RuntimeSession {
             profile: PublicAgentEntry {
                 name: "fixture".to_owned(),
@@ -4434,6 +4857,8 @@ mod tests {
             operation: RuntimeOperation::ExecWithCredential,
             consumed: AtomicBool::new(false),
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
+            manifest_persistence: None,
+            profile_signing: None,
         }
     }
 
