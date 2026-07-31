@@ -1,5 +1,5 @@
 /**
- * Login-form fixtures for the field-detection heuristic (CVT-151). Each fixture reproduces the
+ * Login-form fixtures for the field-detection heuristic. Each fixture reproduces the
  * *known field-identification signals* of a real service's sign-in form — the attributes a password
  * manager keys off (input types, autocomplete, name/id, placeholder, aria-label) and the flow shape
  * (combined vs multi-step) — not a byte-for-byte scrape. They exercise every detection path against

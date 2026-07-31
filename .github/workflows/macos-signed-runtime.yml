@@ -265,6 +265,8 @@ jobs:
           SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_IDENTITY }}
           NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARYTOOL_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARYTOOL_ISSUER_ID }}
+          INPUTS_MARKETING_VERSION: ${{ inputs.marketing_version }}
+          INPUTS_BUNDLE_VERSION: ${{ inputs.bundle_version }}
         run: |
           set -euo pipefail
           output_dir="$RUNNER_TEMP/palladin-universal-bundle"
@@ -273,8 +275,8 @@ jobs:
             --profile "$PALLADIN_PROFILE_PATH" \
             --output-dir "$output_dir" \
             --architecture universal \
-            --marketing-version "${{ inputs.marketing_version }}" \
-            --bundle-version "${{ inputs.bundle_version }}"
+            --marketing-version "${INPUTS_MARKETING_VERSION}" \
+            --bundle-version "${INPUTS_BUNDLE_VERSION}"
           packaging/macos/scripts/sign-notarize.sh \
             --bundle-dir "$output_dir" \
             --architecture universal \
@@ -306,7 +308,7 @@ jobs:
               --pack-destination "$RUNNER_TEMP" >/dev/null
           done
           for architecture in arm64 x64; do
-            runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$architecture-${{ inputs.marketing_version }}.tgz"
+            runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$architecture-${INPUTS_MARKETING_VERSION}.tgz"
             test -f "$runtime_tgz"
             packaged_runtime="$RUNNER_TEMP/packed-runtime-darwin-$architecture"
             mkdir -p "$packaged_runtime"
@@ -319,7 +321,7 @@ jobs:
               "$packaged_runtime/package/PalladinRuntime.app"
           done
           runtime_arch=$(node -p 'process.arch')
-          runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$runtime_arch-${{ inputs.marketing_version }}.tgz"
+          runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$runtime_arch-${INPUTS_MARKETING_VERSION}.tgz"
           test -f "$runtime_tgz"
 
           smoke="$RUNNER_TEMP/npm-smoke"
@@ -334,6 +336,8 @@ jobs:
           grep -F 'platform: macos/aarch64' <<<"$doctor"
           grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
           grep -F 'identity-opened: no' <<<"$doctor"
+        env:
+          INPUTS_MARKETING_VERSION: ${{ inputs.marketing_version }}
 
       - name: Opublikuj zweryfikowany artefakt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

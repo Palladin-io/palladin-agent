@@ -232,11 +232,13 @@ jobs:
           $scripts = @('packaging/windows/scripts/Install-SecureRuntime.ps1', 'packaging/windows/scripts/Palladin.Release.psm1')
           & $sign -Artifacts $scripts -CertificateThumbprint $env:EXPECTED_THUMBPRINT -TimestampUrl $env:TIMESTAMP_URL -Publisher $env:PUBLISHER
           foreach ($architecture in 'x64', 'arm64') {
-            $directory = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-$architecture-${{ inputs.source_sha }}"
+            $directory = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-$architecture-$env:INPUTS_SOURCE_SHA"
             $artifacts = Get-ChildItem -LiteralPath $directory -Filter '*.exe' | ForEach-Object FullName
             if ($artifacts.Count -ne 5) { throw "expected five $architecture PE artifacts" }
             & $sign -Artifacts $artifacts -CertificateThumbprint $env:EXPECTED_THUMBPRINT -TimestampUrl $env:TIMESTAMP_URL -Publisher $env:PUBLISHER
           }
+        env:
+          INPUTS_SOURCE_SHA: ${{ inputs.source_sha }}
       - name: Zweryfikuj atomową wersję npm i Rust
         shell: pwsh
         run: |
@@ -254,7 +256,7 @@ jobs:
           $assets = Join-Path $env:RUNNER_TEMP 'assets'
           packaging/windows/scripts/New-PackagingAssets.ps1 -OutputDirectory $assets
           foreach ($architecture in 'x64', 'arm64') {
-            $native = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-$architecture-${{ inputs.source_sha }}"
+            $native = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-$architecture-$env:INPUTS_SOURCE_SHA"
             $msix = Join-Path $env:RUNNER_TEMP "msix-$architecture"
             packaging/windows/scripts/Build-Msix.ps1 -Architecture $architecture -Version $env:RELEASE_VERSION -Publisher $env:PUBLISHER -BrokerBinary (Join-Path $native 'palladin-service.exe') -WorkerBinary (Join-Path $native 'palladin-worker.exe') -ExecutorBinary (Join-Path $native 'palladin-executor.exe') -CompanionBinary (Join-Path $native 'palladin-companion.exe') -AssetsDirectory $assets -OutputDirectory $msix
             $packages = Get-ChildItem -LiteralPath $msix -Filter '*.msix' | ForEach-Object FullName
@@ -265,6 +267,8 @@ jobs:
             $companion = Get-ChildItem -LiteralPath $msix -Filter '*Companion*.msix' | Select-Object -ExpandProperty FullName
             packaging/windows/scripts/Verify-Release.ps1 -Architecture $architecture -Version $env:RELEASE_VERSION -Publisher $env:PUBLISHER -SignerThumbprint $env:EXPECTED_THUMBPRINT -ClientBinary (Join-Path $native 'palladin-client.exe') -BrokerPackage $broker -CompanionPackage $companion -StagedNpmDirectory $npm
           }
+        env:
+          INPUTS_SOURCE_SHA: ${{ inputs.source_sha }}
       - name: Zbuduj i podpisz wieloarchitekturne bundle
         shell: pwsh
         run: |

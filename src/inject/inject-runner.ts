@@ -24,7 +24,7 @@ export interface InjectOptions {
   submit?: boolean;
   /** Max time to wait for the password field to appear on a multi-step form. */
   passwordStepTimeoutMs?: number;
-  /** Optional value-free trace sink (CVT-157, `--verbose`). Never receives secret values. */
+  /** Optional value-free trace sink for `--verbose`. Never receives secret values. */
   log?: (message: string) => void;
 }
 
@@ -33,7 +33,7 @@ export type InjectResult =
       ok: true;
       steps: string[];
       /**
-       * Best-effort observation of the post-submit auth outcome (CVT-151 follow-up). `succeeded` /
+       * Best-effort observation of the post-submit auth outcome. `succeeded` /
        * `rejected` are HINTS, not guarantees; `unknown` is the honest default (and is used whenever
        * we did not submit). The agent makes the final call from its own browser/task result. A
        * `rejected` outcome means the form was driven correctly but the credential was likely refused
@@ -47,7 +47,7 @@ export type InjectResult =
       steps: string[];
       /**
        * The page HTML at failure time and its URL, so the caller can persist a redacted, value-free
-       * diagnostic (CVT-151 follow-up). Omitted only when failure happened before any page read
+       * diagnostic. Omitted only when failure happened before any page read
        * (e.g. origin mismatch — we still pass it so misses are captured). Never contains secrets.
        */
       diagnostic?: { html: string; url: string };
@@ -59,7 +59,7 @@ const POLL_INTERVAL = 400;
 const OUTCOME_SETTLE_MS = 1500;
 
 /**
- * Fill (and optionally submit) the login form on `page` with `secret` (CVT-151).
+ * Fill (and optionally submit) the login form on `page` with `secret`.
  *
  * Order of operations is security-critical:
  *  1. Verify the page origin matches the entry's bound domain BEFORE touching any field. This is the
@@ -173,7 +173,7 @@ export async function injectCredential(
   return observe(preUrl);
   } catch (err) {
     // Any Playwright action error (fill/click timeout, detached node…) becomes a graceful failure
-    // WITH a value-free diagnostic — never an uncaught crash that bypasses failure-capture (CVT-157).
+    // WITH a value-free diagnostic — never an uncaught crash that bypasses failure-capture.
     log(`action error: ${(err as Error).message}`);
     return fail(`browser action failed: ${(err as Error).message}`);
   }

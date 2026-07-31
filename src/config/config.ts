@@ -6,7 +6,7 @@ export interface AgentConfig {
   host: string;
   /**
    * The backend-assigned agent ID. Sent as X-Agent-Id and used in the signature canonical so the
-   * server can look up Agent.SigningPublicKey to verify each request (CVT-157). Populated by
+   * server can look up Agent.SigningPublicKey to verify each request. Populated by
    * connect/status once the backend returns it; absent before the first successful enrollment.
    */
   agentId?: string;

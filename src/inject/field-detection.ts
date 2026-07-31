@@ -1,5 +1,5 @@
 /**
- * Login-form field detection (CVT-151). Pure DOM heuristics — the same approach password managers
+ * Login-form field detection. Pure DOM heuristics — the same approach password managers
  * (1Password, Bitwarden) use — so the CLI never asks the agent's LLM for JavaScript to run on the
  * page (that would hand the page our secret and open a prompt-injection channel). The agent may
  * optionally supply explicit selectors; otherwise we infer them here.

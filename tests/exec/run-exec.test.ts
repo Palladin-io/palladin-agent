@@ -77,7 +77,7 @@ describe('runExecCapture — env injection + masking', () => {
   });
 });
 
-describe('runExecForTool — model-safe result (CVT-200)', () => {
+describe('runExecForTool — model-safe result', () => {
   it('does NOT return the child stdout/stderr to the model, only exit code + note', async () => {
     const logRoot = mkdtempSync(join(tmpdir(), 'palladin-exec-'));
     const mirror = collectStream();

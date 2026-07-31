@@ -79,7 +79,7 @@ export async function registerAgent(
   return { status: 'unreachable', error: `HTTP ${res.status}` };
 }
 
-// ── Discovery (CVT-144) ──────────────────────────────────────────────────────
+// ── Discovery ──────────────────────────────────────────────────────
 // Org-wide entry search. Metadata only — never ciphertext. Starting point of the
 // flow: search_entries → request_access → get_grant_status → retrieve_credential.
 
@@ -218,13 +218,13 @@ export class AgentApiError extends Error {
   }
 }
 
-// ── Unified credential access (CVT-61) ───────────────────────────────────────
+// ── Unified credential access ───────────────────────────────────────
 // A single call drives the whole flow. The agent calls get_credential; if it has
 // no grant yet the server creates a pending one (user approves in the panel) and
 // returns access:"pending". The agent calls again; once approved the server
 // returns access:"granted" with the encrypted envelope, decrypted locally.
 
-/** How the agent intends to use the credential (CVT-149). Mirrors backend GrantMethods flag names. */
+/** How the agent intends to use the credential. Mirrors backend GrantMethods flag names. */
 export type CredentialMethod = 'get' | 'exec' | 'inject';
 
 /** Discriminated result of POST .../credential, keyed on `access`. */
@@ -236,7 +236,7 @@ export type CredentialAccess =
   | ({ access: 'granted'; entryId: string; label: string; urlDomain: string | null } & EncryptedCredential)
   /**
    * Awaiting user approval. `created` = the grant was just requested by this call. The optional
-   * `pollIntervalMs` / `maxWaitMs` are the org's approval-wait policy (CVT-157) — the CLI uses them
+   * `pollIntervalMs` / `maxWaitMs` are the org's approval-wait policy — the CLI uses them
    * as defaults for its long-poll when no explicit `--wait` / `--poll-interval` flag is given.
    */
   | { access: 'pending'; grantId: string; created?: boolean; pollIntervalMs?: number; maxWaitMs?: number }
@@ -245,9 +245,9 @@ export type CredentialAccess =
   | { access: 'revoked' }
   | { access: 'expired' }
   | { access: 'consumed' }
-  /** The grant does not whitelist the method the agent asked for (CVT-149). */
+  /** The grant does not whitelist the method the agent asked for. */
   | { access: 'method-not-allowed' }
-  /** Script entries execute — get/inject are refused regardless of the grant's methods (CVT-242). */
+  /** Script entries execute — get/inject are refused regardless of the grant's methods. */
   | { access: 'script-exec-only' }
   /** FULL grant covers the entry but no wrapped material exists yet. */
   | { access: 'unavailable' }
@@ -265,7 +265,7 @@ export type CredentialAccess =
  */
 export interface GetCredentialOptions {
   reason?: string;
-  /** Delivery method the agent intends to use (CVT-149). Defaults server-side to `get`. */
+  /** Delivery method the agent intends to use. Defaults server-side to `get`. */
   method?: CredentialMethod;
   /**
    * Methods to put on the grant if this call has to create a Pending one. Defaults server-side to

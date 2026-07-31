@@ -29,7 +29,7 @@ export function statusCommand(getProfile: GetProfile): Command {
 
       const config  = loadConfig(paths);
       const keypair = await loadKeypair(name, paths);
-      // Backfill / register the signing key for agents enrolled before signing existed (CVT-157).
+      // Backfill / register the signing key for agents enrolled before signing existed.
       const signingKeypair = await ensureSigningKeypair(name, paths);
       const signingPubKey = signingPublicKeyBase64(signingKeypair);
       const signingTier = await detectKeyTier(name, paths, 'signing');

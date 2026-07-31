@@ -1,8 +1,8 @@
 import { parseHTML } from 'linkedom';
 
 /**
- * Best-effort classification of what happened AFTER `inject` submitted a login form (CVT-151
- * follow-up). The CLI cannot definitively know whether a login succeeded — only the agent, looking
+ * Best-effort classification of what happened AFTER `inject` submitted a login form. The CLI
+ * cannot definitively know whether a login succeeded — only the agent, looking
  * at its own browser / task result, can. So this is a conservative, three-state OBSERVATION the
  * agent can use as a hint, not a guarantee:
  *

@@ -5,7 +5,7 @@ import { failureReportDir, type InjectFailureReport } from '../inject/failure-re
 
 /**
  * `palladin inject-failures` — review the redacted inject failure reports collected locally
- * (CVT-151 follow-up). This is the fast feedback loop for patching unsupported sites: it groups
+ * This is the fast feedback loop for patching unsupported sites: it groups
  * misses by domain so you can see which forms the heuristic could not drive, inspect their (value-
  * free) structure, and turn them into fixtures or selector overrides.
  *

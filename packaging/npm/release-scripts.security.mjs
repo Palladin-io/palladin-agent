@@ -310,7 +310,8 @@ test('release workflows pin actions and isolate the one-time npm token exception
   const finalRelease = readFileSync(join(workflowDirectory, 'release-finalize.yml'), 'utf8');
   assert.doesNotMatch(platformRelease, /secrets:\s+inherit/);
   assert.match(platformRelease, /npm stage publish "\$package" --tag candidate/);
-  assert.match(metaRelease, /npm stage publish "\$RUNNER_TEMP\/stage-assets\/palladin-agent-\$\{\{ inputs\.version \}\}\.tgz" --tag latest/);
+  assert.match(metaRelease, /INPUTS_VERSION: \$\{\{ inputs\.version \}\}/);
+  assert.match(metaRelease, /npm stage publish "\$RUNNER_TEMP\/stage-assets\/palladin-agent-\$\{INPUTS_VERSION\}\.tgz" --tag latest/);
   for (const contents of [platformRelease, metaRelease, finalRelease]) {
     assert.match(contents, /github\.actor == 'patryk-roguszewski'/);
     assert.match(contents, /test "\$GITHUB_REF" = "refs\/tags\/\$RELEASE_TAG"/);
@@ -352,7 +353,7 @@ test('release finalization requires both exact owner-approved security gates bef
   assert.doesNotMatch(workflow, /report\.mjs validate[^]*\|\| true/);
   assert.ok(
     workflow.indexOf('node security/adversarial/report.mjs validate')
-      < workflow.indexOf('gh release edit "${{ inputs.release_tag }}"'),
+      < workflow.indexOf('gh release edit "${INPUTS_RELEASE_TAG}"'),
   );
 });
 
@@ -368,7 +369,7 @@ test('meta-package staging is blocked by the exact adversarial and physical life
   const lifecycleArtifactValidations = [
     ...workflow.matchAll(/node security\/lifecycle\/verify-release-artifacts\.mjs/g),
   ];
-  const stageOffset = workflow.indexOf('npm stage publish "$RUNNER_TEMP/stage-assets/palladin-agent-${{ inputs.version }}.tgz" --tag latest');
+  const stageOffset = workflow.indexOf('npm stage publish "$RUNNER_TEMP/stage-assets/palladin-agent-${INPUTS_VERSION}.tgz" --tag latest');
 
   assert.equal(reportValidations.length, 3);
   assert.equal(artifactValidations.length, 3);

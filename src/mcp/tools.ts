@@ -43,7 +43,7 @@ function errorMessage(err: unknown): string {
 }
 
 // Discovery is org-wide via GET /api/agent/entries (agent-auth, metadata only).
-// The legacy CVT-44 placeholders list_vaults / list_entries called JwtBearer (user)
+// The legacy placeholders list_vaults / list_entries called JwtBearer (user)
 // endpoints and returned 401 under agent-auth — they are intentionally not exposed.
 export function registerTools(server: LegacyMcpToolRegistry, config: AgentConfig, keypair: Keypair, signing?: SigningContext): void {
   server.registerTool(
@@ -224,7 +224,7 @@ async function resolveForTool(
 /**
  * Run a Script entry for the MCP exec tool: validate the interpreter, deliver every referenced entry
  * through the agent's own grants, then execute with references in the environment. Output is withheld
- * from the model exactly like a plain exec (CVT-200) — only exit code + note come back.
+ * from the model exactly like a plain exec — only exit code + note come back.
  */
 async function execScriptForTool(
   config: AgentConfig,

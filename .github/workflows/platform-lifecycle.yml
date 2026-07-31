@@ -116,15 +116,24 @@ jobs:
       - name: Download and bind all three immutable release sets
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUTS_BASELINE_TAG: ${{ inputs.baseline_tag }}
+          INPUTS_BASELINE_VERSION: ${{ inputs.baseline_version }}
+          INPUTS_BASELINE_SOURCE_SHA: ${{ inputs.baseline_source_sha }}
+          INPUTS_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          INPUTS_CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          INPUTS_CANDIDATE_SOURCE_SHA: ${{ inputs.candidate_source_sha }}
+          INPUTS_ROLLBACK_TAG: ${{ inputs.rollback_tag }}
+          INPUTS_ROLLBACK_VERSION: ${{ inputs.rollback_version }}
+          INPUTS_ROLLBACK_SOURCE_SHA: ${{ inputs.rollback_source_sha }}
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/lifecycle-release-sets"
           mkdir -m 700 "$root"
           for phase in baseline candidate forward-rollback; do
             case "$phase" in
-              baseline) tag='${{ inputs.baseline_tag }}'; version='${{ inputs.baseline_version }}'; source='${{ inputs.baseline_source_sha }}' ;;
-              candidate) tag='${{ inputs.candidate_tag }}'; version='${{ inputs.candidate_version }}'; source='${{ inputs.candidate_source_sha }}' ;;
-              forward-rollback) tag='${{ inputs.rollback_tag }}'; version='${{ inputs.rollback_version }}'; source='${{ inputs.rollback_source_sha }}' ;;
+              baseline) tag="${INPUTS_BASELINE_TAG}"; version="${INPUTS_BASELINE_VERSION}"; source="${INPUTS_BASELINE_SOURCE_SHA}" ;;
+              candidate) tag="${INPUTS_CANDIDATE_TAG}"; version="${INPUTS_CANDIDATE_VERSION}"; source="${INPUTS_CANDIDATE_SOURCE_SHA}" ;;
+              forward-rollback) tag="${INPUTS_ROLLBACK_TAG}"; version="${INPUTS_ROLLBACK_VERSION}"; source="${INPUTS_ROLLBACK_SOURCE_SHA}" ;;
             esac
             directory="$root/$phase"
             mkdir -m 700 "$directory"
@@ -353,10 +362,10 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: { name: 'lifecycle-report-${{ needs.authorize.outputs.source_sha }}', path: '${{ runner.temp }}/lifecycle-report' }
       - name: Revalidate and upload without replacement
-        env: { GH_TOKEN: '${{ github.token }}' }
+        env: { GH_TOKEN: "${{ github.token }}", INPUTS_CANDIDATE_TAG: "${{ inputs.candidate_tag }}" }
         run: |
           set -euo pipefail
           report="$RUNNER_TEMP/lifecycle-report"
           node security/lifecycle/report.mjs validate --source-sha '${{ needs.authorize.outputs.source_sha }}' --json "$report/lifecycle-report.json" --markdown "$report/lifecycle-report.md"
-          test "$(gh release view '${{ inputs.candidate_tag }}' --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
-          gh release upload '${{ inputs.candidate_tag }}' "$report/lifecycle-report.json" "$report/lifecycle-report.md" --repo "$GITHUB_REPOSITORY"
+          test "$(gh release view "${INPUTS_CANDIDATE_TAG}" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          gh release upload "${INPUTS_CANDIDATE_TAG}" "$report/lifecycle-report.json" "$report/lifecycle-report.md" --repo "$GITHUB_REPOSITORY"
