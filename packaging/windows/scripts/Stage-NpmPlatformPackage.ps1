@@ -29,7 +29,9 @@ foreach ($field in 'scripts', 'dependencies', 'optionalDependencies') {
 
 New-Item -ItemType Directory -Path (Join-Path $OutputDirectory 'bin') | Out-Null
 Copy-Item -LiteralPath (Join-Path $source 'README.md') -Destination $OutputDirectory
-Copy-Item -LiteralPath (Join-Path $source 'LICENSE') -Destination $OutputDirectory
+Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $OutputDirectory
+Copy-Item -LiteralPath (Join-Path $root 'NOTICE') -Destination $OutputDirectory
+Copy-Item -LiteralPath (Join-Path $root 'THIRD_PARTY_NOTICES.md') -Destination $OutputDirectory
 Copy-Item -LiteralPath $ClientBinary -Destination (Join-Path $OutputDirectory 'bin/palladin-client.exe')
 $manifest.PSObject.Properties.Remove('private')
 $manifest | Add-Member -NotePropertyName os -NotePropertyValue @('win32')
@@ -45,5 +47,5 @@ $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $Outp
   --os win32 `
   --cpu $Architecture `
   --libc none `
-  --files '["bin/palladin-client.exe","README.md","LICENSE"]'
+  --files '["bin/palladin-client.exe","README.md","LICENSE","NOTICE","THIRD_PARTY_NOTICES.md"]'
 if ($LASTEXITCODE -ne 0) { throw 'staged npm package manifest verification failed' }

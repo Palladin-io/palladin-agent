@@ -55,7 +55,12 @@ describe('Linux hardened package boundary', () => {
         'bin/palladin-worker',
         'README.md',
         'LICENSE',
+        'NOTICE',
+        'THIRD_PARTY_NOTICES.md',
       ]);
+      for (const file of ['LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']) {
+        expect(readFileSync(join(output, file), 'utf8')).toBe(readFileSync(file, 'utf8'));
+      }
       expect(manifest.scripts).toBeUndefined();
       expect(manifest.dependencies).toBeUndefined();
       expect(manifest.optionalDependencies).toBeUndefined();

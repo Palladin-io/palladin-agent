@@ -12,7 +12,9 @@
   "files": [
     "PalladinRuntime.app/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "publishConfig": {
     "access": "public",

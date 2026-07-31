@@ -77,7 +77,10 @@ function metaManifest(overrides = {}) {
     repository: { type: 'git', url: 'https://example.test/source.git' },
     homepage: 'https://example.test',
     bugs: { url: 'https://example.test/issues' },
-    files: ['dist/bin/', 'dist/runtime/', 'README.md', 'LICENSE', 'SECURITY.md'],
+    files: [
+      'dist/bin/', 'dist/runtime/', 'README.md', 'LICENSE', 'NOTICE',
+      'THIRD_PARTY_NOTICES.md', 'SBOM.cdx.json', 'SECURITY.md',
+    ],
     workspaces: ['packages/*'],
     publishConfig: { access: 'public', provenance: true },
     type: 'module',
@@ -95,7 +98,9 @@ function createMetaSource(root, manifest = metaManifest()) {
   mkdirSync(join(root, 'dist/runtime'), { recursive: true });
   writeFileSync(join(root, 'dist/bin/palladin.js'), 'fixture');
   writeFileSync(join(root, 'dist/runtime/native-dispatch.js'), 'fixture');
-  for (const file of ['README.md', 'LICENSE', 'SECURITY.md']) writeFileSync(join(root, file), file);
+  for (const file of [
+    'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md', 'SBOM.cdx.json', 'SECURITY.md',
+  ]) writeFileSync(join(root, file), file);
   writeJson(join(root, 'package.json'), manifest);
 }
 
@@ -114,7 +119,13 @@ test('stages only the publishable meta package and preserves the private source'
     assert.equal(staged.devDependencies, undefined);
     assert.deepEqual(staged.optionalDependencies, metaManifest().optionalDependencies);
     assert.equal(readFileSync(join(source, 'package.json'), 'utf8'), before);
-    assert.deepEqual(readdirSync(output).sort(), ['LICENSE', 'README.md', 'SECURITY.md', 'dist', 'package.json']);
+    assert.deepEqual(readdirSync(output).sort(), [
+      'LICENSE', 'NOTICE', 'README.md', 'SBOM.cdx.json', 'SECURITY.md',
+      'THIRD_PARTY_NOTICES.md', 'dist', 'package.json',
+    ]);
+    for (const file of ['LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']) {
+      assert.equal(readFileSync(join(output, file), 'utf8'), readFileSync(join(source, file), 'utf8'));
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -161,14 +172,19 @@ test('creates exactly nine inert bootstrap packages without mutating source file
     assert.deepEqual(readdirSync(output).sort(), PUBLIC_PACKAGE_NAMES.map((name) => name.slice('@palladin/'.length)).sort());
     for (const name of PUBLIC_PACKAGE_NAMES) {
       const directory = join(output, name.slice('@palladin/'.length));
-      assert.deepEqual(readdirSync(directory), ['package.json']);
       const manifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
       assert.equal(manifest.name, name);
       assert.equal(manifest.version, '0.0.0-bootstrap');
       for (const forbidden of ['private', 'bin', 'scripts', 'dependencies', 'optionalDependencies', 'devDependencies']) {
         assert.equal(manifest[forbidden], undefined);
       }
-      assert.deepEqual(manifest.files, []);
+      assert.deepEqual(manifest.files, ['LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']);
+      assert.deepEqual(readdirSync(directory).sort(), [
+        'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md', 'package.json',
+      ]);
+      for (const file of manifest.files) {
+        assert.equal(readFileSync(join(directory, file), 'utf8'), readFileSync(file, 'utf8'));
+      }
     }
     assert.equal(readFileSync('package.json', 'utf8'), sourceBefore);
     const duplicate = failing('stage-bootstrap-packages.mjs', ['--output-dir', output]);

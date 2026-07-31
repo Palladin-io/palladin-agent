@@ -34,6 +34,8 @@ install -m 0755 "$binaries/palladin-linux-client" "$output/bin/palladin-linux-cl
 install -m 0755 "$binaries/palladin-worker" "$output/bin/palladin-worker"
 install -m 0644 "$template/README.md" "$output/README.md"
 install -m 0644 "$root/LICENSE" "$output/LICENSE"
+install -m 0644 "$root/NOTICE" "$output/NOTICE"
+install -m 0644 "$root/THIRD_PARTY_NOTICES.md" "$output/THIRD_PARTY_NOTICES.md"
 node - "$template/package.json" "$output/package.json" "$architecture" "$libc_family" <<'NODE'
 const [source, output, architecture, libc] = process.argv.slice(2);
 const fs = require('node:fs');
@@ -46,7 +48,10 @@ delete manifest.private;
 manifest.os = ['linux'];
 manifest.cpu = [architecture];
 manifest.libc = [libc];
-manifest.files = ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE'];
+manifest.files = [
+  'bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE',
+  'NOTICE', 'THIRD_PARTY_NOTICES.md',
+];
 fs.writeFileSync(output, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o644 });
 NODE
 node "$root/packaging/npm/verify-platform-package.mjs" \
@@ -55,4 +60,4 @@ node "$root/packaging/npm/verify-platform-package.mjs" \
   --os linux \
   --cpu "$architecture" \
   --libc "$libc_family" \
-  --files '["bin/palladin-linux-client","bin/palladin-worker","README.md","LICENSE"]'
+  --files '["bin/palladin-linux-client","bin/palladin-worker","README.md","LICENSE","NOTICE","THIRD_PARTY_NOTICES.md"]'

@@ -50,9 +50,12 @@ readonly package_source="$REPOSITORY_ROOT/packages/runtime-darwin-$architecture"
 require_regular_file "$package_source/package.json" "private workspace manifest"
 require_regular_file "$package_source/README.md" "platform package README"
 require_regular_file "$REPOSITORY_ROOT/LICENSE" "repository license"
+require_regular_file "$REPOSITORY_ROOT/NOTICE" "repository notice"
+require_regular_file "$REPOSITORY_ROOT/THIRD_PARTY_NOTICES.md" "third-party notices"
 
 mkdir -p "$output_dir"
-cp "$package_source/package.json" "$package_source/README.md" "$REPOSITORY_ROOT/LICENSE" "$output_dir/"
+cp "$package_source/package.json" "$package_source/README.md" "$REPOSITORY_ROOT/LICENSE" \
+  "$REPOSITORY_ROOT/NOTICE" "$REPOSITORY_ROOT/THIRD_PARTY_NOTICES.md" "$output_dir/"
 ditto "$app_path" "$output_dir/PalladinRuntime.app"
 
 node - "$output_dir/package.json" "$architecture" <<'NODE'
@@ -80,4 +83,4 @@ node "$REPOSITORY_ROOT/packaging/npm/verify-platform-package.mjs" \
   --os darwin \
   --cpu "$architecture" \
   --libc none \
-  --files '["PalladinRuntime.app/","README.md","LICENSE"]'
+  --files '["PalladinRuntime.app/","README.md","LICENSE","NOTICE","THIRD_PARTY_NOTICES.md"]'

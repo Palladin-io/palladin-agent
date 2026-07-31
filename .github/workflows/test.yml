@@ -92,6 +92,8 @@ jobs:
       - name: Run Rust compatibility and migration tests
         working-directory: runtime
         run: cargo test --workspace --locked
+      - name: Verify committed OSS metadata
+        run: npm run oss:check
       - run: npm ci --ignore-scripts --workspaces=false
       - run: npm run build
       - name: Run TypeScript contract vectors

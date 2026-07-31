@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { lstatSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 function fail(message) {
@@ -35,6 +35,28 @@ if (!equal(manifest.os, [values.get('os')])) fail('unexpected os metadata');
 if (!equal(manifest.cpu, [values.get('cpu')])) fail('unexpected cpu metadata');
 if (!equal(manifest.libc, expectedLibc)) fail('unexpected libc metadata');
 if (!equal(manifest.files, expectedFiles)) fail('unexpected files allowlist');
+for (const entry of expectedFiles) {
+  if (entry.includes('..') || entry.includes('\\') || entry.startsWith('/')) {
+    fail(`unsafe package file entry: ${entry}`);
+  }
+  const path = resolve(packageDirectory, entry.replace(/\/$/, ''));
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    fail(`package file is missing: ${entry}`);
+  }
+  if (stat.isSymbolicLink()) fail(`package file must not be a symbolic link: ${entry}`);
+  if (entry.endsWith('/') ? !stat.isDirectory() : !stat.isFile()) {
+    fail(`package file has the wrong type: ${entry}`);
+  }
+}
+for (const legalFile of ['LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']) {
+  if (readFileSync(join(packageDirectory, legalFile), 'utf8')
+      !== readFileSync(resolve(scriptDirectory, '../..', legalFile), 'utf8')) {
+    fail(`package ${legalFile} is not the canonical repository file`);
+  }
+}
 if (!equal(manifest.publishConfig, { access: 'public', provenance: true })) {
   fail('public provenance configuration is required');
 }
