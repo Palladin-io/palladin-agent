@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { assertSecureHost, isLocalHost } from '../../src/http/client.js';
 
-describe('assertSecureHost (CVT-219)', () => {
+describe('assertSecureHost', () => {
   it('allows https to any host', () => {
     expect(() => assertSecureHost('https://api.palladin.io')).not.toThrow();
     expect(() => assertSecureHost('https://api.stage.palladin.io')).not.toThrow();

@@ -5,7 +5,7 @@ export type OriginCheckResult =
   | { ok: false; reason: string };
 
 /**
- * Anti-phishing gate for `inject` (CVT-151). Before the CLI types a credential into a page it must
+ * Anti-phishing gate for `inject`. Before the CLI types a credential into a page it must
  * prove the page's origin belongs to the same site the entry is bound to. Without this, a
  * prompt-injected agent could navigate to a look-alike phishing page and have `inject` type the
  * real password into it.

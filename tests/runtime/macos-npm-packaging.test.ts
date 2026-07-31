@@ -38,7 +38,10 @@ describe('macOS npm platform packages', () => {
           version: '0.1.0',
           os: ['darwin'],
           cpu: [architecture],
-          files: ['PalladinRuntime.app/', 'README.md', 'LICENSE'],
+          files: [
+            'PalladinRuntime.app/', 'README.md', 'LICENSE', 'NOTICE',
+            'THIRD_PARTY_NOTICES.md',
+          ],
         });
         expect(manifest.private).toBeUndefined();
         expect(manifest.libc).toBeUndefined();

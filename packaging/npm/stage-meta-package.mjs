@@ -11,7 +11,10 @@ import {
   readJsonObject,
 } from './release-policy.mjs';
 
-const EXPECTED_FILES = Object.freeze(['dist/bin/', 'dist/runtime/', 'README.md', 'LICENSE', 'SECURITY.md']);
+const EXPECTED_FILES = Object.freeze([
+  'dist/bin/', 'dist/runtime/', 'README.md', 'LICENSE', 'NOTICE',
+  'THIRD_PARTY_NOTICES.md', 'SBOM.cdx.json', 'SECURITY.md',
+]);
 const OUTPUT_FIELDS = Object.freeze([
   'name', 'version', 'description', 'license', 'repository', 'homepage', 'bugs',
   'files', 'publishConfig', 'type', 'bin', 'engines', 'optionalDependencies',

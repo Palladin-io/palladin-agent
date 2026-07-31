@@ -4,7 +4,7 @@ import { parseHTML } from 'linkedom';
 import { palladinRoot } from '../config/paths.js';
 
 /**
- * Privacy-safe diagnostics for `inject` failures (CVT-151 follow-up). When the heuristic cannot
+ * Privacy-safe diagnostics for `inject` failures. When the heuristic cannot
  * drive a real login form we record a STRUCTURAL snapshot — never any field values, never the
  * secret — so the detection rules can be improved against real-world misses without ever
  * persisting sensitive data.

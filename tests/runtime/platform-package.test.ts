@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
@@ -75,8 +75,11 @@ describe('public npm package boundary', () => {
     const paths = packs[0]?.files.map((file) => file.path).sort();
     expect(paths).toEqual([
       'LICENSE',
+      'NOTICE',
       'README.md',
+      'SBOM.cdx.json',
       'SECURITY.md',
+      'THIRD_PARTY_NOTICES.md',
       'dist/bin/palladin.d.ts',
       'dist/bin/palladin.d.ts.map',
       'dist/bin/palladin.js',
@@ -123,7 +126,10 @@ describe('public npm package boundary', () => {
     expect(runtime.private).toBe(true);
     expect(runtime.os).toBeUndefined();
     expect(runtime.cpu).toBeUndefined();
-    expect(runtime.files).toEqual(['bin/palladin-client.exe', 'README.md', 'LICENSE']);
+    expect(runtime.files).toEqual([
+      'bin/palladin-client.exe', 'README.md', 'LICENSE', 'NOTICE',
+      'THIRD_PARTY_NOTICES.md',
+    ]);
     expect(runtime.scripts).toBeUndefined();
     expect(runtime.dependencies).toBeUndefined();
     expect(runtime.optionalDependencies).toBeUndefined();
@@ -145,6 +151,9 @@ describe('public npm package boundary', () => {
       'bin/palladin-linux-client',
       'bin/palladin-worker',
       'README.md',
+      'LICENSE',
+      'NOTICE',
+      'THIRD_PARTY_NOTICES.md',
     ]);
     expect(runtime.scripts).toBeUndefined();
     expect(runtime.dependencies).toBeUndefined();
@@ -153,14 +162,14 @@ describe('public npm package boundary', () => {
   });
 
   it.each([
-    ['darwin', 'arm64', 'none', '@palladin/runtime-darwin-arm64', ['PalladinRuntime.app/', 'README.md', 'LICENSE']],
-    ['darwin', 'x64', 'none', '@palladin/runtime-darwin-x64', ['PalladinRuntime.app/', 'README.md', 'LICENSE']],
-    ['win32', 'arm64', 'none', '@palladin/runtime-win32-arm64', ['bin/palladin-client.exe', 'README.md', 'LICENSE']],
-    ['win32', 'x64', 'none', '@palladin/runtime-win32-x64', ['bin/palladin-client.exe', 'README.md', 'LICENSE']],
-    ['linux', 'arm64', 'glibc', '@palladin/runtime-linux-arm64-gnu', ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE']],
-    ['linux', 'arm64', 'musl', '@palladin/runtime-linux-arm64-musl', ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE']],
-    ['linux', 'x64', 'glibc', '@palladin/runtime-linux-x64-gnu', ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE']],
-    ['linux', 'x64', 'musl', '@palladin/runtime-linux-x64-musl', ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE']],
+    ['darwin', 'arm64', 'none', '@palladin/runtime-darwin-arm64', ['PalladinRuntime.app/', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']],
+    ['darwin', 'x64', 'none', '@palladin/runtime-darwin-x64', ['PalladinRuntime.app/', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']],
+    ['win32', 'arm64', 'none', '@palladin/runtime-win32-arm64', ['bin/palladin-client.exe', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']],
+    ['win32', 'x64', 'none', '@palladin/runtime-win32-x64', ['bin/palladin-client.exe', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']],
+    ['linux', 'arm64', 'glibc', '@palladin/runtime-linux-arm64-gnu', ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']],
+    ['linux', 'arm64', 'musl', '@palladin/runtime-linux-arm64-musl', ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']],
+    ['linux', 'x64', 'glibc', '@palladin/runtime-linux-x64-gnu', ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']],
+    ['linux', 'x64', 'musl', '@palladin/runtime-linux-x64-musl', ['bin/palladin-linux-client', 'bin/palladin-worker', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']],
   ])('verifies the staged public %s/%s/%s manifest', (os, cpu, libc, name, files) => {
     const temporary = mkdtempSync(join(tmpdir(), 'palladin-platform-manifest-'));
     try {
@@ -180,6 +189,18 @@ describe('public npm package boundary', () => {
         } : {}),
         publishConfig: { access: 'public', provenance: true },
       }, null, 2)}\n`);
+      for (const file of files) {
+        const path = join(packageDirectory, file);
+        if (file.endsWith('/')) {
+          mkdirSync(path, { recursive: true });
+        } else {
+          mkdirSync(dirname(path), { recursive: true });
+          const canonical = ['LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md'].includes(file)
+            ? readFileSync(file, 'utf8')
+            : 'fixture';
+          writeFileSync(path, canonical);
+        }
+      }
       execFileSync(process.execPath, [
         'packaging/npm/verify-platform-package.mjs',
         '--package', packageDirectory,

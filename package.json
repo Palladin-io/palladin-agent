@@ -2,6 +2,7 @@
   "name": "@palladin/agent",
   "version": "0.1.0",
   "description": "Script-free launcher for the Palladin native Agent CLI and MCP runtime",
+  "author": "Patryk Roguszewski <patryk.roguszewski@palladin.io>",
   "private": true,
   "license": "Apache-2.0",
   "repository": {
@@ -17,6 +18,9 @@
     "dist/runtime/",
     "README.md",
     "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES.md",
+    "SBOM.cdx.json",
     "SECURITY.md"
   ],
   "workspaces": [
@@ -37,6 +41,8 @@
     "lint": "tsc --noEmit",
     "test": "vitest run && npm run test:release",
     "test:release": "node --test packaging/npm/release-scripts.security.mjs",
+    "oss:generate": "node packaging/npm/generate-oss-metadata.mjs",
+    "oss:check": "node packaging/npm/generate-oss-metadata.mjs --check",
     "test:watch": "vitest"
   },
   "devDependencies": {

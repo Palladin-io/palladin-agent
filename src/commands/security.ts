@@ -28,7 +28,7 @@ export function securityCommand(getProfile: GetProfile): Command {
         const success = await upgradeToKeychain(name, paths);
         if (success) {
           console.log('✓ Key moved to OS keychain');
-          // Move the Ed25519 signing key too, if it is currently file-based (CVT-157).
+          // Move the Ed25519 signing key too, if it is currently file-based.
           if (await hasKey(name, paths, 'signing')) {
             const signingMoved = await upgradeKeyToKeychain(name, paths, 'signing');
             if (signingMoved) console.log('✓ Signing key moved to OS keychain');

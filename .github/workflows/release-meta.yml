@@ -33,7 +33,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      id-token: write
+      id-token: write # authenticate to Cloud KMS through workload identity
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
       policy_generation: ${{ steps.policy_input.outputs.policy_generation }}
@@ -41,7 +41,6 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.release_tag }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -333,8 +332,19 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.authorize.outputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Check out the trusted source commit
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main "$SOURCE_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          git checkout --detach "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -353,6 +363,7 @@ jobs:
         env:
           PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
           SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          INPUTS_VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -364,15 +375,17 @@ jobs:
           npm run build
           node packaging/npm/verify-version-policy-build.mjs \
             --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
-            --bundle "$bundle" --version "${{ inputs.version }}"
+            --bundle "$bundle" --version "${INPUTS_VERSION}"
 
       - name: Build the exact local meta-package candidate
         shell: bash
         run: |
           set -euo pipefail
           node packaging/npm/stage-meta-package.mjs \
-            --source . --output-dir "$RUNNER_TEMP/meta" --version "${{ inputs.version }}"
+            --source . --output-dir "$RUNNER_TEMP/meta" --version "${INPUTS_VERSION}"
           npm pack "$RUNNER_TEMP/meta" --pack-destination "$RUNNER_TEMP" >/dev/null
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Install from the registry and execute the native package
         shell: bash
@@ -447,8 +460,19 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.authorize.outputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Check out the trusted source commit
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main "$SOURCE_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          git checkout --detach "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -465,6 +489,7 @@ jobs:
         env:
           PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
           SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          INPUTS_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           bundle="$RUNNER_TEMP/version-policy-artifact/version-policy.json"
@@ -475,12 +500,14 @@ jobs:
           npm run build
           node packaging/npm/verify-version-policy-build.mjs \
             --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
-            --bundle "$bundle" --version "${{ inputs.version }}"
+            --bundle "$bundle" --version "${INPUTS_VERSION}"
       - name: Build the exact local meta-package candidate
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           node packaging/npm/stage-meta-package.mjs \
-            --source . --output-dir "$RUNNER_TEMP/meta" --version "${{ inputs.version }}"
+            --source . --output-dir "$RUNNER_TEMP/meta" --version "${INPUTS_VERSION}"
           npm pack "$RUNNER_TEMP/meta" --pack-destination "$RUNNER_TEMP" >/dev/null
 
       - name: Resolve through npm on native Alpine
@@ -512,12 +539,22 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      id-token: write
+      id-token: write # authenticate to Cloud KMS through workload identity
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.authorize.outputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Check out the trusted source commit
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main "$SOURCE_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          git checkout --detach "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: version-policy-${{ inputs.version }}-${{ needs.authorize.outputs.source_sha }}
@@ -534,7 +571,9 @@ jobs:
           --public-key "${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}"
           --source-sha "${{ needs.authorize.outputs.source_sha }}"
           --bundle "$RUNNER_TEMP/version-policy-artifact/version-policy.json"
-          --version "${{ inputs.version }}"
+          --version "${INPUTS_VERSION}"
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -580,6 +619,7 @@ jobs:
         env:
           PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
           SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          INPUTS_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           bundle="$RUNNER_TEMP/version-policy-artifact/version-policy.json"
@@ -589,7 +629,7 @@ jobs:
           npm run build
           node packaging/npm/stage-meta-package.mjs \
             --source . --output-dir "$RUNNER_TEMP/live-policy-meta" \
-            --version "${{ inputs.version }}"
+            --version "${INPUTS_VERSION}"
           npm pack "$RUNNER_TEMP/live-policy-meta" \
             --pack-destination "$RUNNER_TEMP" >/dev/null
           meta=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'palladin-agent-*.tgz' -print -quit)
@@ -619,13 +659,23 @@ jobs:
     environment: version-policy-signing
     timeout-minutes: 10
     permissions:
-      contents: write
-      id-token: write
+      contents: write # attach the signed policy to the draft release
+      id-token: write # authenticate to Cloud KMS through workload identity
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.authorize.outputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Check out the trusted source commit
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main "$SOURCE_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          git checkout --detach "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
@@ -702,13 +752,23 @@ jobs:
     environment: version-policy-signing
     timeout-minutes: 15
     permissions:
-      contents: write
-      id-token: write
+      contents: write # attach the operator approval to the draft release
+      id-token: write # authenticate to Cloud KMS through workload identity
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.authorize.outputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Check out the trusted source commit
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main "$SOURCE_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          git checkout --detach "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
@@ -787,14 +847,25 @@ jobs:
     environment: version-policy-signing
     timeout-minutes: 15
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      contents: write # attach the attested meta-package candidate to the draft release
+      id-token: write # create artifact attestations through GitHub OIDC
+      attestations: write # attest the exact meta-package candidate and its SBOM
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.authorize.outputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Check out the trusted source commit
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main "$SOURCE_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          git checkout --detach "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -813,6 +884,7 @@ jobs:
         env:
           PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
           SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          INPUTS_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           bundle="$RUNNER_TEMP/version-policy-artifact/version-policy.json"
@@ -823,13 +895,15 @@ jobs:
           npm run build
           node packaging/npm/verify-version-policy-build.mjs \
             --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
-            --bundle "$bundle" --version "${{ inputs.version }}"
+            --bundle "$bundle" --version "${INPUTS_VERSION}"
       - run: npm test
 
       - name: Stage the public meta-package directory
         run: >-
           node packaging/npm/stage-meta-package.mjs
-          --source . --output-dir "$RUNNER_TEMP/meta" --version "${{ inputs.version }}"
+          --source . --output-dir "$RUNNER_TEMP/meta" --version "${INPUTS_VERSION}"
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Pack the meta-package
         run: |
@@ -852,17 +926,19 @@ jobs:
           set -euo pipefail
           release="$RUNNER_TEMP/meta-release"
           node packaging/npm/generate-release-manifest.mjs \
-            --artifacts "$release" --version "${{ inputs.version }}" \
+            --artifacts "$release" --version "${INPUTS_VERSION}" \
             --source-sha "${{ needs.authorize.outputs.source_sha }}" \
             --sbom "$release/sbom-agent.spdx.json" \
             --manifest "$release/release-manifest-agent.json" \
             --checksums "$release/SHA256SUMS-agent"
           node packaging/npm/verify-release-manifest.mjs \
-            --artifacts "$release" --version "${{ inputs.version }}" \
+            --artifacts "$release" --version "${INPUTS_VERSION}" \
             --source-sha "${{ needs.authorize.outputs.source_sha }}" \
             --sbom "$release/sbom-agent.spdx.json" \
             --manifest "$release/release-manifest-agent.json" \
             --checksums "$release/SHA256SUMS-agent"
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
@@ -876,12 +952,14 @@ jobs:
       - name: Add or verify the byte-identical attested meta assets
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUTS_VERSION: ${{ inputs.version }}
+          INPUTS_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           existing="$RUNNER_TEMP/existing-meta-release"
           mkdir -m 700 "$existing"
-          names=(palladin-agent-${{ inputs.version }}.tgz release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json)
-          present=$(gh release view "${{ inputs.release_tag }}" --repo "$GITHUB_REPOSITORY" \
+          names=("palladin-agent-${INPUTS_VERSION}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json)
+          present=$(gh release view "${INPUTS_RELEASE_TAG}" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '[.assets[].name]')
           count=0
           for name in "${names[@]}"; do
@@ -891,11 +969,11 @@ jobs:
           done
           if [[ $count -eq 0 ]]; then
             mapfile -t assets < <(find "$RUNNER_TEMP/meta-release" -type f -print | sort)
-            gh release upload "${{ inputs.release_tag }}" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
+            gh release upload "${INPUTS_RELEASE_TAG}" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
           else
             test "$count" -eq "${#names[@]}"
             for name in "${names[@]}"; do
-              gh release download "${{ inputs.release_tag }}" --repo "$GITHUB_REPOSITORY" \
+              gh release download "${INPUTS_RELEASE_TAG}" --repo "$GITHUB_REPOSITORY" \
                 --pattern "$name" --dir "$existing"
               cmp --silent "$RUNNER_TEMP/meta-release/$name" "$existing/$name"
             done
@@ -924,13 +1002,23 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      id-token: write
-      attestations: read
+      id-token: write # npm trusted publishing with provenance
+      attestations: read # verify the candidate attestations before npm staging
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.authorize.outputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Check out the trusted source commit
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main "$SOURCE_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          git checkout --detach "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
@@ -942,12 +1030,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUTS_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           assets="$RUNNER_TEMP/stage-assets"
           mkdir -m 700 "$assets"
           for pattern in \
-            "palladin-agent-${{ inputs.version }}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json \
+            "palladin-agent-${INPUTS_VERSION}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json \
             release-manifest.json adversarial-report.json adversarial-report.md adversarial-approval.json \
             lifecycle-report.json lifecycle-report.md lifecycle-approval.json; do
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
@@ -996,7 +1085,9 @@ jobs:
             gh attestation verify "$assets/$filename" --repo "$GITHUB_REPOSITORY"
           done
       - name: Stage the byte-identical meta-package under latest
-        run: npm stage publish "$RUNNER_TEMP/stage-assets/palladin-agent-${{ inputs.version }}.tgz" --tag latest --provenance --ignore-scripts
+        run: npm stage publish "$RUNNER_TEMP/stage-assets/palladin-agent-${INPUTS_VERSION}.tgz" --tag latest --provenance --ignore-scripts
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
       - name: Record the final manual npm approval boundary
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'

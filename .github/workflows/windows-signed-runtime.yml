@@ -122,7 +122,6 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Zweryfikuj SHA i pochodzenie z main
@@ -131,9 +130,11 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          git fetch --no-tags origin main
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main "$SOURCE_SHA"
           git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          git checkout --detach "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - name: Potwierdź natywną architekturę runnera
         shell: pwsh
         env:
@@ -186,7 +187,6 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Zweryfikuj checkout przed użyciem skryptów release
@@ -194,14 +194,18 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
+          if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'source_sha must be a full lowercase commit SHA' }
+          git fetch --no-tags origin main $env:SOURCE_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'failed to fetch the requested source commit' }
+          git merge-base --is-ancestor $env:SOURCE_SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'source SHA is not an ancestor of main' }
+          git checkout --detach $env:SOURCE_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'failed to check out the trusted source commit' }
+          if ((git rev-parse HEAD) -cne $env:SOURCE_SHA) { throw 'unexpected checkout SHA' }
           if ($env:PALLADIN_WINDOWS_PACKAGE_FAMILY_NAME -cnotmatch '^Palladin\.Runtime\.Companion_[a-z0-9]{13}$') { throw 'protected Companion PFN is missing or invalid' }
           Import-Module (Resolve-Path './packaging/windows/scripts/Palladin.Release.psm1') -Force
           $derivedPfn = Get-PalladinPackageFamilyName -Name 'Palladin.Runtime.Companion' -Publisher $env:PUBLISHER
           if ($derivedPfn -cne $env:PALLADIN_WINDOWS_PACKAGE_FAMILY_NAME) { throw 'protected Companion PFN does not match the protected publisher' }
-          if ((git rev-parse HEAD) -cne $env:SOURCE_SHA) { throw 'unexpected checkout SHA' }
-          git fetch --no-tags origin main
-          git merge-base --is-ancestor $env:SOURCE_SHA origin/main
-          if ($LASTEXITCODE -ne 0) { throw 'source SHA is not an ancestor of main' }
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: unsigned-windows-*-${{ inputs.source_sha }}
@@ -228,11 +232,13 @@ jobs:
           $scripts = @('packaging/windows/scripts/Install-SecureRuntime.ps1', 'packaging/windows/scripts/Palladin.Release.psm1')
           & $sign -Artifacts $scripts -CertificateThumbprint $env:EXPECTED_THUMBPRINT -TimestampUrl $env:TIMESTAMP_URL -Publisher $env:PUBLISHER
           foreach ($architecture in 'x64', 'arm64') {
-            $directory = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-$architecture-${{ inputs.source_sha }}"
+            $directory = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-$architecture-$env:INPUTS_SOURCE_SHA"
             $artifacts = Get-ChildItem -LiteralPath $directory -Filter '*.exe' | ForEach-Object FullName
             if ($artifacts.Count -ne 5) { throw "expected five $architecture PE artifacts" }
             & $sign -Artifacts $artifacts -CertificateThumbprint $env:EXPECTED_THUMBPRINT -TimestampUrl $env:TIMESTAMP_URL -Publisher $env:PUBLISHER
           }
+        env:
+          INPUTS_SOURCE_SHA: ${{ inputs.source_sha }}
       - name: Zweryfikuj atomową wersję npm i Rust
         shell: pwsh
         run: |
@@ -250,7 +256,7 @@ jobs:
           $assets = Join-Path $env:RUNNER_TEMP 'assets'
           packaging/windows/scripts/New-PackagingAssets.ps1 -OutputDirectory $assets
           foreach ($architecture in 'x64', 'arm64') {
-            $native = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-$architecture-${{ inputs.source_sha }}"
+            $native = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-$architecture-$env:INPUTS_SOURCE_SHA"
             $msix = Join-Path $env:RUNNER_TEMP "msix-$architecture"
             packaging/windows/scripts/Build-Msix.ps1 -Architecture $architecture -Version $env:RELEASE_VERSION -Publisher $env:PUBLISHER -BrokerBinary (Join-Path $native 'palladin-service.exe') -WorkerBinary (Join-Path $native 'palladin-worker.exe') -ExecutorBinary (Join-Path $native 'palladin-executor.exe') -CompanionBinary (Join-Path $native 'palladin-companion.exe') -AssetsDirectory $assets -OutputDirectory $msix
             $packages = Get-ChildItem -LiteralPath $msix -Filter '*.msix' | ForEach-Object FullName
@@ -261,6 +267,8 @@ jobs:
             $companion = Get-ChildItem -LiteralPath $msix -Filter '*Companion*.msix' | Select-Object -ExpandProperty FullName
             packaging/windows/scripts/Verify-Release.ps1 -Architecture $architecture -Version $env:RELEASE_VERSION -Publisher $env:PUBLISHER -SignerThumbprint $env:EXPECTED_THUMBPRINT -ClientBinary (Join-Path $native 'palladin-client.exe') -BrokerPackage $broker -CompanionPackage $companion -StagedNpmDirectory $npm
           }
+        env:
+          INPUTS_SOURCE_SHA: ${{ inputs.source_sha }}
       - name: Zbuduj i podpisz wieloarchitekturne bundle
         shell: pwsh
         run: |
@@ -357,7 +365,6 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
@@ -368,10 +375,14 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
-          if ((git rev-parse HEAD) -cne $env:SOURCE_SHA) { throw 'unexpected checkout SHA' }
-          git fetch --no-tags origin main
+          if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'source_sha must be a full lowercase commit SHA' }
+          git fetch --no-tags origin main $env:SOURCE_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'failed to fetch the requested source commit' }
           git merge-base --is-ancestor $env:SOURCE_SHA origin/main
           if ($LASTEXITCODE -ne 0) { throw 'source SHA is not an ancestor of main' }
+          git checkout --detach $env:SOURCE_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'failed to check out the trusted source commit' }
+          if ((git rev-parse HEAD) -cne $env:SOURCE_SHA) { throw 'unexpected checkout SHA' }
           if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -cne '${{ matrix.os_architecture }}') {
             throw 'runner architecture does not match signed artifact architecture'
           }

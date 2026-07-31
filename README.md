@@ -5,6 +5,10 @@ Public npm launcher and native CLI/MCP runtime for Palladin Agent.
 > [!WARNING]
 > Palladin Agent is pre-production software and has not been published to npm. Do not use development builds with production credentials.
 
+The repository contains the current native runtime and release engineering,
+but no public npm release is available yet. Installation commands below describe
+the intended signed release and will not work until the packages are published.
+
 ## Security boundary
 
 The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed universal executable from the exact x64 or arm64 npm package. On Windows it verifies the exact Authenticode-signed `palladin-client.exe` against signed release policy, copies only that public executable into a version-and-hash-specific per-user cache, opens and re-verifies the cached file under a non-write/non-delete handle, and keeps that handle until the child exits. The child is started without a shell. This avoids locking `node_modules` while an MCP session remains active. The client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. On Linux the dispatcher reads only the `PT_INTERP` header of its own Node executable and selects the exact x64 or arm64 glibc or musl package; unknown libc loaders fail before package resolution. There is no TypeScript credential implementation, `PATH`, runtime download, cross-libc, or plaintext fallback.
@@ -206,4 +210,11 @@ Every pull request runs two stable required contexts:
 - `CI Gate` aggregates the Node.js matrix, minimum supported npm selection tests, Rust formatting and linting, the full Rust workspace, and the frozen TypeScript/Rust/.NET contract consumers.
 - `Native Platform Gate` aggregates native Apple Silicon, Intel macOS, Windows x64, Windows ARM64, Linux glibc x64/arm64, and Linux musl x64/arm64 builds and smoke tests. A supported target cannot be skipped by a path filter.
 
-The repository is public under Apache-2.0. Signed release artifacts are not produced by public pull requests. `macOS Signed Release Gate` and `Windows Signed Release Gate` are separate owner-dispatched workflows that sign only an exact commit already reachable from `main`, then install and execute the resulting artifacts on native CPU runners. They must be green for a signed release, but are not pull-request branch-protection contexts.
+The repository is public under [Apache-2.0](LICENSE). See [NOTICE](NOTICE),
+[third-party notices](THIRD_PARTY_NOTICES.md), and the
+[trademark policy](TRADEMARKS.md). Signed release artifacts are not produced by
+public pull requests. `macOS Signed Release Gate` and `Windows Signed Release
+Gate` are separate owner-dispatched workflows that sign only an exact commit
+already reachable from `main`, then install and execute the resulting artifacts
+on native CPU runners. They must be green for a signed release, but are not
+pull-request branch-protection contexts.

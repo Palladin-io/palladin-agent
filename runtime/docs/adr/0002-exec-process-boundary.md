@@ -1,14 +1,13 @@
 # ADR 0002: Credential execution process boundary
 
 - Status: Accepted
-- Issues: CVT-314, CVT-319, CVT-337
 - Date: 2026-07-13
 
 ## Context
 
 The native runtime can execute a caller-selected program with one delivered credential, or execute a Script entry after delivering all of its references. This feature must not expose Palladin identity material to the child process or claim a stronger operating-system boundary than the standalone package provides.
 
-The API key is an organization credential. Multiple Agents may use the same API key. An Agent's identity is its stable `agentId` and its X25519 and Ed25519 key pairs. CVT-314 does not change this ownership model or the backend protocol.
+The API key is an organization credential. Multiple Agents may use the same API key. An Agent's identity is its stable `agentId` and its X25519 and Ed25519 key pairs. This decision does not change the ownership model or backend protocol.
 
 The standalone runtime retains identity keys and the organization API key in its parent process while serving CLI or MCP requests. Operating-system credential stores protect these values at rest, but do not universally prevent another process under the same user or UID from debugging the runtime, reading its memory, or invoking the same credential-store interface. Therefore native execution in the standalone npm distribution is a Convenience-tier feature.
 
@@ -42,15 +41,15 @@ Required platform directions are:
 
 The platform executor must expose a narrow operation protocol, not raw secret retrieval. A package without the appropriate broker and passing negative tests reports Convenience and never silently downgrades a requested Hardened operation.
 
-### Windows implementation (CVT-337)
+### Windows implementation
 
 The signed Broker MSIX contains a one-shot `palladin-executor.exe`; it is not a second service. The restricted `LocalService` worker sends only one already-approved command and its scoped credential environment through the executor's bounded stdin. API key, DEK, X25519 and Ed25519 material remain in the worker.
 
 The executor creates the selected process inside a fixed AppContainer with outbound Internet client capability. The child is created suspended with an exact inherited-handle list containing only null stdin and executor-owned stdout/stderr pipes, assigned to a kill-on-close Job Object, and only then resumed. The selected executable is canonicalized, opened without write/delete sharing, rejected when the final handle is a reparse point, and kept pinned across `CreateProcessW` to prevent same-user replacement after consent. Script files live only in the AppContainer profile and are removed on every handled exit path.
 
-AppContainer is intentionally a security boundary and not a transparent user-session token. Commands cannot read arbitrary user files, broker storage, Windows Hello pins, machine-DPAPI ciphertexts, or another process's memory unless a future reviewed capability explicitly grants such access. CVT-337 does not add `broadFileSystemAccess`, a LocalSystem launcher, or a plaintext fallback.
+AppContainer is intentionally a security boundary and not a transparent user-session token. Commands cannot read arbitrary user files, broker storage, Windows Hello pins, machine-DPAPI ciphertexts, or another process's memory unless a future reviewed capability explicitly grants such access. This implementation does not add `broadFileSystemAccess`, a LocalSystem launcher, or a plaintext fallback.
 
-### Linux glibc implementation (CVT-319)
+### Linux glibc implementation
 
 Interactive npm use remains Convenience. Secret Service, PolKit, an executable path, and a Unix group cannot distinguish trusted Palladin JavaScript from other code running under the same UID. PolKit is used only for the narrow administrative action that creates or revokes a root-owned mapping between a dedicated Agent UID and one local profile.
 
@@ -62,8 +61,8 @@ The broker owns public state and authenticated secret ciphertext in `/var/lib/pa
 
 Credential execution crosses a second boundary. A root-owned socket assigned to a broker-only group starts one executor instance with a fresh `DynamicUser` UID for one request. The executor also checks `SO_PEERCRED` for the installed broker UID and requires a matching versioned protocol envelope. The broker sends only the already-approved command and scoped credential environment. The executor never receives the organization API key, X25519 or Ed25519 private key, or DEK. Broker and executor units clear loader variables and use `NoNewPrivileges`, `ProtectProc`, an empty capability set, and a core-dump prohibition. Native negative tests set the permissive Yama baseline and still require `ptrace`, `/proc`, and `process_vm_readv` access from the Agent UID to fail.
 
-Alpine/OpenRC does not provide an equivalent fresh per-request `DynamicUser`, socket-instantiated executor, and unit sandbox. A static executor UID would let a surviving or concurrent credential process attack later requests. CVT-320 therefore ships static musl npm artifacts as Convenience only and explicitly leaves Alpine Hardened unsupported in the MVP. An APK must not claim Hardened until a separately reviewed native supervisor can allocate a fresh kernel identity and sandbox per request and guarantee complete process-tree cleanup.
+Alpine/OpenRC does not provide an equivalent fresh per-request `DynamicUser`, socket-instantiated executor, and unit sandbox. A static executor UID would let a surviving or concurrent credential process attack later requests. The current release therefore ships static musl npm artifacts as Convenience only and explicitly leaves Alpine Hardened unsupported in the MVP. An APK must not claim Hardened until a separately reviewed native supervisor can allocate a fresh kernel identity and sandbox per request and guarantee complete process-tree cleanup.
 
 ## Consequences
 
-CVT-314 materially reduces accidental leakage, environment inheritance, output exfiltration through MCP, temporary-file residue on handled paths, and orphaned subprocesses. The standalone tier still does not defend against effective same-user debugging or memory reads. Windows Hardened adds the AppContainer boundary described above. Linux Hardened adds the dedicated Agent UID, broker UID, and one-shot executor UID boundary described above. macOS retains its separately documented execution-boundary requirement.
+The process boundary materially reduces accidental leakage, environment inheritance, output exfiltration through MCP, temporary-file residue on handled paths, and orphaned subprocesses. The standalone tier still does not defend against effective same-user debugging or memory reads. Windows Hardened adds the AppContainer boundary described above. Linux Hardened adds the dedicated Agent UID, broker UID, and one-shot executor UID boundary described above. macOS retains its separately documented execution-boundary requirement.

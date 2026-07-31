@@ -37,7 +37,7 @@ For each package:
 1. Patryk enables npm account 2FA and confirms ownership of the `@palladin` scope.
 2. Patryk creates a granular npm access token with the minimum package-creation scope and the shortest available expiry. The token exists only for this bootstrap window.
 3. Store it only in the protected `npm-bootstrap` GitHub environment. That environment must require Patryk's approval and must not expose the secret to pull requests.
-4. Run the owner-dispatched bootstrap workflow from a reviewed commit on `main`. It publishes a generated, inert `0.0.0-bootstrap` package under the non-default `bootstrap` dist-tag with `--access public` and provenance. The tarball may contain only `package.json`, `README.md`, and `LICENSE`. It must contain no binary, launcher, lifecycle script, `bin` entry, optional dependency, or production source.
+4. Run the owner-dispatched bootstrap workflow from a reviewed commit on `main`. It publishes a generated, inert `0.0.0-bootstrap` package under the non-default `bootstrap` dist-tag with `--access public` and provenance. The tarball may contain only `package.json` plus the canonical `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. It must contain no binary, launcher, lifecycle script, `bin` entry, optional dependency, or production source.
 5. Verify the package name, scope, bootstrap tag, tarball contents, source repository, and provenance on npm.
 6. Configure the exact trusted publisher described below.
 7. Set Publishing access to **Require two-factor authentication and disallow tokens**.

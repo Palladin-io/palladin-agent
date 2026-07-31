@@ -1,6 +1,6 @@
 import { CredentialAccess } from '../http/agent-api.js';
 
-// ── Defaults (CVT-157) ────────────────────────────────────────────────────────
+// ── Defaults ────────────────────────────────────────────────────────
 // A human approving in the web/mobile panel realistically takes tens of seconds to a couple of
 // minutes, so we long-poll on a *flat* interval (no sub-second backoff — nobody approves in 2s).
 export const DEFAULT_WAIT_MS = 180_000; // total budget: 3 minutes
