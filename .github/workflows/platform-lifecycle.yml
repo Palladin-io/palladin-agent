@@ -171,7 +171,7 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
-      id-token: write
+      id-token: write # sign the lifecycle report through workload identity
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: '${{ github.sha }}', persist-credentials: false }
@@ -222,7 +222,9 @@ jobs:
     runs-on: ${{ fromJSON(matrix.runner) }}
     environment: lifecycle-qa
     timeout-minutes: 90
-    permissions: { contents: read, id-token: write }
+    permissions:
+      contents: read
+      id-token: write # sign the lifecycle report through workload identity
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: '${{ github.sha }}', persist-credentials: false }
@@ -278,7 +280,9 @@ jobs:
     runs-on: ${{ fromJSON(matrix.runner) }}
     environment: lifecycle-qa
     timeout-minutes: 90
-    permissions: { contents: read, id-token: write }
+    permissions:
+      contents: read
+      id-token: write # sign the lifecycle report through workload identity
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: '${{ github.sha }}', persist-credentials: false }
@@ -353,7 +357,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: lifecycle-qa
     timeout-minutes: 8
-    permissions: { contents: write }
+    permissions:
+      contents: write # attach the validated lifecycle report to the draft release
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: '${{ github.sha }}', persist-credentials: false }

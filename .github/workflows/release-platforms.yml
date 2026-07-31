@@ -40,7 +40,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      id-token: write
+      id-token: write # authenticate to Cloud KMS through workload identity
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
@@ -153,8 +153,8 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      id-token: write
-      attestations: write
+      id-token: write # create artifact attestations through GitHub OIDC
+      attestations: write # attest the exact platform artifacts
     env:
       GLIBC_BASELINE: "2.34"
       SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
@@ -317,9 +317,9 @@ jobs:
     environment: npm-release
     timeout-minutes: 20
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      contents: write # create the draft release and upload validated platform assets
+      id-token: write # npm trusted publishing and artifact attestations
+      attestations: write # attest the exact platform artifacts and SBOM
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

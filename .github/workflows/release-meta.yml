@@ -33,7 +33,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      id-token: write
+      id-token: write # authenticate to Cloud KMS through workload identity
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
       policy_generation: ${{ steps.policy_input.outputs.policy_generation }}
@@ -539,7 +539,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      id-token: write
+      id-token: write # authenticate to Cloud KMS through workload identity
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -659,8 +659,8 @@ jobs:
     environment: version-policy-signing
     timeout-minutes: 10
     permissions:
-      contents: write
-      id-token: write
+      contents: write # attach the signed policy to the draft release
+      id-token: write # authenticate to Cloud KMS through workload identity
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -752,8 +752,8 @@ jobs:
     environment: version-policy-signing
     timeout-minutes: 15
     permissions:
-      contents: write
-      id-token: write
+      contents: write # attach the operator approval to the draft release
+      id-token: write # authenticate to Cloud KMS through workload identity
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -847,9 +847,9 @@ jobs:
     environment: version-policy-signing
     timeout-minutes: 15
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      contents: write # attach the attested meta-package candidate to the draft release
+      id-token: write # create artifact attestations through GitHub OIDC
+      attestations: write # attest the exact meta-package candidate and its SBOM
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -1002,8 +1002,8 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      id-token: write
-      attestations: read
+      id-token: write # npm trusted publishing with provenance
+      attestations: read # verify the candidate attestations before npm staging
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

@@ -3,7 +3,7 @@ updates:
   - package-ecosystem: npm
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     open-pull-requests-limit: 5
     groups:
       development-dependencies:
@@ -11,15 +11,21 @@ updates:
         update-types:
           - minor
           - patch
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: cargo
     directory: /runtime
     schedule:
-      interval: weekly
+      interval: monthly
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7

@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      id-token: write
+      id-token: write # npm trusted publishing with provenance
     steps:
       - name: Require explicit owner confirmation
         env:
