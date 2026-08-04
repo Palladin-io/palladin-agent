@@ -101,15 +101,7 @@ impl std::fmt::Debug for ParsedSecret {
     }
 }
 
-const STRUCTURAL_KEYS: &[&str] = &[
-    "v",
-    "fields",
-    "script",
-    "interpreter",
-    "refs",
-    "totp",
-    "type",
-];
+const STRUCTURAL_KEYS: &[&str] = &["v", "fields", "script", "interpreter", "refs", "totp"];
 
 pub fn parse_secret(plaintext: &[u8]) -> Result<ParsedSecret, SecretParseError> {
     let text = std::str::from_utf8(plaintext).map_err(|_| SecretParseError::InvalidUtf8)?;
@@ -133,9 +125,15 @@ pub fn parse_secret(plaintext: &[u8]) -> Result<ParsedSecret, SecretParseError> 
     let url = string(object.get("url")).map(Into::into);
     let notes = string(object.get("notes")).map(Into::into);
     let legacy_totp = string(object.get("totp")).map(Into::into);
+    let is_credit_card = string(object.get("type")).is_some_and(|entry_type| {
+        entry_type
+            .replace(['_', '-'], "")
+            .eq_ignore_ascii_case("creditcard")
+    });
     let mut fields = BTreeMap::new();
     for (key, value) in object {
         if !STRUCTURAL_KEYS.contains(&key.as_str())
+            && !(key == "type" && is_credit_card)
             && let Some(value) = value.as_str()
         {
             fields.insert(key.clone(), value.to_owned().into());
@@ -513,6 +511,14 @@ mod tests {
             "forward-compatible credential field diverged"
         );
         assert!(!format!("{v2:?}").contains("a@b.com"));
+
+        let legacy_type =
+            parse_secret(br#"{"value":"token","type":"bearer"}"#).expect("legacy type field");
+        let legacy_type_preserved = legacy_type.fields["type"].expose_secret() == "bearer";
+        assert!(
+            legacy_type_preserved,
+            "ordinary type fields remain injectable"
+        );
     }
 
     #[test]
