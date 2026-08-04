@@ -69,7 +69,7 @@ export interface ParsedSecret {
 }
 
 // Top-level keys that carry structure, not an injectable well-known value.
-const STRUCTURAL_KEYS = new Set(['v', 'fields', 'script', 'interpreter', 'refs', 'totp']);
+const STRUCTURAL_KEYS = new Set(['v', 'fields', 'script', 'interpreter', 'refs', 'totp', 'type']);
 
 /**
  * Parse the decrypted plaintext. Accepts every entry shape; falls back to treating the whole
