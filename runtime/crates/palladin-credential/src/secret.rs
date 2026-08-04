@@ -101,7 +101,15 @@ impl std::fmt::Debug for ParsedSecret {
     }
 }
 
-const STRUCTURAL_KEYS: &[&str] = &["v", "fields", "script", "interpreter", "refs", "totp"];
+const STRUCTURAL_KEYS: &[&str] = &[
+    "v",
+    "fields",
+    "script",
+    "interpreter",
+    "refs",
+    "totp",
+    "type",
+];
 
 pub fn parse_secret(plaintext: &[u8]) -> Result<ParsedSecret, SecretParseError> {
     let text = std::str::from_utf8(plaintext).map_err(|_| SecretParseError::InvalidUtf8)?;
