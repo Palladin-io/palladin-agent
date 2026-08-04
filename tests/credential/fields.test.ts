@@ -37,15 +37,14 @@ describe('resolveField — well-known aliases', () => {
     expectSensitiveEqual(injectionValue(resolveField(s, { field: 'notes' })), 'n', 'notes field');
   });
 
-  it('resolves credit-card aliases locally', () => {
-    const s = parseSecret(JSON.stringify({ cardholderName: 'Ada Lovelace', cardNumber: '4242424242424242',
-      expiryMonth: '12', expiryYear: '2030', securityCode: '123' }));
-    expectSensitiveEqual(injectionValue(resolveField(s, { field: 'cardNumber' })), '4242424242424242', 'card number');
-  });
-
   it('resolves `value` to the primary secret for a KEY entry', () => {
     const s = parseSecret(JSON.stringify({ v: 2, value: 'sk-abc', fields: [] }));
     expectSensitiveEqual(injectionValue(resolveField(s, { field: 'value' })), 'sk-abc', 'primary key field');
+  });
+
+  it('does not expose payment-card fields through field selection', () => {
+    const s = parseSecret(JSON.stringify({ type: 'CREDIT_CARD', cardNumber: '4242424242424242' }));
+    expect(() => resolveField(s, { field: 'cardNumber' })).toThrow(/no field named/);
   });
 });
 

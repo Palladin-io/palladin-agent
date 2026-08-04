@@ -196,13 +196,6 @@ fn resolve_by_label<'a>(
         "password" | "value" => Some(secret.password.clone()),
         "url" => secret.url.clone(),
         "notes" => secret.notes.clone(),
-        "cardholdername" => secret.fields.get("cardholderName").cloned(),
-        "cardnumber" => secret.fields.get("cardNumber").cloned(),
-        "expirymonth" => secret.fields.get("expiryMonth").cloned(),
-        "expiryyear" => secret.fields.get("expiryYear").cloned(),
-        "securitycode" => secret.fields.get("securityCode").cloned(),
-        "pin" => secret.fields.get("pin").cloned(),
-        "billingaddress" => secret.fields.get("billingAddress").cloned(),
         _ => return Err(FieldSelectionError::UnknownField(label.to_owned())),
     }
     .filter(|value| !value.expose_secret().is_empty())
@@ -339,23 +332,6 @@ mod tests {
         FieldSelectionError, FieldSelector, ResolvedField, redact_totp_secrets, resolve_field_at,
     };
 
-    #[test]
-    fn resolves_credit_card_fields_without_a_primary_secret() {
-        let parsed = crate::secret::parse_secret(br#"{"type":"CREDIT_CARD","cardholderName":"Ada","cardNumber":"4242424242424242","expiryMonth":"12","expiryYear":"2030","securityCode":"123"}"#).expect("card");
-        let resolved = resolve_field_at(
-            &parsed,
-            &FieldSelector {
-                field: Some("cardNumber".to_owned()),
-                field_id: None,
-            },
-            0,
-        )
-        .expect("field");
-        assert_eq!(
-            resolved.expose_for_authorized_operation(),
-            "4242424242424242"
-        );
-    }
     use crate::secret::parse_secret;
 
     const TOTP: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
