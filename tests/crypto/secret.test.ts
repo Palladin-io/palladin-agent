@@ -30,6 +30,11 @@ describe('parseSecret', () => {
     expect(s.fields.type).toBeUndefined();
   });
 
+  it('preserves a legacy non-card type field', () => {
+    const s = parseSecret(JSON.stringify({ value: 'token', type: 'bearer' }));
+    expectSensitiveEqual(s.fields.type, 'bearer', 'legacy type field');
+  });
+
   it('falls back to raw plaintext when not JSON', () => {
     const s = parseSecret('raw-secret-token');
     expect(s.username).toBeNull();
