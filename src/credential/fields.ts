@@ -24,7 +24,7 @@ export class FieldSelectionError extends Error {
 }
 
 // Well-known fields addressable by a stable alias regardless of entry type (spec §4).
-const WELL_KNOWN_ALIASES = ['username', 'password', 'url', 'value', 'notes', 'cardholderName', 'cardNumber', 'expiryMonth', 'expiryYear', 'securityCode', 'pin', 'billingAddress'] as const;
+const WELL_KNOWN_ALIASES = ['username', 'password', 'url', 'value', 'notes'] as const;
 type WellKnownAlias = (typeof WELL_KNOWN_ALIASES)[number];
 
 /**
@@ -77,23 +77,22 @@ function resolveByLabel(secret: ParsedSecret, label: string): ResolvedField {
     return { kind: 'totp', label: 'totp', code, expiresIn };
   }
 
-  const alias = WELL_KNOWN_ALIASES.find((candidate) => candidate.toLowerCase() === lower);
-  if (alias) {
-    return resolveWellKnown(secret, alias, label);
+  if ((WELL_KNOWN_ALIASES as readonly string[]).includes(lower)) {
+    return resolveWellKnown(secret, lower as WellKnownAlias, label);
   }
 
   throw new FieldSelectionError(`no field named "${label}". ${availableHint(secret)}`);
 }
 
 function resolveWellKnown(secret: ParsedSecret, alias: WellKnownAlias, label: string): ResolvedField {
-  const value = ({
+  const value = {
     username: secret.username,
     password: secret.password,
     // `value` addresses the primary secret (KEY value / CREDENTIAL password).
     value: secret.password,
     url: secret.url,
     notes: secret.notes,
-  } as Partial<Record<WellKnownAlias, string | null>>)[alias] ?? secret.fields[alias];
+  }[alias];
 
   if (value === null || value === undefined || value === '') {
     throw new FieldSelectionError(`this entry has no "${label}" field. ${availableHint(secret)}`);
@@ -167,7 +166,7 @@ function totpReplacement(descriptor: string): Record<string, unknown> {
 /** A value-free hint listing addressable field names, to guide a failed selection. */
 function availableHint(secret: ParsedSecret): string {
   const wellKnown = WELL_KNOWN_ALIASES.filter((alias) => {
-    const present = ({ username: secret.username, password: secret.password, value: secret.password, url: secret.url, notes: secret.notes } as Partial<Record<WellKnownAlias, string | null>>)[alias] ?? secret.fields[alias];
+    const present = { username: secret.username, password: secret.password, value: secret.password, url: secret.url, notes: secret.notes }[alias];
     return present !== null && present !== undefined && present !== '';
   });
   const custom = secret.customFields.map((f) => f.label);
