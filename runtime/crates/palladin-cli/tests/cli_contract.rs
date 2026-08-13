@@ -112,6 +112,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Doctor => "doctor",
         Commands::Connect(_) => "connect",
         Commands::Status => "status",
+        Commands::Pair => "pair",
         Commands::Disconnect { .. } => "disconnect",
         Commands::Search(_) => "search",
         Commands::Get(_) => "get",

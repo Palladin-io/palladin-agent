@@ -5,7 +5,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Parser;
-use palladin_api::{CredentialMethod, ReportCredentialStaleInput, StaleReasonCode};
+use palladin_api::{
+    AgentPairingStatus, CredentialMethod, ReportCredentialStaleInput, StaleReasonCode,
+};
 use palladin_cli::args::{
     AgentsCommand, Cli, Commands, ConnectArgs, ExecArgs, GetArgs, McpCommand, ProgressArg,
     ReportStaleArgs, SearchArgs, SecurityCommand, StaleCodeArg,
@@ -50,6 +52,7 @@ use palladin_runtime::{
 use palladin_windows_broker::BrokerSecretStore;
 use secrecy::ExposeSecret;
 use serde::Serialize;
+use uuid::Uuid;
 use zeroize::Zeroizing;
 
 const EXIT_FAILURE: u8 = 1;
@@ -155,6 +158,7 @@ async fn main() -> ExitCode {
             connect(&service, cli.id.as_deref(), args, runtime_storage_tier).await
         }
         Commands::Status => status(&service, cli.id.as_deref(), runtime_storage_tier).await,
+        Commands::Pair => pair(&service, cli.id.as_deref()).await,
         Commands::Disconnect { purge, confirm } => disconnect(
             &service,
             cli.id.as_deref(),
@@ -445,6 +449,7 @@ const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
         Commands::Init { .. }
         | Commands::Connect(_)
         | Commands::Status
+        | Commands::Pair
         | Commands::Disconnect { .. }
         | Commands::Search(_)
         | Commands::Get(_)
@@ -728,6 +733,80 @@ async fn status(
         &outcome.registration,
         runtime_storage_tier,
     ))
+}
+
+async fn pair(service: &RuntimeService<RuntimeSecretStore>, profile: Option<&str>) -> ExitCode {
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let activation_id = match pairing_activation_id() {
+        Ok(activation_id) => activation_id,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let session = match service.open_session(
+        profile,
+        &hostname,
+        &connection,
+        OperationDescriptor::PairVaults {
+            activation_id: activation_id.clone(),
+        },
+    ) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let candidate = match session.create_pairing_activation(&activation_id).await {
+        Ok(candidate) => candidate,
+        Err(error) => return fail(&error.to_string()),
+    };
+    println!(
+        "Pairing activation: {}",
+        palladin_core::terminal::shorten_identifier(&activation_id)
+    );
+    println!(
+        "Verification code: {}",
+        candidate.short_authentication_string()
+    );
+    println!("Approve the matching code in Palladin. Waiting for confirmation...");
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let response = match session.get_pairing_status(&activation_id).await {
+            Ok(response) => response,
+            Err(error) => return fail(&error.to_string()),
+        };
+        if response.status == AgentPairingStatus::Pending {
+            continue;
+        }
+        let confirmed =
+            match candidate.confirm_from_relay(response, time::OffsetDateTime::now_utc()) {
+                Ok(confirmed) => confirmed,
+                Err(error) => return fail(&error.to_string()),
+            };
+        drop(session);
+        let config =
+            match service.persist_pairing_anchors(profile, &hostname, &connection, confirmed) {
+                Ok(config) => config,
+                Err(error) => return fail(&error.to_string()),
+            };
+        println!(
+            "Pairing complete: {} vault(s) trusted.",
+            config.vault_trust_anchors.len()
+        );
+        return ExitCode::SUCCESS;
+    }
+}
+
+fn pairing_activation_id() -> Result<String, RuntimeError> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| RuntimeError::RandomGenerationFailed)?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(Uuid::from_bytes(bytes).to_string())
 }
 
 async fn search(

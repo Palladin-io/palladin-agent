@@ -2845,6 +2845,68 @@ impl RuntimeSession<'_> {
         Ok(())
     }
 
+    /// Creates an authenticated pairing transcript for the exact activation bound to this
+    /// operation. The organization identifier is introduced by the Member-confirmed transcript;
+    /// the Agent identifier and both Agent key fingerprints are derived from local identity state.
+    pub async fn create_pairing_activation(
+        &self,
+        activation_id: &str,
+    ) -> Result<RuntimePairingCandidate, RuntimeError> {
+        self.begin_operation(RuntimeOperation::PairVaults)?;
+        if !self.config.agent_active {
+            return Err(RuntimeError::AgentNotActive);
+        }
+        let cancellation = self.lease.cancellation_token();
+        let remaining = self
+            .lease
+            .remaining()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        let response = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                return Err(RuntimeError::OperationAuthorizationExpired);
+            }
+            () = tokio::time::sleep(remaining) => {
+                return Err(RuntimeError::OperationAuthorizationExpired);
+            }
+            response = self.api.create_pairing_activation(activation_id) => response?,
+        };
+        self.ensure_authorized()?;
+        if response.activation_id != activation_id {
+            return Err(RuntimeError::UntrustedVaultManifest);
+        }
+        let identity = self.pairing_identity_binding(&response.organization_id)?;
+        prepare_runtime_pairing(response, &identity)
+    }
+
+    /// Polls only after the activation call consumed this PairVaults authorization.
+    pub async fn get_pairing_status(
+        &self,
+        activation_id: &str,
+    ) -> Result<AgentPairingStatusResponse, RuntimeError> {
+        self.ensure_operation(RuntimeOperation::PairVaults)?;
+        if !self.consumed.load(Ordering::SeqCst) {
+            return Err(RuntimeError::OperationAuthorizationMismatch);
+        }
+        let cancellation = self.lease.cancellation_token();
+        let remaining = self
+            .lease
+            .remaining()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        let response = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                return Err(RuntimeError::OperationAuthorizationExpired);
+            }
+            () = tokio::time::sleep(remaining) => {
+                return Err(RuntimeError::OperationAuthorizationExpired);
+            }
+            response = self.api.get_pairing_status(activation_id) => response?,
+        };
+        self.ensure_authorized()?;
+        Ok(response)
+    }
+
     async fn credential_options(
         &self,
         request: CredentialDeliveryRequest<'_>,
@@ -2930,6 +2992,30 @@ impl RuntimeSession<'_> {
             .and_then(decode_32_standard)?;
         Ok(AgentIdentityBinding {
             organization_id: Uuid::parse_str(&anchor.organization_id)
+                .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+            agent_id: Uuid::parse_str(agent_id).map_err(|_| RuntimeError::InvalidPublicConfig)?,
+            x25519_fingerprint: key_fingerprint(1, self.encryption.public_key())?,
+            ed25519_fingerprint: key_fingerprint(2, &signing_public_key)?,
+        })
+    }
+
+    fn pairing_identity_binding(
+        &self,
+        organization_id: &str,
+    ) -> Result<AgentIdentityBinding, RuntimeError> {
+        let agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        let signing_public_key = self
+            .config
+            .signing_public_key
+            .as_deref()
+            .ok_or(RuntimeError::InvalidPublicConfig)
+            .and_then(decode_32_standard)?;
+        Ok(AgentIdentityBinding {
+            organization_id: Uuid::parse_str(organization_id)
                 .map_err(|_| RuntimeError::InvalidPublicConfig)?,
             agent_id: Uuid::parse_str(agent_id).map_err(|_| RuntimeError::InvalidPublicConfig)?,
             x25519_fingerprint: key_fingerprint(1, self.encryption.public_key())?,
@@ -3964,6 +4050,8 @@ pub enum RuntimeError {
     MissingOrganizationCredential,
     #[error("Agent is not registered; run palladin status or reconnect it")]
     MissingAgentId,
+    #[error("Agent is not active; approve it in Palladin, then run palladin pair")]
+    AgentNotActive,
     #[error("stored secret has an invalid format")]
     InvalidStoredSecret,
     #[error("public profile configuration is invalid")]
@@ -3976,7 +4064,9 @@ pub enum RuntimeError {
     InvalidDiscoveryCursor,
     #[error("local Discovery index exceeds its hard entry limit")]
     DiscoveryIndexLimitExceeded,
-    #[error("vault manifest is not bound to an independently paired local trust anchor")]
+    #[error(
+        "vault manifest is not bound to an independently paired local trust anchor; run palladin pair"
+    )]
     UntrustedVaultManifest,
     #[error(
         "legacy Agent data requires an explicit migration - use palladin security legacy-status for TypeScript state or palladin security upgrade for native schema v2"
@@ -4965,6 +5055,119 @@ mod tests {
             ),
             Err(RuntimeError::UntrustedVaultManifest)
         ));
+    }
+
+    #[tokio::test]
+    async fn pair_vaults_session_creates_polls_and_confirms_the_bound_activation() {
+        let activation_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let encryption = X25519Identity::generate().expect("encryption identity");
+        let signing = Ed25519Identity::generate().expect("signing identity");
+        let identity = AgentIdentityBinding {
+            organization_id: Uuid::parse_str(TEST_ORGANIZATION_ID).expect("organization id"),
+            agent_id: Uuid::parse_str(TEST_AGENT_ID).expect("agent id"),
+            x25519_fingerprint: key_fingerprint(1, encryption.public_key()).expect("fingerprint"),
+            ed25519_fingerprint: key_fingerprint(2, signing.public_key()).expect("fingerprint"),
+        };
+        let expected_candidate = prepare_pairing(
+            Uuid::parse_str(activation_id).expect("activation id"),
+            &identity,
+            &[],
+        )
+        .expect("candidate");
+        let expires_at = "2099-01-01T00:00:00Z";
+        let activation = json!({
+            "activationId": activation_id,
+            "organizationId": TEST_ORGANIZATION_ID,
+            "agentId": TEST_AGENT_ID,
+            "agentAccessEpoch": 1,
+            "agentX25519Fingerprint": URL_SAFE_NO_PAD.encode(identity.x25519_fingerprint),
+            "agentEd25519Fingerprint": URL_SAFE_NO_PAD.encode(identity.ed25519_fingerprint),
+            "expiresAt": expires_at,
+            "candidateManifests": [],
+        })
+        .to_string();
+        let pending = json!({
+            "activationId": activation_id,
+            "status": "pending",
+            "expiresAt": expires_at,
+            "confirmedPairingDigest": null,
+        })
+        .to_string();
+        let confirmed = json!({
+            "activationId": activation_id,
+            "status": "confirmed",
+            "expiresAt": expires_at,
+            "confirmedPairingDigest": expected_candidate.transcript_digest(),
+        })
+        .to_string();
+        let (host, requests) = credential_server_owned(vec![activation, pending, confirmed]).await;
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_pairing_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let session = RuntimeSession {
+            profile: PublicAgentEntry {
+                name: "fixture".to_owned(),
+                identity_id: "11111111111111111111111111111111".to_owned(),
+                created_at: "2026-01-01T00:00:00Z".to_owned(),
+                agent_type: None,
+                config_digest: None,
+            },
+            config: PublicProfileConfig {
+                schema_version: PUBLIC_SCHEMA_VERSION,
+                identity_id: "11111111111111111111111111111111".to_owned(),
+                host,
+                organization_credential_id: "22222222222222222222222222222222".to_owned(),
+                retired_organization_credential_ids: Vec::new(),
+                agent_id: Some(TEST_AGENT_ID.to_owned()),
+                agent_active: true,
+                encryption_public_key: Some(STANDARD.encode(encryption.public_key())),
+                signing_public_key: Some(STANDARD.encode(signing.public_key())),
+                vault_trust_anchors: Vec::new(),
+                binding_signature: STANDARD.encode([0_u8; 64]),
+            },
+            api,
+            encryption,
+            lease: test_lease(),
+            operation: RuntimeOperation::PairVaults,
+            consumed: AtomicBool::new(false),
+            discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
+            manifest_persistence: None,
+            profile_signing: None,
+        };
+
+        let candidate = session
+            .create_pairing_activation(activation_id)
+            .await
+            .expect("create pairing activation");
+        assert_eq!(
+            session
+                .get_pairing_status(activation_id)
+                .await
+                .expect("pending status")
+                .status,
+            AgentPairingStatus::Pending
+        );
+        let relay = session
+            .get_pairing_status(activation_id)
+            .await
+            .expect("confirmed status");
+        let pairing = candidate
+            .confirm_from_relay(relay, OffsetDateTime::now_utc())
+            .expect("confirmed pairing");
+        assert!(pairing.anchors.is_empty());
+        let requests = requests.lock().expect("requests");
+        assert!(requests[0].starts_with("POST /api/agent/pairing/activations "));
+        assert!(requests[1].starts_with(&format!(
+            "GET /api/agent/pairing/activations/{activation_id} "
+        )));
+        assert!(requests[2].starts_with(&format!(
+            "GET /api/agent/pairing/activations/{activation_id} "
+        )));
     }
 
     fn grant_response(
