@@ -1423,6 +1423,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             .map_err(|_| RuntimeError::InvalidPublicConfig)?;
         let expected_profile_signing_key = STANDARD.encode(signing.public_key());
         if advanced.manifest_revision < current_revision
+            || advanced.vdk_version < anchor.vdk_version
             || anchor.organization_id != expected_anchor.organization_id
             || anchor.vault_signing_public_key
                 != URL_SAFE_NO_PAD.encode(advanced.signing_public_key)
@@ -1433,10 +1434,13 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         {
             return Err(RuntimeError::UntrustedVaultManifest);
         }
-        if advanced.manifest_revision == current_revision {
+        if advanced.manifest_revision == current_revision
+            && advanced.vdk_version == anchor.vdk_version
+        {
             return Ok(());
         }
         anchor.manifest_revision = advanced.manifest_revision.to_string();
+        anchor.vdk_version = advanced.vdk_version;
         let binding =
             profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
         config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
@@ -1504,6 +1508,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         confirmed: ConfirmedRuntimePairing,
     ) -> Result<PublicProfileConfig, RuntimeError> {
         let activation_id = confirmed.activation_id;
+        let expected_identity = confirmed.identity;
         let mut anchors = confirmed.anchors;
         anchors.sort_by(|left, right| left.vault_id.cmp(&right.vault_id));
         let _lock = self.repository.acquire_transaction_lock()?;
@@ -1518,7 +1523,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             connection,
             &descriptor,
         )?;
-        let (_, signing) = self.load_identity_verified_authorized(
+        let (encryption, signing) = self.load_identity_verified_authorized(
             &profile.identity_id,
             state.configs.get(&profile.identity_id),
             &authorization,
@@ -1529,6 +1534,13 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             .get(&profile.identity_id)
             .cloned()
             .ok_or(RuntimeError::InvalidPublicConfig)?;
+        validate_confirmed_pairing_identity(
+            &expected_identity,
+            &anchors,
+            &config,
+            encryption.public_key(),
+            signing.public_key(),
+        )?;
         config.vault_trust_anchors = anchors;
         let profile_binding =
             profile_binding_bytes(&config).map_err(|_| RuntimeError::InvalidPublicConfig)?;
@@ -2934,11 +2946,13 @@ impl RuntimeSession<'_> {
             .manifest_revision
             .parse::<u64>()
             .map_err(|_| RuntimeError::InvalidPublicConfig)?;
-        if advanced.manifest_revision < pinned {
+        if advanced.manifest_revision < pinned || advanced.vdk_version < anchor.vdk_version {
             return Err(RuntimeError::UntrustedVaultManifest);
         }
         let Some(persistence) = self.manifest_persistence else {
-            return if advanced.manifest_revision == pinned {
+            return if advanced.manifest_revision == pinned
+                && advanced.vdk_version == anchor.vdk_version
+            {
                 Ok(())
             } else {
                 Err(RuntimeError::IntegrityViolation)
@@ -3686,13 +3700,14 @@ impl std::fmt::Debug for DeliveredCredential {
 }
 
 pub struct RuntimePairingCandidate {
-    organization_id: Uuid,
+    identity: AgentIdentityBinding,
     agent_access_epoch: u64,
     candidate: PairingCandidate,
 }
 
 pub struct ConfirmedRuntimePairing {
     activation_id: String,
+    identity: AgentIdentityBinding,
     anchors: Vec<PublicVaultTrustAnchor>,
 }
 
@@ -3731,8 +3746,9 @@ impl RuntimePairingCandidate {
         )?;
         Ok(ConfirmedRuntimePairing {
             activation_id,
+            identity: self.identity.clone(),
             anchors: public_anchors_from_pairing(
-                self.organization_id,
+                self.identity.organization_id,
                 self.agent_access_epoch,
                 anchors,
             )?,
@@ -3769,7 +3785,7 @@ pub fn prepare_runtime_pairing(
         .collect::<Vec<_>>();
     let candidate = prepare_pairing(activation_id, expected_identity, &manifests)?;
     Ok(RuntimePairingCandidate {
-        organization_id,
+        identity: expected_identity.clone(),
         agent_access_epoch: u64::from(response.agent_access_epoch),
         candidate,
     })
@@ -3855,6 +3871,7 @@ fn pinned_vault_trust(anchor: &PublicVaultTrustAnchor) -> Result<PinnedVaultTrus
             .parse()
             .map_err(|_| RuntimeError::InvalidPublicConfig)?,
         manifest_signing_key_version: anchor.manifest_signing_key_version,
+        vdk_version: anchor.vdk_version,
     })
 }
 
@@ -3876,10 +3893,35 @@ fn public_anchors_from_pairing(
             vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(anchor.signing_key_fingerprint),
             manifest_revision: anchor.manifest_revision.to_string(),
             manifest_signing_key_version: anchor.manifest_signing_key_version,
+            vdk_version: anchor.vdk_version,
         })
         .collect::<Vec<_>>();
     public.sort_by(|left, right| left.vault_id.cmp(&right.vault_id));
     Ok(public)
+}
+
+fn validate_confirmed_pairing_identity(
+    expected: &AgentIdentityBinding,
+    anchors: &[PublicVaultTrustAnchor],
+    config: &PublicProfileConfig,
+    encryption_public_key: &[u8; 32],
+    signing_public_key: &[u8; 32],
+) -> Result<(), RuntimeError> {
+    let configured_agent_id = config
+        .agent_id
+        .as_deref()
+        .ok_or(RuntimeError::MissingAgentId)
+        .and_then(|value| Uuid::parse_str(value).map_err(|_| RuntimeError::InvalidPublicConfig))?;
+    if configured_agent_id != expected.agent_id
+        || key_fingerprint(1, encryption_public_key)? != expected.x25519_fingerprint
+        || key_fingerprint(2, signing_public_key)? != expected.ed25519_fingerprint
+        || anchors
+            .iter()
+            .any(|anchor| anchor.organization_id != expected.organization_id.to_string())
+    {
+        return Err(RuntimeError::UntrustedVaultManifest);
+    }
+    Ok(())
 }
 
 const fn credential_method_mask(method: CredentialMethod) -> u16 {
@@ -4329,6 +4371,7 @@ mod tests {
             vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(vault_signing_fingerprint),
             manifest_revision: "7".to_owned(),
             manifest_signing_key_version: 2,
+            vdk_version: 3,
         };
         {
             let _lock = service
@@ -4374,6 +4417,7 @@ mod tests {
             signing_key_fingerprint: vault_signing_fingerprint,
             manifest_revision: 8,
             manifest_signing_key_version: 2,
+            vdk_version: 4,
         };
         service
             .persist_advanced_manifest_revision(
@@ -4395,6 +4439,7 @@ mod tests {
             .load_config(&created.identity_id)
             .expect("persisted config");
         assert_eq!(persisted.vault_trust_anchors[0].manifest_revision, "8");
+        assert_eq!(persisted.vault_trust_anchors[0].vdk_version, 4);
         let regressed = PinnedVaultTrust {
             manifest_revision: 7,
             ..advanced
@@ -4404,6 +4449,21 @@ mod tests {
                 &created.identity_id,
                 &anchor,
                 &regressed,
+                &signing,
+                &test_lease(),
+            ),
+            Err(RuntimeError::UntrustedVaultManifest)
+        ));
+        let downgraded_vdk = PinnedVaultTrust {
+            manifest_revision: 9,
+            vdk_version: 3,
+            ..advanced
+        };
+        assert!(matches!(
+            restarted.persist_advanced_manifest_revision(
+                &created.identity_id,
+                &anchor,
+                &downgraded_vdk,
                 &signing,
                 &test_lease(),
             ),
@@ -4801,6 +4861,7 @@ mod tests {
                     vault_signing_key_fingerprint: STANDARD.encode([2_u8; 32]),
                     manifest_revision: "1".to_owned(),
                     manifest_signing_key_version: 1,
+                    vdk_version: 1,
                 }],
                 binding_signature: STANDARD.encode([0_u8; 64]),
             },
@@ -4835,6 +4896,7 @@ mod tests {
                 vault_signing_key_fingerprint: STANDARD.encode([2_u8; 32]),
                 manifest_revision: "1".to_owned(),
                 manifest_signing_key_version: 1,
+                vdk_version: 1,
             }],
             binding_signature: STANDARD.encode([0_u8; 64]),
         };
@@ -4845,6 +4907,64 @@ mod tests {
         update_registered_agent_id(&mut config, "agent-replacement");
         assert_eq!(config.agent_id.as_deref(), Some("agent-replacement"));
         assert!(config.vault_trust_anchors.is_empty());
+    }
+
+    #[test]
+    fn confirmed_pairing_cannot_cross_agent_identity() {
+        let encryption = X25519Identity::generate().expect("encryption identity");
+        let signing = Ed25519Identity::generate().expect("signing identity");
+        let agent_id = Uuid::parse_str(TEST_AGENT_ID).expect("agent id");
+        let organization_id = Uuid::parse_str(TEST_ORGANIZATION_ID).expect("organization id");
+        let expected = AgentIdentityBinding {
+            organization_id,
+            agent_id,
+            x25519_fingerprint: key_fingerprint(1, encryption.public_key()).expect("fingerprint"),
+            ed25519_fingerprint: key_fingerprint(2, signing.public_key()).expect("fingerprint"),
+        };
+        let anchor = PublicVaultTrustAnchor {
+            organization_id: TEST_ORGANIZATION_ID.to_owned(),
+            vault_id: TEST_VAULT_ID.to_owned(),
+            agent_access_epoch: 1,
+            vault_signing_public_key: STANDARD.encode([1_u8; 32]),
+            vault_signing_key_fingerprint: STANDARD.encode([2_u8; 32]),
+            manifest_revision: "1".to_owned(),
+            manifest_signing_key_version: 1,
+            vdk_version: 1,
+        };
+        let mut config = PublicProfileConfig {
+            schema_version: PUBLIC_SCHEMA_VERSION,
+            identity_id: "11111111111111111111111111111111".to_owned(),
+            host: "https://example.test".to_owned(),
+            organization_credential_id: "22222222222222222222222222222222".to_owned(),
+            retired_organization_credential_ids: Vec::new(),
+            agent_id: Some(TEST_AGENT_ID.to_owned()),
+            agent_active: true,
+            encryption_public_key: Some(STANDARD.encode(encryption.public_key())),
+            signing_public_key: Some(STANDARD.encode(signing.public_key())),
+            vault_trust_anchors: Vec::new(),
+            binding_signature: STANDARD.encode([0_u8; 64]),
+        };
+
+        validate_confirmed_pairing_identity(
+            &expected,
+            std::slice::from_ref(&anchor),
+            &config,
+            encryption.public_key(),
+            signing.public_key(),
+        )
+        .expect("matching identity");
+
+        config.agent_id = Some("55555555-5555-4555-8555-555555555555".to_owned());
+        assert!(matches!(
+            validate_confirmed_pairing_identity(
+                &expected,
+                &[anchor],
+                &config,
+                encryption.public_key(),
+                signing.public_key(),
+            ),
+            Err(RuntimeError::UntrustedVaultManifest)
+        ));
     }
 
     fn grant_response(

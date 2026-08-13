@@ -133,6 +133,7 @@ pub struct PublicVaultTrustAnchor {
     pub vault_signing_key_fingerprint: String,
     pub manifest_revision: String,
     pub manifest_signing_key_version: u32,
+    pub vdk_version: u32,
 }
 
 impl PublicVaultTrustAnchor {
@@ -148,6 +149,7 @@ impl PublicVaultTrustAnchor {
             )
             && is_canonical_positive_revision(&self.manifest_revision)
             && self.manifest_signing_key_version > 0
+            && self.vdk_version > 0
     }
 }
 
@@ -430,7 +432,7 @@ fn append_trust_anchors_digest(digest: &mut CanonicalDigest, anchors: &[PublicVa
     if anchors.is_empty() {
         return;
     }
-    digest.u32(2);
+    digest.u32(3);
     digest.u64(anchors.len() as u64);
     for anchor in anchors {
         digest.text(&anchor.organization_id);
@@ -440,6 +442,7 @@ fn append_trust_anchors_digest(digest: &mut CanonicalDigest, anchors: &[PublicVa
         digest.text(&anchor.vault_signing_key_fingerprint);
         digest.text(&anchor.manifest_revision);
         digest.u32(anchor.manifest_signing_key_version);
+        digest.u32(anchor.vdk_version);
     }
 }
 
@@ -447,7 +450,7 @@ fn append_trust_anchors_bytes(bytes: &mut CanonicalBytes, anchors: &[PublicVault
     if anchors.is_empty() {
         return;
     }
-    bytes.u32(2);
+    bytes.u32(3);
     bytes.u64(anchors.len() as u64);
     for anchor in anchors {
         bytes.text(&anchor.organization_id);
@@ -457,6 +460,7 @@ fn append_trust_anchors_bytes(bytes: &mut CanonicalBytes, anchors: &[PublicVault
         bytes.text(&anchor.vault_signing_key_fingerprint);
         bytes.text(&anchor.manifest_revision);
         bytes.u32(anchor.manifest_signing_key_version);
+        bytes.u32(anchor.vdk_version);
     }
 }
 
@@ -839,6 +843,7 @@ mod tests {
                 .encode(sha2::Sha256::digest(fingerprint_input)),
             manifest_revision: "14".to_owned(),
             manifest_signing_key_version: 2,
+            vdk_version: 3,
         }
     }
 
@@ -1025,6 +1030,7 @@ mod tests {
                 "manifestSigningKeyVersion",
                 Box::new(|anchor| anchor.manifest_signing_key_version += 1),
             ),
+            ("vdkVersion", Box::new(|anchor| anchor.vdk_version += 1)),
         ];
 
         for (field, mutation) in mutations {
@@ -1063,6 +1069,7 @@ mod tests {
             Box::new(|anchor| anchor.manifest_revision = "014".to_owned()),
             Box::new(|anchor| anchor.manifest_revision = "0".to_owned()),
             Box::new(|anchor| anchor.manifest_signing_key_version = 0),
+            Box::new(|anchor| anchor.vdk_version = 0),
         ];
         for mutation in invalid_mutations {
             let mut config = fixture_config("https://api.palladin.io");

@@ -75,6 +75,7 @@ pub struct PinnedVaultTrust {
     pub signing_key_fingerprint: [u8; 32],
     pub manifest_revision: u64,
     pub manifest_signing_key_version: u32,
+    pub vdk_version: u32,
 }
 
 #[derive(Debug)]
@@ -286,6 +287,7 @@ pub fn prepare_pairing(
             signing_key_fingerprint,
             manifest_revision: parse_revision(&manifest.manifest_revision)?,
             manifest_signing_key_version: manifest.manifest_signing_key_version,
+            vdk_version: manifest.vdk_version,
         });
     }
     let transcript = PairingTranscript {
@@ -390,6 +392,7 @@ fn verify_manifest_against_anchor(
     if vault_id != anchor.vault_id
         || revision < anchor.manifest_revision
         || (require_advance && revision == anchor.manifest_revision)
+        || manifest.vdk_version < anchor.vdk_version
         || manifest.manifest_signing_key_version != anchor.manifest_signing_key_version
         || decode_32(&manifest.vault_signing_public_key)? != anchor.signing_public_key
         || decode_32(&manifest.vault_signing_key_fingerprint)? != anchor.signing_key_fingerprint
@@ -408,6 +411,7 @@ fn verify_manifest_against_anchor(
     )?;
     Ok(PinnedVaultTrust {
         manifest_revision: revision,
+        vdk_version: manifest.vdk_version,
         ..anchor.clone()
     })
 }

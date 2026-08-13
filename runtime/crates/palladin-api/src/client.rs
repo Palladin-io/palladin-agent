@@ -468,21 +468,22 @@ async fn decode_success<T: serde::de::DeserializeOwned>(
 async fn decode_discovery_sync<T: serde::de::DeserializeOwned>(
     mut response: reqwest::Response,
 ) -> Result<T, ApiError> {
-    match response.status() {
+    let status = response.status();
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_DISCOVERY_SYNC_RESPONSE_BYTES as u64)
+    {
+        return Err(ApiError::SizeLimitExceeded);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| ApiError::Transport)? {
+        if body.len().saturating_add(chunk.len()) > MAX_DISCOVERY_SYNC_RESPONSE_BYTES {
+            return Err(ApiError::SizeLimitExceeded);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    match status {
         status if status.is_success() => {
-            if response
-                .content_length()
-                .is_some_and(|length| length > MAX_DISCOVERY_SYNC_RESPONSE_BYTES as u64)
-            {
-                return Err(ApiError::SizeLimitExceeded);
-            }
-            let mut body = Vec::new();
-            while let Some(chunk) = response.chunk().await.map_err(|_| ApiError::Transport)? {
-                if body.len().saturating_add(chunk.len()) > MAX_DISCOVERY_SYNC_RESPONSE_BYTES {
-                    return Err(ApiError::SizeLimitExceeded);
-                }
-                body.extend_from_slice(&chunk);
-            }
             serde_json::from_slice(&body).map_err(|_| ApiError::InvalidResponse)
         }
         StatusCode::CONFLICT => {
@@ -494,10 +495,8 @@ async fn decode_discovery_sync<T: serde::de::DeserializeOwned>(
                 min_retained_sequence: String,
                 new_snapshot_required: bool,
             }
-            let reset: Reset = response
-                .json()
-                .await
-                .map_err(|_| ApiError::InvalidResponse)?;
+            let reset: Reset =
+                serde_json::from_slice(&body).map_err(|_| ApiError::InvalidResponse)?;
             if reset.outcome != "resetRequired" || !reset.new_snapshot_required {
                 return Err(ApiError::InvalidResponse);
             }
@@ -512,11 +511,8 @@ async fn decode_discovery_sync<T: serde::de::DeserializeOwned>(
             struct Outcome {
                 outcome: String,
             }
-            let status = response.status();
-            let outcome: Outcome = response
-                .json()
-                .await
-                .map_err(|_| ApiError::InvalidResponse)?;
+            let outcome: Outcome =
+                serde_json::from_slice(&body).map_err(|_| ApiError::InvalidResponse)?;
             match (status, outcome.outcome.as_str()) {
                 (StatusCode::BAD_REQUEST, "invalid-cursor") => Err(ApiError::InvalidCursor),
                 (StatusCode::PAYLOAD_TOO_LARGE, "size-limit-exceeded") => {
@@ -875,6 +871,19 @@ mod tests {
             api.get_agent_discovery_snapshot("vault", None, Some(200))
                 .await
                 .expect_err("oversized response"),
+            ApiError::SizeLimitExceeded
+        );
+
+        let oversized_error = Box::leak(
+            "x".repeat(MAX_DISCOVERY_SYNC_RESPONSE_BYTES + 1)
+                .into_boxed_str(),
+        );
+        let (host, _) = response_server(vec![(409, oversized_error)]).await;
+        let api = client(&host, vec![16; 32], Duration::from_secs(2));
+        assert_eq!(
+            api.get_agent_discovery_delta("vault", Some("1"), None, None)
+                .await
+                .expect_err("oversized error response"),
             ApiError::SizeLimitExceeded
         );
     }

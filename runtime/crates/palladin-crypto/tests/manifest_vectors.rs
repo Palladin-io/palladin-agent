@@ -185,6 +185,13 @@ fn pinned_anchor_rejects_replay_and_embedded_key_substitution() {
         .expect("signature must verify against the previously pinned key");
     assert_eq!(advanced.manifest_revision, 14);
 
+    let mut newer_vdk_anchor = previous_anchor.clone();
+    newer_vdk_anchor.vdk_version = manifest.vdk_version + 1;
+    assert!(matches!(
+        verify_current_manifest(manifest, &identity, &newer_vdk_anchor),
+        Err(CryptoError::StaleInput)
+    ));
+
     assert!(matches!(
         verify_manifest_update(manifest, &identity, anchor),
         Err(CryptoError::StaleInput)
