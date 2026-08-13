@@ -1,7 +1,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use palladin_core::{host::ApiHost, secret::OrganizationApiKey};
+use palladin_core::{
+    host::ApiHost, public_store::MAX_VAULT_TRUST_ANCHORS, secret::OrganizationApiKey,
+};
 use palladin_crypto::{
     Ed25519Identity, EncryptedReasonContext, EncryptedReasonEnvelope, X25519Identity,
     encrypt_reason, generate_nonce_base64, sign_request,
@@ -185,7 +187,7 @@ impl ApiClient {
                 &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
             )
             .await?;
-        decode_success(response).await
+        decode_vault_manifests(response).await
     }
 
     pub async fn get_agent_discovery_snapshot(
@@ -465,9 +467,9 @@ async fn decode_success<T: serde::de::DeserializeOwned>(
     response.json().await.map_err(|_| ApiError::InvalidResponse)
 }
 
-async fn decode_discovery_sync<T: serde::de::DeserializeOwned>(
+async fn read_bounded_response(
     mut response: reqwest::Response,
-) -> Result<T, ApiError> {
+) -> Result<(StatusCode, Vec<u8>), ApiError> {
     let status = response.status();
     if response
         .content_length()
@@ -482,6 +484,32 @@ async fn decode_discovery_sync<T: serde::de::DeserializeOwned>(
         }
         body.extend_from_slice(&chunk);
     }
+    Ok((status, body))
+}
+
+async fn decode_vault_manifests(
+    response: reqwest::Response,
+) -> Result<crate::AgentVaultManifestsResponse, ApiError> {
+    let (status, body) = read_bounded_response(response).await?;
+    if !status.is_success() {
+        return Err(ApiError::Http(status.as_u16()));
+    }
+    let manifests: crate::AgentVaultManifestsResponse =
+        serde_json::from_slice(&body).map_err(|_| ApiError::InvalidResponse)?;
+    enforce_vault_manifest_item_limit(manifests.items.len())?;
+    Ok(manifests)
+}
+
+fn enforce_vault_manifest_item_limit(count: usize) -> Result<(), ApiError> {
+    (count <= MAX_VAULT_TRUST_ANCHORS)
+        .then_some(())
+        .ok_or(ApiError::SizeLimitExceeded)
+}
+
+async fn decode_discovery_sync<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, ApiError> {
+    let (status, body) = read_bounded_response(response).await?;
     match status {
         status if status.is_success() => {
             serde_json::from_slice(&body).map_err(|_| ApiError::InvalidResponse)
@@ -585,7 +613,7 @@ mod tests {
 
     use super::{
         ApiClient, ApiError, MAX_DISCOVERY_SYNC_RESPONSE_BYTES, SigningContext,
-        diagnostics_enabled_for, encode_component,
+        diagnostics_enabled_for, encode_component, enforce_vault_manifest_item_limit,
     };
     use crate::{
         AgentRegistrationResult, CredentialMethod, GetCredentialOptions,
@@ -885,6 +913,33 @@ mod tests {
                 .await
                 .expect_err("oversized error response"),
             ApiError::SizeLimitExceeded
+        );
+    }
+
+    #[tokio::test]
+    async fn vault_manifest_decoder_enforces_the_response_byte_budget() {
+        let oversized = Box::leak(
+            "x".repeat(MAX_DISCOVERY_SYNC_RESPONSE_BYTES + 1)
+                .into_boxed_str(),
+        );
+        let (host, _) = response_server(vec![(200, oversized)]).await;
+        let api = client(&host, vec![17; 32], Duration::from_secs(2));
+
+        assert_eq!(
+            api.list_vault_manifests()
+                .await
+                .expect_err("oversized manifest response"),
+            ApiError::SizeLimitExceeded
+        );
+    }
+
+    #[test]
+    fn vault_manifest_decoder_enforces_the_profile_anchor_item_budget() {
+        assert_eq!(
+            enforce_vault_manifest_item_limit(
+                palladin_core::public_store::MAX_VAULT_TRUST_ANCHORS + 1
+            ),
+            Err(ApiError::SizeLimitExceeded)
         );
     }
 

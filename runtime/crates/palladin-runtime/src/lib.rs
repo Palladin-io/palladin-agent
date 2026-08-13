@@ -3115,6 +3115,12 @@ impl RuntimeSession<'_> {
             }
         };
         let mut index = self.discovery.lock().await;
+        let agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        index.scope_to_identity(&self.profile.identity_id, agent_id);
         let mut authorized_vaults = BTreeSet::new();
         for item in manifests.items {
             let vault_id = item.manifest.vault_id.clone();

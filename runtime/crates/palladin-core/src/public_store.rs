@@ -23,7 +23,7 @@ const ED25519_PUBLIC_KEY_BYTES: usize = 32;
 const ED25519_SIGNATURE_BYTES: usize = 64;
 const X25519_PUBLIC_KEY_BYTES: usize = 32;
 const SHA256_BYTES: usize = 32;
-const MAX_VAULT_TRUST_ANCHORS: usize = 256;
+pub const MAX_VAULT_TRUST_ANCHORS: usize = 256;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

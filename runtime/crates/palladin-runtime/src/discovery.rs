@@ -96,6 +96,7 @@ impl IndexedEntry {
 }
 
 pub(crate) struct LocalDiscoveryIndex {
+    owner: Option<(String, String)>,
     entries: BTreeMap<(String, String), IndexedEntry>,
     vault_versions: BTreeMap<String, u32>,
     applied_sequences: BTreeMap<String, String>,
@@ -105,10 +106,22 @@ pub(crate) struct LocalDiscoveryIndex {
 impl LocalDiscoveryIndex {
     pub(crate) fn new() -> Self {
         Self {
+            owner: None,
             entries: BTreeMap::new(),
             vault_versions: BTreeMap::new(),
             applied_sequences: BTreeMap::new(),
             logical_bytes: 0,
+        }
+    }
+
+    pub(crate) fn scope_to_identity(&mut self, profile_identity_id: &str, agent_id: &str) {
+        let matches = self
+            .owner
+            .as_ref()
+            .is_some_and(|(profile, agent)| profile == profile_identity_id && agent == agent_id);
+        if !matches {
+            self.purge();
+            self.owner = Some((profile_identity_id.to_owned(), agent_id.to_owned()));
         }
     }
 
@@ -140,6 +153,7 @@ impl LocalDiscoveryIndex {
     }
 
     pub(crate) fn purge(&mut self) {
+        self.owner = None;
         self.entries.clear();
         self.vault_versions.clear();
         self.applied_sequences.clear();
@@ -444,6 +458,7 @@ mod tests {
         index.purge();
 
         assert!(index.entries.is_empty());
+        assert!(index.owner.is_none());
         assert!(index.vault_versions.is_empty());
         assert!(index.applied_sequences.is_empty());
         assert!(
@@ -452,6 +467,32 @@ mod tests {
                 .unwrap()
                 .items
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn changing_profile_or_agent_identity_purges_cached_discovery_state() {
+        let mut index = LocalDiscoveryIndex::new();
+        let vault_id = "11111111-1111-4111-8111-111111111111";
+        index.scope_to_identity("profile-a", "agent-a");
+        index.prepare_vault(vault_id, 7);
+        index
+            .upsert(
+                vault_id,
+                "entry-a",
+                account("Private account", "sentinel-user"),
+            )
+            .unwrap();
+        index.mark_applied(vault_id, "42".into());
+
+        index.scope_to_identity("profile-b", "agent-b");
+
+        assert!(index.entries.is_empty());
+        assert!(index.vault_versions.is_empty());
+        assert!(index.applied_sequences.is_empty());
+        assert_eq!(
+            index.owner,
+            Some(("profile-b".to_owned(), "agent-b".to_owned()))
         );
     }
 
