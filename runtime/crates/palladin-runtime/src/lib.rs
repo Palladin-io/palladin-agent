@@ -1339,6 +1339,10 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         organization_owners.push(config.organization_credential_id.clone());
         organization_owners.sort();
         organization_owners.dedup();
+        let pairing_activation_id = match &descriptor {
+            OperationDescriptor::PairVaults { activation_id } => Some(activation_id.clone()),
+            _ => None,
+        };
         let request = connection.request(&descriptor)?;
         let operation = request.operation;
         let binding = request.binding(
@@ -1390,6 +1394,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             lease,
             operation,
             consumed: AtomicBool::new(false),
+            pairing_activation_id,
             discovery: Arc::clone(&self.discovery),
             manifest_persistence: Some(self),
             profile_signing: Some(profile_signing),
@@ -2724,6 +2729,7 @@ pub struct RuntimeSession<'a> {
     lease: OperationLease,
     operation: RuntimeOperation,
     consumed: AtomicBool,
+    pairing_activation_id: Option<String>,
     discovery: Arc<tokio::sync::Mutex<LocalDiscoveryIndex>>,
     manifest_persistence: Option<&'a dyn ManifestRevisionPersistence>,
     profile_signing: Option<Ed25519Identity>,
@@ -2845,6 +2851,20 @@ impl RuntimeSession<'_> {
         Ok(())
     }
 
+    fn ensure_pairing_activation(&self, activation_id: &str) -> Result<(), RuntimeError> {
+        if self.pairing_activation_id.as_deref() != Some(activation_id) {
+            return Err(RuntimeError::OperationAuthorizationMismatch);
+        }
+        Ok(())
+    }
+
+    /// Consumes a renewed PairVaults authorization for polling an existing, exactly bound
+    /// activation without creating a second pairing candidate.
+    pub fn resume_pairing_polling(&self, activation_id: &str) -> Result<(), RuntimeError> {
+        self.ensure_pairing_activation(activation_id)?;
+        self.begin_operation(RuntimeOperation::PairVaults)
+    }
+
     /// Creates an authenticated pairing transcript for the exact activation bound to this
     /// operation. The organization identifier is introduced by the Member-confirmed transcript;
     /// the Agent identifier and both Agent key fingerprints are derived from local identity state.
@@ -2852,6 +2872,7 @@ impl RuntimeSession<'_> {
         &self,
         activation_id: &str,
     ) -> Result<RuntimePairingCandidate, RuntimeError> {
+        self.ensure_pairing_activation(activation_id)?;
         self.begin_operation(RuntimeOperation::PairVaults)?;
         if !self.config.agent_active {
             return Err(RuntimeError::AgentNotActive);
@@ -2884,6 +2905,7 @@ impl RuntimeSession<'_> {
         &self,
         activation_id: &str,
     ) -> Result<AgentPairingStatusResponse, RuntimeError> {
+        self.ensure_pairing_activation(activation_id)?;
         self.ensure_operation(RuntimeOperation::PairVaults)?;
         if !self.consumed.load(Ordering::SeqCst) {
             return Err(RuntimeError::OperationAuthorizationMismatch);
@@ -4621,6 +4643,7 @@ mod tests {
             lease: test_lease(),
             operation: RuntimeOperation::GetCredential,
             consumed: AtomicBool::new(false),
+            pairing_activation_id: None,
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
             manifest_persistence: None,
             profile_signing: None,
@@ -4966,6 +4989,7 @@ mod tests {
             lease: test_lease(),
             operation: RuntimeOperation::ExecWithCredential,
             consumed: AtomicBool::new(false),
+            pairing_activation_id: None,
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
             manifest_persistence: None,
             profile_signing: None,
@@ -5064,10 +5088,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pair_vaults_session_creates_polls_and_confirms_the_bound_activation() {
+    async fn pair_vaults_session_renews_polling_for_the_bound_activation() {
         let activation_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let encryption = X25519Identity::generate().expect("encryption identity");
-        let signing = Ed25519Identity::generate().expect("signing identity");
+        let encryption =
+            X25519Identity::from_private_bytes(vec![41; 32]).expect("encryption identity");
+        let signing = Ed25519Identity::from_seed(vec![42; 32]).expect("signing identity");
         let identity = AgentIdentityBinding {
             organization_id: Uuid::parse_str(TEST_ORGANIZATION_ID).expect("organization id"),
             agent_id: Uuid::parse_str(TEST_AGENT_ID).expect("agent id"),
@@ -5115,32 +5140,35 @@ mod tests {
             None,
         )
         .expect("API client");
+        let profile = || PublicAgentEntry {
+            name: "fixture".to_owned(),
+            identity_id: "11111111111111111111111111111111".to_owned(),
+            created_at: "2026-01-01T00:00:00Z".to_owned(),
+            agent_type: None,
+            config_digest: None,
+        };
+        let config = |host: String, identity: &X25519Identity| PublicProfileConfig {
+            schema_version: PUBLIC_SCHEMA_VERSION,
+            identity_id: "11111111111111111111111111111111".to_owned(),
+            host,
+            organization_credential_id: "22222222222222222222222222222222".to_owned(),
+            retired_organization_credential_ids: Vec::new(),
+            agent_id: Some(TEST_AGENT_ID.to_owned()),
+            agent_active: true,
+            encryption_public_key: Some(STANDARD.encode(identity.public_key())),
+            signing_public_key: Some(STANDARD.encode(signing.public_key())),
+            vault_trust_anchors: Vec::new(),
+            binding_signature: STANDARD.encode([0_u8; 64]),
+        };
         let session = RuntimeSession {
-            profile: PublicAgentEntry {
-                name: "fixture".to_owned(),
-                identity_id: "11111111111111111111111111111111".to_owned(),
-                created_at: "2026-01-01T00:00:00Z".to_owned(),
-                agent_type: None,
-                config_digest: None,
-            },
-            config: PublicProfileConfig {
-                schema_version: PUBLIC_SCHEMA_VERSION,
-                identity_id: "11111111111111111111111111111111".to_owned(),
-                host,
-                organization_credential_id: "22222222222222222222222222222222".to_owned(),
-                retired_organization_credential_ids: Vec::new(),
-                agent_id: Some(TEST_AGENT_ID.to_owned()),
-                agent_active: true,
-                encryption_public_key: Some(STANDARD.encode(encryption.public_key())),
-                signing_public_key: Some(STANDARD.encode(signing.public_key())),
-                vault_trust_anchors: Vec::new(),
-                binding_signature: STANDARD.encode([0_u8; 64]),
-            },
+            profile: profile(),
+            config: config(host.clone(), &encryption),
             api,
             encryption,
             lease: test_lease(),
             operation: RuntimeOperation::PairVaults,
             consumed: AtomicBool::new(false),
+            pairing_activation_id: Some(activation_id.to_owned()),
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
             manifest_persistence: None,
             profile_signing: None,
@@ -5158,7 +5186,39 @@ mod tests {
                 .status,
             AgentPairingStatus::Pending
         );
-        let relay = session
+        drop(session);
+
+        let renewed_encryption =
+            X25519Identity::from_private_bytes(vec![41; 32]).expect("renewed encryption identity");
+        let renewed_api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_pairing_fixture".to_owned()),
+            &renewed_encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("renewed API client");
+        let renewed = RuntimeSession {
+            profile: profile(),
+            config: config(host, &renewed_encryption),
+            api: renewed_api,
+            encryption: renewed_encryption,
+            lease: test_lease(),
+            operation: RuntimeOperation::PairVaults,
+            consumed: AtomicBool::new(false),
+            pairing_activation_id: Some(activation_id.to_owned()),
+            discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
+            manifest_persistence: None,
+            profile_signing: None,
+        };
+        assert!(matches!(
+            renewed.resume_pairing_polling("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            Err(RuntimeError::OperationAuthorizationMismatch)
+        ));
+        renewed
+            .resume_pairing_polling(activation_id)
+            .expect("resume bound polling");
+        let relay = renewed
             .get_pairing_status(activation_id)
             .await
             .expect("confirmed status");

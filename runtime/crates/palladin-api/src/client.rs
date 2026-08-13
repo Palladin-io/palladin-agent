@@ -18,7 +18,7 @@ use crate::types::{
     InjectFailureUpload, RegistrationBody, ReportCredentialStaleInput, StaleRequestBody,
 };
 
-const MAX_DISCOVERY_SYNC_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_BOUNDED_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 const ENCODE_URI_COMPONENT: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -274,7 +274,7 @@ impl ApiClient {
                 &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
             )
             .await?;
-        decode_success(response).await
+        decode_bounded_success(response).await
     }
 
     pub async fn get_pairing_status(
@@ -286,7 +286,7 @@ impl ApiClient {
             encode_component(activation_id)
         );
         let response = self.send(Method::GET, &path, None, &[]).await?;
-        decode_success(response).await
+        decode_bounded_success(response).await
     }
 
     pub async fn get_credential(
@@ -345,7 +345,7 @@ impl ApiClient {
             encode_component(grant_id)
         );
         let response = self.send(Method::GET, &path, None, &[]).await?;
-        decode_success(response).await
+        decode_bounded_success(response).await
     }
 
     pub async fn report_credential_stale(
@@ -458,13 +458,14 @@ impl ApiClient {
     }
 }
 
-async fn decode_success<T: serde::de::DeserializeOwned>(
+async fn decode_bounded_success<T: serde::de::DeserializeOwned>(
     response: reqwest::Response,
 ) -> Result<T, ApiError> {
-    if !response.status().is_success() {
-        return Err(ApiError::Http(response.status().as_u16()));
+    let (status, body) = read_bounded_response(response).await?;
+    if !status.is_success() {
+        return Err(ApiError::Http(status.as_u16()));
     }
-    response.json().await.map_err(|_| ApiError::InvalidResponse)
+    serde_json::from_slice(&body).map_err(|_| ApiError::InvalidResponse)
 }
 
 async fn read_bounded_response(
@@ -473,13 +474,13 @@ async fn read_bounded_response(
     let status = response.status();
     if response
         .content_length()
-        .is_some_and(|length| length > MAX_DISCOVERY_SYNC_RESPONSE_BYTES as u64)
+        .is_some_and(|length| length > MAX_BOUNDED_RESPONSE_BYTES as u64)
     {
         return Err(ApiError::SizeLimitExceeded);
     }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| ApiError::Transport)? {
-        if body.len().saturating_add(chunk.len()) > MAX_DISCOVERY_SYNC_RESPONSE_BYTES {
+        if body.len().saturating_add(chunk.len()) > MAX_BOUNDED_RESPONSE_BYTES {
             return Err(ApiError::SizeLimitExceeded);
         }
         body.extend_from_slice(&chunk);
@@ -592,7 +593,7 @@ pub enum ApiError {
     },
     #[error("vault discovery sync cursor is invalid")]
     InvalidCursor,
-    #[error("vault discovery sync item exceeds the response size limit")]
+    #[error("API response exceeds the size limit")]
     SizeLimitExceeded,
 }
 
@@ -612,8 +613,8 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::{
-        ApiClient, ApiError, MAX_DISCOVERY_SYNC_RESPONSE_BYTES, SigningContext,
-        diagnostics_enabled_for, encode_component, enforce_vault_manifest_item_limit,
+        ApiClient, ApiError, MAX_BOUNDED_RESPONSE_BYTES, SigningContext, diagnostics_enabled_for,
+        encode_component, enforce_vault_manifest_item_limit,
     };
     use crate::{
         AgentRegistrationResult, CredentialMethod, GetCredentialOptions,
@@ -888,10 +889,7 @@ mod tests {
 
     #[tokio::test]
     async fn discovery_sync_streaming_decoder_enforces_the_response_byte_budget() {
-        let oversized = Box::leak(
-            "x".repeat(MAX_DISCOVERY_SYNC_RESPONSE_BYTES + 1)
-                .into_boxed_str(),
-        );
+        let oversized = Box::leak("x".repeat(MAX_BOUNDED_RESPONSE_BYTES + 1).into_boxed_str());
         let (host, _) = response_server(vec![(200, oversized)]).await;
         let api = client(&host, vec![15; 32], Duration::from_secs(2));
 
@@ -902,10 +900,8 @@ mod tests {
             ApiError::SizeLimitExceeded
         );
 
-        let oversized_error = Box::leak(
-            "x".repeat(MAX_DISCOVERY_SYNC_RESPONSE_BYTES + 1)
-                .into_boxed_str(),
-        );
+        let oversized_error =
+            Box::leak("x".repeat(MAX_BOUNDED_RESPONSE_BYTES + 1).into_boxed_str());
         let (host, _) = response_server(vec![(409, oversized_error)]).await;
         let api = client(&host, vec![16; 32], Duration::from_secs(2));
         assert_eq!(
@@ -918,10 +914,7 @@ mod tests {
 
     #[tokio::test]
     async fn vault_manifest_decoder_enforces_the_response_byte_budget() {
-        let oversized = Box::leak(
-            "x".repeat(MAX_DISCOVERY_SYNC_RESPONSE_BYTES + 1)
-                .into_boxed_str(),
-        );
+        let oversized = Box::leak("x".repeat(MAX_BOUNDED_RESPONSE_BYTES + 1).into_boxed_str());
         let (host, _) = response_server(vec![(200, oversized)]).await;
         let api = client(&host, vec![17; 32], Duration::from_secs(2));
 
@@ -929,6 +922,37 @@ mod tests {
             api.list_vault_manifests()
                 .await
                 .expect_err("oversized manifest response"),
+            ApiError::SizeLimitExceeded
+        );
+    }
+
+    #[tokio::test]
+    async fn protocol_control_responses_enforce_the_response_byte_budget() {
+        let oversized = Box::leak("x".repeat(MAX_BOUNDED_RESPONSE_BYTES + 1).into_boxed_str());
+        let (host, _) = response_server(vec![(200, oversized)]).await;
+        let api = client(&host, vec![18; 32], Duration::from_secs(2));
+        assert_eq!(
+            api.create_pairing_activation("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+                .await
+                .expect_err("oversized pairing activation"),
+            ApiError::SizeLimitExceeded
+        );
+
+        let (host, _) = response_server(vec![(200, oversized)]).await;
+        let api = client(&host, vec![19; 32], Duration::from_secs(2));
+        assert_eq!(
+            api.get_pairing_status("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+                .await
+                .expect_err("oversized pairing status"),
+            ApiError::SizeLimitExceeded
+        );
+
+        let (host, _) = response_server(vec![(200, oversized)]).await;
+        let api = client(&host, vec![20; 32], Duration::from_secs(2));
+        assert_eq!(
+            api.get_grant_status("vault", "grant")
+                .await
+                .expect_err("oversized grant status"),
             ApiError::SizeLimitExceeded
         );
     }

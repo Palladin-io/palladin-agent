@@ -748,7 +748,7 @@ async fn pair(service: &RuntimeService<RuntimeSecretStore>, profile: Option<&str
         Ok(activation_id) => activation_id,
         Err(error) => return fail(&error.to_string()),
     };
-    let session = match service.open_session(
+    let mut session = match service.open_session(
         profile,
         &hostname,
         &connection,
@@ -777,6 +777,25 @@ async fn pair(service: &RuntimeService<RuntimeSecretStore>, profile: Option<&str
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let response = match session.get_pairing_status(&activation_id).await {
             Ok(response) => response,
+            Err(RuntimeError::OperationAuthorizationExpired) => {
+                drop(session);
+                let renewed = match service.open_session(
+                    profile,
+                    &hostname,
+                    &connection,
+                    OperationDescriptor::PairVaults {
+                        activation_id: activation_id.clone(),
+                    },
+                ) {
+                    Ok(session) => session,
+                    Err(error) => return fail(&error.to_string()),
+                };
+                if let Err(error) = renewed.resume_pairing_polling(&activation_id) {
+                    return fail(&error.to_string());
+                }
+                session = renewed;
+                continue;
+            }
             Err(error) => return fail(&error.to_string()),
         };
         if response.status == AgentPairingStatus::Pending {
