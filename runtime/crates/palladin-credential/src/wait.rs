@@ -127,9 +127,46 @@ pub async fn await_grant<P, PollFuture, S, SleepFuture, H, E>(
     initial: CredentialAccess,
     policy: WaitPolicy,
     cancellation: &CancellationToken,
+    poll: P,
+    sleep: S,
+    heartbeat: H,
+) -> Result<CredentialAccess, WaitError<E>>
+where
+    P: FnMut() -> PollFuture,
+    PollFuture: Future<Output = Result<CredentialAccess, E>>,
+    S: FnMut(Duration) -> SleepFuture,
+    SleepFuture: Future<Output = ()>,
+    H: FnMut(HeartbeatInfo),
+{
+    await_grant_with_backoff(initial, policy, cancellation, poll, sleep, heartbeat, false).await
+}
+
+pub async fn await_grant_exponential<P, PollFuture, S, SleepFuture, H, E>(
+    initial: CredentialAccess,
+    policy: WaitPolicy,
+    cancellation: &CancellationToken,
+    poll: P,
+    sleep: S,
+    heartbeat: H,
+) -> Result<CredentialAccess, WaitError<E>>
+where
+    P: FnMut() -> PollFuture,
+    PollFuture: Future<Output = Result<CredentialAccess, E>>,
+    S: FnMut(Duration) -> SleepFuture,
+    SleepFuture: Future<Output = ()>,
+    H: FnMut(HeartbeatInfo),
+{
+    await_grant_with_backoff(initial, policy, cancellation, poll, sleep, heartbeat, true).await
+}
+
+async fn await_grant_with_backoff<P, PollFuture, S, SleepFuture, H, E>(
+    initial: CredentialAccess,
+    policy: WaitPolicy,
+    cancellation: &CancellationToken,
     mut poll: P,
     mut sleep: S,
     mut heartbeat: H,
+    exponential: bool,
 ) -> Result<CredentialAccess, WaitError<E>>
 where
     P: FnMut() -> PollFuture,
@@ -153,6 +190,7 @@ where
     let mut grant_id = Some(grant_id);
     let mut elapsed_ms = 0_u64;
     let mut next_poll_ms = poll_ms;
+    let mut current_poll_ms = poll_ms;
     let mut next_heartbeat_ms = heartbeat_ms;
     let wall_deadline = Instant::now() + Duration::from_millis(policy.wait_ms);
 
@@ -198,7 +236,10 @@ where
                         elapsed_ms,
                         deadline_ms: policy.wait_ms,
                     });
-                    next_poll_ms = next_poll_ms.saturating_add(poll_ms);
+                    if exponential {
+                        current_poll_ms = current_poll_ms.saturating_mul(2).min(DEFAULT_POLL_MS);
+                    }
+                    next_poll_ms = next_poll_ms.saturating_add(current_poll_ms);
                     continue;
                 }
             };
@@ -213,7 +254,10 @@ where
                 grant_id = Some(current.clone());
             }
             last = result;
-            next_poll_ms = next_poll_ms.saturating_add(poll_ms);
+            if exponential {
+                current_poll_ms = current_poll_ms.saturating_mul(2).min(DEFAULT_POLL_MS);
+            }
+            next_poll_ms = next_poll_ms.saturating_add(current_poll_ms);
         }
     }
     Ok(last)
@@ -333,7 +377,8 @@ mod tests {
     use super::{
         DEFAULT_POLL_MS, DEFAULT_WAIT_MS, DurationParseError, HeartbeatInfo, MAX_WAIT_MS,
         MIN_POLL_MS, ProgressMode, WaitError, WaitHints, WaitOptions, WaitPolicyError, await_grant,
-        heartbeat_line, parse_duration, parse_wait_duration, resolve_wait_policy,
+        await_grant_exponential, heartbeat_line, parse_duration, parse_wait_duration,
+        resolve_wait_policy,
     };
 
     fn pending(id: &str) -> CredentialAccess {
@@ -464,6 +509,42 @@ mod tests {
                 Some("grant-two".to_owned())
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn v2_polling_uses_bounded_exponential_backoff_without_changing_v1_schedule() {
+        let sleeps = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&sleeps);
+        let mut responses = vec![pending("grant"), CredentialAccess::Denied].into_iter();
+        let result = await_grant_exponential(
+            pending("grant"),
+            super::WaitPolicy {
+                wait_ms: 50_000,
+                poll_ms: 5_000,
+                heartbeat_ms: 30_000,
+                poll_timeout_ms: 5_000,
+                progress: ProgressMode::None,
+            },
+            &CancellationToken::new(),
+            || {
+                let response = responses.next().expect("bounded responses");
+                async move { Ok::<_, Infallible>(response) }
+            },
+            move |duration| {
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed
+                        .lock()
+                        .expect("sleeps")
+                        .push(duration.as_millis() as u64)
+                }
+            },
+            |_| {},
+        )
+        .await
+        .expect("wait");
+        assert!(matches!(result, CredentialAccess::Denied));
+        assert_eq!(*sleeps.lock().expect("sleeps"), vec![5_000, 5_000, 5_000]);
     }
 
     #[tokio::test]

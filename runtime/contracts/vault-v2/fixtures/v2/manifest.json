@@ -1,0 +1,65 @@
+{
+  "contract": "palladin-vault-v2-cross-language-fixtures",
+  "fixtureSchemaVersion": 1,
+  "protocolVersion": 2,
+  "status": "normative-for-protocol-2",
+  "syntheticDataOnly": true,
+  "immutableRegistry": {
+    "path": "../../v1/registry.json",
+    "sha256": "8b1afea64fe81de72d69843a50d92c6429f7537cd6d3d97a58822aafc97f81a2"
+  },
+  "algorithms": {
+    "suite": "PLV2-XC20P-HKDF256-X25519-ED25519",
+    "canonicalJson": "RFC8785",
+    "sealedBox": "libsodium-crypto_box_seal-X25519-XSalsa20-Poly1305-v1",
+    "deterministicGenerationOnly": "fixture generator fixes nonces and sealed-box ephemeral seeds; production must use CSPRNG values"
+  },
+  "consumerContract": {
+    "canonicalRoot": "contracts/vault-v2/fixtures/v2",
+    "consumers": [
+      "net-backend",
+      "react-web-panel",
+      "flutter-mobile",
+      "agent-runtime-rust"
+    ],
+    "rule": "consume these exact files by pinned root-repository commit and manifest hash; do not copy or rewrite expected bytes"
+  },
+  "pairingTranscriptBoundary": {
+    "kind": "local trust-establishment fixture contract; not a new backend wire DTO",
+    "domainPrefixAscii": "PLDNV2PAIR:TRANSCRIPT:",
+    "sasBits": 60,
+    "replacementRequires": "explicit protocol-version decision and a new immutable fixture directory"
+  },
+  "plaintextFixtureBoundary": "FixtureEncryptedReasonPayload and FixtureGrantPayload freeze canonical plaintext test shapes without changing the frozen outer wire DTOs or AAD.",
+  "generatedBy": "fixtures/v2/generate.mjs",
+  "files": [
+    {
+      "path": "vectors/aad.json",
+      "sha256": "825def1e19c0d012b83c2736a9cc9428d248bc4a78f9ad0a5b04a34e4c1dd904"
+    },
+    {
+      "path": "vectors/key-derivation.json",
+      "sha256": "c6b590dcb49cd58542d3b3d9979743bd35a1f256ca692e369357d513fae888c8"
+    },
+    {
+      "path": "vectors/envelopes.json",
+      "sha256": "bb642e737fda2c77e89f181b342bf9c24c6bc3dbfeafe0ebd38af1f3041e9a62"
+    },
+    {
+      "path": "vectors/signatures.json",
+      "sha256": "2b9fa47e377e92a5c7d5a9299761ca42dc12f2024bef736ef372be3a16ca840a"
+    },
+    {
+      "path": "vectors/pairing.json",
+      "sha256": "d4f7d8a586cacf53896f9fe609163a88cc292646f3d010bb807a7d1cfc215ec8"
+    },
+    {
+      "path": "vectors/rotation.json",
+      "sha256": "b01e5cad49347520294b2c3adc921181db936f58d847101e09e6a2cfc5d310f1"
+    },
+    {
+      "path": "negative/corruption.json",
+      "sha256": "2368188c7a0b686eac105c252527b0e6e8c6434f1d326eb00868f57869c30c8e"
+    }
+  ]
+}

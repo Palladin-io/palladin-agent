@@ -2,16 +2,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_core::{host::ApiHost, secret::OrganizationApiKey};
-use palladin_crypto::{Ed25519Identity, X25519Identity, generate_nonce_base64, sign_request};
+use palladin_crypto::{
+    Ed25519Identity, EncryptedReasonContext, EncryptedReasonEnvelope, X25519Identity,
+    encrypt_reason, generate_nonce_base64, sign_request,
+};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use reqwest::{Method, StatusCode, header::HeaderValue};
 use thiserror::Error;
 
 use crate::types::{
-    AgentRegistrationResult, CredentialAccess, CredentialRequestBody, EntrySearchResult,
-    GetCredentialOptions, InjectFailureUpload, RegistrationBody, ReportCredentialStaleInput,
-    StaleRequestBody,
+    AgentDiscoveryDeltaBody, AgentDiscoverySnapshotBody, AgentRegistrationResult,
+    CreatePairingActivationBody, CredentialAccess, CredentialRequestBody, GetCredentialOptions,
+    InjectFailureUpload, RegistrationBody, ReportCredentialStaleInput, StaleRequestBody,
 };
+
+const MAX_DISCOVERY_SYNC_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 const ENCODE_URI_COMPONENT: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -55,6 +60,15 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
+    pub fn encrypt_access_reason(
+        &self,
+        reason: &str,
+        context: EncryptedReasonContext,
+    ) -> Result<EncryptedReasonEnvelope, ApiError> {
+        let signer = self.signing.as_ref().ok_or(ApiError::InvalidInput)?;
+        encrypt_reason(reason, context, &signer.identity).map_err(|_| ApiError::InvalidInput)
+    }
+
     pub fn new(
         host: ApiHost,
         organization_api_key: OrganizationApiKey,
@@ -160,23 +174,115 @@ impl ApiClient {
         }
     }
 
-    pub async fn search_entries(
+    pub async fn list_vault_manifests(
         &self,
-        query: &str,
+    ) -> Result<crate::AgentVaultManifestsResponse, ApiError> {
+        let response = self
+            .send(
+                Method::GET,
+                "/api/agent/vault-manifests",
+                None,
+                &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
+            )
+            .await?;
+        decode_success(response).await
+    }
+
+    pub async fn get_agent_discovery_snapshot(
+        &self,
+        vault_id: &str,
         cursor: Option<&str>,
         page_size: Option<u32>,
-    ) -> Result<EntrySearchResult, ApiError> {
-        let path = {
-            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-            serializer.append_pair("query", query);
-            if let Some(cursor) = cursor {
-                serializer.append_pair("cursor", cursor);
-            }
-            if let Some(page_size) = page_size {
-                serializer.append_pair("pageSize", &page_size.to_string());
-            }
-            format!("/api/agent/entries?{}", serializer.finish())
-        };
+    ) -> Result<crate::AgentDiscoverySnapshotResponse, ApiError> {
+        let body = serde_json::to_vec(&AgentDiscoverySnapshotBody {
+            vault_id,
+            cursor,
+            page_size,
+        })
+        .map_err(|_| ApiError::InvalidInput)?;
+        let path = format!(
+            "/api/agent/vaults/{}/discovery/sync/snapshot",
+            encode_component(vault_id)
+        );
+        let response = self.send_discovery_sync(&path, body).await?;
+        decode_discovery_sync(response).await
+    }
+
+    pub async fn get_agent_discovery_delta(
+        &self,
+        vault_id: &str,
+        after_sequence: Option<&str>,
+        continuation_cursor: Option<&str>,
+        page_size: Option<u32>,
+    ) -> Result<crate::AgentDiscoveryDeltaResponse, ApiError> {
+        let body = serde_json::to_vec(&AgentDiscoveryDeltaBody {
+            vault_id,
+            after_sequence,
+            continuation_cursor,
+            page_size,
+        })
+        .map_err(|_| ApiError::InvalidInput)?;
+        let path = format!(
+            "/api/agent/vaults/{}/discovery/sync/delta",
+            encode_component(vault_id)
+        );
+        let response = self.send_discovery_sync(&path, body).await?;
+        decode_discovery_sync(response).await
+    }
+
+    async fn send_discovery_sync(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+    ) -> Result<reqwest::Response, ApiError> {
+        let response = self
+            .send(
+                Method::POST,
+                path,
+                Some(body),
+                &[
+                    ("X-Palladin-Vault-Protocol", HeaderValue::from_static("2")),
+                    ("X-Palladin-Sync-Policy", HeaderValue::from_static("1")),
+                ],
+            )
+            .await?;
+        if response.headers().get("X-Palladin-Vault-Protocol")
+            != Some(&HeaderValue::from_static("2"))
+            || response.headers().get("X-Palladin-Sync-Policy")
+                != Some(&HeaderValue::from_static("1"))
+            || response.headers().get(reqwest::header::CONTENT_ENCODING)
+                != Some(&HeaderValue::from_static("identity"))
+        {
+            return Err(ApiError::InvalidResponse);
+        }
+        Ok(response)
+    }
+
+    pub async fn create_pairing_activation(
+        &self,
+        activation_id: &str,
+    ) -> Result<crate::AgentPairingActivationResponse, ApiError> {
+        let body = serde_json::to_vec(&CreatePairingActivationBody { activation_id })
+            .map_err(|_| ApiError::InvalidInput)?;
+        let response = self
+            .send(
+                Method::POST,
+                "/api/agent/pairing/activations",
+                Some(body),
+                &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
+            )
+            .await?;
+        decode_success(response).await
+    }
+
+    pub async fn get_pairing_status(
+        &self,
+        activation_id: &str,
+    ) -> Result<crate::AgentPairingStatusResponse, ApiError> {
+        let path = format!(
+            "/api/agent/pairing/activations/{}",
+            encode_component(activation_id)
+        );
         let response = self.send(Method::GET, &path, None, &[]).await?;
         decode_success(response).await
     }
@@ -196,7 +302,7 @@ impl ApiClient {
                 .join(", ")
         });
         let body = serde_json::to_vec(&CredentialRequestBody {
-            reason: options.reason.as_deref(),
+            encrypted_reason: options.encrypted_reason.as_ref(),
             method: options.method.map(|method| method.backend_name()),
             requested_methods,
         })
@@ -206,7 +312,14 @@ impl ApiClient {
             encode_component(vault_id),
             encode_component(entry_id)
         );
-        let response = self.send(Method::POST, &path, Some(body), &[]).await?;
+        let response = self
+            .send(
+                Method::POST,
+                &path,
+                Some(body),
+                &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
+            )
+            .await?;
         match response.status() {
             StatusCode::OK
             | StatusCode::ACCEPTED
@@ -217,6 +330,20 @@ impl ApiClient {
             StatusCode::BAD_REQUEST => Err(ApiError::ReasonRequired),
             status => Err(ApiError::Http(status.as_u16())),
         }
+    }
+
+    pub async fn get_grant_status(
+        &self,
+        vault_id: &str,
+        grant_id: &str,
+    ) -> Result<crate::GrantStatusResponse, ApiError> {
+        let path = format!(
+            "/api/agent/vaults/{}/grants/{}/status",
+            encode_component(vault_id),
+            encode_component(grant_id)
+        );
+        let response = self.send(Method::GET, &path, None, &[]).await?;
+        decode_success(response).await
     }
 
     pub async fn report_credential_stale(
@@ -338,6 +465,70 @@ async fn decode_success<T: serde::de::DeserializeOwned>(
     response.json().await.map_err(|_| ApiError::InvalidResponse)
 }
 
+async fn decode_discovery_sync<T: serde::de::DeserializeOwned>(
+    mut response: reqwest::Response,
+) -> Result<T, ApiError> {
+    match response.status() {
+        status if status.is_success() => {
+            if response
+                .content_length()
+                .is_some_and(|length| length > MAX_DISCOVERY_SYNC_RESPONSE_BYTES as u64)
+            {
+                return Err(ApiError::SizeLimitExceeded);
+            }
+            let mut body = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(|_| ApiError::Transport)? {
+                if body.len().saturating_add(chunk.len()) > MAX_DISCOVERY_SYNC_RESPONSE_BYTES {
+                    return Err(ApiError::SizeLimitExceeded);
+                }
+                body.extend_from_slice(&chunk);
+            }
+            serde_json::from_slice(&body).map_err(|_| ApiError::InvalidResponse)
+        }
+        StatusCode::CONFLICT => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Reset {
+                outcome: String,
+                current_sequence: String,
+                min_retained_sequence: String,
+                new_snapshot_required: bool,
+            }
+            let reset: Reset = response
+                .json()
+                .await
+                .map_err(|_| ApiError::InvalidResponse)?;
+            if reset.outcome != "resetRequired" || !reset.new_snapshot_required {
+                return Err(ApiError::InvalidResponse);
+            }
+            Err(ApiError::ResetRequired {
+                current_sequence: reset.current_sequence,
+                min_retained_sequence: reset.min_retained_sequence,
+            })
+        }
+        StatusCode::BAD_REQUEST | StatusCode::PAYLOAD_TOO_LARGE => {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Outcome {
+                outcome: String,
+            }
+            let status = response.status();
+            let outcome: Outcome = response
+                .json()
+                .await
+                .map_err(|_| ApiError::InvalidResponse)?;
+            match (status, outcome.outcome.as_str()) {
+                (StatusCode::BAD_REQUEST, "invalid-cursor") => Err(ApiError::InvalidCursor),
+                (StatusCode::PAYLOAD_TOO_LARGE, "size-limit-exceeded") => {
+                    Err(ApiError::SizeLimitExceeded)
+                }
+                _ => Err(ApiError::InvalidResponse),
+            }
+        }
+        status => Err(ApiError::Http(status.as_u16())),
+    }
+}
+
 fn header(value: &str) -> Result<HeaderValue, ApiError> {
     HeaderValue::from_str(value).map_err(|_| ApiError::InvalidInput)
 }
@@ -354,7 +545,7 @@ fn diagnostics_enabled_for(value: Option<&std::ffi::OsStr>) -> bool {
     value != Some(std::ffi::OsStr::new("1"))
 }
 
-#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum ApiError {
     #[error("API request input is invalid")]
     InvalidInput,
@@ -370,6 +561,15 @@ pub enum ApiError {
     Clock,
     #[error("request signing failed")]
     Signing,
+    #[error("vault discovery sync requires a fresh snapshot")]
+    ResetRequired {
+        current_sequence: String,
+        min_retained_sequence: String,
+    },
+    #[error("vault discovery sync cursor is invalid")]
+    InvalidCursor,
+    #[error("vault discovery sync item exceeds the response size limit")]
+    SizeLimitExceeded,
 }
 
 #[cfg(test)]
@@ -387,7 +587,10 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    use super::{ApiClient, ApiError, SigningContext, diagnostics_enabled_for, encode_component};
+    use super::{
+        ApiClient, ApiError, MAX_DISCOVERY_SYNC_RESPONSE_BYTES, SigningContext,
+        diagnostics_enabled_for, encode_component,
+    };
     use crate::{
         AgentRegistrationResult, CredentialMethod, GetCredentialOptions,
         ReportCredentialStaleInput, StaleReasonCode,
@@ -406,6 +609,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_api_bodies_are_never_embedded_in_errors() {
+        const CANARY: &str = "api-secret-canary-must-never-be-diagnosed";
+        let (host, _) = response_server(vec![(200, CANARY)]).await;
+        let error = client(&host, vec![1; 32], Duration::from_secs(1))
+            .list_vault_manifests()
+            .await
+            .expect_err("malformed response");
+
+        assert!(matches!(error, ApiError::InvalidResponse));
+        assert!(!format!("{error:?} {error}").contains(CANARY));
+    }
+
+    #[tokio::test]
     async fn shared_organization_key_can_authenticate_distinct_agents() {
         let (host, requests) = response_server(vec![
             (200, r#"{"items":[],"nextCursor":null}"#),
@@ -415,11 +631,8 @@ mod tests {
         let first = client(&host, vec![1; 32], Duration::from_secs(1));
         let second = client(&host, vec![2; 32], Duration::from_secs(1));
 
-        first.search_entries("ab", None, None).await.expect("first");
-        second
-            .search_entries("ab", None, None)
-            .await
-            .expect("second");
+        first.list_vault_manifests().await.expect("first");
+        second.list_vault_manifests().await.expect("second");
 
         let requests = requests.lock().expect("requests");
         assert_eq!(requests.len(), 2);
@@ -442,7 +655,7 @@ mod tests {
         let (get_host, get_requests) =
             response_server(vec![(503, ""), (200, r#"{"items":[],"nextCursor":null}"#)]).await;
         signed_client(&get_host, vec![3; 32], Duration::from_secs(1))
-            .search_entries("ab", None, None)
+            .list_vault_manifests()
             .await
             .expect("GET retry");
         {
@@ -467,7 +680,7 @@ mod tests {
     async fn timeouts_are_bounded_and_post_is_not_retried() {
         let (get_host, get_count) = hanging_server().await;
         let get_error = client(&get_host, vec![5; 32], Duration::from_millis(20))
-            .search_entries("ab", None, None)
+            .list_vault_manifests()
             .await
             .expect_err("GET timeout");
         assert_eq!(get_error, ApiError::Transport);
@@ -505,7 +718,7 @@ mod tests {
             "vault/one",
             "entry two",
             &GetCredentialOptions {
-                reason: Some("because".to_owned()),
+                encrypted_reason: None,
                 method: Some(CredentialMethod::Exec),
                 requested_methods: vec![CredentialMethod::Get, CredentialMethod::Inject],
             },
@@ -518,12 +731,14 @@ mod tests {
         let (headers, body) = request.split_once("\r\n\r\n").expect("HTTP request");
         assert_eq!(
             body,
-            r#"{"reason":"because","method":"Exec","requestedMethods":"Get, Inject"}"#
+            r#"{"method":"Exec","requestedMethods":"Get, Inject"}"#
         );
+        assert!(!body.contains("reason"));
         assert!(headers.starts_with(
             "POST /api/agent/vaults/vault%2Fone/entries/entry%20two/credential HTTP/1.1"
         ));
         assert_eq!(header_value(headers, "x-agent-id"), "agent-123");
+        assert_eq!(header_value(headers, "x-palladin-vault-protocol"), "2");
 
         let timestamp = header_value(headers, "x-agent-timestamp")
             .parse::<u64>()
@@ -545,6 +760,123 @@ mod tests {
             .expect("public key")
             .verify(canonical.as_bytes(), &signature)
             .expect("valid signature");
+    }
+
+    #[tokio::test]
+    async fn pairing_client_sends_protocol_gate_and_decodes_fail_closed_status() {
+        let activation = r#"{"activationId":"aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa","organizationId":"11111111-1111-4111-8111-111111111111","agentId":"55555555-5555-4555-8555-555555555555","agentAccessEpoch":3,"agentX25519Fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","agentEd25519Fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","expiresAt":"2026-07-26T19:00:00Z","candidateManifests":[]}"#;
+        let status = r#"{"activationId":"aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa","status":"confirmed","expiresAt":"2026-07-26T19:00:00Z","confirmedPairingDigest":"ccccccccccccccccccccccccccccccccccccccccccc"}"#;
+        let (host, requests) = response_server(vec![(200, activation), (200, status)]).await;
+        let api = client(&host, vec![7; 32], Duration::from_secs(1));
+        let created = api
+            .create_pairing_activation("aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa")
+            .await
+            .expect("activation");
+        assert_eq!(created.agent_access_epoch, 3);
+        let polled = api
+            .get_pairing_status("aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa")
+            .await
+            .expect("status");
+        assert_eq!(polled.status, crate::AgentPairingStatus::Confirmed);
+        let requests = requests.lock().expect("requests");
+        assert!(requests[0].contains("x-palladin-vault-protocol: 2"));
+        assert!(
+            requests[0].ends_with(r#"{"activationId":"aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa"}"#)
+        );
+        assert!(requests[1].starts_with(
+            "GET /api/agent/pairing/activations/aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa HTTP/1.1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn discovery_sync_sends_frozen_headers_and_decodes_exact_pages() {
+        let snapshot = r#"{"snapshotBaseSequence":"12","items":[{"entryId":"33333333-3333-4333-8333-333333333333","kind":"head","agentDiscoveryRevision":"7","agentDiscovery":{"organizationId":"11111111-1111-4111-8111-111111111111","vaultId":"22222222-2222-4222-8222-222222222222","entryId":"33333333-3333-4333-8333-333333333333","agentDiscoveryRevision":"7","vdkVersion":3,"header":{"protocolVersion":2,"algorithmSuite":1,"resourceKind":2,"projectionKind":4,"resourceRevision":"7","keyVersion":3,"memberKeyGeneration":5,"nonce":"nonce"},"ciphertext":"ciphertext"}}],"nextCursor":"next"}"#;
+        let delta = r#"{"deltaUpperBound":"14","appliedThroughSequence":"14","items":[{"entryId":"33333333-3333-4333-8333-333333333333","kind":"tombstone","agentDiscoveryRevision":null,"agentDiscovery":null}],"continuationCursor":null}"#;
+        let (host, requests) = response_server(vec![(200, snapshot), (200, delta)]).await;
+        let api = client(&host, vec![13; 32], Duration::from_secs(1));
+
+        let snapshot_page = api
+            .get_agent_discovery_snapshot("vault/id", Some("cursor"), Some(50))
+            .await
+            .expect("snapshot");
+        assert_eq!(snapshot_page.snapshot_base_sequence, "12");
+        assert_eq!(snapshot_page.items.len(), 1);
+        let delta_page = api
+            .get_agent_discovery_delta("vault/id", Some("12"), None, Some(25))
+            .await
+            .expect("delta");
+        assert_eq!(delta_page.applied_through_sequence, "14");
+
+        let requests = requests.lock().expect("requests");
+        assert!(requests.iter().all(|request| {
+            request.contains("x-palladin-vault-protocol: 2")
+                && request.contains("x-palladin-sync-policy: 1")
+        }));
+        assert!(
+            requests[0]
+                .starts_with("POST /api/agent/vaults/vault%2Fid/discovery/sync/snapshot HTTP/1.1")
+        );
+        assert!(requests[0].ends_with(r#"{"vaultId":"vault/id","cursor":"cursor","pageSize":50}"#));
+        assert!(
+            requests[1].ends_with(r#"{"vaultId":"vault/id","afterSequence":"12","pageSize":25}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_sync_maps_only_exact_structured_errors() {
+        let (host, _) = response_server(vec![
+            (409, r#"{"outcome":"resetRequired","currentSequence":"20","minRetainedSequence":"10","newSnapshotRequired":true}"#),
+            (400, r#"{"outcome":"invalid-cursor"}"#),
+            (413, r#"{"outcome":"size-limit-exceeded"}"#),
+            (404, r#"{"outcome":"invalid-cursor"}"#),
+        ])
+        .await;
+        let api = client(&host, vec![14; 32], Duration::from_secs(1));
+
+        assert_eq!(
+            api.get_agent_discovery_delta("vault", Some("1"), None, None)
+                .await
+                .expect_err("reset"),
+            ApiError::ResetRequired {
+                current_sequence: "20".to_owned(),
+                min_retained_sequence: "10".to_owned(),
+            }
+        );
+        assert_eq!(
+            api.get_agent_discovery_snapshot("vault", Some("bad"), None)
+                .await
+                .expect_err("invalid cursor"),
+            ApiError::InvalidCursor
+        );
+        assert_eq!(
+            api.get_agent_discovery_delta("vault", Some("1"), None, None)
+                .await
+                .expect_err("size limit"),
+            ApiError::SizeLimitExceeded
+        );
+        assert_eq!(
+            api.get_agent_discovery_snapshot("vault", None, None)
+                .await
+                .expect_err("404 remains generic"),
+            ApiError::Http(404)
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_sync_streaming_decoder_enforces_the_response_byte_budget() {
+        let oversized = Box::leak(
+            "x".repeat(MAX_DISCOVERY_SYNC_RESPONSE_BYTES + 1)
+                .into_boxed_str(),
+        );
+        let (host, _) = response_server(vec![(200, oversized)]).await;
+        let api = client(&host, vec![15; 32], Duration::from_secs(2));
+
+        assert_eq!(
+            api.get_agent_discovery_snapshot("vault", None, Some(200))
+                .await
+                .expect_err("oversized response"),
+            ApiError::SizeLimitExceeded
+        );
     }
 
     #[tokio::test]
@@ -647,7 +979,7 @@ mod tests {
                     "Service Unavailable"
                 };
                 let response = format!(
-                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nX-Palladin-Vault-Protocol: 2\r\nX-Palladin-Sync-Policy: 1\r\nContent-Encoding: identity\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 stream.write_all(response.as_bytes()).await.expect("write");
