@@ -73,6 +73,13 @@ use palladin_credential::secret::{ScriptPayload, parse_secret};
 const DISCOVERY_SYNC_PAGE_SIZE: usize = 200;
 const MAX_DISCOVERY_SYNC_PAGES: usize = 1_000;
 
+fn update_registered_agent_id(config: &mut PublicProfileConfig, agent_id: &str) {
+    if config.agent_id.as_deref() != Some(agent_id) {
+        config.vault_trust_anchors.clear();
+    }
+    config.agent_id = Some(agent_id.to_owned());
+}
+
 pub use palladin_exec::{ExecError, ExecResult, OperatorOutput};
 
 pub struct RuntimeService<S> {
@@ -1273,7 +1280,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         | AgentRegistrationResult::Active { agent_id, .. }
         | AgentRegistrationResult::Deactivated { agent_id } = &registration
         {
-            config.agent_id = Some(agent_id.clone());
+            update_registered_agent_id(&mut config, agent_id);
             config.agent_active = matches!(&registration, AgentRegistrationResult::Active { .. });
             config.encryption_public_key = Some(STANDARD.encode(encryption.public_key()));
             config.signing_public_key = Some(STANDARD.encode(signing_public_key));
@@ -4806,6 +4813,38 @@ mod tests {
             manifest_persistence: None,
             profile_signing: None,
         }
+    }
+
+    #[test]
+    fn registration_agent_id_change_invalidates_pairing_anchors() {
+        let mut config = PublicProfileConfig {
+            schema_version: PUBLIC_SCHEMA_VERSION,
+            identity_id: "11111111111111111111111111111111".to_owned(),
+            host: "https://example.test".to_owned(),
+            organization_credential_id: "22222222222222222222222222222222".to_owned(),
+            retired_organization_credential_ids: Vec::new(),
+            agent_id: Some("agent-current".to_owned()),
+            agent_active: true,
+            encryption_public_key: None,
+            signing_public_key: None,
+            vault_trust_anchors: vec![PublicVaultTrustAnchor {
+                organization_id: TEST_ORGANIZATION_ID.to_owned(),
+                vault_id: TEST_VAULT_ID.to_owned(),
+                agent_access_epoch: 1,
+                vault_signing_public_key: STANDARD.encode([1_u8; 32]),
+                vault_signing_key_fingerprint: STANDARD.encode([2_u8; 32]),
+                manifest_revision: "1".to_owned(),
+                manifest_signing_key_version: 1,
+            }],
+            binding_signature: STANDARD.encode([0_u8; 64]),
+        };
+
+        update_registered_agent_id(&mut config, "agent-current");
+        assert_eq!(config.vault_trust_anchors.len(), 1);
+
+        update_registered_agent_id(&mut config, "agent-replacement");
+        assert_eq!(config.agent_id.as_deref(), Some("agent-replacement"));
+        assert!(config.vault_trust_anchors.is_empty());
     }
 
     fn grant_response(

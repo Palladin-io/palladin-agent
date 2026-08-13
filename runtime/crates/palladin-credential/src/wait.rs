@@ -191,6 +191,7 @@ where
     let mut elapsed_ms = 0_u64;
     let mut next_poll_ms = poll_ms;
     let mut current_poll_ms = poll_ms;
+    let max_poll_ms = DEFAULT_POLL_MS.max(poll_ms);
     let mut next_heartbeat_ms = heartbeat_ms;
     let wall_deadline = Instant::now() + Duration::from_millis(policy.wait_ms);
 
@@ -237,7 +238,7 @@ where
                         deadline_ms: policy.wait_ms,
                     });
                     if exponential {
-                        current_poll_ms = current_poll_ms.saturating_mul(2).min(DEFAULT_POLL_MS);
+                        current_poll_ms = current_poll_ms.saturating_mul(2).min(max_poll_ms);
                     }
                     next_poll_ms = next_poll_ms.saturating_add(current_poll_ms);
                     continue;
@@ -255,7 +256,7 @@ where
             }
             last = result;
             if exponential {
-                current_poll_ms = current_poll_ms.saturating_mul(2).min(DEFAULT_POLL_MS);
+                current_poll_ms = current_poll_ms.saturating_mul(2).min(max_poll_ms);
             }
             next_poll_ms = next_poll_ms.saturating_add(current_poll_ms);
         }
@@ -545,6 +546,42 @@ mod tests {
         .expect("wait");
         assert!(matches!(result, CredentialAccess::Denied));
         assert_eq!(*sleeps.lock().expect("sleeps"), vec![5_000, 5_000, 5_000]);
+    }
+
+    #[tokio::test]
+    async fn v2_backoff_never_shortens_an_interval_above_the_default() {
+        let sleeps = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&sleeps);
+        let mut responses = vec![pending("grant"), CredentialAccess::Denied].into_iter();
+        let result = await_grant_exponential(
+            pending("grant"),
+            super::WaitPolicy {
+                wait_ms: 130_000,
+                poll_ms: 60_000,
+                heartbeat_ms: 60_000,
+                poll_timeout_ms: 60_000,
+                progress: ProgressMode::None,
+            },
+            &CancellationToken::new(),
+            || {
+                let response = responses.next().expect("bounded responses");
+                async move { Ok::<_, Infallible>(response) }
+            },
+            move |duration| {
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed
+                        .lock()
+                        .expect("sleeps")
+                        .push(duration.as_millis() as u64)
+                }
+            },
+            |_| {},
+        )
+        .await
+        .expect("wait");
+        assert!(matches!(result, CredentialAccess::Denied));
+        assert_eq!(*sleeps.lock().expect("sleeps"), vec![60_000, 60_000]);
     }
 
     #[tokio::test]
