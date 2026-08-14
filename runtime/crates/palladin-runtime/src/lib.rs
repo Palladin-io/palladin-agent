@@ -1,15 +1,20 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+mod discovery;
 mod integrity;
 pub mod version_policy;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_api::{
-    AgentRegistrationResult, ApiClient, ApiError, CredentialAccess, CredentialMethod,
-    EntrySearchResult, GetCredentialOptions, ReportCredentialStaleInput,
+    AgentDiscoveryEnvelope, AgentDiscoverySyncItem, AgentPairingActivationResponse,
+    AgentPairingStatus, AgentPairingStatusResponse, AgentRegistrationResult, ApiClient, ApiError,
+    CredentialAccess, CredentialMethod, EntrySearchResult, GetCredentialOptions, GrantStatus,
+    ReportCredentialStaleInput, VaultManifest,
 };
 use palladin_core::host::ApiHost;
 use palladin_core::legacy_typescript::{LegacyTypeScriptError, LegacyTypeScriptRepository};
@@ -19,16 +24,21 @@ use palladin_core::profiles::{
 };
 use palladin_core::public_store::{
     PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicProfileConfig, PublicRegistry,
-    profile_binding_bytes, profile_config_digest, registry_digest,
+    PublicVaultTrustAnchor, profile_binding_bytes, profile_config_digest, registry_digest,
 };
 use palladin_core::secret::OrganizationApiKey;
+use palladin_core::terminal::shorten_identifier;
 use palladin_credential::wait::{
-    HeartbeatInfo, WaitError, WaitHints, WaitOptions, WaitPolicyError, await_grant,
+    HeartbeatInfo, WaitError, WaitHints, WaitOptions, WaitPolicyError, await_grant_exponential,
     resolve_wait_policy,
 };
 use palladin_crypto::{
-    DecryptedCredential, Ed25519Identity, X25519Identity, decrypt_credential,
-    verify_profile_binding,
+    AadField, AadProfile, AadValue, AgentIdentityBinding, CredentialEnvelopeContext,
+    DecryptedCredential, Ed25519Identity, EncryptedReasonContext, EnvelopeHeader, HkdfContext,
+    PairingCandidate, PairingRelayStatus, PinnedVaultTrust, SecretBytes, VaultManifestV2,
+    X25519Identity, confirm_pairing_from_relay, decode_base64url, decrypt_credential,
+    decrypt_envelope, derive_projection_key, key_fingerprint, open_sealed_box, prepare_pairing,
+    verify_current_manifest, verify_profile_binding,
 };
 use palladin_exec::{
     EnvironmentError, SecretEnvironment, resolve_interpreter, run_command, run_script,
@@ -46,7 +56,10 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 use zeroize::Zeroizing;
+
+use discovery::{DiscoveryPlaintext, LocalDiscoveryIndex};
 
 use integrity::{
     ConfigWrite, IntegrityJournal, SecretAllocation, SecretCopy, SecretDeletion, TRUST_OWNER_ID,
@@ -57,11 +70,22 @@ use integrity::{
 use palladin_credential::fields::{FieldSelector, resolve_field};
 use palladin_credential::secret::{ScriptPayload, parse_secret};
 
+const DISCOVERY_SYNC_PAGE_SIZE: usize = 200;
+const MAX_DISCOVERY_SYNC_PAGES: usize = 1_000;
+
+fn update_registered_agent_id(config: &mut PublicProfileConfig, agent_id: &str) {
+    if config.agent_id.as_deref() != Some(agent_id) {
+        config.vault_trust_anchors.clear();
+    }
+    config.agent_id = Some(agent_id.to_owned());
+}
+
 pub use palladin_exec::{ExecError, ExecResult, OperatorOutput};
 
 pub struct RuntimeService<S> {
     repository: ProfileRepository,
     secrets: S,
+    discovery: Arc<tokio::sync::Mutex<LocalDiscoveryIndex>>,
 }
 
 const OPERATION_BINDING_DOMAIN: &[u8] = b"palladin.runtime.exact-operation.v1";
@@ -75,6 +99,7 @@ pub enum RuntimeOperation {
     GetCredential,
     ExecWithCredential,
     ReportCredentialStale,
+    PairVaults,
     VerifyIdentity,
     DeleteProfile,
     PurgeProfile,
@@ -91,6 +116,7 @@ impl RuntimeOperation {
             Self::GetCredential => "get_credential",
             Self::ExecWithCredential => "exec_with_credential",
             Self::ReportCredentialStale => "report_credential_stale",
+            Self::PairVaults => "pair_vaults",
             Self::VerifyIdentity => "verify_identity",
             Self::DeleteProfile => "delete_profile",
             Self::PurgeProfile => "purge_profile",
@@ -107,7 +133,9 @@ impl RuntimeOperation {
             Self::GetCredential => AuthorizationPrompt::GetCredential,
             Self::ExecWithCredential => AuthorizationPrompt::ExecWithCredential,
             Self::ReportCredentialStale => AuthorizationPrompt::ReportCredentialStale,
-            Self::VerifyIdentity | Self::UpgradeSecurity => AuthorizationPrompt::IdentityManagement,
+            Self::VerifyIdentity | Self::UpgradeSecurity | Self::PairVaults => {
+                AuthorizationPrompt::IdentityManagement
+            }
             Self::DeleteProfile | Self::PurgeProfile | Self::PurgeAll => {
                 AuthorizationPrompt::DestructiveIdentityManagement
             }
@@ -170,6 +198,9 @@ pub enum OperationDescriptor {
         code: String,
         note: Option<String>,
     },
+    PairVaults {
+        activation_id: String,
+    },
     VerifyIdentity,
     DeleteProfile,
     PurgeProfile,
@@ -197,6 +228,7 @@ impl OperationDescriptor {
             Self::GetCredential { .. } => RuntimeOperation::GetCredential,
             Self::ExecWithCredential { .. } => RuntimeOperation::ExecWithCredential,
             Self::ReportCredentialStale { .. } => RuntimeOperation::ReportCredentialStale,
+            Self::PairVaults { .. } => RuntimeOperation::PairVaults,
             Self::VerifyIdentity => RuntimeOperation::VerifyIdentity,
             Self::DeleteProfile => RuntimeOperation::DeleteProfile,
             Self::PurgeProfile => RuntimeOperation::PurgeProfile,
@@ -288,6 +320,7 @@ impl OperationDescriptor {
                 encoder.field(code.as_bytes());
                 encoder.optional(note.as_deref());
             }
+            Self::PairVaults { activation_id } => encoder.field(activation_id.as_bytes()),
         }
         encoder.finish()
     }
@@ -507,12 +540,13 @@ struct VerifiedState {
     configs: BTreeMap<String, PublicProfileConfig>,
 }
 
-impl<S: SecretStore> RuntimeService<S> {
+impl<S: SecretStore + Sync> RuntimeService<S> {
     #[must_use]
     pub fn new(repository: ProfileRepository, secrets: S) -> Self {
         Self {
             repository,
             secrets,
+            discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
         }
     }
 
@@ -1095,6 +1129,11 @@ impl<S: SecretStore> RuntimeService<S> {
                         retired
                     })
                     .unwrap_or_default(),
+                vault_trust_anchors: existing_config
+                    .as_ref()
+                    .filter(|config| config.agent_id == agent_id)
+                    .map(|config| config.vault_trust_anchors.clone())
+                    .unwrap_or_default(),
                 agent_id,
                 agent_active,
                 encryption_public_key: Some(encryption_public_key),
@@ -1241,7 +1280,7 @@ impl<S: SecretStore> RuntimeService<S> {
         | AgentRegistrationResult::Active { agent_id, .. }
         | AgentRegistrationResult::Deactivated { agent_id } = &registration
         {
-            config.agent_id = Some(agent_id.clone());
+            update_registered_agent_id(&mut config, agent_id);
             config.agent_active = matches!(&registration, AgentRegistrationResult::Active { .. });
             config.encryption_public_key = Some(STANDARD.encode(encryption.public_key()));
             config.signing_public_key = Some(STANDARD.encode(signing_public_key));
@@ -1270,6 +1309,9 @@ impl<S: SecretStore> RuntimeService<S> {
                 false,
             )?;
         }
+        if !matches!(&registration, AgentRegistrationResult::Active { .. }) {
+            self.discovery.lock().await.purge();
+        }
         Ok(StatusOutcome {
             profile: agent,
             config,
@@ -1283,7 +1325,7 @@ impl<S: SecretStore> RuntimeService<S> {
         hostname: &str,
         connection: &OperationConnection,
         descriptor: OperationDescriptor,
-    ) -> Result<RuntimeSession, RuntimeError> {
+    ) -> Result<RuntimeSession<'_>, RuntimeError> {
         let _lock = self.repository.acquire_transaction_lock()?;
         self.recover_pending_operations_locked()?;
         let state = self.verified_state_locked()?;
@@ -1297,6 +1339,10 @@ impl<S: SecretStore> RuntimeService<S> {
         organization_owners.push(config.organization_credential_id.clone());
         organization_owners.sort();
         organization_owners.dedup();
+        let pairing_activation_id = match &descriptor {
+            OperationDescriptor::PairVaults { activation_id } => Some(activation_id.clone()),
+            _ => None,
+        };
         let request = connection.request(&descriptor)?;
         let operation = request.operation;
         let binding = request.binding(
@@ -1328,6 +1374,12 @@ impl<S: SecretStore> RuntimeService<S> {
             .agent_id
             .as_ref()
             .ok_or(RuntimeError::MissingAgentId)?;
+        let profile_signing = Ed25519Identity::from_libsodium_secret(
+            signing
+                .libsodium_secret_for_secure_storage()
+                .expose_secret()
+                .to_vec(),
+        )?;
         let signing = Some(palladin_api::SigningContext {
             agent_id: agent_id.clone(),
             identity: signing,
@@ -1342,7 +1394,82 @@ impl<S: SecretStore> RuntimeService<S> {
             lease,
             operation,
             consumed: AtomicBool::new(false),
+            pairing_activation_id,
+            discovery: Arc::clone(&self.discovery),
+            manifest_persistence: Some(self),
+            profile_signing: Some(profile_signing),
         })
+    }
+
+    fn persist_advanced_manifest_revision(
+        &self,
+        identity_id: &str,
+        expected_anchor: &PublicVaultTrustAnchor,
+        advanced: &PinnedVaultTrust,
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let state = self.verified_state_locked()?;
+        let mut config = state
+            .configs
+            .get(identity_id)
+            .cloned()
+            .ok_or(RuntimeError::InvalidPublicConfig)?;
+        let anchor = config
+            .vault_trust_anchors
+            .iter_mut()
+            .find(|anchor| anchor.vault_id == expected_anchor.vault_id)
+            .ok_or(RuntimeError::UntrustedVaultManifest)?;
+        let current_revision = anchor
+            .manifest_revision
+            .parse::<u64>()
+            .map_err(|_| RuntimeError::InvalidPublicConfig)?;
+        let expected_profile_signing_key = STANDARD.encode(signing.public_key());
+        if advanced.manifest_revision < current_revision
+            || advanced.vdk_version < anchor.vdk_version
+            || anchor.organization_id != expected_anchor.organization_id
+            || anchor.vault_signing_public_key
+                != URL_SAFE_NO_PAD.encode(advanced.signing_public_key)
+            || anchor.vault_signing_key_fingerprint
+                != URL_SAFE_NO_PAD.encode(advanced.signing_key_fingerprint)
+            || anchor.manifest_signing_key_version != advanced.manifest_signing_key_version
+            || config.signing_public_key.as_deref() != Some(expected_profile_signing_key.as_str())
+        {
+            return Err(RuntimeError::UntrustedVaultManifest);
+        }
+        if advanced.manifest_revision == current_revision
+            && advanced.vdk_version == anchor.vdk_version
+        {
+            return Ok(());
+        }
+        anchor.manifest_revision = advanced.manifest_revision.to_string();
+        anchor.vdk_version = advanced.vdk_version;
+        let binding =
+            profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+        let digest =
+            profile_config_digest(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        let mut registry = state.registry.clone();
+        registry
+            .agents
+            .iter_mut()
+            .find(|entry| entry.identity_id == identity_id)
+            .ok_or(RuntimeError::IntegrityViolation)?
+            .config_digest = Some(digest);
+        self.commit_authorized_transition(
+            &state,
+            registry,
+            vec![ConfigWrite {
+                identity_id: identity_id.to_owned(),
+                config,
+            }],
+            Vec::new(),
+            Vec::new(),
+            false,
+            lease,
+        )
     }
 
     pub fn verify_identity(
@@ -1373,6 +1500,79 @@ impl<S: SecretStore> RuntimeService<S> {
             .ensure_active()
             .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
         Ok(profile)
+    }
+
+    /// Atomically commits trust anchors produced by a locally verified pairing transcript.
+    /// The caller must retain the in-memory candidate until Member confirmation succeeds; this
+    /// method accepts only the resulting public anchors and binds them to signed profile state.
+    pub fn persist_pairing_anchors(
+        &self,
+        profile_name: Option<&str>,
+        hostname: &str,
+        connection: &OperationConnection,
+        confirmed: ConfirmedRuntimePairing,
+    ) -> Result<PublicProfileConfig, RuntimeError> {
+        let activation_id = confirmed.activation_id;
+        let expected_identity = confirmed.identity;
+        let mut anchors = confirmed.anchors;
+        anchors.sort_by(|left, right| left.vault_id.cmp(&right.vault_id));
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let state = self.verified_state_locked()?;
+        let profile = resolve_profile_in(&state.registry, profile_name)?;
+        let descriptor = OperationDescriptor::PairVaults { activation_id };
+        let (authorization, binding) = self.authorize_profile_operation_with_binding(
+            &state,
+            &profile,
+            hostname,
+            connection,
+            &descriptor,
+        )?;
+        let (encryption, signing) = self.load_identity_verified_authorized(
+            &profile.identity_id,
+            state.configs.get(&profile.identity_id),
+            &authorization,
+            &binding,
+        )?;
+        let mut config = state
+            .configs
+            .get(&profile.identity_id)
+            .cloned()
+            .ok_or(RuntimeError::InvalidPublicConfig)?;
+        validate_confirmed_pairing_identity(
+            &expected_identity,
+            &anchors,
+            &config,
+            encryption.public_key(),
+            signing.public_key(),
+        )?;
+        config.vault_trust_anchors = anchors;
+        let profile_binding =
+            profile_binding_bytes(&config).map_err(|_| RuntimeError::InvalidPublicConfig)?;
+        config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&profile_binding));
+        let config_digest =
+            profile_config_digest(&config).map_err(|_| RuntimeError::InvalidPublicConfig)?;
+        let mut registry = state.registry.clone();
+        registry
+            .agents
+            .iter_mut()
+            .find(|entry| entry.identity_id == profile.identity_id)
+            .ok_or(RuntimeError::IntegrityViolation)?
+            .config_digest = Some(config_digest);
+        let lease = authorization.into_lease()?;
+        self.commit_authorized_transition(
+            &state,
+            registry,
+            vec![ConfigWrite {
+                identity_id: profile.identity_id,
+                config: config.clone(),
+            }],
+            Vec::new(),
+            Vec::new(),
+            false,
+            &lease,
+        )?;
+        Ok(config)
     }
 
     /// Replaces exportable TypeScript identities with fresh native identities.
@@ -1648,6 +1848,7 @@ impl<S: SecretStore> RuntimeService<S> {
                     agent_active: false,
                     encryption_public_key: Some(encryption_public_key),
                     signing_public_key: Some(signing_public_key),
+                    vault_trust_anchors: Vec::new(),
                     binding_signature: STANDARD.encode([0_u8; 64]),
                 };
                 let binding =
@@ -2520,7 +2721,7 @@ pub struct LegacyCleanupOutcome {
     pub profiles: usize,
 }
 
-pub struct RuntimeSession {
+pub struct RuntimeSession<'a> {
     profile: PublicAgentEntry,
     config: PublicProfileConfig,
     api: ApiClient,
@@ -2528,6 +2729,41 @@ pub struct RuntimeSession {
     lease: OperationLease,
     operation: RuntimeOperation,
     consumed: AtomicBool,
+    pairing_activation_id: Option<String>,
+    discovery: Arc<tokio::sync::Mutex<LocalDiscoveryIndex>>,
+    manifest_persistence: Option<&'a dyn ManifestRevisionPersistence>,
+    profile_signing: Option<Ed25519Identity>,
+}
+
+trait ManifestRevisionPersistence: Sync {
+    fn persist_advanced_manifest_revision(
+        &self,
+        identity_id: &str,
+        expected_anchor: &PublicVaultTrustAnchor,
+        advanced: &PinnedVaultTrust,
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError>;
+}
+
+impl<S: SecretStore + Sync> ManifestRevisionPersistence for RuntimeService<S> {
+    fn persist_advanced_manifest_revision(
+        &self,
+        identity_id: &str,
+        expected_anchor: &PublicVaultTrustAnchor,
+        advanced: &PinnedVaultTrust,
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError> {
+        RuntimeService::persist_advanced_manifest_revision(
+            self,
+            identity_id,
+            expected_anchor,
+            advanced,
+            signing,
+            lease,
+        )
+    }
 }
 
 struct OperationCancellation {
@@ -2583,7 +2819,7 @@ pub struct CredentialExecRequest<'a> {
     pub output: OperatorOutput,
 }
 
-impl RuntimeSession {
+impl RuntimeSession<'_> {
     #[must_use]
     pub fn profile(&self) -> &PublicAgentEntry {
         &self.profile
@@ -2613,6 +2849,236 @@ impl RuntimeSession {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| RuntimeError::OperationAuthorizationConsumed)?;
         Ok(())
+    }
+
+    fn ensure_pairing_activation(&self, activation_id: &str) -> Result<(), RuntimeError> {
+        if self.pairing_activation_id.as_deref() != Some(activation_id) {
+            return Err(RuntimeError::OperationAuthorizationMismatch);
+        }
+        Ok(())
+    }
+
+    /// Consumes a renewed PairVaults authorization for polling an existing, exactly bound
+    /// activation without creating a second pairing candidate.
+    pub fn resume_pairing_polling(&self, activation_id: &str) -> Result<(), RuntimeError> {
+        self.ensure_pairing_activation(activation_id)?;
+        self.begin_operation(RuntimeOperation::PairVaults)
+    }
+
+    /// Creates an authenticated pairing transcript for the exact activation bound to this
+    /// operation. The organization identifier is introduced by the Member-confirmed transcript;
+    /// the Agent identifier and both Agent key fingerprints are derived from local identity state.
+    pub async fn create_pairing_activation(
+        &self,
+        activation_id: &str,
+    ) -> Result<RuntimePairingCandidate, RuntimeError> {
+        self.ensure_pairing_activation(activation_id)?;
+        self.begin_operation(RuntimeOperation::PairVaults)?;
+        if !self.config.agent_active {
+            return Err(RuntimeError::AgentNotActive);
+        }
+        let cancellation = self.lease.cancellation_token();
+        let remaining = self
+            .lease
+            .remaining()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        let response = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                return Err(RuntimeError::OperationAuthorizationExpired);
+            }
+            () = tokio::time::sleep(remaining) => {
+                return Err(RuntimeError::OperationAuthorizationExpired);
+            }
+            response = self.api.create_pairing_activation(activation_id) => response?,
+        };
+        self.ensure_authorized()?;
+        if response.activation_id != activation_id {
+            return Err(RuntimeError::UntrustedVaultManifest);
+        }
+        let identity = self.pairing_identity_binding(&response.organization_id)?;
+        prepare_runtime_pairing(response, &identity)
+    }
+
+    /// Polls only after the activation call consumed this PairVaults authorization.
+    pub async fn get_pairing_status(
+        &self,
+        activation_id: &str,
+    ) -> Result<AgentPairingStatusResponse, RuntimeError> {
+        self.ensure_pairing_activation(activation_id)?;
+        self.ensure_operation(RuntimeOperation::PairVaults)?;
+        if !self.consumed.load(Ordering::SeqCst) {
+            return Err(RuntimeError::OperationAuthorizationMismatch);
+        }
+        let cancellation = self.lease.cancellation_token();
+        let remaining = self
+            .lease
+            .remaining()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        let response = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                return Err(RuntimeError::OperationAuthorizationExpired);
+            }
+            () = tokio::time::sleep(remaining) => {
+                return Err(RuntimeError::OperationAuthorizationExpired);
+            }
+            response = self.api.get_pairing_status(activation_id) => response?,
+        };
+        self.ensure_authorized()?;
+        Ok(response)
+    }
+
+    async fn credential_options(
+        &self,
+        request: CredentialDeliveryRequest<'_>,
+        method: CredentialMethod,
+    ) -> Result<GetCredentialOptions, RuntimeError> {
+        let requested_methods = Vec::new();
+        let Some(reason) = request
+            .reason
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(GetCredentialOptions {
+                encrypted_reason: None,
+                method: Some(method),
+                requested_methods,
+            });
+        };
+        let anchor = self
+            .config
+            .vault_trust_anchors
+            .iter()
+            .find(|anchor| anchor.vault_id == request.vault_id)
+            .ok_or(RuntimeError::UntrustedVaultManifest)?;
+        let response = self.api.list_vault_manifests().await?;
+        let manifest = response
+            .items
+            .into_iter()
+            .find(|item| item.manifest.vault_id == request.vault_id)
+            .ok_or(RuntimeError::UntrustedVaultManifest)?
+            .manifest;
+        let manifest = vault_manifest_v2(manifest);
+        let identity = self.agent_identity_binding(anchor)?;
+        let pinned = pinned_vault_trust(anchor)?;
+        let advanced = verify_current_manifest(&manifest, &identity, &pinned)?;
+        self.persist_manifest_revision(anchor, &advanced)?;
+
+        let mut request_id = [0_u8; 16];
+        getrandom::fill(&mut request_id).map_err(|_| RuntimeError::RandomGenerationFailed)?;
+        request_id[6] = (request_id[6] & 0x0f) | 0x40;
+        request_id[8] = (request_id[8] & 0x3f) | 0x80;
+        let recipient_key = decode_32_url(&manifest.vault_agent_message_public_key)?;
+        let recipient_fingerprint = decode_32_url(&manifest.vault_agent_message_key_fingerprint)?;
+        let encrypted_reason = self.api.encrypt_access_reason(
+            reason,
+            EncryptedReasonContext {
+                organization_id: identity.organization_id,
+                vault_id: Uuid::parse_str(request.vault_id)
+                    .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+                entry_id: Uuid::parse_str(request.entry_id)
+                    .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+                grant_request_id: Uuid::from_bytes(request_id),
+                agent_id: identity.agent_id,
+                request_revision: 1,
+                reason_key_version: 1,
+                agent_message_key_version: manifest.agent_message_key_version,
+                member_key_generation: manifest.agent_message_key_version,
+                requested_methods: credential_method_mask(method),
+                recipient_agent_message_public_key: recipient_key,
+                recipient_agent_message_key_fingerprint: recipient_fingerprint,
+            },
+        )?;
+        Ok(GetCredentialOptions {
+            encrypted_reason: Some(encrypted_reason),
+            method: Some(method),
+            requested_methods,
+        })
+    }
+
+    fn agent_identity_binding(
+        &self,
+        anchor: &PublicVaultTrustAnchor,
+    ) -> Result<AgentIdentityBinding, RuntimeError> {
+        let agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        let signing_public_key = self
+            .config
+            .signing_public_key
+            .as_deref()
+            .ok_or(RuntimeError::InvalidPublicConfig)
+            .and_then(decode_32_standard)?;
+        Ok(AgentIdentityBinding {
+            organization_id: Uuid::parse_str(&anchor.organization_id)
+                .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+            agent_id: Uuid::parse_str(agent_id).map_err(|_| RuntimeError::InvalidPublicConfig)?,
+            x25519_fingerprint: key_fingerprint(1, self.encryption.public_key())?,
+            ed25519_fingerprint: key_fingerprint(2, &signing_public_key)?,
+        })
+    }
+
+    fn pairing_identity_binding(
+        &self,
+        organization_id: &str,
+    ) -> Result<AgentIdentityBinding, RuntimeError> {
+        let agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        let signing_public_key = self
+            .config
+            .signing_public_key
+            .as_deref()
+            .ok_or(RuntimeError::InvalidPublicConfig)
+            .and_then(decode_32_standard)?;
+        Ok(AgentIdentityBinding {
+            organization_id: Uuid::parse_str(organization_id)
+                .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+            agent_id: Uuid::parse_str(agent_id).map_err(|_| RuntimeError::InvalidPublicConfig)?,
+            x25519_fingerprint: key_fingerprint(1, self.encryption.public_key())?,
+            ed25519_fingerprint: key_fingerprint(2, &signing_public_key)?,
+        })
+    }
+
+    fn persist_manifest_revision(
+        &self,
+        anchor: &PublicVaultTrustAnchor,
+        advanced: &PinnedVaultTrust,
+    ) -> Result<(), RuntimeError> {
+        let pinned = anchor
+            .manifest_revision
+            .parse::<u64>()
+            .map_err(|_| RuntimeError::InvalidPublicConfig)?;
+        if advanced.manifest_revision < pinned || advanced.vdk_version < anchor.vdk_version {
+            return Err(RuntimeError::UntrustedVaultManifest);
+        }
+        let Some(persistence) = self.manifest_persistence else {
+            return if advanced.manifest_revision == pinned
+                && advanced.vdk_version == anchor.vdk_version
+            {
+                Ok(())
+            } else {
+                Err(RuntimeError::IntegrityViolation)
+            };
+        };
+        let signing = self
+            .profile_signing
+            .as_ref()
+            .ok_or(RuntimeError::IntegrityViolation)?;
+        self.ensure_authorized()?;
+        persistence.persist_advanced_manifest_revision(
+            &self.profile.identity_id,
+            anchor,
+            advanced,
+            signing,
+            &self.lease,
+        )?;
+        self.ensure_authorized()
     }
 
     fn operation_cancellation(
@@ -2650,11 +3116,353 @@ impl RuntimeSession {
             () = tokio::time::sleep(remaining) => {
                 Err(RuntimeError::OperationAuthorizationExpired)
             }
-            result = self.api.search_entries(query, cursor, page_size) => {
+            result = self.search_local_discovery(query, cursor, page_size) => {
                 self.ensure_authorized()?;
-                result.map_err(RuntimeError::Api)
+                result
             }
         }
+    }
+
+    async fn search_local_discovery(
+        &self,
+        query: &str,
+        cursor: Option<&str>,
+        page_size: Option<u32>,
+    ) -> Result<EntrySearchResult, RuntimeError> {
+        let manifests = match self.api.list_vault_manifests().await {
+            Ok(manifests) => manifests,
+            Err(error) => {
+                self.discovery.lock().await.purge();
+                return Err(error.into());
+            }
+        };
+        let mut index = self.discovery.lock().await;
+        let agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        index.scope_to_identity(&self.profile.identity_id, agent_id);
+        let mut authorized_vaults = BTreeSet::new();
+        for item in manifests.items {
+            let vault_id = item.manifest.vault_id.clone();
+            authorized_vaults.insert(vault_id.clone());
+            let anchor = self
+                .config
+                .vault_trust_anchors
+                .iter()
+                .find(|anchor| anchor.vault_id == vault_id)
+                .ok_or(RuntimeError::UntrustedVaultManifest)?;
+            let identity = self.agent_identity_binding(anchor)?;
+            let manifest = vault_manifest_v2(item.manifest);
+            let advanced =
+                verify_current_manifest(&manifest, &identity, &pinned_vault_trust(anchor)?)?;
+            self.persist_manifest_revision(anchor, &advanced)?;
+            let vdk = self.open_manifest_vdk(&manifest, item.envelope)?;
+            if let Err(error) = self
+                .sync_discovery_vault(&vault_id, manifest.vdk_version, &vdk, &mut index)
+                .await
+            {
+                if matches!(error, RuntimeError::Api(ApiError::ResetRequired { .. })) {
+                    index.remove_vault(&vault_id);
+                    self.sync_discovery_vault(&vault_id, manifest.vdk_version, &vdk, &mut index)
+                        .await?;
+                } else {
+                    return Err(error);
+                }
+            }
+        }
+        index.retain_vaults(&authorized_vaults);
+        index.search(query, cursor, page_size)
+    }
+
+    fn open_manifest_vdk(
+        &self,
+        manifest: &VaultManifestV2,
+        envelope: palladin_api::AgentVaultDiscoveryEnvelope,
+    ) -> Result<SecretBytes, RuntimeError> {
+        if envelope.protocol_version != manifest.protocol_version
+            || envelope.organization_id != manifest.organization_id
+            || envelope.vault_id != manifest.vault_id
+            || envelope.agent_id != manifest.agent_id
+            || envelope.vdk_version != manifest.vdk_version
+            || envelope.algorithm_suite != manifest.algorithm_suite
+            || envelope.recipient_agent_key_fingerprint != manifest.agent_x25519_fingerprint
+            || envelope.manifest_revision != manifest.manifest_revision
+            || envelope.manifest_signature != manifest.signature
+            || envelope.recipient_agent_key_version == 0
+        {
+            return Err(RuntimeError::UntrustedVaultManifest);
+        }
+        let wrapped = decode_base64url(&envelope.agent_wrapped_vdk)?;
+        let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(&wrapped));
+        if digest
+            .as_bytes()
+            .ct_eq(manifest.agent_wrapped_vdk_digest.as_bytes())
+            .unwrap_u8()
+            != 1
+        {
+            return Err(RuntimeError::UntrustedVaultManifest);
+        }
+        let vdk = open_sealed_box(&wrapped, &self.encryption)?;
+        if vdk.expose_for_crypto_operation().len() != 32 {
+            return Err(RuntimeError::UntrustedVaultManifest);
+        }
+        Ok(vdk)
+    }
+
+    async fn sync_discovery_vault(
+        &self,
+        vault_id: &str,
+        vdk_version: u32,
+        vdk: &SecretBytes,
+        index: &mut LocalDiscoveryIndex,
+    ) -> Result<(), RuntimeError> {
+        if index.prepare_vault(vault_id, vdk_version) {
+            let after = index
+                .applied_sequence(vault_id)
+                .ok_or(RuntimeError::InvalidDiscoveryPayload)?
+                .to_owned();
+            return self
+                .apply_discovery_delta(vault_id, &after, vdk, index)
+                .await;
+        }
+        let mut snapshot_cursor = None;
+        let mut snapshot_base = None;
+        let mut heads = Vec::new();
+        for _ in 0..MAX_DISCOVERY_SYNC_PAGES {
+            let page = self
+                .api
+                .get_agent_discovery_snapshot(
+                    vault_id,
+                    snapshot_cursor.as_deref(),
+                    Some(DISCOVERY_SYNC_PAGE_SIZE as u32),
+                )
+                .await?;
+            if page.items.len() > DISCOVERY_SYNC_PAGE_SIZE {
+                return Err(RuntimeError::DiscoveryIndexLimitExceeded);
+            }
+            validate_sequence(&page.snapshot_base_sequence)?;
+            if snapshot_base
+                .as_ref()
+                .is_some_and(|base| base != &page.snapshot_base_sequence)
+            {
+                return Err(RuntimeError::InvalidDiscoveryPayload);
+            }
+            snapshot_base = Some(page.snapshot_base_sequence);
+            for item in page.items {
+                match item {
+                    AgentDiscoverySyncItem::Head {
+                        entry_id,
+                        agent_discovery_revision,
+                        agent_discovery,
+                    } => {
+                        let plaintext = self.decrypt_discovery(
+                            vault_id,
+                            &entry_id,
+                            &agent_discovery_revision,
+                            agent_discovery,
+                            vdk,
+                        )?;
+                        heads.push((entry_id, plaintext));
+                    }
+                    AgentDiscoverySyncItem::Tombstone { .. } => {
+                        return Err(RuntimeError::InvalidDiscoveryPayload);
+                    }
+                }
+                if heads.len() > 10_000 {
+                    return Err(RuntimeError::DiscoveryIndexLimitExceeded);
+                }
+            }
+            snapshot_cursor = page.next_cursor;
+            if snapshot_cursor.is_none() {
+                break;
+            }
+        }
+        if snapshot_cursor.is_some() {
+            return Err(RuntimeError::DiscoveryIndexLimitExceeded);
+        }
+        index.replace_vault(vault_id, heads)?;
+        let after = snapshot_base.ok_or(RuntimeError::InvalidDiscoveryPayload)?;
+        self.apply_discovery_delta(vault_id, &after, vdk, index)
+            .await
+    }
+
+    async fn apply_discovery_delta(
+        &self,
+        vault_id: &str,
+        initial_after: &str,
+        vdk: &SecretBytes,
+        index: &mut LocalDiscoveryIndex,
+    ) -> Result<(), RuntimeError> {
+        let mut after = initial_after.to_owned();
+        let mut applied = validate_sequence(&after)?;
+        let mut delta_upper_bound = None;
+        let mut continuation = None;
+        for _ in 0..MAX_DISCOVERY_SYNC_PAGES {
+            let page = self
+                .api
+                .get_agent_discovery_delta(
+                    vault_id,
+                    continuation.is_none().then_some(after.as_str()),
+                    continuation.as_deref(),
+                    Some(DISCOVERY_SYNC_PAGE_SIZE as u32),
+                )
+                .await?;
+            if page.items.len() > DISCOVERY_SYNC_PAGE_SIZE {
+                return Err(RuntimeError::DiscoveryIndexLimitExceeded);
+            }
+            let upper_bound = validate_sequence(&page.delta_upper_bound)?;
+            let applied_through = validate_sequence(&page.applied_through_sequence)?;
+            if delta_upper_bound.is_some_and(|expected| expected != upper_bound)
+                || applied_through < applied
+                || applied_through > upper_bound
+            {
+                return Err(RuntimeError::InvalidDiscoveryPayload);
+            }
+            delta_upper_bound = Some(upper_bound);
+            for item in page.items {
+                match item {
+                    AgentDiscoverySyncItem::Head {
+                        entry_id,
+                        agent_discovery_revision,
+                        agent_discovery,
+                    } => index.upsert(
+                        vault_id,
+                        &entry_id,
+                        self.decrypt_discovery(
+                            vault_id,
+                            &entry_id,
+                            &agent_discovery_revision,
+                            agent_discovery,
+                            vdk,
+                        )?,
+                    )?,
+                    AgentDiscoverySyncItem::Tombstone {
+                        entry_id,
+                        agent_discovery_revision,
+                        agent_discovery,
+                    } => {
+                        if agent_discovery_revision.is_some() || agent_discovery.is_some() {
+                            return Err(RuntimeError::InvalidDiscoveryPayload);
+                        }
+                        index.remove(vault_id, &entry_id);
+                    }
+                }
+            }
+            after = page.applied_through_sequence;
+            applied = applied_through;
+            continuation = page.continuation_cursor;
+            if continuation.is_none() {
+                if applied != upper_bound {
+                    return Err(RuntimeError::InvalidDiscoveryPayload);
+                }
+                index.mark_applied(vault_id, after);
+                return Ok(());
+            }
+        }
+        Err(RuntimeError::DiscoveryIndexLimitExceeded)
+    }
+
+    fn decrypt_discovery(
+        &self,
+        expected_vault_id: &str,
+        expected_entry_id: &str,
+        expected_revision: &str,
+        envelope: AgentDiscoveryEnvelope,
+        vdk: &SecretBytes,
+    ) -> Result<DiscoveryPlaintext, RuntimeError> {
+        let organization_id = Uuid::parse_str(&envelope.organization_id)
+            .map_err(|_| RuntimeError::InvalidDiscoveryPayload)?;
+        let vault_id = Uuid::parse_str(&envelope.vault_id)
+            .map_err(|_| RuntimeError::InvalidDiscoveryPayload)?;
+        let entry_id = Uuid::parse_str(&envelope.entry_id)
+            .map_err(|_| RuntimeError::InvalidDiscoveryPayload)?;
+        let revision = validate_sequence(&envelope.agent_discovery_revision)?;
+        let header_revision = validate_sequence(&envelope.header.resource_revision)?;
+        validate_discovery_envelope_scope(
+            expected_vault_id,
+            expected_entry_id,
+            expected_revision,
+            &envelope,
+            revision,
+            header_revision,
+        )?;
+        let header = EnvelopeHeader {
+            protocol_version: envelope.header.protocol_version,
+            algorithm_suite: envelope.header.algorithm_suite,
+            resource_kind: envelope.header.resource_kind,
+            projection_kind: envelope.header.projection_kind,
+            resource_revision: revision,
+            key_version: envelope.header.key_version,
+            member_key_generation: envelope.header.member_key_generation,
+        };
+        let nonce = decode_base64url(&envelope.header.nonce)?;
+        let ciphertext = decode_base64url(&envelope.ciphertext)?;
+        let key = derive_projection_key(
+            vdk.expose_for_crypto_operation(),
+            HkdfContext {
+                resource_kind: 2,
+                organization_id,
+                vault_id,
+                entry_id: Some(entry_id),
+                key_version: envelope.vdk_version,
+                member_key_generation: envelope.header.member_key_generation,
+                purpose_id: 4,
+            },
+        )?;
+        let aad = [
+            AadField {
+                tag: 1,
+                value: AadValue::U16(header.protocol_version),
+            },
+            AadField {
+                tag: 2,
+                value: AadValue::U16(header.algorithm_suite),
+            },
+            AadField {
+                tag: 3,
+                value: AadValue::U16(header.resource_kind),
+            },
+            AadField {
+                tag: 4,
+                value: AadValue::Uuid(organization_id),
+            },
+            AadField {
+                tag: 5,
+                value: AadValue::Uuid(vault_id),
+            },
+            AadField {
+                tag: 6,
+                value: AadValue::Uuid(entry_id),
+            },
+            AadField {
+                tag: 7,
+                value: AadValue::U16(header.projection_kind),
+            },
+            AadField {
+                tag: 8,
+                value: AadValue::U64(header.resource_revision),
+            },
+            AadField {
+                tag: 9,
+                value: AadValue::U32(header.key_version),
+            },
+            AadField {
+                tag: 10,
+                value: AadValue::U32(header.member_key_generation),
+            },
+        ];
+        let plaintext = decrypt_envelope(
+            AadProfile::AgentDiscovery,
+            header,
+            key.expose_for_crypto_operation(),
+            &nonce,
+            &aad,
+            &ciphertext,
+        )?;
+        serde_json::from_slice(plaintext.expose_for_crypto_operation())
+            .map_err(|_| RuntimeError::InvalidDiscoveryPayload)
     }
 
     pub async fn report_credential_stale(
@@ -2808,12 +3616,12 @@ impl RuntimeSession {
             let parsed = parse_secret(credential.expose_for_authorized_operation())
                 .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
             drop(credential);
-            let value = if let Some(field) = &reference.field {
+            let value = if reference.field.is_some() || reference.field_id.is_some() {
                 resolve_field(
                     &parsed,
                     &FieldSelector {
-                        field: Some(field.clone()),
-                        field_id: None,
+                        field: reference.field.clone(),
+                        field_id: reference.field_id.clone(),
                     },
                 )
                 .map_err(|_| RuntimeError::InvalidEnvironmentField)?
@@ -2840,15 +3648,7 @@ impl RuntimeSession {
         self.ensure_authorized()?;
         let operation_cancellation = self.operation_cancellation(cancellation)?;
         let cancellation = operation_cancellation.token();
-        let options = GetCredentialOptions {
-            reason: request
-                .reason
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned),
-            method: Some(method),
-            requested_methods: Vec::new(),
-        };
+        let options = self.credential_options(request, method).await?;
         let initial = tokio::select! {
             biased;
             () = cancellation.cancelled() => {
@@ -2870,13 +3670,39 @@ impl RuntimeSession {
             _ => WaitHints::default(),
         };
         let policy = resolve_wait_policy(request.wait, hints)?;
-        let access = await_grant(
+        let pending_grant_id = match &initial {
+            CredentialAccess::Pending { grant_id, .. } => Some(grant_id.clone()),
+            _ => None,
+        };
+        let access = await_grant_exponential(
             initial,
             policy,
             cancellation,
-            || {
-                self.api
-                    .get_credential(request.vault_id, request.entry_id, &options)
+            || async {
+                let Some(grant_id) = pending_grant_id.as_deref() else {
+                    return Err(ApiError::InvalidResponse);
+                };
+                let status = self
+                    .api
+                    .get_grant_status(request.vault_id, grant_id)
+                    .await?;
+                match status.status {
+                    GrantStatus::Pending => Ok(CredentialAccess::Pending {
+                        grant_id: status.grant_id,
+                        created: None,
+                        poll_interval_ms: None,
+                        max_wait_ms: None,
+                    }),
+                    GrantStatus::Active => {
+                        self.api
+                            .get_credential(request.vault_id, request.entry_id, &options)
+                            .await
+                    }
+                    GrantStatus::Denied => Ok(CredentialAccess::Denied),
+                    GrantStatus::Revoked => Ok(CredentialAccess::Revoked),
+                    GrantStatus::Expired => Ok(CredentialAccess::Expired),
+                    GrantStatus::Consumed => Ok(CredentialAccess::Consumed),
+                }
             },
             tokio::time::sleep,
             heartbeat,
@@ -2887,21 +3713,54 @@ impl RuntimeSession {
             WaitError::Poll(error) => RuntimeError::Api(error),
         })?;
         let CredentialAccess::Granted {
-            entry_id,
-            label,
-            url_domain,
+            organization_id: _,
+            vault_id: _,
+            grant_id,
+            agent_id: _,
+            approved_methods,
+            entry_id: _,
             envelope,
         } = access
         else {
             return Ok(CredentialDelivery::NotGranted(access));
         };
         self.ensure_authorized()?;
-        let credential = decrypt_credential(&envelope, &self.encryption)?;
+        let anchor = self
+            .config
+            .vault_trust_anchors
+            .iter()
+            .find(|anchor| anchor.vault_id == request.vault_id)
+            .ok_or(RuntimeError::UntrustedVaultManifest)?;
+        let expected_agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        let credential = decrypt_credential(
+            &envelope,
+            &self.encryption,
+            &CredentialEnvelopeContext {
+                organization_id: &anchor.organization_id,
+                vault_id: request.vault_id,
+                grant_id: &grant_id,
+                agent_id: expected_agent_id,
+                entry_id: request.entry_id,
+                approved_methods,
+                requested_vault_id: request.vault_id,
+                requested_entry_id: request.entry_id,
+                requested_method: match method {
+                    CredentialMethod::Get => 1,
+                    CredentialMethod::Exec => 2,
+                    CredentialMethod::Inject => 4,
+                },
+            },
+        )?;
         self.ensure_authorized()?;
+        let entry_id = request.entry_id.to_owned();
+        let label = shorten_identifier(&entry_id);
         Ok(CredentialDelivery::Granted(DeliveredCredential {
             entry_id,
             label,
-            url_domain,
             credential,
         }))
     }
@@ -2933,7 +3792,6 @@ impl std::fmt::Debug for CredentialDelivery {
 pub struct DeliveredCredential {
     pub entry_id: String,
     pub label: String,
-    pub url_domain: Option<String>,
     credential: DecryptedCredential,
 }
 
@@ -2950,9 +3808,241 @@ impl std::fmt::Debug for DeliveredCredential {
             .debug_struct("DeliveredCredential")
             .field("entry_id", &self.entry_id)
             .field("label", &"[REDACTED]")
-            .field("url_domain", &self.url_domain)
             .field("credential", &"[REDACTED]")
             .finish()
+    }
+}
+
+pub struct RuntimePairingCandidate {
+    identity: AgentIdentityBinding,
+    agent_access_epoch: u64,
+    candidate: PairingCandidate,
+}
+
+pub struct ConfirmedRuntimePairing {
+    activation_id: String,
+    identity: AgentIdentityBinding,
+    anchors: Vec<PublicVaultTrustAnchor>,
+}
+
+impl RuntimePairingCandidate {
+    #[must_use]
+    pub fn transcript_digest(&self) -> &str {
+        self.candidate.transcript_digest()
+    }
+
+    #[must_use]
+    pub fn short_authentication_string(&self) -> &str {
+        self.candidate.short_authentication_string()
+    }
+
+    pub fn confirm_from_relay(
+        self,
+        response: AgentPairingStatusResponse,
+        now: OffsetDateTime,
+    ) -> Result<ConfirmedRuntimePairing, RuntimeError> {
+        let activation_id = self.candidate.transcript().activation_id.clone();
+        let status = match response.status {
+            AgentPairingStatus::Pending => "pending",
+            AgentPairingStatus::Confirmed => "confirmed",
+            AgentPairingStatus::Expired => "expired",
+            AgentPairingStatus::Stale => "stale",
+        };
+        let anchors = confirm_pairing_from_relay(
+            self.candidate,
+            &PairingRelayStatus {
+                activation_id: response.activation_id,
+                status: status.to_owned(),
+                expires_at: response.expires_at,
+                confirmed_pairing_digest: response.confirmed_pairing_digest,
+            },
+            now,
+        )?;
+        Ok(ConfirmedRuntimePairing {
+            activation_id,
+            identity: self.identity.clone(),
+            anchors: public_anchors_from_pairing(
+                self.identity.organization_id,
+                self.agent_access_epoch,
+                anchors,
+            )?,
+        })
+    }
+}
+
+pub fn prepare_runtime_pairing(
+    response: AgentPairingActivationResponse,
+    expected_identity: &AgentIdentityBinding,
+) -> Result<RuntimePairingCandidate, RuntimeError> {
+    let activation_id =
+        Uuid::parse_str(&response.activation_id).map_err(|_| RuntimeError::InvalidPublicConfig)?;
+    let organization_id = Uuid::parse_str(&response.organization_id)
+        .map_err(|_| RuntimeError::InvalidPublicConfig)?;
+    let agent_id =
+        Uuid::parse_str(&response.agent_id).map_err(|_| RuntimeError::InvalidPublicConfig)?;
+    if organization_id != expected_identity.organization_id
+        || agent_id != expected_identity.agent_id
+        || response.agent_access_epoch == 0
+        || decode_32_url(&response.agent_x25519_fingerprint)?
+            != expected_identity.x25519_fingerprint
+        || decode_32_url(&response.agent_ed25519_fingerprint)?
+            != expected_identity.ed25519_fingerprint
+    {
+        return Err(RuntimeError::UntrustedVaultManifest);
+    }
+    OffsetDateTime::parse(&response.expires_at, &Rfc3339)
+        .map_err(|_| RuntimeError::InvalidPublicConfig)?;
+    let manifests = response
+        .candidate_manifests
+        .into_iter()
+        .map(vault_manifest_v2)
+        .collect::<Vec<_>>();
+    let candidate = prepare_pairing(activation_id, expected_identity, &manifests)?;
+    Ok(RuntimePairingCandidate {
+        identity: expected_identity.clone(),
+        agent_access_epoch: u64::from(response.agent_access_epoch),
+        candidate,
+    })
+}
+
+fn vault_manifest_v2(manifest: VaultManifest) -> VaultManifestV2 {
+    VaultManifestV2 {
+        protocol_version: manifest.protocol_version,
+        algorithm_suite: manifest.algorithm_suite,
+        organization_id: manifest.organization_id,
+        vault_id: manifest.vault_id,
+        agent_id: manifest.agent_id,
+        agent_x25519_fingerprint: manifest.agent_x25519_fingerprint,
+        agent_ed25519_fingerprint: manifest.agent_ed25519_fingerprint,
+        vault_signing_public_key: manifest.vault_signing_public_key,
+        vault_signing_key_fingerprint: manifest.vault_signing_key_fingerprint,
+        manifest_signing_key_version: manifest.manifest_signing_key_version,
+        vault_agent_message_public_key: manifest.vault_agent_message_public_key,
+        vault_agent_message_key_fingerprint: manifest.vault_agent_message_key_fingerprint,
+        agent_message_key_version: manifest.agent_message_key_version,
+        vdk_version: manifest.vdk_version,
+        agent_wrapped_vdk_digest: manifest.agent_wrapped_vdk_digest,
+        manifest_revision: manifest.manifest_revision,
+        issued_at: manifest.issued_at,
+        minimum_agent_runtime_protocol: manifest.minimum_agent_runtime_protocol,
+        signature: manifest.signature,
+    }
+}
+
+fn validate_sequence(value: &str) -> Result<u64, RuntimeError> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(RuntimeError::InvalidDiscoveryPayload);
+    }
+    value
+        .parse()
+        .map_err(|_| RuntimeError::InvalidDiscoveryPayload)
+}
+
+fn validate_discovery_envelope_scope(
+    expected_vault_id: &str,
+    expected_entry_id: &str,
+    expected_revision: &str,
+    envelope: &AgentDiscoveryEnvelope,
+    revision: u64,
+    header_revision: u64,
+) -> Result<(), RuntimeError> {
+    if envelope.vault_id != expected_vault_id
+        || envelope.entry_id != expected_entry_id
+        || envelope.agent_discovery_revision != expected_revision
+        || revision != header_revision
+        || envelope.vdk_version != envelope.header.key_version
+    {
+        return Err(RuntimeError::InvalidDiscoveryPayload);
+    }
+    Ok(())
+}
+
+fn decode_32_url(value: &str) -> Result<[u8; 32], RuntimeError> {
+    decode_base64url(value)?
+        .try_into()
+        .map_err(|_| RuntimeError::InvalidPublicConfig)
+}
+
+fn decode_32_standard(value: &str) -> Result<[u8; 32], RuntimeError> {
+    STANDARD
+        .decode(value)
+        .map_err(|_| RuntimeError::InvalidPublicConfig)?
+        .try_into()
+        .map_err(|_| RuntimeError::InvalidPublicConfig)
+}
+
+fn pinned_vault_trust(anchor: &PublicVaultTrustAnchor) -> Result<PinnedVaultTrust, RuntimeError> {
+    Ok(PinnedVaultTrust {
+        vault_id: Uuid::parse_str(&anchor.vault_id)
+            .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+        signing_public_key: decode_32_url(&anchor.vault_signing_public_key)?,
+        signing_key_fingerprint: decode_32_url(&anchor.vault_signing_key_fingerprint)?,
+        manifest_revision: anchor
+            .manifest_revision
+            .parse()
+            .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+        manifest_signing_key_version: anchor.manifest_signing_key_version,
+        vdk_version: anchor.vdk_version,
+    })
+}
+
+fn public_anchors_from_pairing(
+    organization_id: Uuid,
+    agent_access_epoch: u64,
+    anchors: Vec<PinnedVaultTrust>,
+) -> Result<Vec<PublicVaultTrustAnchor>, RuntimeError> {
+    if agent_access_epoch == 0 {
+        return Err(RuntimeError::InvalidPublicConfig);
+    }
+    let mut public = anchors
+        .into_iter()
+        .map(|anchor| PublicVaultTrustAnchor {
+            organization_id: organization_id.to_string(),
+            vault_id: anchor.vault_id.to_string(),
+            agent_access_epoch,
+            vault_signing_public_key: URL_SAFE_NO_PAD.encode(anchor.signing_public_key),
+            vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(anchor.signing_key_fingerprint),
+            manifest_revision: anchor.manifest_revision.to_string(),
+            manifest_signing_key_version: anchor.manifest_signing_key_version,
+            vdk_version: anchor.vdk_version,
+        })
+        .collect::<Vec<_>>();
+    public.sort_by(|left, right| left.vault_id.cmp(&right.vault_id));
+    Ok(public)
+}
+
+fn validate_confirmed_pairing_identity(
+    expected: &AgentIdentityBinding,
+    anchors: &[PublicVaultTrustAnchor],
+    config: &PublicProfileConfig,
+    encryption_public_key: &[u8; 32],
+    signing_public_key: &[u8; 32],
+) -> Result<(), RuntimeError> {
+    let configured_agent_id = config
+        .agent_id
+        .as_deref()
+        .ok_or(RuntimeError::MissingAgentId)
+        .and_then(|value| Uuid::parse_str(value).map_err(|_| RuntimeError::InvalidPublicConfig))?;
+    if configured_agent_id != expected.agent_id
+        || key_fingerprint(1, encryption_public_key)? != expected.x25519_fingerprint
+        || key_fingerprint(2, signing_public_key)? != expected.ed25519_fingerprint
+        || anchors
+            .iter()
+            .any(|anchor| anchor.organization_id != expected.organization_id.to_string())
+    {
+        return Err(RuntimeError::UntrustedVaultManifest);
+    }
+    Ok(())
+}
+
+const fn credential_method_mask(method: CredentialMethod) -> u16 {
+    match method {
+        CredentialMethod::Get => 1,
+        CredentialMethod::Exec => 2,
+        CredentialMethod::Inject => 4,
     }
 }
 
@@ -2988,10 +4078,24 @@ pub enum RuntimeError {
     MissingOrganizationCredential,
     #[error("Agent is not registered; run palladin status or reconnect it")]
     MissingAgentId,
+    #[error("Agent is not active; approve it in Palladin, then run palladin pair")]
+    AgentNotActive,
     #[error("stored secret has an invalid format")]
     InvalidStoredSecret,
     #[error("public profile configuration is invalid")]
     InvalidPublicConfig,
+    #[error("decrypted Discovery payload is invalid")]
+    InvalidDiscoveryPayload,
+    #[error("local Discovery query is invalid")]
+    InvalidDiscoveryQuery,
+    #[error("local Discovery cursor is invalid or stale")]
+    InvalidDiscoveryCursor,
+    #[error("local Discovery index exceeds its hard entry limit")]
+    DiscoveryIndexLimitExceeded,
+    #[error(
+        "vault manifest is not bound to an independently paired local trust anchor; run palladin pair"
+    )]
+    UntrustedVaultManifest,
     #[error(
         "legacy Agent data requires an explicit migration - use palladin security legacy-status for TypeScript state or palladin security upgrade for native schema v2"
     )]
@@ -3150,11 +4254,66 @@ mod tests {
     use std::io::Read;
     use std::sync::{Arc, Mutex};
 
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use palladin_crypto::{
+        EncodedSuitePayload, EncryptedCredential, EnvelopeBinding, EnvelopeDescriptor,
+        EnvelopePurpose, EnvelopeScope, GrantEnvelopeBinding, GrantEnvelopeDescriptor,
+        GrantEnvelopeScope, RecipientKeyKind, VAULT_XCHACHA_V1, WrappedGrantDek, WrapperContext,
+        WrapperPurpose, X25519_WRAPPER_V1, X25519SealedBoxSuite, XChaChaVaultSuite,
+        compute_field_set_commitment, compute_key_fingerprint,
+    };
+    use secrecy::{ExposeSecret, SecretBox};
     use serde_json::json;
+    use sha2::{Digest, Sha256};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     use super::*;
+
+    const TEST_ORGANIZATION_ID: &str = "00112233-4455-4677-8899-aabbccddeeff";
+    const TEST_VAULT_ID: &str = "11112222-3333-4444-8555-666677778888";
+    const TEST_ENTRY_ID: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    #[cfg(not(windows))]
+    const TEST_REFERENCE_ENTRY_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const TEST_GRANT_ID: &str = "12345678-1234-4234-8234-1234567890ab";
+    const TEST_AGENT_ID: &str = "fedcba98-7654-4321-8765-abcdefabcdef";
+
+    type MemorySecretValues = BTreeMap<(String, SecretSlot), Vec<u8>>;
+
+    #[derive(Clone, Default)]
+    struct MemorySecretStore(Arc<Mutex<MemorySecretValues>>);
+
+    impl SecretStore for MemorySecretStore {
+        fn get(
+            &self,
+            owner_id: &str,
+            slot: SecretSlot,
+        ) -> Result<Option<secrecy::SecretSlice<u8>>, StoreError> {
+            Ok(self
+                .0
+                .lock()
+                .expect("store")
+                .get(&(owner_id.to_owned(), slot))
+                .cloned()
+                .map(Into::into))
+        }
+
+        fn set(&self, owner_id: &str, slot: SecretSlot, secret: &[u8]) -> Result<(), StoreError> {
+            self.0
+                .lock()
+                .expect("store")
+                .insert((owner_id.to_owned(), slot), secret.to_vec());
+            Ok(())
+        }
+
+        fn delete(&self, owner_id: &str, slot: SecretSlot) -> Result<(), StoreError> {
+            self.0
+                .lock()
+                .expect("store")
+                .remove(&(owner_id.to_owned(), slot));
+            Ok(())
+        }
+    }
 
     fn test_lease() -> OperationLease {
         let scope = OperationScope::new(
@@ -3254,6 +4413,182 @@ mod tests {
         assert!(!debug.contains("approval reason"));
     }
 
+    #[test]
+    fn discovery_outer_entry_id_must_match_authenticated_envelope_scope() {
+        let envelope = AgentDiscoveryEnvelope {
+            organization_id: "11111111-1111-4111-8111-111111111111".to_owned(),
+            vault_id: "22222222-2222-4222-8222-222222222222".to_owned(),
+            entry_id: "33333333-3333-4333-8333-333333333333".to_owned(),
+            agent_discovery_revision: "7".to_owned(),
+            vdk_version: 2,
+            header: palladin_api::AgentDiscoveryEnvelopeHeader {
+                protocol_version: 2,
+                algorithm_suite: 1,
+                resource_kind: 2,
+                projection_kind: 3,
+                resource_revision: "7".to_owned(),
+                key_version: 2,
+                member_key_generation: 1,
+                nonce: "unused".to_owned(),
+            },
+            ciphertext: "unused".to_owned(),
+        };
+
+        assert!(
+            validate_discovery_envelope_scope(
+                &envelope.vault_id,
+                &envelope.entry_id,
+                "7",
+                &envelope,
+                7,
+                7,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            validate_discovery_envelope_scope(
+                &envelope.vault_id,
+                "44444444-4444-4444-8444-444444444444",
+                "7",
+                &envelope,
+                7,
+                7,
+            ),
+            Err(RuntimeError::InvalidDiscoveryPayload)
+        ));
+    }
+
+    #[test]
+    fn manifest_revision_advance_survives_restart_and_rejects_regression() {
+        let root = tempfile::tempdir().expect("root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("private root");
+        }
+        let store = MemorySecretStore::default();
+        let repository = ProfileRepository::new(root.path().to_path_buf()).expect("repository");
+        let service = RuntimeService::new(repository, store.clone());
+        let created = service.create_profile("default", None).expect("profile");
+        let signing_secret = store
+            .get(&created.identity_id, SecretSlot::Ed25519SecretKey)
+            .expect("read signing key")
+            .expect("signing key");
+        let signing =
+            Ed25519Identity::from_libsodium_secret(signing_secret.expose_secret().to_vec())
+                .expect("signing identity");
+        let vault_signing_key = [3_u8; 32];
+        let vault_signing_fingerprint =
+            key_fingerprint(3, &vault_signing_key).expect("fingerprint");
+        let anchor = PublicVaultTrustAnchor {
+            organization_id: "11111111-1111-4111-8111-111111111111".to_owned(),
+            vault_id: "22222222-2222-4222-8222-222222222222".to_owned(),
+            agent_access_epoch: 1,
+            vault_signing_public_key: URL_SAFE_NO_PAD.encode(vault_signing_key),
+            vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(vault_signing_fingerprint),
+            manifest_revision: "7".to_owned(),
+            manifest_signing_key_version: 2,
+            vdk_version: 3,
+        };
+        {
+            let _lock = service
+                .repository
+                .acquire_transaction_lock()
+                .expect("transaction lock");
+            let state = service.verified_state_locked().expect("verified state");
+            let mut config = PublicProfileConfig {
+                schema_version: PUBLIC_SCHEMA_VERSION,
+                identity_id: created.identity_id.clone(),
+                host: "https://api.stage.palladin.io".to_owned(),
+                organization_credential_id: "44444444444444444444444444444444".to_owned(),
+                retired_organization_credential_ids: Vec::new(),
+                agent_id: Some("55555555-5555-4555-8555-555555555555".to_owned()),
+                agent_active: true,
+                encryption_public_key: Some(created.encryption_public_key.clone()),
+                signing_public_key: Some(created.signing_public_key.clone()),
+                vault_trust_anchors: vec![anchor.clone()],
+                binding_signature: STANDARD.encode([0_u8; 64]),
+            };
+            let binding = profile_binding_bytes(&config).expect("binding");
+            config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+            let digest = profile_config_digest(&config).expect("config digest");
+            let mut registry = state.registry.clone();
+            registry.agents[0].config_digest = Some(digest);
+            service
+                .commit_transition(
+                    &state,
+                    registry,
+                    vec![ConfigWrite {
+                        identity_id: created.identity_id.clone(),
+                        config,
+                    }],
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                )
+                .expect("seed paired profile");
+        }
+        let advanced = PinnedVaultTrust {
+            vault_id: Uuid::parse_str(&anchor.vault_id).expect("vault id"),
+            signing_public_key: vault_signing_key,
+            signing_key_fingerprint: vault_signing_fingerprint,
+            manifest_revision: 8,
+            manifest_signing_key_version: 2,
+            vdk_version: 4,
+        };
+        service
+            .persist_advanced_manifest_revision(
+                &created.identity_id,
+                &anchor,
+                &advanced,
+                &signing,
+                &test_lease(),
+            )
+            .expect("persist manifest advance");
+
+        let restarted = RuntimeService::new(
+            ProfileRepository::new(root.path().to_path_buf()).expect("restart repository"),
+            store,
+        );
+        restarted.registry().expect("restart verification");
+        let persisted = restarted
+            .repository
+            .load_config(&created.identity_id)
+            .expect("persisted config");
+        assert_eq!(persisted.vault_trust_anchors[0].manifest_revision, "8");
+        assert_eq!(persisted.vault_trust_anchors[0].vdk_version, 4);
+        let regressed = PinnedVaultTrust {
+            manifest_revision: 7,
+            ..advanced
+        };
+        assert!(matches!(
+            restarted.persist_advanced_manifest_revision(
+                &created.identity_id,
+                &anchor,
+                &regressed,
+                &signing,
+                &test_lease(),
+            ),
+            Err(RuntimeError::UntrustedVaultManifest)
+        ));
+        let downgraded_vdk = PinnedVaultTrust {
+            manifest_revision: 9,
+            vdk_version: 3,
+            ..advanced
+        };
+        assert!(matches!(
+            restarted.persist_advanced_manifest_revision(
+                &created.identity_id,
+                &anchor,
+                &downgraded_vdk,
+                &signing,
+                &test_lease(),
+            ),
+            Err(RuntimeError::UntrustedVaultManifest)
+        ));
+    }
+
     #[tokio::test]
     async fn delivery_enforces_the_exact_method_and_never_decrypts_before_granted() {
         let non_granted_bodies = [
@@ -3300,6 +4635,7 @@ mod tests {
                 agent_active: false,
                 encryption_public_key: None,
                 signing_public_key: None,
+                vault_trust_anchors: Vec::new(),
                 binding_signature: STANDARD.encode([0_u8; 64]),
             },
             api,
@@ -3307,6 +4643,10 @@ mod tests {
             lease: test_lease(),
             operation: RuntimeOperation::GetCredential,
             consumed: AtomicBool::new(false),
+            pairing_activation_id: None,
+            discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
+            manifest_persistence: None,
+            profile_signing: None,
         };
 
         let get = session
@@ -3365,26 +4705,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_exec_delivers_with_exec_and_runs_without_shell_or_protocol_stdin() {
+    async fn native_exec_consumes_the_canonical_credential_envelope() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../contracts/v1/encrypted-envelope.json"
         ))
         .expect("envelope fixture");
-        let mut body = json!({
-            "access": "granted",
-            "entryId": "entry-fixture",
-            "label": "Fixture credential",
-            "urlDomain": "example.test",
-        });
-        body.as_object_mut().expect("body").extend(
-            fixture
-                .get("envelope")
-                .and_then(serde_json::Value::as_object)
-                .expect("envelope")
-                .clone(),
-        );
-        let body = body.to_string();
-        let (host, requests) = credential_server_owned(vec![body]).await;
         let private_key = STANDARD
             .decode(
                 fixture
@@ -3394,6 +4719,19 @@ mod tests {
             )
             .expect("private key base64");
         let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-password-not-production"},{"id":"credential.url","kind":"url","mode":"value","value":"https://example.test/login"},{"id":"credential.username","kind":"text","mode":"value","value":"fixture-user"}],"schema":"palladin.grant-payload.v1"}"#;
+        let body = grant_response(
+            &encryption,
+            TEST_ENTRY_ID,
+            payload,
+            &[
+                "credential.password",
+                "credential.url",
+                "credential.username",
+            ],
+            2,
+        );
+        let (host, requests) = credential_server_owned(vec![body]).await;
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
@@ -3415,10 +4753,9 @@ mod tests {
                 &CancellationToken::new(),
                 |_| {},
             )
-            .await
-            .expect("exec");
+            .await;
         assert_eq!(
-            outcome,
+            outcome.expect("native exec"),
             CredentialExecOutcome::Completed(ExecResult {
                 exit_code: 0,
                 cancelled: false,
@@ -3450,18 +4787,54 @@ mod tests {
     #[cfg(not(windows))]
     #[tokio::test]
     async fn script_resolves_every_reference_before_spawning_the_allowlisted_interpreter() {
-        let main = r#"{"access":"granted","entryId":"script-entry","label":"Fixture Script","urlDomain":null,"nonce":"p4zno4W6mNfd0WESkmk6Kg2IzO9VsLxw","reEncryptedBlob":"sd652QzdkDm9esJ/oNXFj2J5fC1yiVt40hc3KdkrX9oosfMa1mNPQq9uJs0aY+MJlcID+MJpSALUZssy1+4pg3nYTsg0Tg/58BaKvfs34FT3vDZZvBexrh4l+erGCHrxX1ZMuPcz3E1Y5dcXH9hTb9d0imuq0udEc3ggfR5NcTkj9qLTrWUGyUKta0MWzJ10t8GmsJD899XLNnLu/IpmDcLoiUaPICtNrKMQUco=","agentWrappedDek":"7zIytOfJ4bPy68f1zA6o9hCieaMWSV/KbhQlaMQbtXiNP+okqawLXloq78+y7TU+OaldelM2pCAx/bBrw7WKIVq+MRhs/AXtAxHXeIzqgB8="}"#.to_owned();
-        let reference = r#"{"access":"granted","entryId":"entry-ref","label":"Fixture Reference","urlDomain":null,"nonce":"ESDpZ93lTBOWJ52IGTpCvMNF76YvF0V7","reEncryptedBlob":"OOLe+QqjuYw/m+64+bzeSsU5T3/G91MQDV5/H+sizDmk4XfZ/77ghOhd2e9P3gKRVO33YZFycDLtzw==","agentWrappedDek":"I3SAjwhivFjXmwGAb2AQgmVsafe1vptGc/HhvGzb2gVn2n+7VykBumldS5PEq3zwH/IL76EUo9vstSOxY+e4BtmpsbcOm1r08la/FFTxyjg="}"#.to_owned();
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/v1/encrypted-envelope.json"
+        ))
+        .expect("identity fixture");
+        let private_key = STANDARD
+            .decode(
+                fixture
+                    .pointer("/keyFixture/privateKeyBase64")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("private key"),
+            )
+            .expect("private key base64");
+        let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let main_payload = format!(
+            r#"{{"entryType":"script","fields":[{{"id":"script.interpreter","kind":"interpreter","mode":"runtime","value":"sh"}},{{"id":"script.refs","kind":"refs","mode":"runtime","value":[{{"entryId":"{TEST_REFERENCE_ENTRY_ID}","env":"TEST_SECRET","fieldId":"credential.password","vaultId":"{TEST_VAULT_ID}"}}]}},{{"id":"script.source","kind":"script","mode":"runtime","value":"test \"$TEST_SECRET\" = fixture-password-not-production"}}],"schema":"palladin.grant-payload.v1"}}"#
+        );
+        let reference_payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-password-not-production"}],"schema":"palladin.grant-payload.v1"}"#;
+        let main = grant_response(
+            &encryption,
+            TEST_ENTRY_ID,
+            &main_payload,
+            &["script.interpreter", "script.refs", "script.source"],
+            2,
+        );
+        let reference = grant_response(
+            &encryption,
+            TEST_REFERENCE_ENTRY_ID,
+            reference_payload,
+            &["credential.password"],
+            2,
+        );
         let (host, requests) = credential_server_owned(vec![main, reference]).await;
-        let (api, encryption) = fixture_api(&host);
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
         let session = runtime_session(host, api, encryption);
         let outcome = session
             .execute_with_credential(
                 CredentialExecRequest {
                     delivery: CredentialDeliveryRequest {
-                        vault_id: "script-vault",
-                        entry_id: "script-entry",
-                        reason: Some("fixture reason"),
+                        vault_id: TEST_VAULT_ID,
+                        entry_id: TEST_ENTRY_ID,
+                        reason: None,
                         wait: WaitOptions {
                             wait_ms: Some(0),
                             poll_ms: None,
@@ -3486,8 +4859,12 @@ mod tests {
         );
         let requests = requests.lock().expect("requests");
         assert_eq!(requests.len(), 2);
-        assert!(requests[0].contains("/vaults/script-vault/entries/script-entry/credential"));
-        assert!(requests[1].contains("/vaults/script-vault/entries/entry-ref/credential"));
+        assert!(requests[0].contains(&format!(
+            "/vaults/{TEST_VAULT_ID}/entries/{TEST_ENTRY_ID}/credential"
+        )));
+        assert!(requests[1].contains(&format!(
+            "/vaults/{TEST_VAULT_ID}/entries/{TEST_REFERENCE_ENTRY_ID}/credential"
+        )));
         assert!(
             requests
                 .iter()
@@ -3537,9 +4914,9 @@ mod tests {
 
     fn request() -> CredentialDeliveryRequest<'static> {
         CredentialDeliveryRequest {
-            vault_id: "vault-fixture",
-            entry_id: "entry-fixture",
-            reason: Some("fixture reason"),
+            vault_id: TEST_VAULT_ID,
+            entry_id: TEST_ENTRY_ID,
+            reason: None,
             wait: WaitOptions {
                 wait_ms: Some(0),
                 poll_ms: None,
@@ -3572,7 +4949,11 @@ mod tests {
         (format!("http://{address}"), requests)
     }
 
-    fn runtime_session(host: String, api: ApiClient, encryption: X25519Identity) -> RuntimeSession {
+    fn runtime_session(
+        host: String,
+        api: ApiClient,
+        encryption: X25519Identity,
+    ) -> RuntimeSession<'static> {
         RuntimeSession {
             profile: PublicAgentEntry {
                 name: "fixture".to_owned(),
@@ -3587,10 +4968,20 @@ mod tests {
                 host,
                 organization_credential_id: "22222222222222222222222222222222".to_owned(),
                 retired_organization_credential_ids: Vec::new(),
-                agent_id: None,
-                agent_active: false,
+                agent_id: Some(TEST_AGENT_ID.to_owned()),
+                agent_active: true,
                 encryption_public_key: None,
                 signing_public_key: None,
+                vault_trust_anchors: vec![PublicVaultTrustAnchor {
+                    organization_id: TEST_ORGANIZATION_ID.to_owned(),
+                    vault_id: TEST_VAULT_ID.to_owned(),
+                    agent_access_epoch: 1,
+                    vault_signing_public_key: STANDARD.encode([1_u8; 32]),
+                    vault_signing_key_fingerprint: STANDARD.encode([2_u8; 32]),
+                    manifest_revision: "1".to_owned(),
+                    manifest_signing_key_version: 1,
+                    vdk_version: 1,
+                }],
                 binding_signature: STANDARD.encode([0_u8; 64]),
             },
             api,
@@ -3598,33 +4989,362 @@ mod tests {
             lease: test_lease(),
             operation: RuntimeOperation::ExecWithCredential,
             consumed: AtomicBool::new(false),
+            pairing_activation_id: None,
+            discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
+            manifest_persistence: None,
+            profile_signing: None,
         }
     }
 
-    #[cfg(not(windows))]
-    fn fixture_api(host: &str) -> (ApiClient, X25519Identity) {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../contracts/v1/encrypted-envelope.json"
-        ))
-        .expect("envelope fixture");
-        let private_key = STANDARD
-            .decode(
-                fixture
-                    .pointer("/keyFixture/privateKeyBase64")
-                    .and_then(serde_json::Value::as_str)
-                    .expect("private key"),
-            )
-            .expect("private key base64");
-        let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+    #[test]
+    fn registration_agent_id_change_invalidates_pairing_anchors() {
+        let mut config = PublicProfileConfig {
+            schema_version: PUBLIC_SCHEMA_VERSION,
+            identity_id: "11111111111111111111111111111111".to_owned(),
+            host: "https://example.test".to_owned(),
+            organization_credential_id: "22222222222222222222222222222222".to_owned(),
+            retired_organization_credential_ids: Vec::new(),
+            agent_id: Some("agent-current".to_owned()),
+            agent_active: true,
+            encryption_public_key: None,
+            signing_public_key: None,
+            vault_trust_anchors: vec![PublicVaultTrustAnchor {
+                organization_id: TEST_ORGANIZATION_ID.to_owned(),
+                vault_id: TEST_VAULT_ID.to_owned(),
+                agent_access_epoch: 1,
+                vault_signing_public_key: STANDARD.encode([1_u8; 32]),
+                vault_signing_key_fingerprint: STANDARD.encode([2_u8; 32]),
+                manifest_revision: "1".to_owned(),
+                manifest_signing_key_version: 1,
+                vdk_version: 1,
+            }],
+            binding_signature: STANDARD.encode([0_u8; 64]),
+        };
+
+        update_registered_agent_id(&mut config, "agent-current");
+        assert_eq!(config.vault_trust_anchors.len(), 1);
+
+        update_registered_agent_id(&mut config, "agent-replacement");
+        assert_eq!(config.agent_id.as_deref(), Some("agent-replacement"));
+        assert!(config.vault_trust_anchors.is_empty());
+    }
+
+    #[test]
+    fn confirmed_pairing_cannot_cross_agent_identity() {
+        let encryption = X25519Identity::generate().expect("encryption identity");
+        let signing = Ed25519Identity::generate().expect("signing identity");
+        let agent_id = Uuid::parse_str(TEST_AGENT_ID).expect("agent id");
+        let organization_id = Uuid::parse_str(TEST_ORGANIZATION_ID).expect("organization id");
+        let expected = AgentIdentityBinding {
+            organization_id,
+            agent_id,
+            x25519_fingerprint: key_fingerprint(1, encryption.public_key()).expect("fingerprint"),
+            ed25519_fingerprint: key_fingerprint(2, signing.public_key()).expect("fingerprint"),
+        };
+        let anchor = PublicVaultTrustAnchor {
+            organization_id: TEST_ORGANIZATION_ID.to_owned(),
+            vault_id: TEST_VAULT_ID.to_owned(),
+            agent_access_epoch: 1,
+            vault_signing_public_key: STANDARD.encode([1_u8; 32]),
+            vault_signing_key_fingerprint: STANDARD.encode([2_u8; 32]),
+            manifest_revision: "1".to_owned(),
+            manifest_signing_key_version: 1,
+            vdk_version: 1,
+        };
+        let mut config = PublicProfileConfig {
+            schema_version: PUBLIC_SCHEMA_VERSION,
+            identity_id: "11111111111111111111111111111111".to_owned(),
+            host: "https://example.test".to_owned(),
+            organization_credential_id: "22222222222222222222222222222222".to_owned(),
+            retired_organization_credential_ids: Vec::new(),
+            agent_id: Some(TEST_AGENT_ID.to_owned()),
+            agent_active: true,
+            encryption_public_key: Some(STANDARD.encode(encryption.public_key())),
+            signing_public_key: Some(STANDARD.encode(signing.public_key())),
+            vault_trust_anchors: Vec::new(),
+            binding_signature: STANDARD.encode([0_u8; 64]),
+        };
+
+        validate_confirmed_pairing_identity(
+            &expected,
+            std::slice::from_ref(&anchor),
+            &config,
+            encryption.public_key(),
+            signing.public_key(),
+        )
+        .expect("matching identity");
+
+        config.agent_id = Some("55555555-5555-4555-8555-555555555555".to_owned());
+        assert!(matches!(
+            validate_confirmed_pairing_identity(
+                &expected,
+                &[anchor],
+                &config,
+                encryption.public_key(),
+                signing.public_key(),
+            ),
+            Err(RuntimeError::UntrustedVaultManifest)
+        ));
+    }
+
+    #[tokio::test]
+    async fn pair_vaults_session_renews_polling_for_the_bound_activation() {
+        let activation_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let encryption =
+            X25519Identity::from_private_bytes(vec![41; 32]).expect("encryption identity");
+        let signing = Ed25519Identity::from_seed(vec![42; 32]).expect("signing identity");
+        let identity = AgentIdentityBinding {
+            organization_id: Uuid::parse_str(TEST_ORGANIZATION_ID).expect("organization id"),
+            agent_id: Uuid::parse_str(TEST_AGENT_ID).expect("agent id"),
+            x25519_fingerprint: key_fingerprint(1, encryption.public_key()).expect("fingerprint"),
+            ed25519_fingerprint: key_fingerprint(2, signing.public_key()).expect("fingerprint"),
+        };
+        let expected_candidate = prepare_pairing(
+            Uuid::parse_str(activation_id).expect("activation id"),
+            &identity,
+            &[],
+        )
+        .expect("candidate");
+        let expires_at = "2099-01-01T00:00:00Z";
+        let activation = json!({
+            "activationId": activation_id,
+            "organizationId": TEST_ORGANIZATION_ID,
+            "agentId": TEST_AGENT_ID,
+            "agentAccessEpoch": 1,
+            "agentX25519Fingerprint": URL_SAFE_NO_PAD.encode(identity.x25519_fingerprint),
+            "agentEd25519Fingerprint": URL_SAFE_NO_PAD.encode(identity.ed25519_fingerprint),
+            "expiresAt": expires_at,
+            "candidateManifests": [],
+        })
+        .to_string();
+        let pending = json!({
+            "activationId": activation_id,
+            "status": "pending",
+            "expiresAt": expires_at,
+            "confirmedPairingDigest": null,
+        })
+        .to_string();
+        let confirmed = json!({
+            "activationId": activation_id,
+            "status": "confirmed",
+            "expiresAt": expires_at,
+            "confirmedPairingDigest": expected_candidate.transcript_digest(),
+        })
+        .to_string();
+        let (host, requests) = credential_server_owned(vec![activation, pending, confirmed]).await;
         let api = ApiClient::new(
-            ApiHost::parse(host).expect("host"),
-            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_pairing_fixture".to_owned()),
             &encryption,
             "fixture-host",
             None,
         )
         .expect("API client");
-        (api, encryption)
+        let profile = || PublicAgentEntry {
+            name: "fixture".to_owned(),
+            identity_id: "11111111111111111111111111111111".to_owned(),
+            created_at: "2026-01-01T00:00:00Z".to_owned(),
+            agent_type: None,
+            config_digest: None,
+        };
+        let config = |host: String, identity: &X25519Identity| PublicProfileConfig {
+            schema_version: PUBLIC_SCHEMA_VERSION,
+            identity_id: "11111111111111111111111111111111".to_owned(),
+            host,
+            organization_credential_id: "22222222222222222222222222222222".to_owned(),
+            retired_organization_credential_ids: Vec::new(),
+            agent_id: Some(TEST_AGENT_ID.to_owned()),
+            agent_active: true,
+            encryption_public_key: Some(STANDARD.encode(identity.public_key())),
+            signing_public_key: Some(STANDARD.encode(signing.public_key())),
+            vault_trust_anchors: Vec::new(),
+            binding_signature: STANDARD.encode([0_u8; 64]),
+        };
+        let session = RuntimeSession {
+            profile: profile(),
+            config: config(host.clone(), &encryption),
+            api,
+            encryption,
+            lease: test_lease(),
+            operation: RuntimeOperation::PairVaults,
+            consumed: AtomicBool::new(false),
+            pairing_activation_id: Some(activation_id.to_owned()),
+            discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
+            manifest_persistence: None,
+            profile_signing: None,
+        };
+
+        let candidate = session
+            .create_pairing_activation(activation_id)
+            .await
+            .expect("create pairing activation");
+        assert_eq!(
+            session
+                .get_pairing_status(activation_id)
+                .await
+                .expect("pending status")
+                .status,
+            AgentPairingStatus::Pending
+        );
+        drop(session);
+
+        let renewed_encryption =
+            X25519Identity::from_private_bytes(vec![41; 32]).expect("renewed encryption identity");
+        let renewed_api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_pairing_fixture".to_owned()),
+            &renewed_encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("renewed API client");
+        let renewed = RuntimeSession {
+            profile: profile(),
+            config: config(host, &renewed_encryption),
+            api: renewed_api,
+            encryption: renewed_encryption,
+            lease: test_lease(),
+            operation: RuntimeOperation::PairVaults,
+            consumed: AtomicBool::new(false),
+            pairing_activation_id: Some(activation_id.to_owned()),
+            discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
+            manifest_persistence: None,
+            profile_signing: None,
+        };
+        assert!(matches!(
+            renewed.resume_pairing_polling("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            Err(RuntimeError::OperationAuthorizationMismatch)
+        ));
+        renewed
+            .resume_pairing_polling(activation_id)
+            .expect("resume bound polling");
+        let relay = renewed
+            .get_pairing_status(activation_id)
+            .await
+            .expect("confirmed status");
+        let pairing = candidate
+            .confirm_from_relay(relay, OffsetDateTime::now_utc())
+            .expect("confirmed pairing");
+        assert!(pairing.anchors.is_empty());
+        let requests = requests.lock().expect("requests");
+        assert!(requests[0].starts_with("POST /api/agent/pairing/activations "));
+        assert!(requests[1].starts_with(&format!(
+            "GET /api/agent/pairing/activations/{activation_id} "
+        )));
+        assert!(requests[2].starts_with(&format!(
+            "GET /api/agent/pairing/activations/{activation_id} "
+        )));
+    }
+
+    fn grant_response(
+        recipient: &X25519Identity,
+        entry_id: &str,
+        plaintext: &str,
+        field_ids: &[&str],
+        approved_methods: u16,
+    ) -> String {
+        let scope = EnvelopeScope {
+            organization_id: test_uuid(TEST_ORGANIZATION_ID),
+            vault_id: test_uuid(TEST_VAULT_ID),
+            entry_id: Some(test_uuid(entry_id)),
+            grant_or_request_id: Some(test_uuid(TEST_GRANT_ID)),
+            agent_id: Some(test_uuid(TEST_AGENT_ID)),
+            member_id: None,
+        };
+        let fingerprint =
+            compute_key_fingerprint(recipient.public_key(), RecipientKeyKind::AgentX25519);
+        let commitment =
+            compute_field_set_commitment(field_ids.iter().copied()).expect("field-set commitment");
+        let descriptor = EnvelopeDescriptor {
+            protocol_version: 2,
+            crypto_suite_id: VAULT_XCHACHA_V1.to_owned(),
+            purpose: EnvelopePurpose::GrantPayload,
+            scope: scope.clone(),
+            resource_revision: 1,
+            key_version: 1,
+            member_key_generation: Some(1),
+            binding: EnvelopeBinding::Grant {
+                entry_revision: 1,
+                wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                recipient_agent_key_version: 1,
+                recipient_agent_key_fingerprint: fingerprint,
+                approved_methods,
+                field_set_commitment: commitment,
+                expires_at: None,
+                remaining_uses: Some(1),
+            },
+        };
+        let aad = descriptor.canonical_aad().expect("AAD");
+        let grant_dek = SecretBox::new(Box::new([0x31; 32]));
+        let payload_key = XChaChaVaultSuite::derive_key(grant_dek.expose_secret(), &descriptor)
+            .expect("payload key");
+        let payload: EncodedSuitePayload =
+            XChaChaVaultSuite::seal(&payload_key, plaintext.as_bytes(), &aad).expect("payload");
+        let wrapper_context = WrapperContext {
+            protocol_version: 2,
+            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+            purpose: WrapperPurpose::GrantDek,
+            scope,
+            resource_revision: 1,
+            wrapped_key_version: 1,
+            member_key_generation: Some(1),
+            recipient_key_kind: RecipientKeyKind::AgentX25519,
+            recipient_key_version: 1,
+            recipient_fingerprint: fingerprint,
+            parent_descriptor_hash: Some(Sha256::digest(aad).into()),
+        };
+        let wrapped =
+            X25519SealedBoxSuite::wrap(&grant_dek, *recipient.public_key(), &wrapper_context)
+                .expect("wrapped DEK");
+        let envelope = EncryptedCredential {
+            descriptor: GrantEnvelopeDescriptor {
+                protocol_version: 2,
+                crypto_suite_id: VAULT_XCHACHA_V1.to_owned(),
+                purpose: 10,
+                scope: GrantEnvelopeScope {
+                    organization_id: TEST_ORGANIZATION_ID.to_owned(),
+                    vault_id: TEST_VAULT_ID.to_owned(),
+                    entry_id: Some(entry_id.to_owned()),
+                    grant_or_request_id: Some(TEST_GRANT_ID.to_owned()),
+                    agent_id: Some(TEST_AGENT_ID.to_owned()),
+                    member_id: None,
+                },
+                resource_revision: "1".to_owned(),
+                key_version: 1,
+                member_key_generation: Some(1),
+                binding: GrantEnvelopeBinding {
+                    entry_revision: "1".to_owned(),
+                    wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                    recipient_key_version: 1,
+                    recipient_key_fingerprint: URL_SAFE_NO_PAD.encode(fingerprint),
+                    approved_methods,
+                    field_set_commitment: URL_SAFE_NO_PAD.encode(commitment),
+                    expires_at: None,
+                    remaining_uses: Some(1),
+                },
+            },
+            encoded_suite_payload: URL_SAFE_NO_PAD.encode(payload.as_bytes()),
+            wrapped_grant_dek: WrappedGrantDek::from_context(&wrapper_context, &wrapped),
+            field_ids: field_ids.iter().map(|value| (*value).to_owned()).collect(),
+        };
+        json!({
+            "access": "granted",
+            "organizationId": TEST_ORGANIZATION_ID,
+            "vaultId": TEST_VAULT_ID,
+            "grantId": TEST_GRANT_ID,
+            "agentId": TEST_AGENT_ID,
+            "approvedMethods": approved_methods,
+            "entryId": entry_id,
+            "grantEnvelope": envelope,
+        })
+        .to_string()
+    }
+
+    fn test_uuid(value: &str) -> [u8; 16] {
+        hex::decode(value.replace('-', ""))
+            .expect("UUID hex")
+            .try_into()
+            .expect("UUID length")
     }
 
     async fn read_request(stream: &mut tokio::net::TcpStream) -> String {

@@ -810,6 +810,7 @@ const fn operation_display_name(operation: SecureOperation) -> &'static str {
         SecureOperation::Doctor => "inspect runtime diagnostics",
         SecureOperation::Connect => "connect organization credential",
         SecureOperation::Status => "read Agent status",
+        SecureOperation::Pair => "pair vault trust anchors",
         SecureOperation::Disconnect => "disconnect Agent profile",
         SecureOperation::Search => "search vault metadata",
         SecureOperation::Get => "release credential",
