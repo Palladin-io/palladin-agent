@@ -3216,9 +3216,6 @@ impl RuntimeSession<'_> {
         &self,
         batch: &PreparedManifestBatch,
     ) -> Result<(), RuntimeError> {
-        if batch.next_anchors == self.config.vault_trust_anchors {
-            return Ok(());
-        }
         let persistence = self
             .manifest_persistence
             .ok_or(RuntimeError::IntegrityViolation)?;
@@ -5071,6 +5068,34 @@ mod tests {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+    }
+
+    #[test]
+    fn unchanged_manifest_batch_still_revalidates_durable_anchors() {
+        let host = "http://127.0.0.1:5000".to_owned();
+        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let persistence = CountingManifestPersistence::default();
+        let mut session = runtime_session(host, api, encryption);
+        session.manifest_persistence = Some(&persistence);
+        session.profile_signing = Some(Ed25519Identity::from_seed(vec![9; 32]).expect("signing"));
+        let batch = PreparedManifestBatch {
+            items: Vec::new(),
+            next_anchors: session.config.vault_trust_anchors.clone(),
+        };
+
+        session
+            .persist_prepared_manifest_batch(&batch)
+            .expect("durable anchor validation");
+
+        assert_eq!(persistence.0.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
