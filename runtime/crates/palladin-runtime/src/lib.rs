@@ -3507,7 +3507,6 @@ impl RuntimeSession<'_> {
         force_refresh: bool,
     ) -> Result<Option<FormDiscoveryMap>, RuntimeError> {
         self.ensure_operation(RuntimeOperation::InjectCredential)?;
-        let mut cache = FormMapCache::load(&self.form_map_root)?;
         let profile_identity_id = &self.profile.identity_id;
         let agent_id = self
             .config
@@ -3516,10 +3515,22 @@ impl RuntimeSession<'_> {
             .ok_or(RuntimeError::AgentNotActive)?;
         let api_origin = &self.config.host;
         if force_refresh {
-            cache.invalidate(profile_identity_id, agent_id, api_origin, domain, provider)?;
-        } else if let Some(map) =
-            cache.get(profile_identity_id, agent_id, api_origin, domain, provider)?
-        {
+            FormMapCache::invalidate_serialized(
+                &self.form_map_root,
+                profile_identity_id,
+                agent_id,
+                api_origin,
+                domain,
+                provider,
+            )?;
+        } else if let Some(map) = FormMapCache::get_serialized(
+            &self.form_map_root,
+            profile_identity_id,
+            agent_id,
+            api_origin,
+            domain,
+            provider,
+        )? {
             self.ensure_authorized()?;
             return Ok(Some(map));
         }
@@ -3527,7 +3538,13 @@ impl RuntimeSession<'_> {
         let map = self.api.get_form_discovery_map(domain, provider).await?;
         self.ensure_authorized()?;
         if let Some(map) = map.as_ref() {
-            cache.put(profile_identity_id, agent_id, api_origin, map.clone())?;
+            FormMapCache::put_serialized(
+                &self.form_map_root,
+                profile_identity_id,
+                agent_id,
+                api_origin,
+                map.clone(),
+            )?;
         }
         Ok(map)
     }

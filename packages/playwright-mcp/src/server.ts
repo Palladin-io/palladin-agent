@@ -228,7 +228,7 @@ export async function injectWithPalladin(
         type: 'result',
         nonce,
         transactionId: credential.transactionId,
-        outcome: credential.formMap === undefined ? providerOutcomeForError(error) : 'stale-form-map',
+        outcome: providerOutcomeForError(error, credential.formMap !== undefined),
       })}\n`);
       await waitForExit(child).catch(() => undefined);
     } else {
@@ -260,13 +260,16 @@ export async function applyCookieOverlays(page: Page, map: FormDiscoveryMap): Pr
   }
 }
 
-function providerOutcomeForError(error: unknown):
+export function providerOutcomeForError(error: unknown, runtimeMap = false):
   'rejected' | 'no-password-field' | 'no-submit-control' | 'origin-mismatch'
   | 'insecure-origin' | 'ambiguous-form' | 'provider-unavailable' | 'stale-form-map' {
   const message = error instanceof Error ? error.message : '';
   if (message.includes('origin mismatch')) return 'origin-mismatch';
   if (message.includes('insecure origin')) return 'insecure-origin';
-  if (message.includes('declared field') || message.includes('transition target')) return 'stale-form-map';
+  if (runtimeMap && (message.includes('declared field is missing or ambiguous')
+    || message.includes('declared field control does not match')
+    || message.includes('transition target')
+    || message.includes('submit control is missing or ambiguous'))) return 'stale-form-map';
   if (message.includes('ambiguous')) return 'ambiguous-form';
   if (message.includes('password field is missing')) return 'no-password-field';
   if (message.includes('submit control is missing')) return 'no-submit-control';

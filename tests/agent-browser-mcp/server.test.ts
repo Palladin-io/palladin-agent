@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   parseInjectArguments,
   parseProviderCredential,
+  providerOutcomeForError,
   verifyDomain,
 } from '../../packages/agent-browser-mcp/src/server.js';
 
@@ -61,5 +62,15 @@ describe('AgentBrowser MCP Inject provider boundary', () => {
     expect(() => verifyDomain('https://example.com/path', 'login.example.com')).toThrow('origin mismatch');
     expect(() => verifyDomain('http://example.com', 'example.com')).toThrow('insecure origin');
     expect(() => verifyDomain('https://example.net', 'example.com')).toThrow('origin mismatch');
+  });
+
+  it('invalidates runtime maps only for attested selector failures', () => {
+    expect(providerOutcomeForError(new Error('AgentBrowser declared field is unavailable'), true))
+      .toBe('stale-form-map');
+    expect(providerOutcomeForError(new Error('origin mismatch'), true)).toBe('origin-mismatch');
+    expect(providerOutcomeForError(new Error('AgentBrowser daemon is unavailable'), true))
+      .toBe('provider-unavailable');
+    expect(providerOutcomeForError(new Error('AgentBrowser declared field is unavailable'), false))
+      .toBe('provider-unavailable');
   });
 });

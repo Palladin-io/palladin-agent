@@ -236,9 +236,9 @@ The definition is an ordered list of one or more steps mapping approved Entry fi
 control locators, with a bounded click or press-Enter action and an optional next-step transition
 expectation.
 
-The version 1 shape is `{"version":1,"steps":[...]}`. Every field mapping contains
-`entryFieldId`, `selector`, and one of the bounded controls `username`, `password`, `text`, `email`,
-`tel`, or `otp`. Every step declares one `click` or `press-enter` submit action; every intermediate
+The version 1 shape is `{"version":1,"steps":[...]}`. A verified map may reference only
+`credential.username` with `username`, `email`, `tel`, or `text`, and `credential.password` with
+`password`; arbitrary Vault field IDs are rejected. Every step declares one `click` or `press-enter` submit action; every intermediate
 step also declares `waitFor`. `--form-json` is value-free and exists only for the ordinary-extension
 CLI adapter—credential values are never accepted there or in MCP arguments.
 
@@ -247,9 +247,10 @@ selected provider validates each declared control, re-checks HTTPS and the authe
 before every fill/submit and after every transition, injects the values, and performs the declared
 actions. It returns only a bounded result and leaves the authenticated browser session available to
 the Agent. Missing, stale, ambiguous, hidden, or semantically invalid definitions fail closed; the
-provider never guesses another form. A failure while executing a cached map invalidates that cache
-entry and asks the API for a fresh revision for the next request; Palladin never retries a partially
-filled or submitted login automatically.
+provider never guesses another form. A failed declared selector, control attestation, submit selector,
+or transition invalidates that cached map and asks the API for a fresh revision for the next request.
+Origin mismatch and provider transport/browser failures keep their specific outcome and do not evict
+a valid map. Palladin never retries a partially filled or submitted login automatically.
 
 ### Form Discovery Map cache
 
@@ -267,7 +268,8 @@ owner-only `~/.palladin/runtime-config.json` file:
 ```
 
 `maxEntries` must be an integer from 1 through 500. Unknown properties, unsafe permissions, symbolic
-links, malformed maps, or an out-of-range limit fail closed. Neither file contains credential values,
+links, malformed maps, or an out-of-range limit fail closed. Every cache read/update/invalidation is
+serialized with the cross-process profile transaction lock. Neither file contains credential values,
 cookies, API keys, private keys, or decrypted vault data. Explicit full-runtime purge recognizes and
 removes both files.
 

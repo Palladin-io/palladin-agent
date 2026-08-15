@@ -192,14 +192,14 @@ export async function injectWithPalladin(
       content: [{ type: 'text', text: JSON.stringify({ status: 'injected', provider: 'agent-browser' }) }],
       isError: false,
     };
-  } catch {
+  } catch (error) {
     if (!resultSent && child?.stdin !== null && child?.stdin !== undefined && credential !== undefined) {
       child.stdin.end(`${JSON.stringify({
         protocol: INJECT_PROTOCOL,
         type: 'result',
         nonce,
         transactionId: credential.transactionId,
-        outcome: credential.formMap === undefined ? 'provider-unavailable' : 'stale-form-map',
+        outcome: providerOutcomeForError(error, credential.formMap !== undefined),
       })}\n`);
       await waitForExit(child).catch(() => undefined);
     } else {
@@ -213,6 +213,20 @@ export async function injectWithPalladin(
     }
     credential = undefined;
   }
+}
+
+export function providerOutcomeForError(
+  error: unknown,
+  runtimeMap = false,
+): 'origin-mismatch' | 'insecure-origin' | 'provider-unavailable' | 'stale-form-map' {
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('origin mismatch')) return 'origin-mismatch';
+  if (message.includes('insecure origin')) return 'insecure-origin';
+  if (runtimeMap && (message.includes('cannot attest the declared password control')
+    || message.includes('declared field is unavailable')
+    || message.includes('declared selector is missing or ambiguous')
+    || message.includes('field attestation failed'))) return 'stale-form-map';
+  return 'provider-unavailable';
 }
 
 export function parseInjectArguments(value: unknown): InjectArguments | null {

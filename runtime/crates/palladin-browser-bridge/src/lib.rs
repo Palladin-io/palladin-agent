@@ -238,6 +238,7 @@ impl FormDiscoveryMap {
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
             || self.map.version != 1
             || self.map.form.validate().is_err()
+            || !valid_login_fields(&self.map.form)
             || !valid_map_login_url(&self.login_url, &self.domain)
             || !valid_cookie_overlays(&self.map.cookie_overlays)
             || self.fingerprint != map_fingerprint(self)?
@@ -257,6 +258,24 @@ impl FormDiscoveryMap {
                 && url.password().is_none()
         })
     }
+}
+
+fn valid_login_fields(form: &InjectionFormDefinition) -> bool {
+    form.steps.iter().all(|step| {
+        step.fields
+            .iter()
+            .all(|field| match field.entry_field_id.as_str() {
+                "credential.username" => matches!(
+                    field.control,
+                    InjectionControl::Email
+                        | InjectionControl::Tel
+                        | InjectionControl::Text
+                        | InjectionControl::Username
+                ),
+                "credential.password" => field.control == InjectionControl::Password,
+                _ => false,
+            })
+    })
 }
 
 fn valid_cookie_overlays(overlays: &[CookieOverlay]) -> bool {
@@ -747,6 +766,13 @@ mod tests {
         wrong_origin.login_url = "https://login.accounts.google.com/".to_owned();
         assert_eq!(
             wrong_origin.validate("accounts.google.com", "playwright"),
+            Err(InjectionError::InvalidFormDiscoveryMap)
+        );
+        let mut unsupported_field = map.clone();
+        unsupported_field.map.form.steps[0].fields[0].entry_field_id =
+            "private.credit-card-number".to_owned();
+        assert_eq!(
+            unsupported_field.validate("accounts.google.com", "playwright"),
             Err(InjectionError::InvalidFormDiscoveryMap)
         );
         let mut wrong_fingerprint = map;

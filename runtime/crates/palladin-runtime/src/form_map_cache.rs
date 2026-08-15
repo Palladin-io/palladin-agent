@@ -4,6 +4,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use palladin_browser_bridge::FormDiscoveryMap;
+use palladin_core::profiles::ProfileRepository;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use thiserror::Error;
@@ -70,6 +71,57 @@ pub(crate) struct FormMapCache {
 }
 
 impl FormMapCache {
+    pub(crate) fn get_serialized(
+        root: &Path,
+        profile_identity_id: &str,
+        agent_id: &str,
+        api_origin: &str,
+        domain: &str,
+        provider: &str,
+    ) -> Result<Option<FormDiscoveryMap>, FormMapCacheError> {
+        Self::transact(root, |cache| {
+            cache.get(profile_identity_id, agent_id, api_origin, domain, provider)
+        })
+    }
+
+    pub(crate) fn put_serialized(
+        root: &Path,
+        profile_identity_id: &str,
+        agent_id: &str,
+        api_origin: &str,
+        map: FormDiscoveryMap,
+    ) -> Result<(), FormMapCacheError> {
+        Self::transact(root, |cache| {
+            cache.put(profile_identity_id, agent_id, api_origin, map)
+        })
+    }
+
+    pub(crate) fn invalidate_serialized(
+        root: &Path,
+        profile_identity_id: &str,
+        agent_id: &str,
+        api_origin: &str,
+        domain: &str,
+        provider: &str,
+    ) -> Result<(), FormMapCacheError> {
+        Self::transact(root, |cache| {
+            cache.invalidate(profile_identity_id, agent_id, api_origin, domain, provider)
+        })
+    }
+
+    fn transact<T>(
+        root: &Path,
+        operation: impl FnOnce(&mut Self) -> Result<T, FormMapCacheError>,
+    ) -> Result<T, FormMapCacheError> {
+        let repository = ProfileRepository::new(root.to_path_buf())
+            .map_err(|_| FormMapCacheError::TransactionLock)?;
+        let _lock = repository
+            .acquire_transaction_lock()
+            .map_err(|_| FormMapCacheError::TransactionLock)?;
+        let mut cache = Self::load(root)?;
+        operation(&mut cache)
+    }
+
     pub(crate) fn load(root: &Path) -> Result<Self, FormMapCacheError> {
         let maximum_entries = load_runtime_config(root)?.form_map_cache.max_entries;
         let path = root.join("form-map-cache.json");
@@ -361,6 +413,8 @@ pub(crate) enum FormMapCacheError {
     UnsafePath,
     #[error("Form Discovery Map cache could not be persisted")]
     Persist,
+    #[error("Form Discovery Map cache transaction lock could not be acquired")]
+    TransactionLock,
     #[error("Form Discovery Map cache filesystem operation failed")]
     Io(#[from] std::io::Error),
     #[error("Form Discovery Map cache JSON is invalid")]
@@ -411,98 +465,111 @@ mod tests {
     fn cache_is_persistent_lru_and_scoped_by_profile_agent_and_api_origin() {
         let root = private_root();
         write_config(root.path(), 2);
-        let mut cache = FormMapCache::load(root.path()).expect("load");
-        cache
-            .put("profile-a", "agent-a", "https://one.example", map())
-            .expect("first");
-        cache
-            .put("profile-a", "agent-a", "https://two.example", map())
-            .expect("second");
+        FormMapCache::put_serialized(
+            root.path(),
+            "profile-a",
+            "agent-a",
+            "https://one.example",
+            map(),
+        )
+        .expect("first");
+        FormMapCache::put_serialized(
+            root.path(),
+            "profile-a",
+            "agent-a",
+            "https://two.example",
+            map(),
+        )
+        .expect("second");
         assert!(
-            cache
-                .get(
-                    "profile-a",
-                    "agent-a",
-                    "https://one.example",
-                    "accounts.google.com",
-                    "playwright"
-                )
-                .expect("touch")
-                .is_some()
-        );
-        cache
-            .put("profile-a", "agent-a", "https://three.example", map())
-            .expect("third");
-
-        let mut reloaded = FormMapCache::load(root.path()).expect("reload");
-        assert!(
-            reloaded
-                .get(
-                    "profile-a",
-                    "agent-a",
-                    "https://two.example",
-                    "accounts.google.com",
-                    "playwright"
-                )
-                .expect("evicted")
-                .is_none()
-        );
-        assert!(
-            reloaded
-                .get(
-                    "profile-a",
-                    "agent-a",
-                    "https://one.example",
-                    "accounts.google.com",
-                    "playwright"
-                )
-                .expect("retained")
-                .is_some()
-        );
-        assert!(
-            reloaded
-                .get(
-                    "profile-b",
-                    "agent-a",
-                    "https://one.example",
-                    "accounts.google.com",
-                    "playwright"
-                )
-                .expect("profile scoped")
-                .is_none()
-        );
-        reloaded
-            .invalidate(
+            FormMapCache::get_serialized(
+                root.path(),
                 "profile-a",
                 "agent-a",
                 "https://one.example",
                 "accounts.google.com",
-                "playwright",
+                "playwright"
             )
-            .expect("invalidate");
+            .expect("touch")
+            .is_some()
+        );
+        FormMapCache::put_serialized(
+            root.path(),
+            "profile-a",
+            "agent-a",
+            "https://three.example",
+            map(),
+        )
+        .expect("third");
+
         assert!(
-            reloaded
-                .get(
-                    "profile-a",
-                    "agent-a",
-                    "https://one.example",
-                    "accounts.google.com",
-                    "playwright"
-                )
-                .expect("invalidated")
-                .is_none()
+            FormMapCache::get_serialized(
+                root.path(),
+                "profile-a",
+                "agent-a",
+                "https://two.example",
+                "accounts.google.com",
+                "playwright"
+            )
+            .expect("evicted")
+            .is_none()
         );
         assert!(
-            reloaded
-                .get(
-                    "profile-a",
-                    "agent-b",
-                    "https://three.example",
-                    "accounts.google.com",
-                    "playwright"
-                )
-                .expect("agent scoped")
-                .is_none()
+            FormMapCache::get_serialized(
+                root.path(),
+                "profile-a",
+                "agent-a",
+                "https://one.example",
+                "accounts.google.com",
+                "playwright"
+            )
+            .expect("retained")
+            .is_some()
+        );
+        assert!(
+            FormMapCache::get_serialized(
+                root.path(),
+                "profile-b",
+                "agent-a",
+                "https://one.example",
+                "accounts.google.com",
+                "playwright"
+            )
+            .expect("profile scoped")
+            .is_none()
+        );
+        FormMapCache::invalidate_serialized(
+            root.path(),
+            "profile-a",
+            "agent-a",
+            "https://one.example",
+            "accounts.google.com",
+            "playwright",
+        )
+        .expect("invalidate");
+        assert!(
+            FormMapCache::get_serialized(
+                root.path(),
+                "profile-a",
+                "agent-a",
+                "https://one.example",
+                "accounts.google.com",
+                "playwright"
+            )
+            .expect("invalidated")
+            .is_none()
+        );
+        assert!(
+            FormMapCache::get_serialized(
+                root.path(),
+                "profile-a",
+                "agent-b",
+                "https://three.example",
+                "accounts.google.com",
+                "playwright"
+            )
+            .expect("agent scoped")
+            .is_none()
         );
     }
 
@@ -520,5 +587,37 @@ mod tests {
             FormMapCache::load(root.path()),
             Err(FormMapCacheError::InvalidConfiguration)
         ));
+    }
+
+    #[test]
+    fn cache_mutations_wait_for_the_cross_process_transaction_lock() {
+        let root = private_root();
+        let repository =
+            ProfileRepository::new(root.path().to_path_buf()).expect("profile repository");
+        let lock = repository
+            .acquire_transaction_lock()
+            .expect("transaction lock");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let result = FormMapCache::put_serialized(
+                    root.path(),
+                    "profile-a",
+                    "agent-a",
+                    "https://api.example",
+                    map(),
+                );
+                sender.send(result).expect("send result");
+            });
+            let was_blocked = receiver
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err();
+            drop(lock);
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("mutation completed")
+                .expect("cache write");
+            assert!(was_blocked);
+        });
     }
 }

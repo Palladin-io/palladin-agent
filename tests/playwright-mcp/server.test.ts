@@ -8,6 +8,7 @@ import {
   parseInjectArguments,
   parseProviderCredential,
   parseProviderCredentialDiagnostic,
+  providerOutcomeForError,
   verifyDomain,
   safeRuntimeStderrCode,
 } from '../../packages/playwright-mcp/src/server.js';
@@ -184,6 +185,18 @@ describe('Playwright MCP Inject provider boundary', () => {
     expect(() => verifyDomain('https://example.com/path', 'login.example.com')).toThrow('origin mismatch');
     expect(() => verifyDomain('http://example.com', 'example.com')).toThrow('insecure origin');
     expect(() => verifyDomain('https://example.net', 'example.com')).toThrow('origin mismatch');
+  });
+
+  it('invalidates runtime maps only for selector and transition failures', () => {
+    expect(providerOutcomeForError(new Error('declared field is missing or ambiguous'), true))
+      .toBe('stale-form-map');
+    expect(providerOutcomeForError(new Error('submit control is missing or ambiguous'), true))
+      .toBe('stale-form-map');
+    expect(providerOutcomeForError(new Error('origin mismatch'), true)).toBe('origin-mismatch');
+    expect(providerOutcomeForError(new Error('provider pipe unavailable'), true))
+      .toBe('provider-unavailable');
+    expect(providerOutcomeForError(new Error('declared field is missing or ambiguous'), false))
+      .toBe('ambiguous-form');
   });
 
   it('executes the declared two-step login and ignores decoys', async () => {

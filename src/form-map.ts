@@ -52,11 +52,18 @@ export function parseFormDiscoveryMap(value: unknown): FormDiscoveryMap | null {
     ) return null;
   const form = parseInjectForm(value.form);
   if (form === null) return null;
+  if (form.steps.some((step) => step.fields.some((field) => !validLoginField(field)))) return null;
   if (value.cookieOverlays !== undefined) {
     if (!Array.isArray(value.cookieOverlays) || value.cookieOverlays.length > MAX_MAP_OVERLAYS
       || value.cookieOverlays.some((overlay) => !validOverlay(overlay))) return null;
   }
   return { ...value, form } as FormDiscoveryMap;
+}
+
+function validLoginField(field: InjectFormDefinition['steps'][number]['fields'][number]): boolean {
+  return (field.entryFieldId === 'credential.username'
+      && ['email', 'tel', 'text', 'username'].includes(field.control))
+    || (field.entryFieldId === 'credential.password' && field.control === 'password');
 }
 
 function validOverlay(value: unknown): value is CookieOverlay {
