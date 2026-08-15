@@ -3504,7 +3504,7 @@ impl RuntimeSession<'_> {
         &self,
         domain: &str,
         provider: &str,
-        force_refresh: bool,
+        rejected: Option<&FormDiscoveryMap>,
     ) -> Result<Option<FormDiscoveryMap>, RuntimeError> {
         self.ensure_operation(RuntimeOperation::InjectCredential)?;
         let profile_identity_id = &self.profile.identity_id;
@@ -3514,14 +3514,18 @@ impl RuntimeSession<'_> {
             .as_deref()
             .ok_or(RuntimeError::AgentNotActive)?;
         let api_origin = &self.config.host;
-        if force_refresh {
-            FormMapCache::invalidate_serialized(
+        if let Some(rejected) = rejected {
+            rejected
+                .validate(domain, provider)
+                .map_err(|_| RuntimeError::FormMapCache)?;
+            FormMapCache::invalidate_matching_serialized(
                 &self.form_map_root,
                 profile_identity_id,
                 agent_id,
                 api_origin,
                 domain,
                 provider,
+                rejected,
             )?;
         } else if let Some(map) = FormMapCache::get_serialized(
             &self.form_map_root,
@@ -3537,6 +3541,24 @@ impl RuntimeSession<'_> {
 
         let map = self.api.get_form_discovery_map(domain, provider).await?;
         self.ensure_authorized()?;
+        if let (Some(rejected), Some(refreshed)) = (rejected, map.as_ref())
+            && refreshed.map_version == rejected.map_version
+            && refreshed.fingerprint == rejected.fingerprint
+        {
+            // Another process may have re-cached the rejected response while this request was in
+            // flight. Remove only that exact revision and never delete a concurrently published
+            // replacement.
+            FormMapCache::invalidate_matching_serialized(
+                &self.form_map_root,
+                profile_identity_id,
+                agent_id,
+                api_origin,
+                domain,
+                provider,
+                rejected,
+            )?;
+            return Ok(None);
+        }
         if let Some(map) = map.as_ref() {
             FormMapCache::put_serialized(
                 &self.form_map_root,
@@ -5385,11 +5407,73 @@ mod tests {
     const TEST_REFERENCE_ENTRY_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const TEST_GRANT_ID: &str = "12345678-1234-4234-8234-1234567890ab";
     const TEST_AGENT_ID: &str = "fedcba98-7654-4321-8765-abcdefabcdef";
+    const TEST_FORM_MAP: &str = r#"{
+      "mapId":"11111111-1111-4111-8111-111111111111","mapVersion":1,"scope":"system",
+      "domain":"accounts.google.com","loginUrl":"https://accounts.google.com/","provider":"playwright",
+      "fingerprint":"b556b71b0235e2afbbbaab4d9b65223e47c126c3a952e6ef946321e1602e3288",
+      "map":{"version":1,"form":{"version":1,"steps":[
+        {"fields":[{"entryFieldId":"credential.username","selector":"input[autocomplete=\"username\"]","control":"username"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"},"waitFor":{"selector":"input[type=\"password\"]"}},
+        {"fields":[{"entryFieldId":"credential.password","selector":"input[type=\"password\"]","control":"password"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"}}
+      ]}},"updatedAt":"2026-08-15T12:00:00Z"
+    }"#;
 
     type MemorySecretValues = BTreeMap<(String, SecretSlot), Vec<u8>>;
 
     #[derive(Clone, Default)]
     struct MemorySecretStore(Arc<Mutex<MemorySecretValues>>);
+
+    #[tokio::test]
+    async fn stale_refresh_never_recaches_the_rejected_revision() {
+        let (host, _) = single_response_server(200, TEST_FORM_MAP.to_owned()).await;
+        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let root = tempfile::tempdir().expect("cache root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("cache root mode");
+        }
+        let rejected: FormDiscoveryMap = serde_json::from_str(TEST_FORM_MAP).expect("map");
+        FormMapCache::put_serialized(
+            root.path(),
+            "11111111111111111111111111111111",
+            TEST_AGENT_ID,
+            &host,
+            rejected.clone(),
+        )
+        .expect("cache rejected revision");
+        let mut session = runtime_session(host.clone(), api, encryption);
+        session.operation = RuntimeOperation::InjectCredential;
+        session.form_map_root = root.path().to_path_buf();
+
+        assert!(
+            session
+                .resolve_form_discovery_map("accounts.google.com", "playwright", Some(&rejected))
+                .await
+                .expect("refresh")
+                .is_none()
+        );
+        assert!(
+            FormMapCache::get_serialized(
+                root.path(),
+                "11111111111111111111111111111111",
+                TEST_AGENT_ID,
+                &host,
+                "accounts.google.com",
+                "playwright"
+            )
+            .expect("cache lookup")
+            .is_none()
+        );
+    }
 
     impl SecretStore for MemorySecretStore {
         fn get(

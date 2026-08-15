@@ -225,6 +225,7 @@ export function providerOutcomeForError(
   if (runtimeMap && (message.includes('cannot attest the declared password control')
     || message.includes('declared field is unavailable')
     || message.includes('declared selector is missing or ambiguous')
+    || message.includes('declared transition timed out')
     || message.includes('field attestation failed'))) return 'stale-form-map';
   return 'provider-unavailable';
 }

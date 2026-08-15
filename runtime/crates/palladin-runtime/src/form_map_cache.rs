@@ -96,16 +96,24 @@ impl FormMapCache {
         })
     }
 
-    pub(crate) fn invalidate_serialized(
+    pub(crate) fn invalidate_matching_serialized(
         root: &Path,
         profile_identity_id: &str,
         agent_id: &str,
         api_origin: &str,
         domain: &str,
         provider: &str,
+        rejected: &FormDiscoveryMap,
     ) -> Result<(), FormMapCacheError> {
         Self::transact(root, |cache| {
-            cache.invalidate(profile_identity_id, agent_id, api_origin, domain, provider)
+            cache.invalidate_matching(
+                profile_identity_id,
+                agent_id,
+                api_origin,
+                domain,
+                provider,
+                rejected,
+            )
         })
     }
 
@@ -212,16 +220,21 @@ impl FormMapCache {
         self.save()
     }
 
-    pub(crate) fn invalidate(
+    pub(crate) fn invalidate_matching(
         &mut self,
         profile_identity_id: &str,
         agent_id: &str,
         api_origin: &str,
         domain: &str,
         provider: &str,
+        rejected: &FormDiscoveryMap,
     ) -> Result<(), FormMapCacheError> {
         let key = cache_key(profile_identity_id, agent_id, api_origin, domain, provider)?;
-        self.entries.retain(|entry| entry.key != key);
+        self.entries.retain(|entry| {
+            entry.key != key
+                || entry.map.map_version != rejected.map_version
+                || entry.map.fingerprint != rejected.fingerprint
+        });
         self.save()
     }
 
@@ -538,13 +551,15 @@ mod tests {
             .expect("profile scoped")
             .is_none()
         );
-        FormMapCache::invalidate_serialized(
+        let rejected = map();
+        FormMapCache::invalidate_matching_serialized(
             root.path(),
             "profile-a",
             "agent-a",
             "https://one.example",
             "accounts.google.com",
             "playwright",
+            &rejected,
         )
         .expect("invalidate");
         assert!(
@@ -558,6 +573,39 @@ mod tests {
             )
             .expect("invalidated")
             .is_none()
+        );
+
+        let mut replacement = map();
+        replacement.map_version += 1;
+        FormMapCache::put_serialized(
+            root.path(),
+            "profile-a",
+            "agent-a",
+            "https://one.example",
+            replacement.clone(),
+        )
+        .expect("replacement");
+        FormMapCache::invalidate_matching_serialized(
+            root.path(),
+            "profile-a",
+            "agent-a",
+            "https://one.example",
+            "accounts.google.com",
+            "playwright",
+            &rejected,
+        )
+        .expect("conditional invalidate");
+        assert_eq!(
+            FormMapCache::get_serialized(
+                root.path(),
+                "profile-a",
+                "agent-a",
+                "https://one.example",
+                "accounts.google.com",
+                "playwright"
+            )
+            .expect("newer revision retained"),
+            Some(replacement)
         );
         assert!(
             FormMapCache::get_serialized(

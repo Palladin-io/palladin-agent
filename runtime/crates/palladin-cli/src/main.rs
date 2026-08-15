@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use palladin_api::{
-    AgentPairingStatus, CredentialMethod, ReportCredentialStaleInput, StaleReasonCode,
+    AgentPairingStatus, ApiError, CredentialMethod, ReportCredentialStaleInput, StaleReasonCode,
 };
 #[cfg(any(target_os = "macos", all(test, unix)))]
 use palladin_browser_bridge::{
@@ -1467,11 +1467,12 @@ async fn inject_extension(
         ));
     }
     let form_map = match session
-        .resolve_form_discovery_map(target.expected_domain(), provider.as_str(), false)
+        .resolve_form_discovery_map(target.expected_domain(), provider.as_str(), None)
         .await
     {
         Ok(Some(map)) if map.applies_to_url(current_url) => Some(map),
         Ok(_) => None,
+        Err(error) if map_lookup_allows_fallback(&error) => None,
         Err(error) => return fail(&error.to_string()),
     };
     let form = match form_map
@@ -1552,7 +1553,11 @@ async fn inject_extension(
     if response.outcome != "injected" {
         if response.outcome == "stale-form-map" && form_map.is_some() {
             let _ = session
-                .resolve_form_discovery_map(target.expected_domain(), provider.as_str(), true)
+                .resolve_form_discovery_map(
+                    target.expected_domain(),
+                    provider.as_str(),
+                    form_map.as_ref(),
+                )
                 .await;
         }
         return fail(match response.outcome.as_str() {
@@ -1586,6 +1591,14 @@ async fn inject_extension(
         provider.as_str()
     );
     ExitCode::SUCCESS
+}
+
+fn map_lookup_allows_fallback(error: &RuntimeError) -> bool {
+    match error {
+        RuntimeError::Api(ApiError::Transport) => true,
+        RuntimeError::Api(ApiError::Http(status)) => (500..=599).contains(status),
+        _ => false,
+    }
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -2278,13 +2291,32 @@ mod authenticated_injection_target_tests {
 
 #[cfg(all(test, unix))]
 mod provider_credential_tests {
-    use super::resolve_injection_credential;
+    use super::{map_lookup_allows_fallback, resolve_injection_credential};
+    use palladin_api::ApiError;
     use palladin_browser_bridge::secure_transport::INJECT_PROVIDER_PROTOCOL;
     use palladin_browser_bridge::{
         InjectionControl, InjectionFormDefinition, InjectionFormField, InjectionFormStep,
         InjectionSubmit, InjectionSubmitKind,
     };
     use palladin_cli::native_browser::{InjectFieldValue, InjectRequest};
+    use palladin_runtime::RuntimeError;
+
+    #[test]
+    fn fallback_form_is_used_only_for_transient_map_lookup_unavailability() {
+        assert!(map_lookup_allows_fallback(&RuntimeError::Api(
+            ApiError::Transport
+        )));
+        assert!(map_lookup_allows_fallback(&RuntimeError::Api(
+            ApiError::Http(503)
+        )));
+        assert!(!map_lookup_allows_fallback(&RuntimeError::Api(
+            ApiError::Http(401)
+        )));
+        assert!(!map_lookup_allows_fallback(&RuntimeError::Api(
+            ApiError::InvalidResponse
+        )));
+        assert!(!map_lookup_allows_fallback(&RuntimeError::FormMapCache));
+    }
 
     #[test]
     fn private_provider_frame_contains_only_declared_field_values() {

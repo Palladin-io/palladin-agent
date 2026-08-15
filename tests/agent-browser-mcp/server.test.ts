@@ -67,6 +67,10 @@ describe('AgentBrowser MCP Inject provider boundary', () => {
   it('invalidates runtime maps only for attested selector failures', () => {
     expect(providerOutcomeForError(new Error('AgentBrowser declared field is unavailable'), true))
       .toBe('stale-form-map');
+    expect(providerOutcomeForError(new Error('AgentBrowser declared transition timed out'), true))
+      .toBe('stale-form-map');
+    expect(providerOutcomeForError(new Error('AgentBrowser command timed out'), true))
+      .toBe('provider-unavailable');
     expect(providerOutcomeForError(new Error('origin mismatch'), true)).toBe('origin-mismatch');
     expect(providerOutcomeForError(new Error('AgentBrowser daemon is unavailable'), true))
       .toBe('provider-unavailable');

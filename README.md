@@ -250,6 +250,10 @@ actions. It returns only a bounded result and leaves the authenticated browser s
 the Agent. Missing, stale, ambiguous, hidden, or semantically invalid definitions fail closed; the
 provider never guesses another form. A failed declared selector, control attestation, submit selector,
 or transition invalidates that cached map and asks the API for a fresh revision for the next request.
+If the API still returns the rejected version and fingerprint, that revision remains uncached; a
+concurrently stored replacement is not removed. A separately validated caller fallback form remains
+available during transient map lookup transport/5xx failures, while invalid payloads, authentication,
+and unsafe local cache/configuration errors still fail closed.
 Origin mismatch and provider transport/browser failures keep their specific outcome and do not evict
 a valid map. Palladin never retries a partially filled or submitted login automatically.
 
