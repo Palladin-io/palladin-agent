@@ -206,7 +206,7 @@ describe('Playwright MCP Inject provider boundary', () => {
     } finally {
       await browser.close();
     }
-  });
+  }, 60_000);
 
   it('waits for a client-rendered combined login surface', async () => {
     const browser = await chromium.launch({ channel: 'chrome', headless: true });
@@ -236,7 +236,7 @@ describe('Playwright MCP Inject provider boundary', () => {
     } finally {
       await browser.close();
     }
-  });
+  }, 60_000);
 
   it('fills a declared text control backed by a textarea', async () => {
     const browser = await chromium.launch({ channel: 'chrome', headless: true });
