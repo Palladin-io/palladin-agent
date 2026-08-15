@@ -342,11 +342,11 @@ fn validate_unix_permissions(
     Ok(())
 }
 
-fn set_private_permissions(file: &File) -> Result<(), std::io::Error> {
+fn set_private_permissions(_file: &File) -> Result<(), std::io::Error> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        _file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
 }
