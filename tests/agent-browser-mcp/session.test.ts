@@ -29,7 +29,13 @@ const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => { while (cleanups.length > 0) await cleanups.pop()?.(); });
 
-describe('AgentBrowser owner-only Inject channel', () => {
+// Agent Browser's authenticated daemon transport is a Unix-domain socket. The
+// production bridge intentionally fails closed on Windows until a separately
+// authenticated Windows transport exists; don't turn that unsupported transport
+// into a CI failure by attempting to bind a `.sock` path on Windows.
+const describeAgentBrowser = process.platform === 'win32' ? describe.skip : describe;
+
+describeAgentBrowser('AgentBrowser owner-only Inject channel', () => {
   it('executes the declared multi-step plan without a secret-bearing argv', async () => {
     const commands: Command[] = [];
     let url = 'https://x.com/i/flow/login';

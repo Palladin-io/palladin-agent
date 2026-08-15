@@ -71,6 +71,8 @@ jobs:
       - run: npm ci --ignore-scripts --workspaces=true --include-workspace-root
       - run: npm run build
       - run: npm run --workspaces=true --workspace packages/openclaw-plugin build
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
       - run: npm run --workspaces=true --workspace packages/openclaw-plugin test
 
   contracts:

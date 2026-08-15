@@ -26,7 +26,7 @@ jobs:
           license-check: true
           allow-licenses: >-
             0BSD, Apache-2.0, Apache-2.0 WITH LLVM-exception,
-            BSD-2-Clause, BSD-3-Clause, CDLA-Permissive-2.0, ISC,
+            BSD-2-Clause, BSD-2-Clause AND JSON, BSD-3-Clause, CDLA-Permissive-2.0, ISC,
             MIT, MPL-2.0, Unicode-3.0
           comment-summary-in-pr: never
           retry-on-snapshot-warnings: false
