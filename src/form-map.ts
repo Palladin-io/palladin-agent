@@ -5,7 +5,7 @@ export const FORM_MAP_VERSION = 1 as const;
 export const MAX_MAP_OVERLAYS = 4;
 
 export type FormMapStatus = 'candidate' | 'observed' | 'verified';
-export type FormMapProvider = 'playwright' | 'agent-browser' | 'extension' | 'generic';
+export type FormMapProvider = string;
 
 export interface CookieOverlayAction {
   selector: string;
@@ -32,12 +32,8 @@ export interface FormDiscoveryMap {
   cookieOverlays?: CookieOverlay[];
 }
 
-const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-const APPROVED_LOGIN_PATHS = new Set([
-  '/', '/accounts/login', '/accounts/login/', '/ap/signin', '/auth/login', '/client',
-  '/consumer/login/', '/en/login', '/i/flow/login', '/login', '/login/', '/sign-in',
-  '/signin', '/store-login', '/users/sign_in', '/v2/', '/ws/eBayISAPI.dll',
-]);
+const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$/;
+const PROVIDER_ID = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const SELECTOR = (value: unknown): value is string => typeof value === 'string'
   && value.length > 0 && utf8Length(value) <= 1024 && value === value.trim() && !value.includes('\0');
 
@@ -50,7 +46,7 @@ export function parseFormDiscoveryMap(value: unknown): FormDiscoveryMap | null {
   if (!record(value) || !onlyKeys(value, ['version', 'mapVersion', 'domain', 'loginUrl', 'provider', 'status', 'fingerprint', 'form', 'cookieOverlays'])
     || value.version !== FORM_MAP_VERSION || typeof value.domain !== 'string' || !DOMAIN.test(value.domain)
     || typeof value.loginUrl !== 'string' || !isHttpsOrigin(value.loginUrl, value.domain)
-    || !['playwright', 'agent-browser', 'extension', 'generic'].includes(String(value.provider))
+    || typeof value.provider !== 'string' || !PROVIDER_ID.test(value.provider)
     || !['candidate', 'observed', 'verified'].includes(String(value.status))
     || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint)
     || (value.mapVersion !== undefined && (typeof value.mapVersion !== 'number'
@@ -59,18 +55,11 @@ export function parseFormDiscoveryMap(value: unknown): FormDiscoveryMap | null {
     ) return null;
   const form = parseInjectForm(value.form);
   if (form === null) return null;
-  if (form.steps.some((step) => step.fields.some((field) => !validLoginField(field)))) return null;
   if (value.cookieOverlays !== undefined) {
     if (!Array.isArray(value.cookieOverlays) || value.cookieOverlays.length > MAX_MAP_OVERLAYS
       || value.cookieOverlays.some((overlay) => !validOverlay(overlay))) return null;
   }
   return { ...value, form } as FormDiscoveryMap;
-}
-
-function validLoginField(field: InjectFormDefinition['steps'][number]['fields'][number]): boolean {
-  return (field.entryFieldId === 'credential.username'
-      && ['email', 'tel', 'text', 'username'].includes(field.control))
-    || (field.entryFieldId === 'credential.password' && field.control === 'password');
 }
 
 function validOverlay(value: unknown): value is CookieOverlay {
@@ -89,8 +78,7 @@ function isHttpsOrigin(value: string, domain: string): boolean {
     return url.protocol === 'https:' && utf8Length(value) <= 2048
       && url.hostname === domain && (url.port === '' || url.port === '443')
       && url.username === '' && url.password === '' && url.hash === ''
-      && APPROVED_LOGIN_PATHS.has(url.pathname)
-      && (url.search === '' || url.search === '?SignIn');
+      && url.search === '';
   } catch { return false; }
 }
 function utf8Length(value: string): number {

@@ -220,27 +220,35 @@ closed until their platform-specific launch attestation and installation paths a
 Codex, Claude, and other MCP clients are callers, not browser providers. They never receive a
 dedicated extension or the credential value. The unshipped Node/Playwright adapters are disabled
 fixtures: their hidden `--provider-transport-stdio` invocation is rejected by the Rust CLI in every
-build. A future provider requires a separately reviewed authenticated transport and registers a new
-lowercase identifier; unknown providers fail closed. The CLI/MCP input never accepts a CDP URL,
+build. Provider identifiers are an open namespace rather than a catalog allowlist; execution fails
+closed until the matching separately reviewed authenticated transport is registered. The CLI/MCP input never accepts a CDP URL,
 remote-debugging port, Playwright WebSocket endpoint, unmanaged browser target, or plaintext pipe.
 
 ### Verified and Agent-defined form execution
 
 The native Rust runtime first looks up a verified Form Discovery Map for the authenticated Entry
-domain and selected provider. Organization-verified maps take precedence over system-verified maps;
-candidate and observed maps are never executed. A returned map is accepted only when its fingerprint,
-bounded action contract, provider, domain, and exact HTTPS origin validate locally. Login URLs use an
-explicit allowlist of static login paths. Query values are rejected; the sole legacy exception is the
-empty eBay `?SignIn` flag. When no verified map
+domain and selected provider. The catalog is global; candidate and observed maps are never executed.
+A returned map is accepted only when its fingerprint, bounded action contract, provider identifier,
+domain, and exact HTTPS origin validate locally. Login paths are data and may represent any locale or
+site route; the contract contains no list of known URLs. Persisted login URLs omit query and fragment
+data so one-time flow state or tokens cannot enter the catalog. When no verified map
 applies, the Agent may prepare the public login surface with ordinary browser tools, inspect it,
 and pass a complete, versioned, value-free form definition to `inject_credential` as a fallback.
-The definition is an ordered list of one or more steps mapping approved Entry field IDs to public
+The definition is an ordered list of one or more steps mapping schema-valid Entry field IDs to public
 control locators, with a bounded click or press-Enter action and an optional next-step transition
 expectation.
 
-The version 1 shape is `{"version":1,"steps":[...]}`. A verified map may reference only
-`credential.username` with `username`, `email`, `tel`, or `text`, and `credential.password` with
-`password`; arbitrary Vault field IDs are rejected. Every step declares one `click` or `press-enter` submit action; every intermediate
+After a fallback form completes every declared Inject step, the native Runtime submits that
+value-free definition to the global API as a `candidate`. The request uses the authenticated Agent
+identity as provenance, strips query and fragment state from the current HTTPS URL, and never
+contains field values. Candidate recording is best-effort after the completed Inject, is idempotent
+for the same fingerprint, and cannot make the map executable; only the trusted catalog process may
+promote it to `verified`.
+
+The version 1 shape is `{"version":1,"steps":[...]}`. A verified map may use any schema-valid Entry
+field identifier needed by the login flow. The runtime resolves only fields from the already
+authorized credential and checks their value kind against the declared control before delivery.
+Every step declares one `click` or `press-enter` submit action; every intermediate
 step also declares `waitFor`. `--form-json` is value-free and exists only for the ordinary-extension
 CLI adapter—credential values are never accepted there or in MCP arguments.
 
@@ -251,8 +259,9 @@ actions. It returns only a bounded result and leaves the authenticated browser s
 the Agent. Missing, stale, ambiguous, hidden, or semantically invalid definitions fail closed; the
 provider never guesses another form. A failed declared selector, control attestation, submit selector,
 or transition invalidates that cached map and asks the API for a fresh revision for the next request.
-If the API still returns the rejected version and fingerprint, that revision remains uncached; a
-concurrently stored higher version in the same scope is neither removed nor overwritten by a delayed
+If the API still returns the rejected version and fingerprint, a public rejection tombstone keeps
+that exact revision unavailable while later requests continue checking for a replacement; a
+concurrently stored higher version is neither removed nor overwritten by a delayed
 response. Cache invalidation/refresh persistence failures are reported to the operator. A separately
 validated caller fallback form remains
 available during transient map lookup transport/5xx failures, while invalid payloads, authentication,
@@ -263,8 +272,9 @@ a valid map. Palladin never retries a partially filled or submitted login automa
 ### Form Discovery Map cache
 
 Verified maps are public and value-free. The native runtime stores them in
-`~/.palladin/form-map-cache.json` with owner-only permissions and an LRU key scoped by Agent profile,
-registered Agent ID, API origin, domain, and provider. The default maximum is 100 entries. Configure it with the
+`~/.palladin/form-map-cache.json` with owner-only permissions and an LRU key scoped by API origin,
+domain, and provider. Global maps are shared by local Agent profiles connected to the same
+API origin. The default maximum is 100 entries. Configure it with the
 owner-only `~/.palladin/runtime-config.json` file:
 
 ```json
@@ -277,7 +287,8 @@ owner-only `~/.palladin/runtime-config.json` file:
 
 `maxEntries` must be an integer from 1 through 500. Unknown properties, unsafe permissions, symbolic
 links, malformed maps, or an out-of-range limit fail closed. Every cache read/update/invalidation is
-serialized with the cross-process profile transaction lock. Neither file contains credential values,
+serialized with the cross-process profile transaction lock. Active maps and rejection tombstones
+share the same LRU capacity. Neither file contains credential values,
 cookies, API keys, private keys, or decrypted vault data. Explicit full-runtime purge recognizes and
 removes both files.
 

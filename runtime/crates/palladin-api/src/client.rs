@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use palladin_browser_bridge::FormDiscoveryMap;
+use palladin_browser_bridge::{FormDiscoveryMap, FormDiscoveryMapDefinition};
 use palladin_core::{
     host::ApiHost, public_store::MAX_VAULT_TRUST_ANCHORS, secret::OrganizationApiKey,
 };
@@ -21,6 +21,25 @@ use crate::types::{
 
 const MAX_BOUNDED_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_FORM_MAP_RESPONSE_BYTES: usize = 128 * 1024;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SubmitFormDiscoveryMapBody<'a> {
+    domain: &'a str,
+    login_url: &'a str,
+    provider: &'a str,
+    fingerprint: &'a str,
+    map: &'a FormDiscoveryMapDefinition,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SubmitFormDiscoveryMapResponse {
+    map_id: String,
+    map_version: u32,
+    status: String,
+    created_at: String,
+}
 
 const ENCODE_URI_COMPONENT: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -315,6 +334,50 @@ impl ApiClient {
         map.validate(domain, provider)
             .map_err(|_| ApiError::InvalidResponse)?;
         Ok(Some(map))
+    }
+
+    pub async fn submit_form_discovery_map_candidate(
+        &self,
+        domain: &str,
+        login_url: &str,
+        provider: &str,
+        fingerprint: &str,
+        map: &FormDiscoveryMapDefinition,
+    ) -> Result<(), ApiError> {
+        let body = serde_json::to_vec(&SubmitFormDiscoveryMapBody {
+            domain,
+            login_url,
+            provider,
+            fingerprint,
+            map,
+        })
+        .map_err(|_| ApiError::InvalidInput)?;
+        let response = self
+            .send(
+                Method::POST,
+                "/api/agent/form-discovery-maps",
+                Some(body),
+                &[],
+            )
+            .await?;
+        let (status, body) =
+            read_bounded_response_with_limit(response, MAX_FORM_MAP_RESPONSE_BYTES).await?;
+        if !status.is_success() {
+            return Err(ApiError::Http(status.as_u16()));
+        }
+        let submitted: SubmitFormDiscoveryMapResponse =
+            serde_json::from_slice(&body).map_err(|_| ApiError::InvalidResponse)?;
+        if submitted.map_id.is_empty()
+            || submitted.map_version == 0
+            || !matches!(
+                submitted.status.as_str(),
+                "candidate" | "observed" | "verified"
+            )
+            || submitted.created_at.is_empty()
+        {
+            return Err(ApiError::InvalidResponse);
+        }
+        Ok(())
     }
 
     pub async fn get_credential(
@@ -640,6 +703,10 @@ mod tests {
 
     use base64::{Engine, engine::general_purpose::STANDARD};
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    use palladin_browser_bridge::{
+        FormDiscoveryMapDefinition, InjectionControl, InjectionFormDefinition, InjectionFormField,
+        InjectionFormStep, InjectionSubmit, InjectionSubmitKind,
+    };
     use palladin_core::{host::ApiHost, secret::OrganizationApiKey};
     use palladin_crypto::{Ed25519Identity, X25519Identity, canonical_request};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -682,9 +749,9 @@ mod tests {
     #[tokio::test]
     async fn form_map_lookup_is_provider_bound_and_treats_not_found_as_cacheable_absence() {
         const MAP: &str = r#"{
-          "mapId":"11111111-1111-4111-8111-111111111111","mapVersion":1,"scope":"system",
+          "mapId":"11111111-1111-4111-8111-111111111111","mapVersion":1,
           "domain":"accounts.google.com","loginUrl":"https://accounts.google.com/","provider":"playwright",
-          "fingerprint":"b556b71b0235e2afbbbaab4d9b65223e47c126c3a952e6ef946321e1602e3288",
+          "fingerprint":"f6f9b42f136c52f404542e6596a7aae9af598d05d49004a29615a83e3479aa35",
           "map":{"version":1,"form":{"version":1,"steps":[
             {"fields":[{"entryFieldId":"credential.username","selector":"input[autocomplete=\"username\"]","control":"username"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"},"waitFor":{"selector":"input[type=\"password\"]"}},
             {"fields":[{"entryFieldId":"credential.password","selector":"input[type=\"password\"]","control":"password"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"}}
@@ -698,10 +765,7 @@ mod tests {
             .await
             .expect("lookup")
             .expect("map");
-        assert_eq!(
-            map.scope,
-            palladin_browser_bridge::FormDiscoveryMapScope::System
-        );
+        assert_eq!(map.provider, "playwright");
         assert!(
             api.get_form_discovery_map("missing.example", "playwright")
                 .await
@@ -713,6 +777,58 @@ mod tests {
         assert!(requests[0].starts_with(
             "GET /api/agent/form-discovery-maps/accounts.google.com?provider=playwright HTTP/1.1"
         ));
+    }
+
+    #[tokio::test]
+    async fn form_map_candidate_submission_is_value_free_signed_and_not_retried() {
+        let response = r#"{
+          "mapId":"11111111-1111-4111-8111-111111111111",
+          "mapVersion":7,
+          "status":"candidate",
+          "createdAt":"2026-08-15T12:00:00Z"
+        }"#;
+        let (host, requests) = response_server(vec![(200, response)]).await;
+        let api = signed_client(&host, vec![22; 32], Duration::from_secs(1));
+        let map = FormDiscoveryMapDefinition {
+            version: 1,
+            form: InjectionFormDefinition {
+                version: 1,
+                steps: vec![InjectionFormStep {
+                    fields: vec![InjectionFormField {
+                        entry_field_id: "credential.password".to_owned(),
+                        selector: "input[type=password]".to_owned(),
+                        control: InjectionControl::Password,
+                    }],
+                    submit: InjectionSubmit {
+                        action: InjectionSubmitKind::Click,
+                        selector: "button[type=submit]".to_owned(),
+                    },
+                    wait_for: None,
+                }],
+            },
+            cookie_overlays: Vec::new(),
+        };
+
+        api.submit_form_discovery_map_candidate(
+            "example.org",
+            "https://example.org/pl/zaloguj",
+            "future-browser",
+            &"a".repeat(64),
+            &map,
+        )
+        .await
+        .expect("candidate submission");
+
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("POST /api/agent/form-discovery-maps HTTP/1.1"));
+        assert!(
+            requests[0]
+                .to_ascii_lowercase()
+                .contains("x-agent-signature:")
+        );
+        assert!(requests[0].contains("\"provider\":\"future-browser\""));
+        assert!(!requests[0].contains("fixture-password"));
     }
 
     #[tokio::test]

@@ -7,12 +7,15 @@ import {
 } from '../../src/browser-host/provider-contract.js';
 
 describe('agent-owned browser provider contract', () => {
-  it('supports the four agent providers without treating them as CDP', () => {
+  it('accepts the open provider namespace without treating endpoints as providers', () => {
     expect(isBrowserProvider('playwright')).toBe(true);
     expect(isBrowserProvider('agent-browser')).toBe(true);
     expect(isBrowserProvider('claude-browser')).toBe(true);
     expect(isBrowserProvider('codex-browser')).toBe(true);
+    expect(isBrowserProvider('future-browser-adapter')).toBe(true);
     expect(isBrowserProvider('ws://127.0.0.1:9222')).toBe(false);
+    expect(isBrowserProvider('Unknown Provider')).toBe(false);
+    expect(isBrowserProvider('unfinished-')).toBe(false);
   });
 
   it('requires a stable page and session capability', () => {

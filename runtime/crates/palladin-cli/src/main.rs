@@ -1591,6 +1591,22 @@ async fn inject_extension(
             _ => "the trusted browser provider did not complete Inject (outcome=invalid)",
         });
     }
+    if form_map.is_none()
+        && let Some(fallback) = open.form.as_ref()
+        && session
+            .submit_form_discovery_map_candidate(
+                target.expected_domain(),
+                &open.current_url,
+                provider.as_str(),
+                fallback,
+            )
+            .await
+            .is_err()
+    {
+        eprintln!(
+            "Warning: the value-free login form candidate could not be recorded; the completed Inject result is unchanged."
+        );
+    }
     eprintln!(
         "Credential injected through provider {}.",
         provider.as_str()

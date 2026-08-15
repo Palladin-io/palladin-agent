@@ -8,12 +8,8 @@
  */
 import type { InjectFormDefinition, InjectFieldValue } from '../inject-contract.js';
 
-export type BrowserProvider =
-  | 'playwright'
-  | 'agent-browser'
-  | 'claude-browser'
-  | 'codex-browser'
-  | 'extension';
+/** Open provider identifier. Availability is decided by the local adapter registry. */
+export type BrowserProvider = string;
 
 export interface BrowserPageCapability {
   readonly provider: BrowserProvider;
@@ -48,8 +44,7 @@ export interface BrowserProviderOpenFrame {
 }
 
 export function isBrowserProvider(value: unknown): value is BrowserProvider {
-  return value === 'playwright' || value === 'agent-browser'
-    || value === 'claude-browser' || value === 'codex-browser' || value === 'extension';
+  return typeof value === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value);
 }
 
 /** Reject accidental debugger URLs and require an agent-owned page identity. */

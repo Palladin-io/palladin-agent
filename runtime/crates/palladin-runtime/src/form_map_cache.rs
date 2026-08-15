@@ -41,8 +41,6 @@ impl Default for RuntimeConfig {
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CacheKey {
-    profile_identity_id: String,
-    agent_id: String,
     api_origin: String,
     domain: String,
     provider: String,
@@ -53,6 +51,8 @@ struct CacheKey {
 struct CacheEntry {
     key: CacheKey,
     map: FormDiscoveryMap,
+    #[serde(default)]
+    rejected: bool,
     last_used: u64,
 }
 
@@ -73,47 +73,30 @@ pub(crate) struct FormMapCache {
 impl FormMapCache {
     pub(crate) fn get_serialized(
         root: &Path,
-        profile_identity_id: &str,
-        agent_id: &str,
         api_origin: &str,
         domain: &str,
         provider: &str,
     ) -> Result<Option<FormDiscoveryMap>, FormMapCacheError> {
-        Self::transact(root, |cache| {
-            cache.get(profile_identity_id, agent_id, api_origin, domain, provider)
-        })
+        Self::transact(root, |cache| cache.get(api_origin, domain, provider))
     }
 
     pub(crate) fn put_serialized(
         root: &Path,
-        profile_identity_id: &str,
-        agent_id: &str,
         api_origin: &str,
         map: FormDiscoveryMap,
-    ) -> Result<FormDiscoveryMap, FormMapCacheError> {
-        Self::transact(root, |cache| {
-            cache.put(profile_identity_id, agent_id, api_origin, map)
-        })
+    ) -> Result<Option<FormDiscoveryMap>, FormMapCacheError> {
+        Self::transact(root, |cache| cache.put(api_origin, map))
     }
 
     pub(crate) fn invalidate_matching_serialized(
         root: &Path,
-        profile_identity_id: &str,
-        agent_id: &str,
         api_origin: &str,
         domain: &str,
         provider: &str,
         rejected: &FormDiscoveryMap,
     ) -> Result<(), FormMapCacheError> {
         Self::transact(root, |cache| {
-            cache.invalidate_matching(
-                profile_identity_id,
-                agent_id,
-                api_origin,
-                domain,
-                provider,
-                rejected,
-            )
+            cache.invalidate_matching(api_origin, domain, provider, rejected)
         })
     }
 
@@ -173,62 +156,57 @@ impl FormMapCache {
 
     pub(crate) fn get(
         &mut self,
-        profile_identity_id: &str,
-        agent_id: &str,
         api_origin: &str,
         domain: &str,
         provider: &str,
     ) -> Result<Option<FormDiscoveryMap>, FormMapCacheError> {
-        let key = cache_key(profile_identity_id, agent_id, api_origin, domain, provider)?;
+        let key = cache_key(api_origin, domain, provider)?;
         let Some(index) = self.entries.iter().position(|entry| entry.key == key) else {
             return Ok(None);
         };
         self.entries[index].last_used = self.take_usage();
-        let map = self.entries[index].map.clone();
+        let map = (!self.entries[index].rejected).then(|| self.entries[index].map.clone());
         self.save()?;
-        Ok(Some(map))
+        Ok(map)
     }
 
     pub(crate) fn put(
         &mut self,
-        profile_identity_id: &str,
-        agent_id: &str,
         api_origin: &str,
         map: FormDiscoveryMap,
-    ) -> Result<FormDiscoveryMap, FormMapCacheError> {
+    ) -> Result<Option<FormDiscoveryMap>, FormMapCacheError> {
         map.validate(&map.domain, &map.provider)
             .map_err(|_| FormMapCacheError::InvalidCache)?;
-        let key = cache_key(
-            profile_identity_id,
-            agent_id,
-            api_origin,
-            &map.domain,
-            &map.provider,
-        )?;
+        let key = cache_key(api_origin, &map.domain, &map.provider)?;
         let last_used = self.take_usage();
         let stored = if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {
             let existing = &self.entries[index].map;
-            if existing.scope == map.scope
-                && existing.map_version == map.map_version
-                && existing.fingerprint != map.fingerprint
-            {
+            if existing.map_version == map.map_version && existing.fingerprint != map.fingerprint {
                 return Err(FormMapCacheError::InvalidCache);
             }
-            if existing.scope == map.scope && existing.map_version > map.map_version {
+            if self.entries[index].rejected
+                && existing.map_version == map.map_version
+                && existing.fingerprint == map.fingerprint
+            {
                 self.entries[index].last_used = last_used;
-                self.entries[index].map.clone()
+                None
+            } else if existing.map_version > map.map_version {
+                self.entries[index].last_used = last_used;
+                (!self.entries[index].rejected).then(|| self.entries[index].map.clone())
             } else {
                 self.entries[index].map = map;
+                self.entries[index].rejected = false;
                 self.entries[index].last_used = last_used;
-                self.entries[index].map.clone()
+                Some(self.entries[index].map.clone())
             }
         } else {
             self.entries.push(CacheEntry {
                 key,
                 map: map.clone(),
+                rejected: false,
                 last_used,
             });
-            map
+            Some(map)
         };
         self.evict();
         self.save()?;
@@ -237,19 +215,29 @@ impl FormMapCache {
 
     pub(crate) fn invalidate_matching(
         &mut self,
-        profile_identity_id: &str,
-        agent_id: &str,
         api_origin: &str,
         domain: &str,
         provider: &str,
         rejected: &FormDiscoveryMap,
     ) -> Result<(), FormMapCacheError> {
-        let key = cache_key(profile_identity_id, agent_id, api_origin, domain, provider)?;
-        self.entries.retain(|entry| {
-            entry.key != key
-                || entry.map.map_version != rejected.map_version
-                || entry.map.fingerprint != rejected.fingerprint
-        });
+        let key = cache_key(api_origin, domain, provider)?;
+        let last_used = self.take_usage();
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.key == key) {
+            if entry.map.map_version == rejected.map_version
+                && entry.map.fingerprint == rejected.fingerprint
+            {
+                entry.rejected = true;
+                entry.last_used = last_used;
+            }
+        } else {
+            self.entries.push(CacheEntry {
+                key,
+                map: rejected.clone(),
+                rejected: true,
+                last_used,
+            });
+            self.evict();
+        }
         self.save()
     }
 
@@ -340,15 +328,11 @@ fn validate_entries(entries: &[CacheEntry]) -> Result<(), FormMapCacheError> {
 }
 
 fn cache_key(
-    profile_identity_id: &str,
-    agent_id: &str,
     api_origin: &str,
     domain: &str,
     provider: &str,
 ) -> Result<CacheKey, FormMapCacheError> {
     let key = CacheKey {
-        profile_identity_id: profile_identity_id.to_owned(),
-        agent_id: agent_id.to_owned(),
         api_origin: api_origin.to_owned(),
         domain: domain.to_owned(),
         provider: provider.to_owned(),
@@ -359,11 +343,7 @@ fn cache_key(
 
 fn validate_cache_key(key: &CacheKey) -> Result<(), FormMapCacheError> {
     let origin = Url::parse(&key.api_origin).map_err(|_| FormMapCacheError::InvalidCache)?;
-    if key.profile_identity_id.is_empty()
-        || key.profile_identity_id.len() > 256
-        || key.agent_id.is_empty()
-        || key.agent_id.len() > 256
-        || key.domain.is_empty()
+    if key.domain.is_empty()
         || key.domain.len() > 253
         || key.provider.is_empty()
         || key.provider.len() > 64
@@ -455,9 +435,9 @@ mod tests {
 
     fn map() -> FormDiscoveryMap {
         serde_json::from_str(r#"{
-          "mapId":"11111111-1111-4111-8111-111111111111","mapVersion":1,"scope":"system",
+          "mapId":"11111111-1111-4111-8111-111111111111","mapVersion":1,
           "domain":"accounts.google.com","loginUrl":"https://accounts.google.com/","provider":"playwright",
-          "fingerprint":"b556b71b0235e2afbbbaab4d9b65223e47c126c3a952e6ef946321e1602e3288",
+          "fingerprint":"f6f9b42f136c52f404542e6596a7aae9af598d05d49004a29615a83e3479aa35",
           "map":{"version":1,"form":{"version":1,"steps":[
             {"fields":[{"entryFieldId":"credential.username","selector":"input[autocomplete=\"username\"]","control":"username"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"},"waitFor":{"selector":"input[type=\"password\"]"}},
             {"fields":[{"entryFieldId":"credential.password","selector":"input[type=\"password\"]","control":"password"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"}}
@@ -490,30 +470,18 @@ mod tests {
     }
 
     #[test]
-    fn cache_is_persistent_lru_and_scoped_by_profile_agent_and_api_origin() {
+    fn cache_is_persistent_lru_and_scoped_by_api_origin() {
         let root = private_root();
         write_config(root.path(), 2);
-        FormMapCache::put_serialized(
-            root.path(),
-            "profile-a",
-            "agent-a",
-            "https://one.example",
-            map(),
-        )
-        .expect("first");
-        FormMapCache::put_serialized(
-            root.path(),
-            "profile-a",
-            "agent-a",
-            "https://two.example",
-            map(),
-        )
-        .expect("second");
+        FormMapCache::put_serialized(root.path(), "https://one.example", map())
+            .expect("first")
+            .expect("accepted first map");
+        FormMapCache::put_serialized(root.path(), "https://two.example", map())
+            .expect("second")
+            .expect("accepted second map");
         assert!(
             FormMapCache::get_serialized(
                 root.path(),
-                "profile-a",
-                "agent-a",
                 "https://one.example",
                 "accounts.google.com",
                 "playwright"
@@ -521,20 +489,13 @@ mod tests {
             .expect("touch")
             .is_some()
         );
-        FormMapCache::put_serialized(
-            root.path(),
-            "profile-a",
-            "agent-a",
-            "https://three.example",
-            map(),
-        )
-        .expect("third");
+        FormMapCache::put_serialized(root.path(), "https://three.example", map())
+            .expect("third")
+            .expect("accepted third map");
 
         assert!(
             FormMapCache::get_serialized(
                 root.path(),
-                "profile-a",
-                "agent-a",
                 "https://two.example",
                 "accounts.google.com",
                 "playwright"
@@ -545,8 +506,6 @@ mod tests {
         assert!(
             FormMapCache::get_serialized(
                 root.path(),
-                "profile-a",
-                "agent-a",
                 "https://one.example",
                 "accounts.google.com",
                 "playwright"
@@ -554,23 +513,9 @@ mod tests {
             .expect("retained")
             .is_some()
         );
-        assert!(
-            FormMapCache::get_serialized(
-                root.path(),
-                "profile-b",
-                "agent-a",
-                "https://one.example",
-                "accounts.google.com",
-                "playwright"
-            )
-            .expect("profile scoped")
-            .is_none()
-        );
         let rejected = map();
         FormMapCache::invalidate_matching_serialized(
             root.path(),
-            "profile-a",
-            "agent-a",
             "https://one.example",
             "accounts.google.com",
             "playwright",
@@ -580,8 +525,6 @@ mod tests {
         assert!(
             FormMapCache::get_serialized(
                 root.path(),
-                "profile-a",
-                "agent-a",
                 "https://one.example",
                 "accounts.google.com",
                 "playwright"
@@ -589,21 +532,29 @@ mod tests {
             .expect("invalidated")
             .is_none()
         );
+        assert!(
+            FormMapCache::put_serialized(root.path(), "https://one.example", rejected.clone())
+                .expect("same rejected response")
+                .is_none()
+        );
+        assert!(
+            FormMapCache::get_serialized(
+                root.path(),
+                "https://one.example",
+                "accounts.google.com",
+                "playwright"
+            )
+            .expect("rejected revision stays unavailable")
+            .is_none()
+        );
 
         let mut replacement = map();
         replacement.map_version += 1;
-        FormMapCache::put_serialized(
-            root.path(),
-            "profile-a",
-            "agent-a",
-            "https://one.example",
-            replacement.clone(),
-        )
-        .expect("replacement");
+        FormMapCache::put_serialized(root.path(), "https://one.example", replacement.clone())
+            .expect("replacement")
+            .expect("accepted replacement");
         FormMapCache::invalidate_matching_serialized(
             root.path(),
-            "profile-a",
-            "agent-a",
             "https://one.example",
             "accounts.google.com",
             "playwright",
@@ -613,8 +564,6 @@ mod tests {
         assert_eq!(
             FormMapCache::get_serialized(
                 root.path(),
-                "profile-a",
-                "agent-a",
                 "https://one.example",
                 "accounts.google.com",
                 "playwright"
@@ -623,39 +572,19 @@ mod tests {
             Some(replacement.clone())
         );
         assert_eq!(
-            FormMapCache::put_serialized(
-                root.path(),
-                "profile-a",
-                "agent-a",
-                "https://one.example",
-                rejected,
-            )
-            .expect("delayed older response"),
-            replacement.clone()
+            FormMapCache::put_serialized(root.path(), "https://one.example", rejected,)
+                .expect("delayed older response"),
+            Some(replacement.clone())
         );
         assert_eq!(
             FormMapCache::get_serialized(
                 root.path(),
-                "profile-a",
-                "agent-a",
                 "https://one.example",
                 "accounts.google.com",
                 "playwright"
             )
             .expect("newer revision remains cached"),
             Some(replacement)
-        );
-        assert!(
-            FormMapCache::get_serialized(
-                root.path(),
-                "profile-a",
-                "agent-b",
-                "https://three.example",
-                "accounts.google.com",
-                "playwright"
-            )
-            .expect("agent scoped")
-            .is_none()
         );
     }
 
@@ -686,13 +615,8 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             scope.spawn(|| {
-                let result = FormMapCache::put_serialized(
-                    root.path(),
-                    "profile-a",
-                    "agent-a",
-                    "https://api.example",
-                    map(),
-                );
+                let result =
+                    FormMapCache::put_serialized(root.path(), "https://api.example", map());
                 sender.send(result).expect("send result");
             });
             let was_blocked = receiver

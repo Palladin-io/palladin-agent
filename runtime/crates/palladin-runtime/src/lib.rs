@@ -19,6 +19,10 @@ use palladin_api::{
     GrantStatus, ReportCredentialStaleInput, VaultManifest,
 };
 use palladin_browser_bridge::secure_transport::{BrowserHostIdentity, SecureTransportError};
+use palladin_browser_bridge::{
+    FormDiscoveryMapDefinition, InjectionFormDefinition, form_discovery_map_fingerprint,
+    form_discovery_map_login_url,
+};
 use palladin_core::host::ApiHost;
 use palladin_core::legacy_typescript::{LegacyTypeScriptError, LegacyTypeScriptRepository};
 use palladin_core::profiles::{
@@ -3507,12 +3511,6 @@ impl RuntimeSession<'_> {
         rejected: Option<&FormDiscoveryMap>,
     ) -> Result<Option<FormDiscoveryMap>, RuntimeError> {
         self.ensure_operation(RuntimeOperation::InjectCredential)?;
-        let profile_identity_id = &self.profile.identity_id;
-        let agent_id = self
-            .config
-            .agent_id
-            .as_deref()
-            .ok_or(RuntimeError::AgentNotActive)?;
         let api_origin = &self.config.host;
         if let Some(rejected) = rejected {
             rejected
@@ -3520,21 +3518,14 @@ impl RuntimeSession<'_> {
                 .map_err(|_| RuntimeError::FormMapCache)?;
             FormMapCache::invalidate_matching_serialized(
                 &self.form_map_root,
-                profile_identity_id,
-                agent_id,
                 api_origin,
                 domain,
                 provider,
                 rejected,
             )?;
-        } else if let Some(map) = FormMapCache::get_serialized(
-            &self.form_map_root,
-            profile_identity_id,
-            agent_id,
-            api_origin,
-            domain,
-            provider,
-        )? {
+        } else if let Some(map) =
+            FormMapCache::get_serialized(&self.form_map_root, api_origin, domain, provider)?
+        {
             self.ensure_authorized()?;
             return Ok(Some(map));
         }
@@ -3550,8 +3541,6 @@ impl RuntimeSession<'_> {
             // replacement.
             FormMapCache::invalidate_matching_serialized(
                 &self.form_map_root,
-                profile_identity_id,
-                agent_id,
                 api_origin,
                 domain,
                 provider,
@@ -3560,17 +3549,34 @@ impl RuntimeSession<'_> {
             return Ok(None);
         }
         let map = if let Some(map) = map {
-            Some(FormMapCache::put_serialized(
-                &self.form_map_root,
-                profile_identity_id,
-                agent_id,
-                api_origin,
-                map,
-            )?)
+            FormMapCache::put_serialized(&self.form_map_root, api_origin, map)?
         } else {
             None
         };
         Ok(map)
+    }
+
+    pub async fn submit_form_discovery_map_candidate(
+        &self,
+        domain: &str,
+        current_url: &str,
+        provider: &str,
+        form: &InjectionFormDefinition,
+    ) -> Result<(), RuntimeError> {
+        self.ensure_operation(RuntimeOperation::InjectCredential)?;
+        let login_url = form_discovery_map_login_url(current_url, domain)
+            .map_err(|_| RuntimeError::InvalidFormDiscoveryMap)?;
+        let map = FormDiscoveryMapDefinition {
+            version: 1,
+            form: form.clone(),
+            cookie_overlays: Vec::new(),
+        };
+        let fingerprint = form_discovery_map_fingerprint(domain, &login_url, provider, &map)
+            .map_err(|_| RuntimeError::InvalidFormDiscoveryMap)?;
+        self.api
+            .submit_form_discovery_map_candidate(domain, &login_url, provider, &fingerprint, &map)
+            .await?;
+        self.ensure_authorized()
     }
 
     /// Consumes a renewed PairVaults authorization for polling an existing, exactly bound
@@ -5193,6 +5199,8 @@ pub enum RuntimeError {
     Api(#[from] ApiError),
     #[error("local Form Discovery Map cache operation failed")]
     FormMapCache,
+    #[error("the value-free Form Discovery Map candidate is invalid")]
+    InvalidFormDiscoveryMap,
     #[error("API key is invalid; it must start with pl_")]
     InvalidApiKey,
     #[error("stored Agent identity is incomplete")]
@@ -5410,9 +5418,9 @@ mod tests {
     const TEST_GRANT_ID: &str = "12345678-1234-4234-8234-1234567890ab";
     const TEST_AGENT_ID: &str = "fedcba98-7654-4321-8765-abcdefabcdef";
     const TEST_FORM_MAP: &str = r#"{
-      "mapId":"11111111-1111-4111-8111-111111111111","mapVersion":1,"scope":"system",
+      "mapId":"11111111-1111-4111-8111-111111111111","mapVersion":1,
       "domain":"accounts.google.com","loginUrl":"https://accounts.google.com/","provider":"playwright",
-      "fingerprint":"b556b71b0235e2afbbbaab4d9b65223e47c126c3a952e6ef946321e1602e3288",
+      "fingerprint":"f6f9b42f136c52f404542e6596a7aae9af598d05d49004a29615a83e3479aa35",
       "map":{"version":1,"form":{"version":1,"steps":[
         {"fields":[{"entryFieldId":"credential.username","selector":"input[autocomplete=\"username\"]","control":"username"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"},"waitFor":{"selector":"input[type=\"password\"]"}},
         {"fields":[{"entryFieldId":"credential.password","selector":"input[type=\"password\"]","control":"password"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"}}
@@ -5444,14 +5452,9 @@ mod tests {
                 .expect("cache root mode");
         }
         let rejected: FormDiscoveryMap = serde_json::from_str(TEST_FORM_MAP).expect("map");
-        FormMapCache::put_serialized(
-            root.path(),
-            "11111111111111111111111111111111",
-            TEST_AGENT_ID,
-            &host,
-            rejected.clone(),
-        )
-        .expect("cache rejected revision");
+        FormMapCache::put_serialized(root.path(), &host, rejected.clone())
+            .expect("cache rejected revision")
+            .expect("accepted initial revision");
         let mut session = runtime_session(host.clone(), api, encryption);
         session.operation = RuntimeOperation::InjectCredential;
         session.form_map_root = root.path().to_path_buf();
@@ -5464,16 +5467,9 @@ mod tests {
                 .is_none()
         );
         assert!(
-            FormMapCache::get_serialized(
-                root.path(),
-                "11111111111111111111111111111111",
-                TEST_AGENT_ID,
-                &host,
-                "accounts.google.com",
-                "playwright"
-            )
-            .expect("cache lookup")
-            .is_none()
+            FormMapCache::get_serialized(root.path(), &host, "accounts.google.com", "playwright")
+                .expect("cache lookup")
+                .is_none()
         );
     }
 

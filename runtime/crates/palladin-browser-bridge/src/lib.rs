@@ -19,6 +19,7 @@ use zeroize::Zeroize;
 
 const MAX_PROVIDER_ID_BYTES: usize = 64;
 const MAX_IDENTIFIER_BYTES: usize = 256;
+const MAX_ENTRY_FIELD_ID_BYTES: usize = 128;
 const MAX_DOMAIN_BYTES: usize = 253;
 const MAX_FIELD_BYTES: usize = 64 * 1024;
 const MAX_SELECTOR_BYTES: usize = 1_024;
@@ -99,7 +100,7 @@ impl InjectionFormDefinition {
             for field in &step.fields {
                 field_count = field_count.saturating_add(1);
                 if field_count > MAX_FORM_FIELDS
-                    || !valid_identifier(&field.entry_field_id)
+                    || !valid_entry_field_id(&field.entry_field_id)
                     || !valid_selector(&field.selector)
                     || !step_field_ids.insert(field.entry_field_id.as_str())
                 {
@@ -148,6 +149,14 @@ impl ProviderId {
         if value.is_empty()
             || value.len() > MAX_PROVIDER_ID_BYTES
             || !value
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            || !value
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            || !value
                 .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
         {
@@ -166,13 +175,6 @@ impl ProviderId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InjectionTarget {
     expected_domain: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum FormDiscoveryMapScope {
-    System,
-    Organization,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -207,7 +209,6 @@ pub struct FormDiscoveryMapDefinition {
 pub struct FormDiscoveryMap {
     pub map_id: String,
     pub map_version: u32,
-    pub scope: FormDiscoveryMapScope,
     pub domain: String,
     pub login_url: String,
     pub provider: String,
@@ -239,7 +240,6 @@ impl FormDiscoveryMap {
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
             || self.map.version != 1
             || self.map.form.validate().is_err()
-            || !valid_login_fields(&self.map.form)
             || !valid_map_login_url(&self.login_url, &self.domain)
             || !valid_cookie_overlays(&self.map.cookie_overlays)
             || self.fingerprint != map_fingerprint(self)?
@@ -259,24 +259,6 @@ impl FormDiscoveryMap {
                 && url.password().is_none()
         })
     }
-}
-
-fn valid_login_fields(form: &InjectionFormDefinition) -> bool {
-    form.steps.iter().all(|step| {
-        step.fields
-            .iter()
-            .all(|field| match field.entry_field_id.as_str() {
-                "credential.username" => matches!(
-                    field.control,
-                    InjectionControl::Email
-                        | InjectionControl::Tel
-                        | InjectionControl::Text
-                        | InjectionControl::Username
-                ),
-                "credential.password" => field.control == InjectionControl::Password,
-                _ => false,
-            })
-    })
 }
 
 fn valid_cookie_overlays(overlays: &[CookieOverlay]) -> bool {
@@ -307,27 +289,22 @@ fn valid_map_login_url(value: &str, domain: &str) -> bool {
             && url.username().is_empty()
             && url.password().is_none()
             && url.fragment().is_none()
-            && matches!(
-                url.path(),
-                "/" | "/accounts/login"
-                    | "/accounts/login/"
-                    | "/ap/signin"
-                    | "/auth/login"
-                    | "/client"
-                    | "/consumer/login/"
-                    | "/en/login"
-                    | "/i/flow/login"
-                    | "/login"
-                    | "/login/"
-                    | "/sign-in"
-                    | "/signin"
-                    | "/store-login"
-                    | "/users/sign_in"
-                    | "/v2/"
-                    | "/ws/eBayISAPI.dll"
-            )
-            && url.query().is_none_or(|query| query == "SignIn")
+            && url.query().is_none()
     })
+}
+
+pub fn form_discovery_map_login_url(
+    current_url: &str,
+    domain: &str,
+) -> Result<String, InjectionError> {
+    let mut url = Url::parse(current_url).map_err(|_| InjectionError::InvalidFormDiscoveryMap)?;
+    url.set_query(None);
+    url.set_fragment(None);
+    let login_url = url.to_string();
+    if !valid_catalog_domain(domain) || !valid_map_login_url(&login_url, domain) {
+        return Err(InjectionError::InvalidFormDiscoveryMap);
+    }
+    Ok(login_url)
 }
 
 fn valid_catalog_domain(value: &str) -> bool {
@@ -342,30 +319,50 @@ fn valid_catalog_domain(value: &str) -> bool {
                 && !label.starts_with('-')
                 && !label.ends_with('-')
         })
-        && value.rsplit('.').next().is_some_and(|label| {
-            label.len() >= 2 && label.bytes().all(|byte| byte.is_ascii_lowercase())
-        })
+        && value
+            .rsplit('.')
+            .next()
+            .is_some_and(|label| label.len() >= 2)
 }
 
-fn map_fingerprint(map: &FormDiscoveryMap) -> Result<String, InjectionError> {
+pub fn form_discovery_map_fingerprint(
+    domain: &str,
+    login_url: &str,
+    provider: &str,
+    map: &FormDiscoveryMapDefinition,
+) -> Result<String, InjectionError> {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct FingerprintInput<'a> {
         domain: &'a str,
         login_url: &'a str,
-        form: &'a InjectionFormDefinition,
+        provider: &'a str,
+        map: &'a FormDiscoveryMapDefinition,
     }
 
-    let login_url =
-        Url::parse(&map.login_url).map_err(|_| InjectionError::InvalidFormDiscoveryMap)?;
+    if !valid_catalog_domain(domain)
+        || ProviderId::parse(provider.to_owned()).is_err()
+        || !valid_map_login_url(login_url, domain)
+        || map.version != 1
+        || map.form.validate().is_err()
+        || !valid_cookie_overlays(&map.cookie_overlays)
+    {
+        return Err(InjectionError::InvalidFormDiscoveryMap);
+    }
+    let login_url = Url::parse(login_url).map_err(|_| InjectionError::InvalidFormDiscoveryMap)?;
     let input = serde_json::to_vec(&FingerprintInput {
-        domain: &map.domain,
+        domain,
         login_url: login_url.path(),
-        form: &map.map.form,
+        provider,
+        map,
     })
     .map_err(|_| InjectionError::InvalidFormDiscoveryMap)?;
     let digest = Sha256::digest(input);
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn map_fingerprint(map: &FormDiscoveryMap) -> Result<String, InjectionError> {
+    form_discovery_map_fingerprint(&map.domain, &map.login_url, &map.provider, &map.map)
 }
 
 impl InjectionTarget {
@@ -441,7 +438,7 @@ impl InjectionCredential {
             || fields.len() > MAX_FORM_FIELDS
             || fields
                 .iter()
-                .any(|(id, value)| !valid_identifier(id) || value.len() > MAX_FIELD_BYTES)
+                .any(|(id, value)| !valid_entry_field_id(id) || value.len() > MAX_FIELD_BYTES)
         {
             return Err(InjectionError::InvalidCredential);
         }
@@ -598,6 +595,14 @@ pub enum InjectionError {
 fn valid_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_IDENTIFIER_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
+
+fn valid_entry_field_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_ENTRY_FIELD_ID_BYTES
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
@@ -768,11 +773,10 @@ mod tests {
         let map: FormDiscoveryMap = serde_json::from_str(r#"{
           "mapId":"11111111-1111-4111-8111-111111111111",
           "mapVersion":1,
-          "scope":"system",
           "domain":"accounts.google.com",
           "loginUrl":"https://accounts.google.com/",
           "provider":"playwright",
-          "fingerprint":"b556b71b0235e2afbbbaab4d9b65223e47c126c3a952e6ef946321e1602e3288",
+          "fingerprint":"f6f9b42f136c52f404542e6596a7aae9af598d05d49004a29615a83e3479aa35",
           "map":{"version":1,"form":{"version":1,"steps":[
             {"fields":[{"entryFieldId":"credential.username","selector":"input[autocomplete=\"username\"]","control":"username"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"},"waitFor":{"selector":"input[type=\"password\"]"}},
             {"fields":[{"entryFieldId":"credential.password","selector":"input[type=\"password\"]","control":"password"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"}}
@@ -782,14 +786,14 @@ mod tests {
 
         assert!(map.validate("accounts.google.com", "playwright").is_ok());
         assert!(valid_map_login_url(
-            "https://signin.ebay.com/ws/eBayISAPI.dll?SignIn",
-            "signin.ebay.com"
+            "https://accounts.google.com/pl/zaloguj/na-konto",
+            "accounts.google.com"
         ));
         assert!(!valid_map_login_url(
             "https://accounts.google.com/?access_token=secret",
             "accounts.google.com"
         ));
-        assert!(!valid_map_login_url(
+        assert!(valid_map_login_url(
             "https://accounts.google.com/reset/one-time-token",
             "accounts.google.com"
         ));
@@ -802,12 +806,16 @@ mod tests {
             wrong_origin.validate("accounts.google.com", "playwright"),
             Err(InjectionError::InvalidFormDiscoveryMap)
         );
-        let mut unsupported_field = map.clone();
-        unsupported_field.map.form.steps[0].fields[0].entry_field_id =
-            "private.credit-card-number".to_owned();
-        assert_eq!(
-            unsupported_field.validate("accounts.google.com", "playwright"),
-            Err(InjectionError::InvalidFormDiscoveryMap)
+        let mut open_contract = map.clone();
+        open_contract.provider = "selenium-grid".to_owned();
+        open_contract.login_url = "https://accounts.google.com/pl/zaloguj".to_owned();
+        open_contract.map.form.steps[0].fields[0].entry_field_id = "credential.totp".to_owned();
+        open_contract.map.form.steps[0].fields[0].control = InjectionControl::Otp;
+        open_contract.fingerprint = map_fingerprint(&open_contract).expect("fingerprint");
+        assert!(
+            open_contract
+                .validate("accounts.google.com", "selenium-grid")
+                .is_ok()
         );
         let mut overflowing_version = map.clone();
         overflowing_version.map_version = i32::MAX as u32 + 1;
@@ -821,6 +829,26 @@ mod tests {
             wrong_fingerprint.validate("accounts.google.com", "playwright"),
             Err(InjectionError::InvalidFormDiscoveryMap)
         );
+
+        let localized: FormDiscoveryMap = serde_json::from_str(r#"{
+          "mapId":"22222222-2222-4222-8222-222222222222",
+          "mapVersion":1,
+          "domain":"example.org",
+          "loginUrl":"https://example.org/pl/zaloguj-si%C4%99",
+          "provider":"custom-browser",
+          "fingerprint":"48807755c6780b76aa7842675e59dccdecd1aab96874c7979078ac489d934e9a",
+          "map":{"version":1,"form":{"version":1,"steps":[{
+            "fields":[{"entryFieldId":"credential.password","selector":"input[aria-label=\"Hasło użytkownika\"]","control":"password"}],
+            "submit":{"action":"click","selector":"button[type=submit]"}
+          }]},"cookieOverlays":[{
+            "selectors":["[data-testid=cmp]"],
+            "dismiss":{"selector":"button[data-action=accept]","action":"click"},
+            "disappears":"[data-testid=cmp]",
+            "frame":"same-origin"
+          }]},
+          "updatedAt":"2026-08-15T12:00:00Z"
+        }"#).expect("localized map");
+        assert!(localized.validate("example.org", "custom-browser").is_ok());
     }
 
     #[tokio::test]

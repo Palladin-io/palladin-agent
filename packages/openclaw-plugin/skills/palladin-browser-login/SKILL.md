@@ -27,8 +27,8 @@ credential value.
    the session open and request that exact action. Continue from the same `sessionId` afterward.
 5. Build the complete value-free form definition before Inject:
    - include every ordered page/step, including username-then-password flows;
-   - map only approved Entry field IDs to unique visible selectors;
-   - for a standard Palladin Credential Entry, the canonical field IDs are
+   - map only field IDs present in the authorized Entry schema to unique visible selectors;
+   - for a standard Palladin Credential Entry, the built-in field IDs are
      `credential.username` and `credential.password`; use those exact IDs in the form and never
      expect Search to return the password field or a separate field-ID property;
    - treat `credential.urlDomain` as public origin metadata, never as a field to fill;
