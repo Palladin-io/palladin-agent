@@ -329,14 +329,14 @@ describe('Playwright MCP Inject provider boundary', () => {
       };
 
       await expect(fillAndSubmit(page, credential(rateLimitedForm))).rejects.toThrow('site-rate-limited');
-      expect(await page.locator('#username').inputValue()).toBe('');
+      expect(await page.locator('#username').inputValue()).toBe('fixture-user');
       expect(await page.locator('[role="alert"]').isVisible()).toBe(true);
     } finally {
       await browser.close();
     }
   });
 
-  it('clears all credential fields while retaining the public alert after rejection', async () => {
+  it('retains the Discovery-visible username and public alert but clears the password', async () => {
     const browser = await chromium.launch({ channel: 'chrome', headless: true });
     try {
       const page = await browser.newPage();
@@ -363,7 +363,7 @@ describe('Playwright MCP Inject provider boundary', () => {
       };
 
       await expect(fillAndSubmit(page, credential(rejectedForm))).rejects.toThrow('site-rejected');
-      expect(await page.locator('#username').inputValue()).toBe('');
+      expect(await page.locator('#username').inputValue()).toBe('fixture-user');
       expect(await page.locator('#password').inputValue()).toBe('');
       expect(await page.locator('[role="alert"]').isVisible()).toBe(true);
     } finally {

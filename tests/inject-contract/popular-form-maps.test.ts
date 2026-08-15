@@ -11,6 +11,9 @@ describe('popular form map catalog', () => {
       expect(parseFormDiscoveryMap(map)).not.toBeNull();
       expect(map.status).toBe('candidate');
       expect(map.fingerprint).toBe(formMapFingerprint(map));
+      for (const field of map.form.steps.flatMap((step) => step.fields)) {
+        expect(['credential.username', 'credential.password']).toContain(field.entryFieldId);
+      }
     }
   });
 });

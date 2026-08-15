@@ -7,8 +7,8 @@ const rows: CatalogRow[] = [
 ];
 
 function form(flow: CatalogRow[2]) {
-  const username = { entryFieldId: 'username', selector: 'input[autocomplete="username"]', control: 'username' as const };
-  const password = { entryFieldId: 'password', selector: 'input[type="password"]', control: 'password' as const };
+  const username = { entryFieldId: 'credential.username', selector: 'input[autocomplete="username"]', control: 'username' as const };
+  const password = { entryFieldId: 'credential.password', selector: 'input[type="password"]', control: 'password' as const };
   const submit = { action: 'click' as const, selector: 'button[type="submit"],input[type="submit"]' };
   if (flow === 'one') return { version: 1 as const, steps: [{ fields: [username, password], submit }] };
   return { version: 1 as const, steps: [{ fields: [username], submit, waitFor: { selector: 'input[type="password"]' } }, { fields: [password], submit }] };
@@ -16,87 +16,87 @@ function form(flow: CatalogRow[2]) {
 
 export const popularFormMaps: FormDiscoveryMap[] = rows.map(([domain, path, flow]) => {
   const siteForm = domain === 'zoom.us' ? { version: 1 as const, steps: [
-    { fields: [{ entryFieldId: 'username', selector: '#email', control: 'username' as const }], submit: { action: 'click' as const, selector: '#signin_btn_next' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
-    { fields: [{ entryFieldId: 'password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
+    { fields: [{ entryFieldId: 'credential.username', selector: '#email', control: 'username' as const }], submit: { action: 'click' as const, selector: '#signin_btn_next' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
+    { fields: [{ entryFieldId: 'credential.password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
   ] } : domain === 'www.dropbox.com' ? { version: 1 as const, steps: [
-    { fields: [{ entryFieldId: 'username', selector: 'input[name="susi_email"]', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]:has-text("Continue")' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
-    { fields: [{ entryFieldId: 'password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
+    { fields: [{ entryFieldId: 'credential.username', selector: 'input[name="susi_email"]', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]:has-text("Continue")' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
+    { fields: [{ entryFieldId: 'credential.password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
   ] } : domain === 'www.instagram.com' ? { version: 1 as const, steps: [{
     fields: [
-      { entryFieldId: 'username', selector: 'input[name="email"]', control: 'username' as const },
-      { entryFieldId: 'password', selector: 'input[name="pass"]', control: 'password' as const },
+      { entryFieldId: 'credential.username', selector: 'input[name="email"]', control: 'username' as const },
+      { entryFieldId: 'credential.password', selector: 'input[name="pass"]', control: 'password' as const },
     ], submit: { action: 'click' as const, selector: '[role="button"][aria-label="Log In"]' },
   }] } : domain === 'accounts.sap.com' ? { version: 1 as const, steps: [{
     fields: [
-      { entryFieldId: 'username', selector: '#j_username', control: 'username' as const },
-      { entryFieldId: 'password', selector: '#j_password', control: 'password' as const },
+      { entryFieldId: 'credential.username', selector: '#j_username', control: 'username' as const },
+      { entryFieldId: 'credential.password', selector: '#j_password', control: 'password' as const },
     ], submit: { action: 'click' as const, selector: '#logOnFormSubmit' },
   }] } : domain === 'www.pinterest.com' ? { version: 1 as const, steps: [{
     fields: [
-      { entryFieldId: 'username', selector: '#streamlined-login-email', control: 'username' as const },
-      { entryFieldId: 'password', selector: '#streamlined-login-password', control: 'password' as const },
+      { entryFieldId: 'credential.username', selector: '#streamlined-login-email', control: 'username' as const },
+      { entryFieldId: 'credential.password', selector: '#streamlined-login-password', control: 'password' as const },
     ], submit: { action: 'click' as const, selector: 'button[type="submit"]:has-text("Log in")' },
   }] } : domain === 'app.hubspot.com' ? { version: 1 as const, steps: [
-    { fields: [{ entryFieldId: 'username', selector: '#username', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]:has-text("Continue")' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
-    { fields: [{ entryFieldId: 'password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
+    { fields: [{ entryFieldId: 'credential.username', selector: '#username', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]:has-text("Continue")' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
+    { fields: [{ entryFieldId: 'credential.password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
   ] } : domain === 'www.airbnb.com' ? { version: 1 as const, steps: [
-    { fields: [{ entryFieldId: 'username', selector: '#phone-or-email', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]:has-text("Continue")' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
-    { fields: [{ entryFieldId: 'password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
+    { fields: [{ entryFieldId: 'credential.username', selector: '#phone-or-email', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]:has-text("Continue")' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
+    { fields: [{ entryFieldId: 'credential.password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
   ] } : domain === 'auth.uber.com' ? { version: 1 as const, steps: [
-    { fields: [{ entryFieldId: 'username', selector: '#PHONE_NUMBER_or_EMAIL_ADDRESS', control: 'username' as const }], submit: { action: 'click' as const, selector: '#forward-button' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
-    { fields: [{ entryFieldId: 'password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
+    { fields: [{ entryFieldId: 'credential.username', selector: '#PHONE_NUMBER_or_EMAIL_ADDRESS', control: 'username' as const }], submit: { action: 'click' as const, selector: '#forward-button' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
+    { fields: [{ entryFieldId: 'credential.password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
   ] } : domain === 'login.microsoftonline.com' ? { version: 1 as const, steps: [{
     fields: [
-      { entryFieldId: 'username', selector: 'input[name="loginfmt"]', control: 'username' as const },
-      { entryFieldId: 'password', selector: 'input[name="passwd"]', control: 'password' as const },
+      { entryFieldId: 'credential.username', selector: 'input[name="loginfmt"]', control: 'username' as const },
+      { entryFieldId: 'credential.password', selector: 'input[name="passwd"]', control: 'password' as const },
     ], submit: { action: 'click' as const, selector: '#idSIButton9' },
   }] } : domain === 'dashboard.stripe.com' ? { version: 1 as const, steps: [{
     fields: [
-      { entryFieldId: 'username', selector: '#email', control: 'username' as const },
-      { entryFieldId: 'password', selector: '#old-password', control: 'password' as const },
+      { entryFieldId: 'credential.username', selector: '#email', control: 'username' as const },
+      { entryFieldId: 'credential.password', selector: '#old-password', control: 'password' as const },
     ], submit: { action: 'click' as const, selector: 'button:has-text("Sign in")' },
   }] } : domain === 'account.booking.com' ? { version: 1 as const, steps: [
-    { fields: [{ entryFieldId: 'username', selector: '#username', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' }, waitFor: { selector: '#hidden-password', timeoutMs: 45_000 } },
-    { fields: [{ entryFieldId: 'password', selector: '#hidden-password', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
+    { fields: [{ entryFieldId: 'credential.username', selector: '#username', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' }, waitFor: { selector: '#hidden-password', timeoutMs: 45_000 } },
+    { fields: [{ entryFieldId: 'credential.password', selector: '#hidden-password', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
   ] } : domain === 'www.figma.com' ? { version: 1 as const, steps: [{
     fields: [
-      { entryFieldId: 'username', selector: '#email', control: 'username' as const },
-      { entryFieldId: 'password', selector: '#current-password', control: 'password' as const },
+      { entryFieldId: 'credential.username', selector: '#email', control: 'username' as const },
+      { entryFieldId: 'credential.password', selector: '#current-password', control: 'password' as const },
     ], submit: { action: 'click' as const, selector: 'button[type="submit"]:has-text("Log in")' },
   }] } : domain === 'vercel.com' ? { version: 1 as const, steps: [
-    { fields: [{ entryFieldId: 'username', selector: 'input[type="email"]', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]:has-text("Continue with Email")' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
-    { fields: [{ entryFieldId: 'password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
+    { fields: [{ entryFieldId: 'credential.username', selector: 'input[type="email"]', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]:has-text("Continue with Email")' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
+    { fields: [{ entryFieldId: 'credential.password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
   ] } : domain === 'id.atlassian.com' ? { version: 1 as const, steps: [
-    { fields: [{ entryFieldId: 'username', selector: 'input[name="username"]', control: 'username' as const }], submit: { action: 'click' as const, selector: '#login-submit' }, waitFor: { selector: 'input[name="password"]', timeoutMs: 45_000 } },
-    { fields: [{ entryFieldId: 'password', selector: 'input[name="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: '#login-submit' } },
+    { fields: [{ entryFieldId: 'credential.username', selector: 'input[name="username"]', control: 'username' as const }], submit: { action: 'click' as const, selector: '#login-submit' }, waitFor: { selector: 'input[name="password"]', timeoutMs: 45_000 } },
+    { fields: [{ entryFieldId: 'credential.password', selector: 'input[name="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: '#login-submit' } },
   ] } : domain === 'id.heroku.com' ? { version: 1 as const, steps: [{
     fields: [
-      { entryFieldId: 'username', selector: '#email', control: 'username' as const },
-      { entryFieldId: 'password', selector: '#password', control: 'password' as const },
+      { entryFieldId: 'credential.username', selector: '#email', control: 'username' as const },
+      { entryFieldId: 'credential.password', selector: '#password', control: 'password' as const },
     ], submit: { action: 'click' as const, selector: 'button[type="submit"]:has-text("Log In")' },
   }] } : domain === 'login.salesforce.com' ? { version: 1 as const, steps: [{
     fields: [
-      { entryFieldId: 'username', selector: '#username', control: 'username' as const },
-      { entryFieldId: 'password', selector: '#password', control: 'password' as const },
+      { entryFieldId: 'credential.username', selector: '#username', control: 'username' as const },
+      { entryFieldId: 'credential.password', selector: '#password', control: 'password' as const },
     ], submit: { action: 'click' as const, selector: '#Login' },
   }] } : domain === 'www.twitch.tv' ? { version: 1 as const, steps: [{
     fields: [
-      { entryFieldId: 'username', selector: '#login-username', control: 'username' as const },
-      { entryFieldId: 'password', selector: '#password-input', control: 'password' as const },
+      { entryFieldId: 'credential.username', selector: '#login-username', control: 'username' as const },
+      { entryFieldId: 'credential.password', selector: '#password-input', control: 'password' as const },
     ], submit: { action: 'click' as const, selector: 'button[type="submit"]:has-text("Log In")' },
   }] } : domain === 'www.linkedin.com' ? { version: 1 as const, steps: [{
     fields: [
-      { entryFieldId: 'username', selector: 'input[type="email"] >> nth=1', control: 'username' as const },
-      { entryFieldId: 'password', selector: 'input[type="password"] >> nth=1', control: 'password' as const },
+      { entryFieldId: 'credential.username', selector: 'input[type="email"] >> nth=1', control: 'username' as const },
+      { entryFieldId: 'credential.password', selector: 'input[type="password"] >> nth=1', control: 'password' as const },
     ], submit: { action: 'click' as const, selector: ':is(button[type="submit"],button:has-text("Sign in"),button:has-text("Zaloguj się"))' },
   }] } : domain === 'www.netflix.com' ? { version: 1 as const, steps: [{
     fields: [
-      { entryFieldId: 'username', selector: 'input[name="userLoginId"]', control: 'username' as const },
-      { entryFieldId: 'password', selector: 'input[name="password"]', control: 'password' as const },
+      { entryFieldId: 'credential.username', selector: 'input[name="userLoginId"]', control: 'username' as const },
+      { entryFieldId: 'credential.password', selector: 'input[name="password"]', control: 'password' as const },
     ], submit: { action: 'click' as const, selector: 'button[type="submit"]' },
   }] } : domain === 'accounts.spotify.com' ? { version: 1 as const, steps: [
-    { fields: [{ entryFieldId: 'username', selector: 'input#username', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
-    { fields: [{ entryFieldId: 'password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
+    { fields: [{ entryFieldId: 'credential.username', selector: 'input#username', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' }, waitFor: { selector: 'input[type="password"]', timeoutMs: 45_000 } },
+    { fields: [{ entryFieldId: 'credential.password', selector: 'input[type="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
   ] } : domain === 'x.com' ? { version: 1 as const, steps: [
     { fields: [{ entryFieldId: 'credential.username', selector: '#jf-input-username_or_email', control: 'username' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' }, waitFor: { selector: 'input[name="password"]', timeoutMs: 45_000 } },
     { fields: [{ entryFieldId: 'credential.password', selector: 'input[name="password"]', control: 'password' as const }], submit: { action: 'click' as const, selector: 'button[type="submit"]' } },
