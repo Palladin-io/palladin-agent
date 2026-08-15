@@ -1551,14 +1551,19 @@ async fn inject_extension(
     };
     drop(forward);
     if response.outcome != "injected" {
-        if response.outcome == "stale-form-map" && form_map.is_some() {
-            let _ = session
+        if response.outcome == "stale-form-map"
+            && let Some(rejected) = form_map.as_ref()
+            && let Err(error) = session
                 .resolve_form_discovery_map(
                     target.expected_domain(),
                     provider.as_str(),
-                    form_map.as_ref(),
+                    Some(rejected),
                 )
-                .await;
+                .await
+        {
+            return fail(&format!(
+                "the trusted browser provider reported a stale Form Discovery Map, but cache invalidation or refresh failed: {error}"
+            ));
         }
         return fail(match response.outcome.as_str() {
             "rejected" => "the trusted browser provider did not complete Inject (outcome=rejected)",

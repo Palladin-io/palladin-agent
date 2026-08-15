@@ -90,7 +90,7 @@ impl FormMapCache {
         agent_id: &str,
         api_origin: &str,
         map: FormDiscoveryMap,
-    ) -> Result<(), FormMapCacheError> {
+    ) -> Result<FormDiscoveryMap, FormMapCacheError> {
         Self::transact(root, |cache| {
             cache.put(profile_identity_id, agent_id, api_origin, map)
         })
@@ -195,7 +195,7 @@ impl FormMapCache {
         agent_id: &str,
         api_origin: &str,
         map: FormDiscoveryMap,
-    ) -> Result<(), FormMapCacheError> {
+    ) -> Result<FormDiscoveryMap, FormMapCacheError> {
         map.validate(&map.domain, &map.provider)
             .map_err(|_| FormMapCacheError::InvalidCache)?;
         let key = cache_key(
@@ -206,18 +206,33 @@ impl FormMapCache {
             &map.provider,
         )?;
         let last_used = self.take_usage();
-        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.key == key) {
-            entry.map = map;
-            entry.last_used = last_used;
+        let stored = if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {
+            let existing = &self.entries[index].map;
+            if existing.scope == map.scope
+                && existing.map_version == map.map_version
+                && existing.fingerprint != map.fingerprint
+            {
+                return Err(FormMapCacheError::InvalidCache);
+            }
+            if existing.scope == map.scope && existing.map_version > map.map_version {
+                self.entries[index].last_used = last_used;
+                self.entries[index].map.clone()
+            } else {
+                self.entries[index].map = map;
+                self.entries[index].last_used = last_used;
+                self.entries[index].map.clone()
+            }
         } else {
             self.entries.push(CacheEntry {
                 key,
-                map,
+                map: map.clone(),
                 last_used,
             });
-        }
+            map
+        };
         self.evict();
-        self.save()
+        self.save()?;
+        Ok(stored)
     }
 
     pub(crate) fn invalidate_matching(
@@ -605,6 +620,29 @@ mod tests {
                 "playwright"
             )
             .expect("newer revision retained"),
+            Some(replacement.clone())
+        );
+        assert_eq!(
+            FormMapCache::put_serialized(
+                root.path(),
+                "profile-a",
+                "agent-a",
+                "https://one.example",
+                rejected,
+            )
+            .expect("delayed older response"),
+            replacement.clone()
+        );
+        assert_eq!(
+            FormMapCache::get_serialized(
+                root.path(),
+                "profile-a",
+                "agent-a",
+                "https://one.example",
+                "accounts.google.com",
+                "playwright"
+            )
+            .expect("newer revision remains cached"),
             Some(replacement)
         );
         assert!(

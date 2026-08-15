@@ -20,6 +20,8 @@ describe('form discovery map', () => {
     expect(parseFormDiscoveryMap({ ...map, loginUrl: 'https://evil.example/login' })).toBeNull();
     expect(parseFormDiscoveryMap({ ...map, loginUrl: 'https://x.com/login?access_token=secret' }))
       .toBeNull();
+    expect(parseFormDiscoveryMap({ ...map, loginUrl: 'https://x.com/reset/one-time-token' }))
+      .toBeNull();
     expect(parseFormDiscoveryMap({
       ...map,
       domain: 'signin.ebay.com',

@@ -307,6 +307,25 @@ fn valid_map_login_url(value: &str, domain: &str) -> bool {
             && url.username().is_empty()
             && url.password().is_none()
             && url.fragment().is_none()
+            && matches!(
+                url.path(),
+                "/" | "/accounts/login"
+                    | "/accounts/login/"
+                    | "/ap/signin"
+                    | "/auth/login"
+                    | "/client"
+                    | "/consumer/login/"
+                    | "/en/login"
+                    | "/i/flow/login"
+                    | "/login"
+                    | "/login/"
+                    | "/sign-in"
+                    | "/signin"
+                    | "/store-login"
+                    | "/users/sign_in"
+                    | "/v2/"
+                    | "/ws/eBayISAPI.dll"
+            )
             && url.query().is_none_or(|query| query == "SignIn")
     })
 }
@@ -768,6 +787,10 @@ mod tests {
         ));
         assert!(!valid_map_login_url(
             "https://accounts.google.com/?access_token=secret",
+            "accounts.google.com"
+        ));
+        assert!(!valid_map_login_url(
+            "https://accounts.google.com/reset/one-time-token",
             "accounts.google.com"
         ));
         assert!(!valid_selector(&"😀".repeat(500)));

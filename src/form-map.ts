@@ -33,6 +33,11 @@ export interface FormDiscoveryMap {
 }
 
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+const APPROVED_LOGIN_PATHS = new Set([
+  '/', '/accounts/login', '/accounts/login/', '/ap/signin', '/auth/login', '/client',
+  '/consumer/login/', '/en/login', '/i/flow/login', '/login', '/login/', '/sign-in',
+  '/signin', '/store-login', '/users/sign_in', '/v2/', '/ws/eBayISAPI.dll',
+]);
 const SELECTOR = (value: unknown): value is string => typeof value === 'string'
   && value.length > 0 && utf8Length(value) <= 1024 && value === value.trim() && !value.includes('\0');
 
@@ -84,6 +89,7 @@ function isHttpsOrigin(value: string, domain: string): boolean {
     return url.protocol === 'https:' && utf8Length(value) <= 2048
       && url.hostname === domain && (url.port === '' || url.port === '443')
       && url.username === '' && url.password === '' && url.hash === ''
+      && APPROVED_LOGIN_PATHS.has(url.pathname)
       && (url.search === '' || url.search === '?SignIn');
   } catch { return false; }
 }

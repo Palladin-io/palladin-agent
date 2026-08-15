@@ -3559,15 +3559,17 @@ impl RuntimeSession<'_> {
             )?;
             return Ok(None);
         }
-        if let Some(map) = map.as_ref() {
-            FormMapCache::put_serialized(
+        let map = if let Some(map) = map {
+            Some(FormMapCache::put_serialized(
                 &self.form_map_root,
                 profile_identity_id,
                 agent_id,
                 api_origin,
-                map.clone(),
-            )?;
-        }
+                map,
+            )?)
+        } else {
+            None
+        };
         Ok(map)
     }
 

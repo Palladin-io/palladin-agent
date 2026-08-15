@@ -229,8 +229,9 @@ remote-debugging port, Playwright WebSocket endpoint, unmanaged browser target, 
 The native Rust runtime first looks up a verified Form Discovery Map for the authenticated Entry
 domain and selected provider. Organization-verified maps take precedence over system-verified maps;
 candidate and observed maps are never executed. A returned map is accepted only when its fingerprint,
-bounded action contract, provider, domain, and exact HTTPS origin validate locally. Login URL query
-values are rejected; the sole legacy exception is the empty eBay `?SignIn` flag. When no verified map
+bounded action contract, provider, domain, and exact HTTPS origin validate locally. Login URLs use an
+explicit allowlist of static login paths. Query values are rejected; the sole legacy exception is the
+empty eBay `?SignIn` flag. When no verified map
 applies, the Agent may prepare the public login surface with ordinary browser tools, inspect it,
 and pass a complete, versioned, value-free form definition to `inject_credential` as a fallback.
 The definition is an ordered list of one or more steps mapping approved Entry field IDs to public
@@ -251,7 +252,9 @@ the Agent. Missing, stale, ambiguous, hidden, or semantically invalid definition
 provider never guesses another form. A failed declared selector, control attestation, submit selector,
 or transition invalidates that cached map and asks the API for a fresh revision for the next request.
 If the API still returns the rejected version and fingerprint, that revision remains uncached; a
-concurrently stored replacement is not removed. A separately validated caller fallback form remains
+concurrently stored higher version in the same scope is neither removed nor overwritten by a delayed
+response. Cache invalidation/refresh persistence failures are reported to the operator. A separately
+validated caller fallback form remains
 available during transient map lookup transport/5xx failures, while invalid payloads, authentication,
 and unsafe local cache/configuration errors still fail closed.
 Origin mismatch and provider transport/browser failures keep their specific outcome and do not evict
