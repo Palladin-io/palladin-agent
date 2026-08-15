@@ -8,11 +8,13 @@ use thiserror::Error;
 use crate::public_store::{
     LegacyPublicProfileConfigV2, LegacyPublicRegistryV2, PUBLIC_SCHEMA_VERSION, PublicAgentEntry,
     PublicProfileConfig, PublicRegistry, PublicStoreError, is_opaque_id, is_profile_name,
-    load_json, load_legacy_profile_config_v2, load_legacy_registry_v2, load_profile_config,
-    load_registry, save_json_atomic, save_profile_config, save_registry,
+    load_json, load_legacy_profile_config_v2, load_legacy_registry_v2, load_private_blob,
+    load_profile_config, load_registry, save_json_atomic, save_private_blob_atomic,
+    save_profile_config, save_registry,
 };
 
 const CLEANUP_SCHEMA_VERSION: u32 = 1;
+const DISCOVERY_CACHE_FILE: &str = "discovery-cache.bin";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -188,6 +190,35 @@ impl ProfileRepository {
         Ok(save_profile_config(&path, config)?)
     }
 
+    pub fn load_discovery_cache(
+        &self,
+        identity_id: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ProfileError> {
+        Ok(load_private_blob(
+            &self.discovery_cache_path(identity_id)?,
+            max_bytes,
+        )?)
+    }
+
+    pub fn save_discovery_cache(
+        &self,
+        identity_id: &str,
+        bytes: &[u8],
+    ) -> Result<(), ProfileError> {
+        let path = self.discovery_cache_path(identity_id)?;
+        let parent = path.parent().ok_or(ProfileError::InvalidRoot)?;
+        ensure_private_directory(&self.root)?;
+        ensure_private_directory(&self.root.join("identities"))?;
+        ensure_private_directory(parent)?;
+        Ok(save_private_blob_atomic(&path, bytes)?)
+    }
+
+    pub fn remove_discovery_cache_if_present(&self, identity_id: &str) -> Result<(), ProfileError> {
+        remove_known_file_if_present(&self.discovery_cache_path(identity_id)?, "discovery cache")?;
+        Ok(())
+    }
+
     pub fn load_legacy_config_v2(
         &self,
         identity_id: &str,
@@ -250,6 +281,10 @@ impl ProfileRepository {
             Ok(metadata) => {
                 validate_private_directory(&metadata, "identity directory")?;
                 validate_identity_directory_contents(&directory)?;
+                remove_known_file_if_present(
+                    &directory.join(DISCOVERY_CACHE_FILE),
+                    "discovery cache",
+                )?;
                 remove_known_file_if_present(&directory.join("config.json"), "profile config")?;
                 fs::remove_dir(directory)?;
             }
@@ -368,6 +403,12 @@ impl ProfileRepository {
 
     fn config_path(&self, identity_id: &str) -> Result<PathBuf, ProfileError> {
         Ok(self.identity_directory(identity_id)?.join("config.json"))
+    }
+
+    fn discovery_cache_path(&self, identity_id: &str) -> Result<PathBuf, ProfileError> {
+        Ok(self
+            .identity_directory(identity_id)?
+            .join(DISCOVERY_CACHE_FILE))
     }
 
     fn identity_directory(&self, identity_id: &str) -> Result<PathBuf, ProfileError> {
@@ -612,12 +653,12 @@ fn path_present_no_follow(path: &Path) -> bool {
 fn validate_identity_directory_contents(directory: &Path) -> Result<(), std::io::Error> {
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
-        if entry.file_name() != "config.json" {
+        if entry.file_name() != "config.json" && entry.file_name() != DISCOVERY_CACHE_FILE {
             return Err(private_path_error(
                 "identity directory contains an unexpected artifact",
             ));
         }
-        validate_private_file(&fs::symlink_metadata(entry.path())?, "profile config")?;
+        validate_private_file(&fs::symlink_metadata(entry.path())?, "profile artifact")?;
     }
     Ok(())
 }

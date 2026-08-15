@@ -365,15 +365,16 @@ export async function fillAndSubmit(
     return 'injected';
   } catch (error) {
     for (const field of filled.reverse()) {
-      if (isDiscoveryVisibleUsername(field.entryFieldId, field.control)) continue;
+      if (!isSensitiveField(field.entryFieldId, field.control)) continue;
       await field.target.fill('').catch(() => undefined);
     }
     throw error;
   }
 }
 
-function isDiscoveryVisibleUsername(entryFieldId: string, control: string): boolean {
-  return entryFieldId === 'credential.username' && control === 'username';
+function isSensitiveField(entryFieldId: string, control: string): boolean {
+  return control === 'password' || control === 'otp'
+    || /(?:password|passcode|otp|totp|secret|token)/i.test(entryFieldId);
 }
 
 async function waitForUniqueSubmit(page: Page, selector: string, timeoutMs = 20_000): Promise<Locator> {

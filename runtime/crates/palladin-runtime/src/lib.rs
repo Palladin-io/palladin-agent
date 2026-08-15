@@ -24,8 +24,9 @@ use palladin_core::profiles::{
     rename_profile, set_default, set_profile_type,
 };
 use palladin_core::public_store::{
-    PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicProfileConfig, PublicRegistry,
-    PublicVaultTrustAnchor, profile_binding_bytes, profile_config_digest, registry_digest,
+    PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicDiscoveryCacheCommitment, PublicProfileConfig,
+    PublicRegistry, PublicVaultTrustAnchor, profile_binding_bytes, profile_config_digest,
+    registry_digest,
 };
 use palladin_core::secret::OrganizationApiKey;
 use palladin_core::terminal::shorten_identifier;
@@ -40,7 +41,8 @@ use palladin_crypto::{
     RecipientKeyKind, SealedWrappedKey, SecretBytes, VaultManifestV2, WrapperContext,
     WrapperPurpose, X25519Identity, X25519SealedBoxSuite, XChaChaVaultSuite,
     confirm_pairing_from_relay, decode_base64url, decrypt_credential, key_fingerprint,
-    prepare_pairing, verify_current_manifest, verify_profile_binding,
+    open_local_discovery_cache, prepare_pairing, seal_local_discovery_cache,
+    verify_current_manifest, verify_profile_binding,
 };
 use palladin_exec::{
     EnvironmentError, SecretEnvironment, resolve_interpreter, run_command, run_script,
@@ -68,9 +70,9 @@ const AGENT_WRAPPED_VDK_DIGEST_PREFIX: &[u8] = b"PLDNV2DG:AGENT-WRAPPED-VDK:";
 use discovery::{DiscoveryPlaintext, LocalDiscoveryIndex};
 
 use integrity::{
-    ConfigWrite, IntegrityJournal, SecretAllocation, SecretCopy, SecretDeletion, TRUST_OWNER_ID,
-    TrustState, decode_trust_state, encode_trust_state, journal_path, load_journal, remove_journal,
-    save_journal,
+    ConfigWrite, DiscoveryCacheWrite, IntegrityJournal, MAX_DISCOVERY_CACHE_CIPHERTEXT_BYTES,
+    SecretAllocation, SecretCopy, SecretDeletion, TRUST_OWNER_ID, TrustState, decode_trust_state,
+    encode_trust_state, hex_digest, journal_path, load_journal, remove_journal, save_journal,
 };
 
 use palladin_credential::fields::{FieldSelector, resolve_field};
@@ -1179,6 +1181,10 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                     .filter(|config| config.agent_id == agent_id)
                     .map(|config| config.vault_trust_anchors.clone())
                     .unwrap_or_default(),
+                discovery_cache: existing_config
+                    .as_ref()
+                    .filter(|config| config.agent_id == agent_id)
+                    .and_then(|config| config.discovery_cache.clone()),
                 agent_id,
                 agent_active,
                 encryption_public_key: Some(encryption_public_key),
@@ -1571,6 +1577,99 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         )
     }
 
+    fn load_discovery_cache(
+        &self,
+        identity_id: &str,
+        agent_id: &str,
+        commitment: Option<&PublicDiscoveryCacheCommitment>,
+        encryption: &X25519Identity,
+    ) -> Result<LocalDiscoveryIndex, RuntimeError> {
+        let Some(commitment) = commitment else {
+            let mut index = LocalDiscoveryIndex::new();
+            index.scope_to_identity(identity_id, agent_id);
+            return Ok(index);
+        };
+        let ciphertext = self
+            .repository
+            .load_discovery_cache(identity_id, MAX_DISCOVERY_CACHE_CIPHERTEXT_BYTES)
+            .map_err(|_| RuntimeError::IntegrityViolation)?;
+        if hex_digest(Sha256::digest(&ciphertext)) != commitment.ciphertext_sha256 {
+            return Err(RuntimeError::IntegrityViolation);
+        }
+        let binding = discovery_cache_binding(identity_id, agent_id, commitment.generation)?;
+        let plaintext = open_local_discovery_cache(encryption, &binding, &ciphertext)
+            .map_err(|_| RuntimeError::IntegrityViolation)?;
+        LocalDiscoveryIndex::decode_durable_cache(
+            plaintext.expose_for_crypto_operation(),
+            identity_id,
+            agent_id,
+        )
+        .map_err(|_| RuntimeError::IntegrityViolation)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn persist_discovery_batch(
+        &self,
+        identity_id: &str,
+        agent_id: &str,
+        expected_anchors: &[PublicVaultTrustAnchor],
+        next_anchors: &[PublicVaultTrustAnchor],
+        expected_cache: Option<&PublicDiscoveryCacheCommitment>,
+        next_cache: &PublicDiscoveryCacheCommitment,
+        ciphertext: &[u8],
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let state = self.verified_state_locked()?;
+        let mut config = state
+            .configs
+            .get(identity_id)
+            .cloned()
+            .ok_or(RuntimeError::InvalidPublicConfig)?;
+        if config.agent_id.as_deref() != Some(agent_id)
+            || config.vault_trust_anchors != expected_anchors
+            || config.discovery_cache.as_ref() != expected_cache
+            || config.signing_public_key.as_deref()
+                != Some(STANDARD.encode(signing.public_key()).as_str())
+            || ciphertext.is_empty()
+            || ciphertext.len() > MAX_DISCOVERY_CACHE_CIPHERTEXT_BYTES
+            || hex_digest(Sha256::digest(ciphertext)) != next_cache.ciphertext_sha256
+            || next_cache.generation
+                != expected_cache.map_or(1, |cache| cache.generation.saturating_add(1))
+        {
+            return Err(RuntimeError::IntegrityViolation);
+        }
+        config.vault_trust_anchors = next_anchors.to_vec();
+        config.discovery_cache = Some(next_cache.clone());
+        let binding =
+            profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+        let digest =
+            profile_config_digest(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        let mut registry = state.registry.clone();
+        registry
+            .agents
+            .iter_mut()
+            .find(|entry| entry.identity_id == identity_id)
+            .ok_or(RuntimeError::IntegrityViolation)?
+            .config_digest = Some(digest);
+        self.commit_authorized_transition_with_cache(
+            &state,
+            registry,
+            vec![ConfigWrite {
+                identity_id: identity_id.to_owned(),
+                config,
+            }],
+            vec![DiscoveryCacheWrite {
+                identity_id: identity_id.to_owned(),
+                ciphertext_base64: STANDARD.encode(ciphertext),
+            }],
+            lease,
+        )
+    }
+
     pub fn verify_identity(
         &self,
         profile_name: Option<&str>,
@@ -1948,6 +2047,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                     encryption_public_key: Some(encryption_public_key),
                     signing_public_key: Some(signing_public_key),
                     vault_trust_anchors: Vec::new(),
+                    discovery_cache: None,
                     binding_signature: STANDARD.encode([0_u8; 64]),
                 };
                 let binding =
@@ -2494,6 +2594,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             current,
             target_registry,
             config_writes,
+            Vec::new(),
             remove_identity_directories,
             Vec::new(),
             secret_deletions,
@@ -2517,6 +2618,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             current,
             target_registry,
             config_writes,
+            Vec::new(),
             remove_identity_directories,
             Vec::new(),
             secret_deletions,
@@ -2540,6 +2642,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             current,
             target_registry,
             config_writes,
+            Vec::new(),
             remove_identity_directories,
             secret_copies,
             secret_deletions,
@@ -2549,11 +2652,34 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn commit_authorized_transition_with_cache(
+        &self,
+        current: &VerifiedState,
+        target_registry: PublicRegistry,
+        config_writes: Vec<ConfigWrite>,
+        discovery_cache_writes: Vec<DiscoveryCacheWrite>,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError> {
+        self.commit_transition_with_copies_inner(
+            current,
+            target_registry,
+            config_writes,
+            discovery_cache_writes,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+            Some(lease),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn commit_transition_with_copies_inner(
         &self,
         current: &VerifiedState,
         target_registry: PublicRegistry,
         config_writes: Vec<ConfigWrite>,
+        discovery_cache_writes: Vec<DiscoveryCacheWrite>,
         remove_identity_directories: Vec<String>,
         secret_copies: Vec<SecretCopy>,
         secret_deletions: Vec<SecretDeletion>,
@@ -2569,7 +2695,8 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             secret_deletions,
             purge_public_root,
         )?
-        .with_secret_copies(secret_copies)?;
+        .with_secret_copies(secret_copies)?
+        .with_discovery_cache_writes(discovery_cache_writes)?;
         // Lifecycle revocation and the durable transition marker are linearized
         // by this guard. Before the marker, revocation aborts with no committed
         // deletion. After the marker, recovery must finish the atomic journal.
@@ -2679,7 +2806,18 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                 }
             }
         }
+        for write in &journal.discovery_cache_writes {
+            let ciphertext = STANDARD
+                .decode(&write.ciphertext_base64)
+                .map_err(|_| RuntimeError::IntegrityRecoveryRequired)?;
+            self.repository
+                .save_discovery_cache(&write.identity_id, &ciphertext)?;
+        }
         for write in &journal.config_writes {
+            if write.config.discovery_cache.is_none() {
+                self.repository
+                    .remove_discovery_cache_if_present(&write.identity_id)?;
+            }
             self.repository
                 .save_config(&write.identity_id, &write.config)?;
         }
@@ -2843,6 +2981,28 @@ trait ManifestRevisionPersistence: Sync {
         signing: &Ed25519Identity,
         lease: &OperationLease,
     ) -> Result<(), RuntimeError>;
+
+    fn load_discovery_cache(
+        &self,
+        identity_id: &str,
+        agent_id: &str,
+        commitment: Option<&PublicDiscoveryCacheCommitment>,
+        encryption: &X25519Identity,
+    ) -> Result<LocalDiscoveryIndex, RuntimeError>;
+
+    #[allow(clippy::too_many_arguments)]
+    fn persist_discovery_batch(
+        &self,
+        identity_id: &str,
+        agent_id: &str,
+        expected_anchors: &[PublicVaultTrustAnchor],
+        next_anchors: &[PublicVaultTrustAnchor],
+        expected_cache: Option<&PublicDiscoveryCacheCommitment>,
+        next_cache: &PublicDiscoveryCacheCommitment,
+        ciphertext: &[u8],
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError>;
 }
 
 impl<S: SecretStore + Sync> ManifestRevisionPersistence for RuntimeService<S> {
@@ -2863,6 +3023,43 @@ impl<S: SecretStore + Sync> ManifestRevisionPersistence for RuntimeService<S> {
             lease,
         )
     }
+
+    fn load_discovery_cache(
+        &self,
+        identity_id: &str,
+        agent_id: &str,
+        commitment: Option<&PublicDiscoveryCacheCommitment>,
+        encryption: &X25519Identity,
+    ) -> Result<LocalDiscoveryIndex, RuntimeError> {
+        RuntimeService::load_discovery_cache(self, identity_id, agent_id, commitment, encryption)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn persist_discovery_batch(
+        &self,
+        identity_id: &str,
+        agent_id: &str,
+        expected_anchors: &[PublicVaultTrustAnchor],
+        next_anchors: &[PublicVaultTrustAnchor],
+        expected_cache: Option<&PublicDiscoveryCacheCommitment>,
+        next_cache: &PublicDiscoveryCacheCommitment,
+        ciphertext: &[u8],
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError> {
+        RuntimeService::persist_discovery_batch(
+            self,
+            identity_id,
+            agent_id,
+            expected_anchors,
+            next_anchors,
+            expected_cache,
+            next_cache,
+            ciphertext,
+            signing,
+            lease,
+        )
+    }
 }
 
 struct PreparedManifestItem {
@@ -2873,6 +3070,11 @@ struct PreparedManifestItem {
 struct PreparedManifestBatch {
     items: Vec<PreparedManifestItem>,
     next_anchors: Vec<PublicVaultTrustAnchor>,
+}
+
+struct PreparedDiscoveryCache {
+    commitment: PublicDiscoveryCacheCommitment,
+    ciphertext: Vec<u8>,
 }
 
 struct PreparedCredentialOptions {
@@ -3234,6 +3436,38 @@ impl RuntimeSession<'_> {
         self.ensure_authorized()
     }
 
+    fn persist_prepared_discovery_batch(
+        &self,
+        batch: &PreparedManifestBatch,
+        cache: &PreparedDiscoveryCache,
+    ) -> Result<(), RuntimeError> {
+        let persistence = self
+            .manifest_persistence
+            .ok_or(RuntimeError::IntegrityViolation)?;
+        let signing = self
+            .profile_signing
+            .as_ref()
+            .ok_or(RuntimeError::IntegrityViolation)?;
+        let agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        self.ensure_authorized()?;
+        persistence.persist_discovery_batch(
+            &self.profile.identity_id,
+            agent_id,
+            &self.config.vault_trust_anchors,
+            &batch.next_anchors,
+            self.config.discovery_cache.as_ref(),
+            &cache.commitment,
+            &cache.ciphertext,
+            signing,
+            &self.lease,
+        )?;
+        self.ensure_authorized()
+    }
+
     fn operation_cancellation(
         &self,
         caller: &CancellationToken,
@@ -3286,21 +3520,6 @@ impl RuntimeSession<'_> {
         self.discovery.lock().await.search(query, cursor, page_size)
     }
 
-    async fn authenticated_discovery_metadata(
-        &self,
-        vault_id: &str,
-        entry_id: &str,
-    ) -> Result<(Option<String>, Vec<AgentVisibleField>), RuntimeError> {
-        self.sync_local_discovery().await?;
-        let index = self.discovery.lock().await;
-        Ok((
-            index.authenticated_url_domain(vault_id, entry_id),
-            index
-                .authenticated_fields(vault_id, entry_id)
-                .unwrap_or_default(),
-        ))
-    }
-
     async fn sync_local_discovery(&self) -> Result<(), RuntimeError> {
         let result = retry_sync_state_changed(|| self.sync_local_discovery_attempt()).await;
         if result.is_err() {
@@ -3310,6 +3529,7 @@ impl RuntimeSession<'_> {
     }
 
     async fn sync_local_discovery_attempt(&self) -> Result<(), RuntimeError> {
+        self.ensure_discovery_cache_loaded().await?;
         let manifests = self.api.list_vault_manifests().await?;
         let batch = self.prepare_manifest_batch(manifests)?;
         let mut index_guard = self.discovery.lock().await;
@@ -3352,9 +3572,68 @@ impl RuntimeSession<'_> {
             Ok(())
         }
         .await;
+        let prepared_cache = match &result {
+            Ok(()) => Some(self.prepare_discovery_cache(&next_index)?),
+            Err(_) => None,
+        };
         publish_discovery_attempt(&mut index_guard, next_index, result, || {
             self.ensure_authorized()?;
-            self.persist_prepared_manifest_batch(&batch)
+            self.persist_prepared_discovery_batch(
+                &batch,
+                prepared_cache
+                    .as_ref()
+                    .ok_or(RuntimeError::IntegrityViolation)?,
+            )
+        })
+    }
+
+    async fn ensure_discovery_cache_loaded(&self) -> Result<(), RuntimeError> {
+        let agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        let mut index = self.discovery.lock().await;
+        if index.is_scoped_to(&self.profile.identity_id, agent_id) {
+            return Ok(());
+        }
+        let persistence = self
+            .manifest_persistence
+            .ok_or(RuntimeError::IntegrityViolation)?;
+        *index = persistence.load_discovery_cache(
+            &self.profile.identity_id,
+            agent_id,
+            self.config.discovery_cache.as_ref(),
+            &self.encryption,
+        )?;
+        Ok(())
+    }
+
+    fn prepare_discovery_cache(
+        &self,
+        index: &LocalDiscoveryIndex,
+    ) -> Result<PreparedDiscoveryCache, RuntimeError> {
+        let agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        let generation = self
+            .config
+            .discovery_cache
+            .as_ref()
+            .map_or(1, |cache| cache.generation.saturating_add(1));
+        let binding = discovery_cache_binding(&self.profile.identity_id, agent_id, generation)?;
+        let plaintext = index.encode_durable_cache()?;
+        let ciphertext =
+            seal_local_discovery_cache(self.encryption.public_key(), &binding, plaintext.as_ref())?;
+        let commitment = PublicDiscoveryCacheCommitment {
+            generation,
+            ciphertext_sha256: hex_digest(Sha256::digest(&ciphertext)),
+        };
+        Ok(PreparedDiscoveryCache {
+            commitment,
+            ciphertext,
         })
     }
 
@@ -3694,26 +3973,8 @@ impl RuntimeSession<'_> {
         H: FnMut(HeartbeatInfo),
     {
         self.begin_operation(RuntimeOperation::InjectCredential)?;
-        let delivery = self
-            .deliver_credential(request, CredentialMethod::Inject, cancellation, heartbeat)
-            .await?;
-        let CredentialDelivery::Granted(mut credential) = delivery else {
-            return Ok(delivery);
-        };
-        let operation_cancellation = self.operation_cancellation(cancellation)?;
-        let cancellation = operation_cancellation.token();
-        let (authenticated_domain, authenticated_fields) = tokio::select! {
-            biased;
-            () = cancellation.cancelled() => {
-                self.ensure_authorized()?;
-                return Err(RuntimeError::WaitCancelled);
-            }
-            result = self.authenticated_discovery_metadata(request.vault_id, request.entry_id) => result?,
-        };
-        self.ensure_authorized()?;
-        credential.authenticated_domain = authenticated_domain;
-        credential.authenticated_fields = authenticated_fields;
-        Ok(CredentialDelivery::Granted(credential))
+        self.deliver_credential(request, CredentialMethod::Inject, cancellation, heartbeat)
+            .await
     }
 
     pub async fn execute_with_credential<H>(
@@ -3973,6 +4234,11 @@ impl RuntimeSession<'_> {
                 },
             },
         )?;
+        let (authenticated_domain, authenticated_fields) = if method == CredentialMethod::Inject {
+            authenticated_inject_metadata(credential.expose_for_authorized_operation())?
+        } else {
+            (None, Vec::new())
+        };
         self.ensure_authorized()?;
         let entry_id = request.entry_id.to_owned();
         let label = shorten_identifier(&entry_id);
@@ -3980,8 +4246,8 @@ impl RuntimeSession<'_> {
             grant_id,
             entry_id,
             label,
-            authenticated_domain: None,
-            authenticated_fields: Vec::new(),
+            authenticated_domain,
+            authenticated_fields,
             credential,
         }))
     }
@@ -4178,6 +4444,29 @@ fn discovery_envelope_digest(envelope: &AgentDiscoveryEnvelope) -> [u8; 32] {
     Sha256::digest(envelope.encoded_suite_payload.as_bytes()).into()
 }
 
+fn discovery_cache_binding(
+    identity_id: &str,
+    agent_id: &str,
+    generation: u64,
+) -> Result<Vec<u8>, RuntimeError> {
+    if identity_id.is_empty()
+        || identity_id.len() > 256
+        || agent_id.is_empty()
+        || agent_id.len() > 256
+        || generation == 0
+    {
+        return Err(RuntimeError::IntegrityViolation);
+    }
+    let mut binding = Vec::with_capacity(identity_id.len() + agent_id.len() + 40);
+    binding.extend_from_slice(b"palladin.discovery-cache.binding.v1\0");
+    binding.extend_from_slice(&(identity_id.len() as u32).to_be_bytes());
+    binding.extend_from_slice(identity_id.as_bytes());
+    binding.extend_from_slice(&(agent_id.len() as u32).to_be_bytes());
+    binding.extend_from_slice(agent_id.as_bytes());
+    binding.extend_from_slice(&generation.to_be_bytes());
+    Ok(binding)
+}
+
 fn validate_sequence(value: &str) -> Result<u64, RuntimeError> {
     if value.is_empty()
         || (value.len() > 1 && value.starts_with('0'))
@@ -4303,14 +4592,7 @@ fn prepare_manifest_anchors(
             verify_current_manifest(manifest, identity, &pinned_vault_trust(anchor)?)
                 .map_err(|_| RuntimeError::UntrustedVaultManifest)?
         } else {
-            #[cfg(feature = "local-development")]
-            {
-                initial_vault_trust(manifest, identity)?
-            }
-            #[cfg(not(feature = "local-development"))]
-            {
-                return Err(RuntimeError::UntrustedVaultManifest);
-            }
+            initial_vault_trust(manifest, identity)?
         };
         let public = PublicVaultTrustAnchor {
             organization_id: organization_id.clone(),
@@ -4335,7 +4617,6 @@ fn prepare_manifest_anchors(
     Ok(next)
 }
 
-#[cfg(feature = "local-development")]
 fn initial_vault_trust(
     manifest: &VaultManifestV2,
     identity: &AgentIdentityBinding,
@@ -4449,6 +4730,34 @@ const fn credential_method_mask(method: CredentialMethod) -> u16 {
         CredentialMethod::Exec => 2,
         CredentialMethod::Inject => 4,
     }
+}
+
+fn authenticated_inject_metadata(
+    plaintext: &[u8],
+) -> Result<(Option<String>, Vec<AgentVisibleField>), RuntimeError> {
+    let parsed = parse_secret(plaintext).map_err(|_| RuntimeError::InvalidCredentialPayload)?;
+    let domain = parsed
+        .fields
+        .get("urlDomain")
+        .map(|value| value.expose_secret().trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            parsed.url.as_ref().and_then(|value| {
+                url::Url::parse(value.expose_secret())
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+            })
+        });
+    let authenticated_fields = parsed
+        .username
+        .as_ref()
+        .map(|username| AgentVisibleField {
+            label: "credential.username".to_owned(),
+            value: username.expose_secret().to_owned(),
+        })
+        .into_iter()
+        .collect();
+    Ok((domain, authenticated_fields))
 }
 
 #[derive(Debug, Error)]
@@ -4820,6 +5129,19 @@ mod tests {
     }
 
     #[test]
+    fn inject_metadata_comes_from_the_fresh_authenticated_grant_payload() {
+        let (domain, fields) = authenticated_inject_metadata(
+            br#"{"username":"visible-user","password":"secret","url":"https://login.example.com/path","urlDomain":"login.example.com"}"#,
+        )
+        .expect("metadata");
+
+        assert_eq!(domain.as_deref(), Some("login.example.com"));
+        assert!(fields.iter().any(|field| {
+            field.label == "credential.username" && field.value == "visible-user"
+        }));
+    }
+
+    #[test]
     fn discovery_outer_entry_id_must_match_authenticated_envelope_scope() {
         let descriptor: palladin_api::AgentDiscoveryEnvelopeDescriptor =
             serde_json::from_value(serde_json::json!({
@@ -4924,30 +5246,43 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "local-development"))]
-    fn manifest_batch_rejects_unpaired_vaults_in_production() {
+    fn authenticated_manifest_batch_adds_a_future_vault_and_pins_its_signing_key() {
         let (identity, manifests) = signed_manifest_fixture();
+        let parent = PublicVaultTrustAnchor {
+            organization_id: identity.organization_id.to_string(),
+            vault_id: manifests[0].vault_id.clone(),
+            agent_access_epoch: 7,
+            vault_signing_public_key: manifests[0].vault_signing_public_key.clone(),
+            vault_signing_key_fingerprint: manifests[0].vault_signing_key_fingerprint.clone(),
+            manifest_revision: manifests[0].manifest_revision.clone(),
+            manifest_signing_key_version: manifests[0].manifest_signing_key_version,
+            vdk_version: manifests[0].vdk_version,
+        };
 
+        let anchors = prepare_manifest_anchors(&[parent], 7, &manifests[1..], &identity)
+            .expect("authenticated future Vault manifest");
+        assert_eq!(anchors.len(), 2);
+        assert!(
+            anchors
+                .iter()
+                .any(|anchor| anchor.vault_id == manifests[1].vault_id)
+        );
+
+        let mut tampered = manifests[1].clone();
+        tampered.vault_signing_public_key = URL_SAFE_NO_PAD.encode([0x42_u8; 32]);
         assert!(matches!(
-            prepare_manifest_anchors(&[], 7, &manifests, &identity),
+            prepare_manifest_anchors(&anchors[..1], 7, &[tampered], &identity),
             Err(RuntimeError::UntrustedVaultManifest)
         ));
     }
 
     #[test]
-    #[cfg(feature = "local-development")]
-    fn manifest_batch_pins_only_a_fully_valid_first_anchor_set() {
+    fn authenticated_initial_manifest_batch_pins_only_fully_valid_vault_keys() {
         let (identity, manifests) = signed_manifest_fixture();
         let anchors = prepare_manifest_anchors(&[], 7, &manifests, &identity)
-            .expect("fully valid first batch");
-
-        assert_eq!(anchors.len(), 2);
+            .expect("fully valid authenticated batch");
+        assert_eq!(anchors.len(), manifests.len());
         assert!(anchors.iter().all(|anchor| anchor.agent_access_epoch == 7));
-        assert!(
-            anchors
-                .windows(2)
-                .all(|pair| pair[0].vault_id < pair[1].vault_id)
-        );
     }
 
     #[test]
@@ -4967,7 +5302,6 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let unchanged = current.clone();
-
         assert!(matches!(
             prepare_manifest_anchors(&current, 8, &manifests, &identity),
             Err(RuntimeError::UntrustedVaultManifest)
@@ -4991,12 +5325,24 @@ mod tests {
         const SECRET_CANARY: &str = "private-key-secret-canary-must-not-leak";
         let (identity, mut manifests) = signed_manifest_fixture();
         manifests[1].signature = SECRET_CANARY.to_owned();
-        let current = Vec::new();
-
+        let current = manifests
+            .iter()
+            .map(|manifest| PublicVaultTrustAnchor {
+                organization_id: identity.organization_id.to_string(),
+                vault_id: manifest.vault_id.clone(),
+                agent_access_epoch: 7,
+                vault_signing_public_key: manifest.vault_signing_public_key.clone(),
+                vault_signing_key_fingerprint: manifest.vault_signing_key_fingerprint.clone(),
+                manifest_revision: manifest.manifest_revision.clone(),
+                manifest_signing_key_version: manifest.manifest_signing_key_version,
+                vdk_version: manifest.vdk_version,
+            })
+            .collect::<Vec<_>>();
+        let unchanged = current.clone();
         let error = prepare_manifest_anchors(&current, 7, &manifests, &identity)
             .expect_err("invalid second signature must reject the batch");
 
-        assert!(current.is_empty(), "no prefix anchor was committed");
+        assert_eq!(current, unchanged, "no prefix anchor was committed");
         let rendered = format!("{error:?} {error}");
         assert!(!rendered.contains(SECRET_CANARY));
     }
@@ -5113,6 +5459,34 @@ mod tests {
             _identity_id: &str,
             _expected_anchors: &[PublicVaultTrustAnchor],
             _next_anchors: &[PublicVaultTrustAnchor],
+            _signing: &Ed25519Identity,
+            _lease: &OperationLease,
+        ) -> Result<(), RuntimeError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn load_discovery_cache(
+            &self,
+            identity_id: &str,
+            agent_id: &str,
+            _commitment: Option<&PublicDiscoveryCacheCommitment>,
+            _encryption: &X25519Identity,
+        ) -> Result<LocalDiscoveryIndex, RuntimeError> {
+            let mut index = LocalDiscoveryIndex::new();
+            index.scope_to_identity(identity_id, agent_id);
+            Ok(index)
+        }
+
+        fn persist_discovery_batch(
+            &self,
+            _identity_id: &str,
+            _agent_id: &str,
+            _expected_anchors: &[PublicVaultTrustAnchor],
+            _next_anchors: &[PublicVaultTrustAnchor],
+            _expected_cache: Option<&PublicDiscoveryCacheCommitment>,
+            _next_cache: &PublicDiscoveryCacheCommitment,
+            _ciphertext: &[u8],
             _signing: &Ed25519Identity,
             _lease: &OperationLease,
         ) -> Result<(), RuntimeError> {
@@ -5254,6 +5628,7 @@ mod tests {
                 encryption_public_key: Some(created.encryption_public_key.clone()),
                 signing_public_key: Some(created.signing_public_key.clone()),
                 vault_trust_anchors: vec![anchor.clone()],
+                discovery_cache: None,
                 binding_signature: STANDARD.encode([0_u8; 64]),
             };
             let binding = profile_binding_bytes(&config).expect("binding");
@@ -5335,6 +5710,197 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn encrypted_discovery_cache_survives_restart_and_rejects_file_rollback() {
+        let root = tempfile::tempdir().expect("root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("private root");
+        }
+        let store = MemorySecretStore::default();
+        let service = RuntimeService::new(
+            ProfileRepository::new(root.path().to_path_buf()).expect("repository"),
+            store.clone(),
+        );
+        let created = service.create_profile("default", None).expect("profile");
+        let signing = Ed25519Identity::from_libsodium_secret(
+            store
+                .get(&created.identity_id, SecretSlot::Ed25519SecretKey)
+                .expect("read signing key")
+                .expect("signing key")
+                .expose_secret()
+                .to_vec(),
+        )
+        .expect("signing identity");
+        let encryption = X25519Identity::from_private_bytes(
+            store
+                .get(&created.identity_id, SecretSlot::X25519PrivateKey)
+                .expect("read encryption key")
+                .expect("encryption key")
+                .expose_secret()
+                .to_vec(),
+        )
+        .expect("encryption identity");
+        let agent_id = "55555555-5555-4555-8555-555555555555";
+        {
+            let _lock = service
+                .repository
+                .acquire_transaction_lock()
+                .expect("transaction lock");
+            let state = service.verified_state_locked().expect("verified state");
+            let mut config = PublicProfileConfig {
+                schema_version: PUBLIC_SCHEMA_VERSION,
+                identity_id: created.identity_id.clone(),
+                host: "https://api.stage.palladin.io".to_owned(),
+                organization_credential_id: "44444444444444444444444444444444".to_owned(),
+                retired_organization_credential_ids: Vec::new(),
+                agent_id: Some(agent_id.to_owned()),
+                agent_active: true,
+                encryption_public_key: Some(created.encryption_public_key.clone()),
+                signing_public_key: Some(created.signing_public_key.clone()),
+                vault_trust_anchors: Vec::new(),
+                discovery_cache: None,
+                binding_signature: STANDARD.encode([0_u8; 64]),
+            };
+            let binding = profile_binding_bytes(&config).expect("binding");
+            config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+            let digest = profile_config_digest(&config).expect("config digest");
+            let mut registry = state.registry.clone();
+            registry.agents[0].config_digest = Some(digest);
+            service
+                .commit_transition(
+                    &state,
+                    registry,
+                    vec![ConfigWrite {
+                        identity_id: created.identity_id.clone(),
+                        config,
+                    }],
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                )
+                .expect("seed active profile");
+        }
+
+        let vault_id = "11111111-1111-4111-8111-111111111111";
+        let entry_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut index = LocalDiscoveryIndex::new();
+        index.scope_to_identity(&created.identity_id, agent_id);
+        index.prepare_vault(vault_id, 1);
+        index
+            .upsert(
+                vault_id,
+                entry_id,
+                1,
+                [1; 32],
+                serde_json::from_value(json!({
+                    "schema": "palladin.agent-discovery.v1",
+                    "agentLabel": "restart sentinel",
+                    "capabilities": ["inject"],
+                    "fields": [{"id":"credential.username","value":"alice"}],
+                    "entryType": "credential"
+                }))
+                .expect("discovery fixture"),
+            )
+            .expect("head");
+        index.mark_applied(vault_id, "12".to_owned());
+
+        let plaintext = index.encode_durable_cache().expect("encode cache");
+        let first_binding =
+            discovery_cache_binding(&created.identity_id, agent_id, 1).expect("cache binding");
+        let first_ciphertext =
+            seal_local_discovery_cache(encryption.public_key(), &first_binding, plaintext.as_ref())
+                .expect("seal cache");
+        let first_commitment = PublicDiscoveryCacheCommitment {
+            generation: 1,
+            ciphertext_sha256: hex_digest(Sha256::digest(&first_ciphertext)),
+        };
+        service
+            .persist_discovery_batch(
+                &created.identity_id,
+                agent_id,
+                &[],
+                &[],
+                None,
+                &first_commitment,
+                &first_ciphertext,
+                &signing,
+                &test_lease(),
+            )
+            .expect("persist cache");
+
+        let restarted = RuntimeService::new(
+            ProfileRepository::new(root.path().to_path_buf()).expect("restart repository"),
+            store,
+        );
+        let config = restarted
+            .repository
+            .load_config(&created.identity_id)
+            .expect("persisted config");
+        let restored = restarted
+            .load_discovery_cache(
+                &created.identity_id,
+                agent_id,
+                config.discovery_cache.as_ref(),
+                &encryption,
+            )
+            .expect("restart cache");
+        assert_eq!(restored.applied_sequence(vault_id), Some("12"));
+        assert_eq!(
+            restored
+                .search("restart sentinel", None, None)
+                .expect("search cache")
+                .items
+                .len(),
+            1
+        );
+
+        let second_binding =
+            discovery_cache_binding(&created.identity_id, agent_id, 2).expect("cache binding");
+        let second_ciphertext = seal_local_discovery_cache(
+            encryption.public_key(),
+            &second_binding,
+            plaintext.as_ref(),
+        )
+        .expect("seal next cache");
+        let second_commitment = PublicDiscoveryCacheCommitment {
+            generation: 2,
+            ciphertext_sha256: hex_digest(Sha256::digest(&second_ciphertext)),
+        };
+        restarted
+            .persist_discovery_batch(
+                &created.identity_id,
+                agent_id,
+                &[],
+                &[],
+                Some(&first_commitment),
+                &second_commitment,
+                &second_ciphertext,
+                &signing,
+                &test_lease(),
+            )
+            .expect("advance cache generation");
+        restarted
+            .repository
+            .save_discovery_cache(&created.identity_id, &first_ciphertext)
+            .expect("simulate file rollback");
+        let rolled_back = restarted
+            .repository
+            .load_config(&created.identity_id)
+            .expect("current config");
+        assert!(matches!(
+            restarted.load_discovery_cache(
+                &created.identity_id,
+                agent_id,
+                rolled_back.discovery_cache.as_ref(),
+                &encryption,
+            ),
+            Err(RuntimeError::IntegrityViolation)
+        ));
+    }
+
     #[tokio::test]
     async fn delivery_enforces_the_exact_method_and_never_decrypts_before_granted() {
         let non_granted_bodies = [
@@ -5382,6 +5948,7 @@ mod tests {
                 encryption_public_key: None,
                 signing_public_key: None,
                 vault_trust_anchors: Vec::new(),
+                discovery_cache: None,
                 binding_signature: STANDARD.encode([0_u8; 64]),
             },
             api,
@@ -5448,6 +6015,65 @@ mod tests {
             assert!(request.contains(&format!(r#""method":"{method}""#)));
             assert!(!request.contains("requestedMethods"));
         }
+    }
+
+    #[tokio::test]
+    async fn granted_inject_uses_one_credential_request_and_never_syncs_discovery() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/v1/encrypted-envelope.json"
+        ))
+        .expect("envelope fixture");
+        let private_key = STANDARD
+            .decode(
+                fixture
+                    .pointer("/keyFixture/privateKeyBase64")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("private key"),
+            )
+            .expect("private key base64");
+        let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-password-not-production"},{"id":"credential.urlDomain","kind":"text","mode":"value","value":"login.example.test"},{"id":"credential.username","kind":"text","mode":"value","value":"fixture-user"}],"schema":"palladin.grant-payload.v1"}"#;
+        let body = grant_response(
+            &encryption,
+            TEST_ENTRY_ID,
+            payload,
+            &[
+                "credential.password",
+                "credential.urlDomain",
+                "credential.username",
+            ],
+            4,
+        );
+        let (host, requests) = credential_server_owned(vec![body]).await;
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let mut session = runtime_session(host, api, encryption);
+        session.operation = RuntimeOperation::InjectCredential;
+
+        let delivery = session
+            .deliver_for_inject(request(), &CancellationToken::new(), |_| {})
+            .await
+            .expect("Inject delivery");
+        let CredentialDelivery::Granted(delivered) = delivery else {
+            panic!("expected granted Inject");
+        };
+
+        assert_eq!(delivered.authenticated_domain(), Some("login.example.test"));
+        assert_eq!(
+            delivered.authenticated_field("credential.username"),
+            Some("fixture-user")
+        );
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains("/credential"));
+        assert!(!requests[0].contains("/discovery"));
+        assert!(!requests[0].contains("/manifests"));
     }
 
     #[tokio::test]
@@ -5749,6 +6375,7 @@ mod tests {
                     manifest_signing_key_version: 1,
                     vdk_version: 1,
                 }],
+                discovery_cache: None,
                 binding_signature: STANDARD.encode([0_u8; 64]),
             },
             api,
@@ -5785,6 +6412,7 @@ mod tests {
                 manifest_signing_key_version: 1,
                 vdk_version: 1,
             }],
+            discovery_cache: None,
             binding_signature: STANDARD.encode([0_u8; 64]),
         };
 
@@ -5829,6 +6457,7 @@ mod tests {
             encryption_public_key: Some(STANDARD.encode(encryption.public_key())),
             signing_public_key: Some(STANDARD.encode(signing.public_key())),
             vault_trust_anchors: Vec::new(),
+            discovery_cache: None,
             binding_signature: STANDARD.encode([0_u8; 64]),
         };
 
@@ -5925,6 +6554,7 @@ mod tests {
             encryption_public_key: Some(STANDARD.encode(identity.public_key())),
             signing_public_key: Some(STANDARD.encode(signing.public_key())),
             vault_trust_anchors: Vec::new(),
+            discovery_cache: None,
             binding_signature: STANDARD.encode([0_u8; 64]),
         };
         let session = RuntimeSession {

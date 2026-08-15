@@ -3,6 +3,7 @@
 mod envelope;
 mod grant;
 mod identity;
+mod local_cache;
 mod manifest;
 mod reason;
 mod signing;
@@ -18,6 +19,7 @@ pub use grant::{
     DecryptedGrantPayload, ExpectedGrantContext, GrantEnvelopeV2, decrypt_grant_payload,
 };
 pub use identity::{Ed25519Identity, X25519Identity, verify_profile_binding};
+pub use local_cache::{open_local_discovery_cache, seal_local_discovery_cache};
 pub use manifest::{
     AgentIdentityBinding, MemberPairingConfirmation, PairingCandidate, PairingRelayStatus,
     PairingTranscript, PairingVault, PinnedVaultTrust, TrustedVdkSet, VaultManifestV2,

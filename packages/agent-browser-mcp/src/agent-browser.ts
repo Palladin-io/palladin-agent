@@ -66,7 +66,8 @@ export class AgentBrowserSession {
       }
     } catch (error) {
       for (const field of filled.reverse()) {
-        if (isDiscoveryVisibleUsername(field.entryFieldId, field.control)) continue;
+        if (field.control !== 'password' && field.control !== 'otp'
+          && !/(?:password|passcode|otp|totp|secret|token)/i.test(field.entryFieldId)) continue;
         await this.command({ action: 'fill', selector: field.selector, value: '' }).catch(() => undefined);
       }
       throw error;

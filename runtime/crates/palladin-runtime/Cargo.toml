@@ -33,6 +33,7 @@ time.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
+url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

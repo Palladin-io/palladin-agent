@@ -22,19 +22,50 @@ before exercising all positive and corruption vectors.
 The native runtime accepts Vault manifests only from the strict
 `{ agentAccessEpoch, items }` response. The non-zero epoch must match every
 integrity-bound local Vault anchor before any item is applied. It validates the
-complete canonical-descriptor manifest/envelope batch, including first-use
-public Vault trust anchors, in memory; only a fully valid batch can produce one
-signed atomic profile update. Discovery pages are decrypted into a cloned local
-index and replace the live index only after every Vault finishes and the anchor
-batch is durably committed.
+complete canonical-descriptor manifest/envelope batch in memory; only a fully
+valid batch can produce one signed atomic profile update. For a previously
+unknown Vault, the authenticated backend response is authoritative for its
+introduction. The runtime verifies that Vault's first manifest signature,
+fingerprint, organization, Agent identity, and envelope bindings, then pins the
+signing key. Later manifests must preserve that pinned key and advance
+monotonically. Vaults do not sign introductions for other Vaults and there is no
+cross-Vault trust chain.
+
+The Discovery index is serialized without credential plaintext, encrypted to
+the Agent's X25519 identity, and written atomically. Its digest and sequence are
+bound into the signed profile plus the protected secure-store checkpoint, so a
+copied, modified, or rolled-back cache is rejected. `search` loads this cache,
+performs the required snapshot or delta synchronization, and publishes a cloned
+index only after every Vault and the signed checkpoint commit succeed. `inject`
+and `exec` do not synchronize Discovery; credential delivery is fetched and
+validated fresh for every operation.
 
 Snapshot or delta `409 { "outcome": "sync-state-changed" }` responses discard
 the complete working attempt. The runtime repeats the operation from a fresh
 manifest authorization read at most three times with bounded linear backoff.
 Other conflicts are not retried, retry exhaustion fails closed, and response
 bodies, ciphertext, credentials, and private identity material are never added
-to errors or diagnostics. Inject obtains its authenticated URL and field
-metadata through the same atomic Discovery synchronization path.
+to errors or diagnostics.
+
+### Security scope and explicit non-goals
+
+Palladin's hard boundary is credential confidentiality and scoped delivery. The
+backend stores ciphertext and structural authorization state; it never receives
+Vault, Discovery, Entry, or credential plaintext and cannot turn an unapproved
+encrypted credential into Agent-readable material. Private keys remain in the
+declared client or native-runtime memory/security boundary.
+
+Manifest signatures and the durable checkpoint protect integrity and rollback
+continuity after a Vault key has been pinned. They do not make the backend a
+public transparency log and do not cryptographically prove the existence of a
+new Vault independently of the authenticated API. A malicious backend can omit
+data, deny service, or introduce self-consistent attacker-owned Discovery data;
+it still cannot decrypt, rewrite, or substitute an existing pinned Vault's
+credential plaintext. Protecting first-seen Vault existence against an actively
+malicious backend would require an independently confirmed organization anchor
+or transparency mechanism. Palladin deliberately does not add that trust chain
+because it does not protect existing credential confidentiality and would make
+Vault creation, onboarding, and recovery materially more complex.
 
 ## Identity ownership
 
