@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PassThrough } from 'node:stream';
-import { chromium } from 'playwright';
+import { chromium, type Page } from 'playwright';
 
 import {
   fillAndSubmit,
@@ -110,35 +110,32 @@ describe('Playwright MCP Inject provider boundary', () => {
   });
 
   it('propagates an allowlisted child stderr code through the orchestration result', async () => {
-    const browser = await chromium.launch({ channel: 'chrome', headless: true });
-    try {
-      const page = await browser.newPage();
-      await page.goto('https://example.com/login');
-      const stdout = new PassThrough();
-      const stderr = new PassThrough();
-      const stdin = new PassThrough();
-      const child = Object.assign(new PassThrough(), {
-        stdin,
-        stdout,
-        stderr,
-        exitCode: 1,
-        kill: () => { stdout.end(); stderr.end(); return true; },
+    // This path fails during the runtime handshake and must not depend on a
+    // real browser process. Keeping the fixture at the boundary also avoids a
+    // Windows Chromium teardown race obscuring the diagnostic assertion.
+    const page = { url: () => 'https://example.com/login' } as Page;
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const stdin = new PassThrough();
+    const child = Object.assign(new PassThrough(), {
+      stdin,
+      stdout,
+      stderr,
+      exitCode: 1,
+      kill: () => { stdout.end(); stderr.end(); return true; },
+    });
+    const result = await injectWithPalladin(page, {
+      vaultId: 'vault', entryId: 'entry', form: combinedForm,
+    }, () => {
+      queueMicrotask(() => {
+        stderr.end('Error: Access was denied by the vault owner.\n');
+        stdout.end();
       });
-      const result = await injectWithPalladin(page, {
-        vaultId: 'vault', entryId: 'entry', form: combinedForm,
-      }, () => {
-        queueMicrotask(() => {
-          stderr.end('Error: Access was denied by the vault owner.\n');
-          stdout.end();
-        });
-        return child as never;
-      });
-      const diagnostic = result.content.find((item) => item.type === 'text');
-      expect(diagnostic?.type === 'text' ? diagnostic.text : '').toContain('(grant-denied)');
-      expect(diagnostic?.type === 'text' ? diagnostic.text : '').not.toContain('Access was denied');
-    } finally {
-      await browser.close();
-    }
+      return child as never;
+    });
+    const diagnostic = result.content.find((item) => item.type === 'text');
+    expect(diagnostic?.type === 'text' ? diagnostic.text : '').toContain('(grant-denied)');
+    expect(diagnostic?.type === 'text' ? diagnostic.text : '').not.toContain('Access was denied');
   });
   it('accepts only a bounded value-free form definition', () => {
     expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry', form: twoStepForm })).not.toBeNull();
