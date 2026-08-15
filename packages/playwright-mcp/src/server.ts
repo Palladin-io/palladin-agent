@@ -15,7 +15,6 @@ import {
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { chromium, type BrowserContext, type Locator, type Page } from 'playwright';
-import { getDomain } from 'tldts';
 import {
   injectFormJsonSchema,
   parseInjectForm,
@@ -365,9 +364,10 @@ export async function fillAndSubmit(
     return 'injected';
   } catch (error) {
     for (const field of filled.reverse()) {
-      const isPublicDiscoveryUsername = field.entryFieldId === 'credential.username'
-        && field.control === 'username';
-      if (!isPublicDiscoveryUsername) await field.target.fill('').catch(() => undefined);
+      // Clear every credential field on failure. The caller still receives the
+      // provider error, but no partially-authenticated form remains usable in
+      // the page after a failed attempt.
+      await field.target.fill('').catch(() => undefined);
     }
     throw error;
   }
@@ -598,13 +598,22 @@ function sameInjectForm(left: InjectFormDefinition, right: InjectFormDefinition)
 export function verifyDomain(url: string, expectedDomain: string): void {
   const parsed = new URL(url);
   if (parsed.protocol !== 'https:') throw new Error('insecure origin');
-  const active = getDomain(parsed.hostname, { allowPrivateDomains: true });
-  const expected = getDomain(expectedDomain, { allowPrivateDomains: true });
-  if (active === null || expected === null || active !== expected) {
+  const active = parsed.hostname.toLowerCase().replace(/\.$/, '');
+  const expected = expectedDomain.toLowerCase().replace(/\.$/, '');
+  // Bind to the exact entry host or one of its descendants. Comparing the
+  // registrable domain would incorrectly allow sibling hosts (e.g.
+  // evil.example.com for an entry bound to login.example.com).
+  if (!isHostname(expected) || (active !== expected && !active.endsWith(`.${expected}`))) {
     // Domains are public metadata; include them in the value-free diagnostic so
     // a legitimate redirect can be fixed without exposing credential material.
-    throw new Error(`origin mismatch (${active ?? 'unknown'} != ${expected ?? 'unknown'})`);
+    throw new Error(`origin mismatch (${active || 'unknown'} != ${expected || 'unknown'})`);
   }
+}
+
+function isHostname(value: string): boolean {
+  if (value.length === 0 || value.length > 253 || value.includes('/') || value.includes(':')) return false;
+  try { return new URL(`https://${value}`).hostname.toLowerCase().replace(/\.$/, '') === value; }
+  catch { return false; }
 }
 
 function readOneLine(stream: NodeJS.ReadableStream): Promise<string> {

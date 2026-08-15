@@ -163,8 +163,11 @@ describe('Playwright MCP Inject provider boundary', () => {
     )).toBeNull();
   });
 
-  it('requires HTTPS and the encrypted registrable domain', () => {
+  it('requires HTTPS and the authenticated host boundary', () => {
     expect(() => verifyDomain('https://login.example.com/path', 'example.com')).not.toThrow();
+    expect(() => verifyDomain('https://deep.login.example.com/path', 'login.example.com')).not.toThrow();
+    expect(() => verifyDomain('https://evil.example.com/path', 'login.example.com')).toThrow('origin mismatch');
+    expect(() => verifyDomain('https://example.com/path', 'login.example.com')).toThrow('origin mismatch');
     expect(() => verifyDomain('http://example.com', 'example.com')).toThrow('insecure origin');
     expect(() => verifyDomain('https://example.net', 'example.com')).toThrow('origin mismatch');
   });
@@ -306,9 +309,7 @@ describe('Playwright MCP Inject provider boundary', () => {
         body: `<form id="login-form"><input id="username"><button id="next" type="submit">Next</button></form>
           <script>document.querySelector('#login-form').addEventListener('submit', (event) => {
             event.preventDefault(); document.body.insertAdjacentHTML('beforeend',
-              '<div role="alert">We have temporarily limited your login. Please try again later.</div>');
-          }); document.querySelector('#username').addEventListener('input', (event) => {
-            if (event.target.value === '') document.querySelector('[role="alert"]')?.remove();
+          '<div role="alert">We have temporarily limited your login. Please try again later.</div>');
           });</script>`,
       }));
       await page.goto('https://example.com/login');
@@ -328,14 +329,14 @@ describe('Playwright MCP Inject provider boundary', () => {
       };
 
       await expect(fillAndSubmit(page, credential(rateLimitedForm))).rejects.toThrow('site-rate-limited');
-      expect(await page.locator('#username').inputValue()).toBe('fixture-user');
+      expect(await page.locator('#username').inputValue()).toBe('');
       expect(await page.locator('[role="alert"]').isVisible()).toBe(true);
     } finally {
       await browser.close();
     }
   });
 
-  it('retains the public username and alert but clears a filled password after rejection', async () => {
+  it('clears all credential fields while retaining the public alert after rejection', async () => {
     const browser = await chromium.launch({ channel: 'chrome', headless: true });
     try {
       const page = await browser.newPage();
@@ -362,7 +363,7 @@ describe('Playwright MCP Inject provider boundary', () => {
       };
 
       await expect(fillAndSubmit(page, credential(rejectedForm))).rejects.toThrow('site-rejected');
-      expect(await page.locator('#username').inputValue()).toBe('fixture-user');
+      expect(await page.locator('#username').inputValue()).toBe('');
       expect(await page.locator('#password').inputValue()).toBe('');
       expect(await page.locator('[role="alert"]').isVisible()).toBe(true);
     } finally {
