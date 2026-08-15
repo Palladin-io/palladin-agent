@@ -37,7 +37,7 @@ export class AgentBrowserSession {
 
   async inject(credential: AgentBrowserCredential, verifyUrl: (url: string) => void): Promise<void> {
     const values = new Map(credential.values.map((field) => [field.entryFieldId, field.value]));
-    const filled: string[] = [];
+    const filled: Array<{ selector: string; entryFieldId: string; control: InjectControl }> = [];
     try {
       for (const step of credential.form.steps) {
         verifyUrl(await this.currentUrl());
@@ -45,8 +45,9 @@ export class AgentBrowserSession {
           const value = values.get(field.entryFieldId);
           if (value === undefined) throw new Error('declared field value is missing');
           await this.validateTarget(field.selector, field.control);
+          verifyUrl(await this.currentUrl());
           await this.command({ action: 'fill', selector: field.selector, value });
-          filled.push(field.selector);
+          filled.push(field);
           verifyUrl(await this.currentUrl());
         }
         verifyUrl(await this.currentUrl());
@@ -64,8 +65,9 @@ export class AgentBrowserSession {
         verifyUrl(await this.currentUrl());
       }
     } catch (error) {
-      for (const selector of filled.reverse()) {
-        await this.command({ action: 'fill', selector, value: '' }).catch(() => undefined);
+      for (const field of filled.reverse()) {
+        if (isDiscoveryVisibleUsername(field.entryFieldId, field.control)) continue;
+        await this.command({ action: 'fill', selector: field.selector, value: '' }).catch(() => undefined);
       }
       throw error;
     }
@@ -214,6 +216,10 @@ export class AgentBrowserSession {
     chmodSync(socket, 0o600);
     return socket;
   }
+}
+
+function isDiscoveryVisibleUsername(entryFieldId: string, control: InjectControl): boolean {
+  return entryFieldId === 'credential.username' && control === 'username';
 }
 
 function configuredSession(): string {

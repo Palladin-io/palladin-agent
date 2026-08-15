@@ -336,6 +336,7 @@ export async function fillAndSubmit(
         const value = values.get(field.entryFieldId);
         if (value === undefined) throw new Error('declared field value is missing');
         const target = await uniqueUsableControl(page, field.selector, field.control);
+        verifyDomain(page.url(), credential.expectedDomain);
         await target.fill(value);
         filled.push({ target, entryFieldId: field.entryFieldId, control: field.control });
         verifyDomain(page.url(), credential.expectedDomain);
@@ -364,13 +365,15 @@ export async function fillAndSubmit(
     return 'injected';
   } catch (error) {
     for (const field of filled.reverse()) {
-      // Clear every credential field on failure. The caller still receives the
-      // provider error, but no partially-authenticated form remains usable in
-      // the page after a failed attempt.
+      if (isDiscoveryVisibleUsername(field.entryFieldId, field.control)) continue;
       await field.target.fill('').catch(() => undefined);
     }
     throw error;
   }
+}
+
+function isDiscoveryVisibleUsername(entryFieldId: string, control: string): boolean {
+  return entryFieldId === 'credential.username' && control === 'username';
 }
 
 async function waitForUniqueSubmit(page: Page, selector: string, timeoutMs = 20_000): Promise<Locator> {

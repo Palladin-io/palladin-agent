@@ -87,6 +87,45 @@ describeAgentBrowser('AgentBrowser owner-only Inject channel', () => {
     }, () => undefined)).rejects.toThrow('password field attestation failed');
   });
 
+  it('retains the Discovery-visible username but clears a filled password after rejection', async () => {
+    const commands: Command[] = [];
+    const fixture = await daemonFixture(async (command) => {
+      commands.push(command);
+      if (command.action === 'url') return { url: 'https://x.com/i/flow/login' };
+      if (command.action === 'snapshot') {
+        return { refs: {
+          e17: { role: 'textbox', name: 'Email or username' },
+          e23: { role: 'textbox', name: 'Password' },
+        } };
+      }
+      if (command.action === 'press') throw new Error('site rejected');
+      return {};
+    });
+    const session = new AgentBrowserSession(SESSION, undefined, fixture.directory);
+    const oneStep = { version: 1 as const, steps: [{
+      fields: [
+        { entryFieldId: 'credential.username', selector: '@e17', control: 'username' as const },
+        { entryFieldId: 'credential.password', selector: '@e23', control: 'password' as const },
+      ],
+      submit: { action: 'press-enter' as const, selector: '@e23' },
+    }] };
+
+    await expect(session.inject({
+      form: oneStep,
+      values: [
+        { entryFieldId: 'credential.username', value: 'fixture-user' },
+        { entryFieldId: 'credential.password', value: FIXTURE_SECRET },
+      ],
+    }, () => undefined)).rejects.toThrow('AgentBrowser rejected the browser operation');
+
+    expect(commands.filter((command) => command.action === 'fill'))
+      .toEqual([
+        expect.objectContaining({ selector: '@e17', value: 'fixture-user' }),
+        expect.objectContaining({ selector: '@e23', value: FIXTURE_SECRET }),
+        expect.objectContaining({ selector: '@e23', value: '' }),
+      ]);
+  });
+
   it('fails closed while AgentBrowser streaming could broadcast daemon commands', async () => {
     const fixture = await daemonFixture(async () => ({ url: 'https://x.com/' }));
     await writeFile(join(fixture.directory, `${SESSION}.stream`), 'active', { mode: 0o600 });
