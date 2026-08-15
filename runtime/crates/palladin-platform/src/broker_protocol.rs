@@ -41,6 +41,7 @@ pub enum SecureOperation {
     Doctor,
     Connect,
     Status,
+    Pair,
     Disconnect,
     Search,
     Get,
@@ -63,6 +64,7 @@ impl SecureOperation {
             "doctor" => Some(Self::Doctor),
             "connect" => Some(Self::Connect),
             "status" => Some(Self::Status),
+            "pair" => Some(Self::Pair),
             "disconnect" => Some(Self::Disconnect),
             "search" => Some(Self::Search),
             "get" => Some(Self::Get),
@@ -971,6 +973,16 @@ mod tests {
             validate_request(&request),
             Err(ProtocolError::InvalidRequest)
         ));
+    }
+
+    #[test]
+    fn pairing_is_a_distinct_consent_bound_operation() {
+        let request = signed_request("pair", SecureOperation::Pair, 1);
+        assert!(validate_request(&request).is_ok());
+        assert_eq!(
+            operation_and_profile(&request.arguments).expect("pair"),
+            (SecureOperation::Pair, "default".to_owned())
+        );
     }
 
     #[test]
