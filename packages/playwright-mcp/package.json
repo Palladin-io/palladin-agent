@@ -34,8 +34,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "@playwright/mcp": "0.0.79",
-    "playwright": "1.63.0-alpha-2026-08-05",
-    "tldts": "7.4.8"
+    "playwright": "1.63.0-alpha-2026-08-05"
   },
   "peerDependencies": {
     "@palladin/agent": "0.1.0"

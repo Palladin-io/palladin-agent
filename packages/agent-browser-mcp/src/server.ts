@@ -14,7 +14,6 @@ import {
   type CallToolResult,
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getDomain } from 'tldts';
 import {
   injectFormJsonSchema,
   parseInjectForm,
@@ -263,9 +262,17 @@ export function parseProviderCredential(
 export function verifyDomain(url: string, expectedDomain: string): void {
   const parsed = new URL(url);
   if (parsed.protocol !== 'https:') throw new Error('insecure origin');
-  const active = getDomain(parsed.hostname, { allowPrivateDomains: true });
-  const expected = getDomain(expectedDomain, { allowPrivateDomains: true });
-  if (active === null || expected === null || active !== expected) throw new Error('origin mismatch');
+  const active = parsed.hostname.toLowerCase().replace(/\.$/, '');
+  const expected = expectedDomain.toLowerCase().replace(/\.$/, '');
+  if (!isHostname(expected) || (active !== expected && !active.endsWith(`.${expected}`))) {
+    throw new Error('origin mismatch');
+  }
+}
+
+function isHostname(value: string): boolean {
+  if (value.length === 0 || value.length > 253 || value.includes('/') || value.includes(':')) return false;
+  try { return new URL(`https://${value}`).hostname.toLowerCase().replace(/\.$/, '') === value; }
+  catch { return false; }
 }
 
 function resolveAgentBrowserLauncher(): string {

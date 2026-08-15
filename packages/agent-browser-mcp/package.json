@@ -20,8 +20,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
-    "agent-browser": "0.33.2",
-    "tldts": "7.4.8"
+    "agent-browser": "0.33.2"
   },
   "peerDependencies": {
     "@palladin/agent": "0.1.0"

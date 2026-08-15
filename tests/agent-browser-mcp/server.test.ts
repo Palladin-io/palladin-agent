@@ -37,8 +37,11 @@ describe('AgentBrowser MCP Inject provider boundary', () => {
     )).toBeNull();
   });
 
-  it('requires HTTPS and the encrypted registrable domain', () => {
+  it('requires HTTPS and the authenticated host boundary', () => {
     expect(() => verifyDomain('https://login.example.com/path', 'example.com')).not.toThrow();
+    expect(() => verifyDomain('https://deep.login.example.com/path', 'login.example.com')).not.toThrow();
+    expect(() => verifyDomain('https://evil.example.com/path', 'login.example.com')).toThrow('origin mismatch');
+    expect(() => verifyDomain('https://example.com/path', 'login.example.com')).toThrow('origin mismatch');
     expect(() => verifyDomain('http://example.com', 'example.com')).toThrow('insecure origin');
     expect(() => verifyDomain('https://example.net', 'example.com')).toThrow('origin mismatch');
   });
