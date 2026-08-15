@@ -1,4 +1,4 @@
 repository=https://github.com/Palladin-io/palladin.git
-commit=b370b56e4f65ecf5350bc4f9203fee6429572955
+commit=b8a4c08a672669aba36aa1239069398fc546a3af
 path=contracts/vault-v2/fixtures/v2
-manifestSha256=13c43defd459e95d50bf2f0a76a5a5446ca41903c36a38beef8b8af3aa208050
+manifestSha256=9d32eedec794ef9033299587ce66c369654e97568bd0df485d9870c8749e824e

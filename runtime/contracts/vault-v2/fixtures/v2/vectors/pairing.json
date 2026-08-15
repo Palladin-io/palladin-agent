@@ -11,7 +11,9 @@
   "signedManifests": [
     {
       "protocolVersion": 2,
-      "algorithmSuite": 1,
+      "cryptoSuiteId": "palladin-vault-xchacha-v1",
+      "wrapperSuiteId": "palladin-x25519-sealed-box-v1",
+      "signatureSuiteId": "palladin-ed25519-v1",
       "organizationId": "11111111-1111-4111-8111-111111111111",
       "vaultId": "12121212-1212-4212-8212-121212121212",
       "agentId": "55555555-5555-4555-8555-555555555555",
@@ -28,11 +30,13 @@
       "manifestRevision": "3",
       "issuedAt": "2026-07-17T05:59:00Z",
       "minimumAgentRuntimeProtocol": 2,
-      "signature": "Mq_omrOwCJFLQEma9sRUeHSJC4e2jPYGpxu7XtbaSfMO1GpwrdesXItNVB1SiDiLEflgul1kUbOxqyfjWEuxDA"
+      "signature": "DqZo1a7MJadRJYIAKvP28hXLpZzgy__8psLSG5UFb4E2c2F8kUFRdjcpiiJcDr55eQRsQ-uFMBYn_HQcnvkNDg"
     },
     {
       "protocolVersion": 2,
-      "algorithmSuite": 1,
+      "cryptoSuiteId": "palladin-vault-xchacha-v1",
+      "wrapperSuiteId": "palladin-x25519-sealed-box-v1",
+      "signatureSuiteId": "palladin-ed25519-v1",
       "organizationId": "11111111-1111-4111-8111-111111111111",
       "vaultId": "22222222-2222-4222-8222-222222222222",
       "agentId": "55555555-5555-4555-8555-555555555555",
@@ -49,7 +53,7 @@
       "manifestRevision": "14",
       "issuedAt": "2026-07-17T06:00:00.123456Z",
       "minimumAgentRuntimeProtocol": 2,
-      "signature": "0u40MbgzfT969F146HIUiL8isHdQBzZD31lyksR2RcA2GOahbq6S7yFL3I8rkX97fULo-S16MsOyl6mD5AeXDA"
+      "signature": "fYETz8lMJji3OsaNFxZSdoD4OBel1e7JWRXTNae7yrcbOn3F7AOKEcwqYlQv9hyNI6GBIqXhyFxFrkk4PDpmCw"
     }
   ],
   "vectors": [
@@ -57,7 +61,7 @@
       "id": "first-pairing-two-vaults",
       "transcript": {
         "protocolVersion": 2,
-        "algorithmSuite": 1,
+        "cryptoSuiteId": "palladin-vault-xchacha-v1",
         "activationId": "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
         "organizationId": "11111111-1111-4111-8111-111111111111",
         "agentId": "55555555-5555-4555-8555-555555555555",
@@ -68,20 +72,20 @@
             "vaultId": "12121212-1212-4212-8212-121212121212",
             "vaultSigningKeyFingerprint": "gpp7k0m_dPVQiD6-J2_MFPPFX7F5ekgvy2ce0Uq2kFA",
             "manifestRevision": "3",
-            "signedManifestDigest": "nXz190Fv7Y0J8icfGwz25BBkK_QQOx_fFIP4SZ7NEaw"
+            "signedManifestDigest": "ss9XIdgUY4PDIgliEfJVRI0B-b8hG11R8jjOXOdX-ws"
           },
           {
             "vaultId": "22222222-2222-4222-8222-222222222222",
             "vaultSigningKeyFingerprint": "3sGfTYj8-M2IfDCdCEXHspvFkOHQvh5x6l_3r9Hu7uM",
             "manifestRevision": "14",
-            "signedManifestDigest": "RtFf3A8jkGpH1igQPhQuE-36Ru4PxHwZlRvZ5YyMJKs"
+            "signedManifestDigest": "xc9qjP0eZba6okf-WD23fRI4oHX8mUpoN7QCxIHCv7g"
           }
         ]
       },
-      "canonicalTranscript": "{\"activationId\":\"aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa\",\"agentEd25519Fingerprint\":\"D6cpTuaLNE0XaYY0vhZ7GBNMr7VE32LS3X0-qBO_824\",\"agentId\":\"55555555-5555-4555-8555-555555555555\",\"agentX25519Fingerprint\":\"5_TqWHxCJp_8YuW5qFpHT7FWTR4IjjfUNToVqeXSiAs\",\"algorithmSuite\":1,\"organizationId\":\"11111111-1111-4111-8111-111111111111\",\"protocolVersion\":2,\"vaults\":[{\"manifestRevision\":\"3\",\"signedManifestDigest\":\"nXz190Fv7Y0J8icfGwz25BBkK_QQOx_fFIP4SZ7NEaw\",\"vaultId\":\"12121212-1212-4212-8212-121212121212\",\"vaultSigningKeyFingerprint\":\"gpp7k0m_dPVQiD6-J2_MFPPFX7F5ekgvy2ce0Uq2kFA\"},{\"manifestRevision\":\"14\",\"signedManifestDigest\":\"RtFf3A8jkGpH1igQPhQuE-36Ru4PxHwZlRvZ5YyMJKs\",\"vaultId\":\"22222222-2222-4222-8222-222222222222\",\"vaultSigningKeyFingerprint\":\"3sGfTYj8-M2IfDCdCEXHspvFkOHQvh5x6l_3r9Hu7uM\"}]}",
-      "inputHex": "504c444e5632504149523a5452414e5343524950543a00027b2261637469766174696f6e4964223a2261616161616161612d616161612d346161612d616161612d616161616161616161616161222c226167656e744564323535313946696e6765727072696e74223a22443663705475614c4e4530586159593076685a3747424e4d7237564533324c533358302d71424f5f383234222c226167656e744964223a2235353535353535352d353535352d343535352d383535352d353535353535353535353535222c226167656e7458323535313946696e6765727072696e74223a22355f5471574878434a705f38597557357146704854374657545234496a6a66554e546f5671655853694173222c22616c676f726974686d5375697465223a312c226f7267616e697a6174696f6e4964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c2270726f746f636f6c56657273696f6e223a322c227661756c7473223a5b7b226d616e69666573745265766973696f6e223a2233222c227369676e65644d616e6966657374446967657374223a226e587a31393046763759304a3869636647777a323542426b4b5f51514f785f6646495034535a374e456177222c227661756c744964223a2231323132313231322d313231322d343231322d383231322d313231323132313231323132222c227661756c745369676e696e674b657946696e6765727072696e74223a22677070376b306d5f645056516944362d4a325f4d4650504658374635656b677679326365305571326b4641227d2c7b226d616e69666573745265766973696f6e223a223134222c227369676e65644d616e6966657374446967657374223a22527446663341386a6b4770483169675150685175452d3336527534507848775a6c52765a3559794d4a4b73222c227661756c744964223a2232323232323232322d323232322d343232322d383232322d323232323232323232323232222c227661756c745369676e696e674b657946696e6765727072696e74223a223373476654596a382d4d32496644436443455848737076466b4f485176683578366c5f337239487537754d227d5d7d",
-      "digestHex": "5c499163555b9d06c30b3decda01cc60709a179af20de3ee3726107cc6e54622",
-      "shortAuthenticationString": "BH4S-2RTN-BEEG"
+      "canonicalTranscript": "{\"activationId\":\"aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa\",\"agentEd25519Fingerprint\":\"D6cpTuaLNE0XaYY0vhZ7GBNMr7VE32LS3X0-qBO_824\",\"agentId\":\"55555555-5555-4555-8555-555555555555\",\"agentX25519Fingerprint\":\"5_TqWHxCJp_8YuW5qFpHT7FWTR4IjjfUNToVqeXSiAs\",\"cryptoSuiteId\":\"palladin-vault-xchacha-v1\",\"organizationId\":\"11111111-1111-4111-8111-111111111111\",\"protocolVersion\":2,\"vaults\":[{\"manifestRevision\":\"3\",\"signedManifestDigest\":\"ss9XIdgUY4PDIgliEfJVRI0B-b8hG11R8jjOXOdX-ws\",\"vaultId\":\"12121212-1212-4212-8212-121212121212\",\"vaultSigningKeyFingerprint\":\"gpp7k0m_dPVQiD6-J2_MFPPFX7F5ekgvy2ce0Uq2kFA\"},{\"manifestRevision\":\"14\",\"signedManifestDigest\":\"xc9qjP0eZba6okf-WD23fRI4oHX8mUpoN7QCxIHCv7g\",\"vaultId\":\"22222222-2222-4222-8222-222222222222\",\"vaultSigningKeyFingerprint\":\"3sGfTYj8-M2IfDCdCEXHspvFkOHQvh5x6l_3r9Hu7uM\"}]}",
+      "inputHex": "504c444e5632504149523a5452414e5343524950543a00027b2261637469766174696f6e4964223a2261616161616161612d616161612d346161612d616161612d616161616161616161616161222c226167656e744564323535313946696e6765727072696e74223a22443663705475614c4e4530586159593076685a3747424e4d7237564533324c533358302d71424f5f383234222c226167656e744964223a2235353535353535352d353535352d343535352d383535352d353535353535353535353535222c226167656e7458323535313946696e6765727072696e74223a22355f5471574878434a705f38597557357146704854374657545234496a6a66554e546f5671655853694173222c2263727970746f53756974654964223a2270616c6c6164696e2d7661756c742d786368616368612d7631222c226f7267616e697a6174696f6e4964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c2270726f746f636f6c56657273696f6e223a322c227661756c7473223a5b7b226d616e69666573745265766973696f6e223a2233222c227369676e65644d616e6966657374446967657374223a2273733958496467555934504449676c6945664a56524930422d62386847313152386a6a4f584f64582d7773222c227661756c744964223a2231323132313231322d313231322d343231322d383231322d313231323132313231323132222c227661756c745369676e696e674b657946696e6765727072696e74223a22677070376b306d5f645056516944362d4a325f4d4650504658374635656b677679326365305571326b4641227d2c7b226d616e69666573745265766973696f6e223a223134222c227369676e65644d616e6966657374446967657374223a22786339716a5030655a6261366f6b662d57443233665249346f4858386d55706f4e37514378494843763767222c227661756c744964223a2232323232323232322d323232322d343232322d383232322d323232323232323232323232222c227661756c745369676e696e674b657946696e6765727072696e74223a223373476654596a382d4d32496644436443455848737076466b4f485176683578366c5f337239487537754d227d5d7d",
+      "digestHex": "65ec5e84a019e193bd600bc07bb5da45326f408ffb8c9c83c0a598a0df2de267",
+      "shortAuthenticationString": "CQP5-X150-37GS"
     }
   ],
   "negativeCases": [
@@ -90,7 +94,7 @@
       "expectedError": "non-canonical-vault-order",
       "transcript": {
         "protocolVersion": 2,
-        "algorithmSuite": 1,
+        "cryptoSuiteId": "palladin-vault-xchacha-v1",
         "activationId": "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
         "organizationId": "11111111-1111-4111-8111-111111111111",
         "agentId": "55555555-5555-4555-8555-555555555555",
@@ -101,13 +105,13 @@
             "vaultId": "22222222-2222-4222-8222-222222222222",
             "vaultSigningKeyFingerprint": "3sGfTYj8-M2IfDCdCEXHspvFkOHQvh5x6l_3r9Hu7uM",
             "manifestRevision": "14",
-            "signedManifestDigest": "RtFf3A8jkGpH1igQPhQuE-36Ru4PxHwZlRvZ5YyMJKs"
+            "signedManifestDigest": "xc9qjP0eZba6okf-WD23fRI4oHX8mUpoN7QCxIHCv7g"
           },
           {
             "vaultId": "12121212-1212-4212-8212-121212121212",
             "vaultSigningKeyFingerprint": "gpp7k0m_dPVQiD6-J2_MFPPFX7F5ekgvy2ce0Uq2kFA",
             "manifestRevision": "3",
-            "signedManifestDigest": "nXz190Fv7Y0J8icfGwz25BBkK_QQOx_fFIP4SZ7NEaw"
+            "signedManifestDigest": "ss9XIdgUY4PDIgliEfJVRI0B-b8hG11R8jjOXOdX-ws"
           }
         ]
       }
@@ -117,7 +121,7 @@
       "expectedError": "duplicate-vault",
       "transcript": {
         "protocolVersion": 2,
-        "algorithmSuite": 1,
+        "cryptoSuiteId": "palladin-vault-xchacha-v1",
         "activationId": "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
         "organizationId": "11111111-1111-4111-8111-111111111111",
         "agentId": "55555555-5555-4555-8555-555555555555",
@@ -128,13 +132,13 @@
             "vaultId": "12121212-1212-4212-8212-121212121212",
             "vaultSigningKeyFingerprint": "gpp7k0m_dPVQiD6-J2_MFPPFX7F5ekgvy2ce0Uq2kFA",
             "manifestRevision": "3",
-            "signedManifestDigest": "nXz190Fv7Y0J8icfGwz25BBkK_QQOx_fFIP4SZ7NEaw"
+            "signedManifestDigest": "ss9XIdgUY4PDIgliEfJVRI0B-b8hG11R8jjOXOdX-ws"
           },
           {
             "vaultId": "12121212-1212-4212-8212-121212121212",
             "vaultSigningKeyFingerprint": "gpp7k0m_dPVQiD6-J2_MFPPFX7F5ekgvy2ce0Uq2kFA",
             "manifestRevision": "3",
-            "signedManifestDigest": "nXz190Fv7Y0J8icfGwz25BBkK_QQOx_fFIP4SZ7NEaw"
+            "signedManifestDigest": "ss9XIdgUY4PDIgliEfJVRI0B-b8hG11R8jjOXOdX-ws"
           }
         ]
       }
@@ -144,7 +148,7 @@
       "expectedError": "incomplete-manifest-set",
       "transcript": {
         "protocolVersion": 2,
-        "algorithmSuite": 1,
+        "cryptoSuiteId": "palladin-vault-xchacha-v1",
         "activationId": "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
         "organizationId": "11111111-1111-4111-8111-111111111111",
         "agentId": "55555555-5555-4555-8555-555555555555",
@@ -155,7 +159,7 @@
             "vaultId": "12121212-1212-4212-8212-121212121212",
             "vaultSigningKeyFingerprint": "gpp7k0m_dPVQiD6-J2_MFPPFX7F5ekgvy2ce0Uq2kFA",
             "manifestRevision": "3",
-            "signedManifestDigest": "nXz190Fv7Y0J8icfGwz25BBkK_QQOx_fFIP4SZ7NEaw"
+            "signedManifestDigest": "ss9XIdgUY4PDIgliEfJVRI0B-b8hG11R8jjOXOdX-ws"
           }
         ]
       }
@@ -165,7 +169,7 @@
       "expectedError": "manifest-digest-mismatch",
       "transcript": {
         "protocolVersion": 2,
-        "algorithmSuite": 1,
+        "cryptoSuiteId": "palladin-vault-xchacha-v1",
         "activationId": "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
         "organizationId": "11111111-1111-4111-8111-111111111111",
         "agentId": "55555555-5555-4555-8555-555555555555",
@@ -176,13 +180,13 @@
             "vaultId": "12121212-1212-4212-8212-121212121212",
             "vaultSigningKeyFingerprint": "gpp7k0m_dPVQiD6-J2_MFPPFX7F5ekgvy2ce0Uq2kFA",
             "manifestRevision": "3",
-            "signedManifestDigest": "nHz190Fv7Y0J8icfGwz25BBkK_QQOx_fFIP4SZ7NEaw"
+            "signedManifestDigest": "s89XIdgUY4PDIgliEfJVRI0B-b8hG11R8jjOXOdX-ws"
           },
           {
             "vaultId": "22222222-2222-4222-8222-222222222222",
             "vaultSigningKeyFingerprint": "3sGfTYj8-M2IfDCdCEXHspvFkOHQvh5x6l_3r9Hu7uM",
             "manifestRevision": "14",
-            "signedManifestDigest": "RtFf3A8jkGpH1igQPhQuE-36Ru4PxHwZlRvZ5YyMJKs"
+            "signedManifestDigest": "xc9qjP0eZba6okf-WD23fRI4oHX8mUpoN7QCxIHCv7g"
           }
         ]
       }
@@ -192,7 +196,7 @@
       "expectedError": "agent-key-mismatch",
       "transcript": {
         "protocolVersion": 2,
-        "algorithmSuite": 1,
+        "cryptoSuiteId": "palladin-vault-xchacha-v1",
         "activationId": "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
         "organizationId": "11111111-1111-4111-8111-111111111111",
         "agentId": "55555555-5555-4555-8555-555555555555",
@@ -203,13 +207,13 @@
             "vaultId": "12121212-1212-4212-8212-121212121212",
             "vaultSigningKeyFingerprint": "gpp7k0m_dPVQiD6-J2_MFPPFX7F5ekgvy2ce0Uq2kFA",
             "manifestRevision": "3",
-            "signedManifestDigest": "nXz190Fv7Y0J8icfGwz25BBkK_QQOx_fFIP4SZ7NEaw"
+            "signedManifestDigest": "ss9XIdgUY4PDIgliEfJVRI0B-b8hG11R8jjOXOdX-ws"
           },
           {
             "vaultId": "22222222-2222-4222-8222-222222222222",
             "vaultSigningKeyFingerprint": "3sGfTYj8-M2IfDCdCEXHspvFkOHQvh5x6l_3r9Hu7uM",
             "manifestRevision": "14",
-            "signedManifestDigest": "RtFf3A8jkGpH1igQPhQuE-36Ru4PxHwZlRvZ5YyMJKs"
+            "signedManifestDigest": "xc9qjP0eZba6okf-WD23fRI4oHX8mUpoN7QCxIHCv7g"
           }
         ]
       }

@@ -247,7 +247,7 @@ exports[`frozen native runtime vectors in TypeScript > pins the exact public MCP
       "requiredMethod": "Inject",
     },
     {
-      "description": "Report that a stored credential did not work so vault owners can rotate it. Send no secret and no typed values - only the entry reference, a machine-readable reason code, and an optional short note.",
+      "description": "Report that a stored credential did not work so vault owners can rotate it. The report contains only the entry reference and a machine-readable reason code.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -264,11 +264,6 @@ exports[`frozen native runtime vectors in TypeScript > pins the exact public MCP
             "description": "Entry ID.",
             "maxLength": 256,
             "minLength": 1,
-            "type": "string",
-          },
-          "note": {
-            "description": "Short secret-free note for the owner.",
-            "maxLength": 4096,
             "type": "string",
           },
           "vaultId": {
