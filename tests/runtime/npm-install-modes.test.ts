@@ -192,8 +192,7 @@ describe('npm installation modes', () => {
       const localRun = await run(process.execPath, [
         npmCli,
         'exec',
-        '--prefix', local,
-        '--',
+        '--call',
         'palladin',
       ], { cwd: local, env: { ...process.env, npm_config_cache: join(fixture, 'local-cache') } });
       expect(localRun.stdout.trim()).toBe('palladin fixture');
@@ -204,14 +203,17 @@ describe('npm installation modes', () => {
         npmCli,
         'exec',
         '--yes',
-        '--ignore-scripts',
-        '--registry', origin,
-        '--package', '@palladin/agent@0.1.0',
-        '--',
+        '--package=@palladin/agent@0.1.0',
+        '--call',
         'palladin',
       ], {
         cwd: npxWork,
-        env: { ...process.env, npm_config_cache: join(fixture, 'npx-cache') },
+        env: {
+          ...process.env,
+          npm_config_cache: join(fixture, 'npx-cache'),
+          npm_config_ignore_scripts: 'true',
+          npm_config_registry: origin,
+        },
       });
       expect(npx.stdout.trim()).toBe('palladin fixture');
 
