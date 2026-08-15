@@ -136,6 +136,7 @@ impl LocalDiscoveryIndex {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn scope_to_identity(&mut self, profile_identity_id: &str, agent_id: &str) {
         let matches = self
             .owner

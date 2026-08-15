@@ -11,6 +11,6 @@ pub use types::{
     AgentVaultDiscoveryEnvelope, AgentVaultManifestItem, AgentVaultManifestsResponse,
     AgentVisibleField, ApprovedCredentialMethods, CredentialAccess, CredentialMethod,
     EntrySearchItem, EntrySearchResult, EnvelopeScopeContract, GetCredentialOptions, GrantStatus,
-    GrantStatusResponse, GrantedCredential, ReportCredentialStaleInput,
-    StaleReasonCode, VaultManifest, X25519WrappedKey, X25519WrapperDescriptor,
+    GrantStatusResponse, GrantedCredential, ReportCredentialStaleInput, StaleReasonCode,
+    VaultManifest, X25519WrappedKey, X25519WrapperDescriptor,
 };

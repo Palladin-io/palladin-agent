@@ -1444,21 +1444,21 @@ fn resolve_injection_field(
             Some(custom_id.strip_prefix("custom:").unwrap_or(custom_id)),
         )?,
     };
-    let compatible = match (kind, field.control) {
+    let compatible = matches!(
+        (kind, field.control),
         (ResolvedKind::Concealed, InjectionControl::Password)
-        | (
-            ResolvedKind::Otp,
-            InjectionControl::Otp | InjectionControl::Text | InjectionControl::Tel,
-        )
-        | (
-            ResolvedKind::Text,
-            InjectionControl::Username
-            | InjectionControl::Text
-            | InjectionControl::Email
-            | InjectionControl::Tel,
-        ) => true,
-        _ => false,
-    };
+            | (
+                ResolvedKind::Otp,
+                InjectionControl::Otp | InjectionControl::Text | InjectionControl::Tel,
+            )
+            | (
+                ResolvedKind::Text,
+                InjectionControl::Username
+                    | InjectionControl::Text
+                    | InjectionControl::Email
+                    | InjectionControl::Tel,
+            )
+    );
     if !compatible {
         return Err(palladin_browser_bridge::InjectionError::InvalidCredential);
     }

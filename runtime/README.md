@@ -91,6 +91,17 @@ These controls are defense in depth inside the selected platform tier. The preci
 
 ## Browser injection
 
-Browser injection is currently unavailable on macOS, Windows, and Linux for Chrome, Edge, Brave, Chromium, Firefox, and Safari. The CLI fails before opening an Agent profile. MCP may already have an Agent session open in order to serve other tools, but `inject_credential` never contacts a browser endpoint, requests a credential, or decrypts one.
+Browser injection is available only through authenticated providers registered behind the
+`palladin.inject-provider.v1` boundary. The Agent prepares a complete value-free form definition;
+the native runtime obtains the approved credential and sends only the declared field values through
+private process pipes to the provider that already owns the browser session. The provider re-checks
+HTTPS and the encrypted Entry domain before every fill, transition, and submit. Playwright and
+AgentBrowser adapters are supplied by their dedicated MCP packages; an ordinary browser profile
+uses the existing Palladin extension provider.
 
-Caller-provided CDP endpoints are never contacted. CDP cannot attest the browser or page origin: a fake endpoint can report an allowed URL and then receive the plaintext fill operation. The decision, support matrix, and requirements for a future authenticated browser component are recorded in [ADR 0003](docs/adr/0003-browser-injection-boundary.md).
+Caller-provided CDP endpoints, remote-debugging ports, Playwright WebSocket endpoints, and unmanaged
+browser targets are never contacted. They cannot attest the browser or page origin: a fake endpoint
+can report an allowed URL and then receive the plaintext fill operation. The rejected legacy path is
+recorded in [ADR 0003](docs/adr/0003-browser-injection-boundary.md); the authenticated provider
+contract and its extension/Playwright/AgentBrowser adapters are recorded in
+[ADR 0005](docs/adr/0005-authenticated-inject-form-contract.md).

@@ -4187,6 +4187,24 @@
       ]
     },
     {
+      "bom-ref": "pkg:cargo/palladin-browser-bridge@0.1.0",
+      "type": "library",
+      "name": "palladin-browser-bridge",
+      "version": "0.1.0",
+      "purl": "pkg:cargo/palladin-browser-bridge@0.1.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/Palladin-io/palladin-agent"
+        }
+      ]
+    },
+    {
       "bom-ref": "pkg:cargo/palladin-cli@0.1.0",
       "type": "library",
       "name": "palladin-cli",

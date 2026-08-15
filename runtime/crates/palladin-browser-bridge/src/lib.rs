@@ -121,7 +121,6 @@ impl InjectionFormDefinition {
         Ok(())
     }
 
-    #[must_use]
     pub fn field_ids(&self) -> impl Iterator<Item = &str> {
         self.steps.iter().flat_map(|step| {
             step.fields

@@ -222,7 +222,7 @@ describe('frozen native runtime vectors in TypeScript', () => {
 
   it('pins the exact public MCP definitions without snapshotting secret vectors', () => {
     expect(fixtureSha256('mcp-tools.json')).toBe(
-      'b87ae814dd4b8aed1de333cf527311bc940f05dd6ea246d1135123a021712dba',
+      '8e6a66157f37cc501b9fed2d944100db6bd61e666fd7ac70656f2a04e00b52f1',
     );
     expect(mcp.contract).toBe('palladin-agent-mcp-tools');
     expect(mcp.syntheticOnly).toBe(true);
