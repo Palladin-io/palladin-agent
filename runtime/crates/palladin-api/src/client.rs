@@ -828,7 +828,19 @@ mod tests {
                 .contains("x-agent-signature:")
         );
         assert!(requests[0].contains("\"provider\":\"future-browser\""));
-        assert!(!requests[0].contains("fixture-password"));
+        let (_, body) = requests[0]
+            .split_once("\r\n\r\n")
+            .expect("candidate request body");
+        let payload: serde_json::Value =
+            serde_json::from_str(body).expect("candidate request JSON");
+        let field = payload
+            .pointer("/map/form/steps/0/fields/0")
+            .and_then(serde_json::Value::as_object)
+            .expect("candidate field");
+        assert_eq!(field.len(), 3);
+        assert!(field.contains_key("entryFieldId"));
+        assert!(field.contains_key("selector"));
+        assert!(field.contains_key("control"));
     }
 
     #[tokio::test]
