@@ -226,6 +226,7 @@ impl FormDiscoveryMap {
         if self.map_id.is_empty()
             || self.map_id.len() > 64
             || self.map_version == 0
+            || self.map_version > i32::MAX as u32
             || self.domain != expected_domain
             || provider.as_str() != expected_provider
             || !valid_catalog_domain(&self.domain)
@@ -306,6 +307,7 @@ fn valid_map_login_url(value: &str, domain: &str) -> bool {
             && url.username().is_empty()
             && url.password().is_none()
             && url.fragment().is_none()
+            && url.query().is_none_or(|query| query == "SignIn")
     })
 }
 
@@ -760,6 +762,15 @@ mod tests {
         }"#).expect("backend map");
 
         assert!(map.validate("accounts.google.com", "playwright").is_ok());
+        assert!(valid_map_login_url(
+            "https://signin.ebay.com/ws/eBayISAPI.dll?SignIn",
+            "signin.ebay.com"
+        ));
+        assert!(!valid_map_login_url(
+            "https://accounts.google.com/?access_token=secret",
+            "accounts.google.com"
+        ));
+        assert!(!valid_selector(&"😀".repeat(500)));
         assert!(map.applies_to_url("https://accounts.google.com/signin"));
         assert!(!map.applies_to_url("https://login.accounts.google.com/signin"));
         let mut wrong_origin = map.clone();
@@ -773,6 +784,12 @@ mod tests {
             "private.credit-card-number".to_owned();
         assert_eq!(
             unsupported_field.validate("accounts.google.com", "playwright"),
+            Err(InjectionError::InvalidFormDiscoveryMap)
+        );
+        let mut overflowing_version = map.clone();
+        overflowing_version.map_version = i32::MAX as u32 + 1;
+        assert_eq!(
+            overflowing_version.validate("accounts.google.com", "playwright"),
             Err(InjectionError::InvalidFormDiscoveryMap)
         );
         let mut wrong_fingerprint = map;

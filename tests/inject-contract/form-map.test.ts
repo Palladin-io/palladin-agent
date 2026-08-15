@@ -18,6 +18,14 @@ describe('form discovery map', () => {
     expect(parseFormDiscoveryMap({ ...map, javascript: 'alert(1)' })).toBeNull();
     expect(parseFormDiscoveryMap({ ...map, cookieOverlays: [{ ...map.cookieOverlays[0], value: 'cookie' }] })).toBeNull();
     expect(parseFormDiscoveryMap({ ...map, loginUrl: 'https://evil.example/login' })).toBeNull();
+    expect(parseFormDiscoveryMap({ ...map, loginUrl: 'https://x.com/login?access_token=secret' }))
+      .toBeNull();
+    expect(parseFormDiscoveryMap({
+      ...map,
+      domain: 'signin.ebay.com',
+      loginUrl: 'https://signin.ebay.com/ws/eBayISAPI.dll?SignIn',
+    })).not.toBeNull();
+    expect(parseFormDiscoveryMap({ ...map, mapVersion: 2_147_483_648 })).toBeNull();
   });
   it('rejects candidate maps with an invalid fingerprint', () => {
     expect(parseFormDiscoveryMap({ ...map, fingerprint: 'bad' })).toBeNull();
@@ -41,6 +49,19 @@ describe('form discovery map', () => {
         steps: [{
           ...form.steps[0],
           fields: [{ ...form.steps[0].fields[0], control: 'password' }],
+        }],
+      },
+    })).toBeNull();
+  });
+  it('counts selector limits in UTF-8 bytes', () => {
+    const form = map.form;
+    expect(parseFormDiscoveryMap({
+      ...map,
+      form: {
+        ...form,
+        steps: [{
+          ...form.steps[0],
+          fields: [{ ...form.steps[0].fields[0], selector: '😀'.repeat(500) }],
         }],
       },
     })).toBeNull();

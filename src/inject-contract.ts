@@ -152,7 +152,8 @@ export function parseInjectValues(
 }
 
 function selector(value: unknown): value is string {
-  return typeof value === 'string' && value.length >= 1 && value.length <= 1024
+  return typeof value === 'string' && value.length >= 1
+    && new TextEncoder().encode(value).length <= 1024
     && value === value.trim() && !value.includes('\0');
 }
 

@@ -34,7 +34,7 @@ export interface FormDiscoveryMap {
 
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const SELECTOR = (value: unknown): value is string => typeof value === 'string'
-  && value.length > 0 && value.length <= 1024 && value === value.trim() && !value.includes('\0');
+  && value.length > 0 && utf8Length(value) <= 1024 && value === value.trim() && !value.includes('\0');
 
 /**
  * Parse server-supplied maps fail-closed. Map actions are deliberately limited to clicking a
@@ -48,7 +48,9 @@ export function parseFormDiscoveryMap(value: unknown): FormDiscoveryMap | null {
     || !['playwright', 'agent-browser', 'extension', 'generic'].includes(String(value.provider))
     || !['candidate', 'observed', 'verified'].includes(String(value.status))
     || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint)
-    || (value.mapVersion !== undefined && (typeof value.mapVersion !== 'number' || !Number.isSafeInteger(value.mapVersion) || value.mapVersion < 1))
+    || (value.mapVersion !== undefined && (typeof value.mapVersion !== 'number'
+      || !Number.isSafeInteger(value.mapVersion) || value.mapVersion < 1
+      || value.mapVersion > 2_147_483_647))
     ) return null;
   const form = parseInjectForm(value.form);
   if (form === null) return null;
@@ -79,10 +81,14 @@ function validOverlay(value: unknown): value is CookieOverlay {
 function isHttpsOrigin(value: string, domain: string): boolean {
   try {
     const url = new URL(value);
-    return url.protocol === 'https:' && url.pathname.length <= 2048
+    return url.protocol === 'https:' && utf8Length(value) <= 2048
       && url.hostname === domain && (url.port === '' || url.port === '443')
-      && url.username === '' && url.password === '' && url.hash === '';
+      && url.username === '' && url.password === '' && url.hash === ''
+      && (url.search === '' || url.search === '?SignIn');
   } catch { return false; }
+}
+function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).length;
 }
 function onlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const allowed = new Set(keys); return Object.keys(value).every((key) => allowed.has(key));

@@ -229,8 +229,9 @@ remote-debugging port, Playwright WebSocket endpoint, unmanaged browser target, 
 The native Rust runtime first looks up a verified Form Discovery Map for the authenticated Entry
 domain and selected provider. Organization-verified maps take precedence over system-verified maps;
 candidate and observed maps are never executed. A returned map is accepted only when its fingerprint,
-bounded action contract, provider, domain, and exact HTTPS origin validate locally. When no verified
-map applies, the Agent may prepare the public login surface with ordinary browser tools, inspect it,
+bounded action contract, provider, domain, and exact HTTPS origin validate locally. Login URL query
+values are rejected; the sole legacy exception is the empty eBay `?SignIn` flag. When no verified map
+applies, the Agent may prepare the public login surface with ordinary browser tools, inspect it,
 and pass a complete, versioned, value-free form definition to `inject_credential` as a fallback.
 The definition is an ordered list of one or more steps mapping approved Entry field IDs to public
 control locators, with a bounded click or press-Enter action and an optional next-step transition
