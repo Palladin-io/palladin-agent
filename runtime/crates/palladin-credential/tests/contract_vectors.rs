@@ -455,12 +455,46 @@ fn access(name: &str) -> CredentialAccess {
     match name {
         "granted" => serde_json::from_value(serde_json::json!({
             "access": "granted",
+            "organizationId": "00112233-4455-4677-8899-aabbccddeeff",
+            "vaultId": "11112222-3333-4444-8555-666677778888",
+            "grantId": "12345678-1234-4234-8234-1234567890ab",
+            "agentId": "fedcba98-7654-4321-8765-abcdefabcdef",
+            "approvedMethods": 1,
             "entryId": "entry-fixture",
-            "label": "Fixture",
-            "urlDomain": null,
-            "reEncryptedBlob": "AA==",
-            "nonce": "AA==",
-            "agentWrappedDek": "AA=="
+            "grantEnvelope": {
+                "descriptor": {
+                    "protocolVersion": 2,
+                    "cryptoSuiteId": "palladin-vault-xchacha-v1",
+                    "purpose": 10,
+                    "scope": {"organizationId":"o","vaultId":"v"},
+                    "resourceRevision": "1",
+                    "keyVersion": 1,
+                    "memberKeyGeneration": 1,
+                    "binding": {
+                        "entryRevision":"1","wrapperSuiteId":"palladin-x25519-sealed-box-v1",
+                        "recipientKeyVersion":1,"recipientKeyFingerprint":"AA",
+                        "approvedMethods":1,"fieldSetCommitment":"AA",
+                        "expiresAt":null,"remainingUses":1
+                    }
+                },
+                "encodedSuitePayload":"AA",
+                "wrappedGrantDek": {
+                    "descriptor": {
+                        "protocolVersion":2,"wrapperSuiteId":"palladin-x25519-sealed-box-v1",
+                        "purpose":4,
+                        "scope": {
+                            "organizationId":"org-fixture","vaultId":"vault-fixture",
+                            "entryId":"entry-fixture","grantOrRequestId":"grant-fixture",
+                            "agentId":"agent-fixture","memberId":null
+                        },
+                        "resourceRevision":"1","wrappedKeyVersion":1,"memberKeyGeneration":1,
+                        "recipientKeyKind":1,"recipientKeyVersion":1,"recipientFingerprint":"AA",
+                        "parentDescriptorHash":"AA"
+                    },
+                    "encodedSealedKeyPackage":"AA"
+                },
+                "fieldIds":["username"]
+            }
         }))
         .expect("granted fixture"),
         "pending" => CredentialAccess::Pending {

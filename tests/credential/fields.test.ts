@@ -41,6 +41,11 @@ describe('resolveField — well-known aliases', () => {
     const s = parseSecret(JSON.stringify({ v: 2, value: 'sk-abc', fields: [] }));
     expectSensitiveEqual(injectionValue(resolveField(s, { field: 'value' })), 'sk-abc', 'primary key field');
   });
+
+  it('does not expose payment-card fields through field selection', () => {
+    const s = parseSecret(JSON.stringify({ type: 'CREDIT_CARD', cardNumber: '4242424242424242' }));
+    expect(() => resolveField(s, { field: 'cardNumber' })).toThrow(/no field named/);
+  });
 });
 
 describe('resolveField — custom fields', () => {

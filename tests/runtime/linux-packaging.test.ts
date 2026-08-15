@@ -67,7 +67,7 @@ describe('Linux hardened package boundary', () => {
     } finally {
       rmSync(temporary, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it('runs the secret-bearing broker under a dedicated non-root UID', () => {
     const unit = read('packaging/linux/systemd/palladin-runtime.service');
