@@ -3304,7 +3304,7 @@ impl RuntimeSession<'_> {
     async fn sync_local_discovery(&self) -> Result<(), RuntimeError> {
         let result = retry_sync_state_changed(|| self.sync_local_discovery_attempt()).await;
         if result.is_err() {
-            self.discovery.lock().await.purge();
+            self.discovery.lock().await.clear_live_heads_and_cursors();
         }
         result
     }
@@ -3313,6 +3313,12 @@ impl RuntimeSession<'_> {
         let manifests = self.api.list_vault_manifests().await?;
         let batch = self.prepare_manifest_batch(manifests)?;
         let mut index_guard = self.discovery.lock().await;
+        let agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        index_guard.scope_to_identity(&self.profile.identity_id, agent_id);
         let mut next_index = index_guard.clone();
         let result = async {
             let mut authorized_vaults = BTreeSet::new();
@@ -3329,7 +3335,7 @@ impl RuntimeSession<'_> {
                     .await
                 {
                     if matches!(error, RuntimeError::Api(ApiError::ResetRequired { .. })) {
-                        next_index.remove_vault(&vault_id);
+                        next_index.require_resnapshot(&vault_id);
                         self.sync_discovery_vault(
                             &vault_id,
                             item.manifest.vdk_version,
@@ -3490,6 +3496,7 @@ impl RuntimeSession<'_> {
                         agent_discovery,
                     } => {
                         let revision = validate_sequence(&agent_discovery_revision)?;
+                        let envelope_digest = discovery_envelope_digest(&agent_discovery);
                         let plaintext = self.decrypt_discovery(
                             vault_id,
                             vdk_version,
@@ -3498,7 +3505,7 @@ impl RuntimeSession<'_> {
                             agent_discovery,
                             vdk,
                         )?;
-                        heads.push((entry_id, revision, plaintext));
+                        heads.push((entry_id, revision, envelope_digest, plaintext));
                     }
                     AgentDiscoverySyncItem::Tombstone { .. } => {
                         return Err(RuntimeError::InvalidDiscoveryPayload);
@@ -3564,10 +3571,12 @@ impl RuntimeSession<'_> {
                         agent_discovery,
                     } => {
                         let revision = validate_sequence(&agent_discovery_revision)?;
+                        let envelope_digest = discovery_envelope_digest(&agent_discovery);
                         index.upsert(
                             vault_id,
                             &entry_id,
                             revision,
+                            envelope_digest,
                             self.decrypt_discovery(
                                 vault_id,
                                 vdk_version,
@@ -4163,6 +4172,10 @@ fn vault_manifest_v2(manifest: VaultManifest) -> VaultManifestV2 {
         minimum_agent_runtime_protocol: manifest.minimum_agent_runtime_protocol,
         signature: manifest.signature,
     }
+}
+
+fn discovery_envelope_digest(envelope: &AgentDiscoveryEnvelope) -> [u8; 32] {
+    Sha256::digest(envelope.encoded_suite_payload.as_bytes()).into()
 }
 
 fn validate_sequence(value: &str) -> Result<u64, RuntimeError> {
@@ -5028,6 +5041,7 @@ mod tests {
                 TEST_VAULT_ID,
                 TEST_ENTRY_ID,
                 1,
+                [1; 32],
                 serde_json::from_value(json!({
                     "schema": "palladin.agent-discovery.v1",
                     "agentLabel": "existing-live-entry",
@@ -5105,7 +5119,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn epoch_rejection_does_not_persist_or_publish_a_partial_discovery_attempt() {
+    async fn epoch_rejection_clears_live_discovery_without_publishing_partial_state() {
         let (host, _) =
             single_response_server(200, r#"{"agentAccessEpoch":2,"items":[]}"#.to_owned()).await;
         let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
@@ -5127,6 +5141,7 @@ mod tests {
                 TEST_VAULT_ID,
                 TEST_ENTRY_ID,
                 1,
+                [1; 32],
                 serde_json::from_value(json!({
                     "schema": "palladin.agent-discovery.v1",
                     "agentLabel": "existing-live-entry",
@@ -5140,22 +5155,21 @@ mod tests {
         }
 
         let error = session
-            .sync_local_discovery_attempt()
+            .sync_local_discovery()
             .await
             .expect_err("epoch mismatch");
 
         assert!(matches!(error, RuntimeError::UntrustedVaultManifest));
         assert_eq!(persistence.0.load(Ordering::SeqCst), 0);
-        assert_eq!(
+        assert!(
             session
                 .discovery
                 .lock()
                 .await
                 .search("existing", None, None)
-                .expect("live index")
+                .expect("cleared live index")
                 .items
-                .len(),
-            1
+                .is_empty()
         );
     }
 

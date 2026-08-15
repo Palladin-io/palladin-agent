@@ -85,6 +85,13 @@ struct IndexedEntry {
     searchable: String,
 }
 
+#[derive(Clone, Copy)]
+struct EntryRevisionCheckpoint {
+    revision: u64,
+    envelope_digest: [u8; 32],
+    live: bool,
+}
+
 impl Drop for IndexedEntry {
     fn drop(&mut self) {
         self.vault_id.zeroize();
@@ -120,7 +127,7 @@ impl IndexedEntry {
 pub(crate) struct LocalDiscoveryIndex {
     owner: Option<(String, String)>,
     entries: BTreeMap<(String, String), IndexedEntry>,
-    entry_revisions: BTreeMap<(String, String), u64>,
+    entry_checkpoints: BTreeMap<(String, String), EntryRevisionCheckpoint>,
     vault_versions: BTreeMap<String, u32>,
     applied_sequences: BTreeMap<String, String>,
     logical_bytes: usize,
@@ -131,14 +138,13 @@ impl LocalDiscoveryIndex {
         Self {
             owner: None,
             entries: BTreeMap::new(),
-            entry_revisions: BTreeMap::new(),
+            entry_checkpoints: BTreeMap::new(),
             vault_versions: BTreeMap::new(),
             applied_sequences: BTreeMap::new(),
             logical_bytes: 0,
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn scope_to_identity(&mut self, profile_identity_id: &str, agent_id: &str) {
         let matches = self
             .owner
@@ -167,10 +173,14 @@ impl LocalDiscoveryIndex {
         self.applied_sequences.insert(vault_id.to_owned(), sequence);
     }
 
+    pub(crate) fn require_resnapshot(&mut self, vault_id: &str) {
+        self.applied_sequences.remove(vault_id);
+    }
+
     pub(crate) fn retain_vaults(&mut self, authorized: &std::collections::BTreeSet<String>) {
         self.entries
             .retain(|(vault, _), _| authorized.contains(vault));
-        self.entry_revisions
+        self.entry_checkpoints
             .retain(|(vault, _), _| authorized.contains(vault));
         self.vault_versions
             .retain(|vault, _| authorized.contains(vault));
@@ -182,15 +192,21 @@ impl LocalDiscoveryIndex {
     pub(crate) fn purge(&mut self) {
         self.owner = None;
         self.entries.clear();
-        self.entry_revisions.clear();
+        self.entry_checkpoints.clear();
         self.vault_versions.clear();
+        self.applied_sequences.clear();
+        self.logical_bytes = 0;
+    }
+
+    pub(crate) fn clear_live_heads_and_cursors(&mut self) {
+        self.entries.clear();
         self.applied_sequences.clear();
         self.logical_bytes = 0;
     }
 
     pub(crate) fn remove_vault(&mut self, vault_id: &str) {
         self.entries.retain(|(vault, _), _| vault != vault_id);
-        self.entry_revisions
+        self.entry_checkpoints
             .retain(|(vault, _), _| vault != vault_id);
         self.vault_versions.remove(vault_id);
         self.applied_sequences.remove(vault_id);
@@ -200,15 +216,24 @@ impl LocalDiscoveryIndex {
     pub(crate) fn replace_vault(
         &mut self,
         vault_id: &str,
-        heads: Vec<(String, u64, DiscoveryPlaintext)>,
+        heads: Vec<(String, u64, [u8; 32], DiscoveryPlaintext)>,
     ) -> Result<(), RuntimeError> {
-        self.entries.retain(|(vault, _), _| vault != vault_id);
-        self.entry_revisions
-            .retain(|(vault, _), _| vault != vault_id);
-        self.applied_sequences.remove(vault_id);
-        for (entry_id, revision, plaintext) in heads {
-            self.upsert(vault_id, &entry_id, revision, plaintext)?;
+        let mut next = self.clone();
+        next.entries.retain(|(vault, _), _| vault != vault_id);
+        next.applied_sequences.remove(vault_id);
+        next.recount_logical_bytes();
+        let mut snapshot_heads = BTreeSet::new();
+        for (entry_id, revision, envelope_digest, plaintext) in heads {
+            next.upsert_snapshot(vault_id, &entry_id, revision, envelope_digest, plaintext)?;
+            snapshot_heads.insert((vault_id.to_owned(), entry_id));
         }
+        for (key, checkpoint) in &mut next.entry_checkpoints {
+            if key.0 == vault_id && !snapshot_heads.contains(key) {
+                checkpoint.live = false;
+            }
+        }
+        next.recount_logical_bytes();
+        *self = next;
         Ok(())
     }
 
@@ -217,18 +242,51 @@ impl LocalDiscoveryIndex {
         vault_id: &str,
         entry_id: &str,
         revision: u64,
-        mut plaintext: DiscoveryPlaintext,
+        envelope_digest: [u8; 32],
+        plaintext: DiscoveryPlaintext,
     ) -> Result<(), RuntimeError> {
-        plaintext.validate()?;
         let key = (vault_id.to_owned(), entry_id.to_owned());
         if revision == 0
             || self
-                .entry_revisions
+                .entry_checkpoints
                 .get(&key)
-                .is_some_and(|current| revision <= *current)
+                .is_some_and(|checkpoint| revision <= checkpoint.revision)
         {
             return Err(RuntimeError::InvalidDiscoveryPayload);
         }
+        self.store_entry(key, revision, envelope_digest, plaintext)
+    }
+
+    fn upsert_snapshot(
+        &mut self,
+        vault_id: &str,
+        entry_id: &str,
+        revision: u64,
+        envelope_digest: [u8; 32],
+        plaintext: DiscoveryPlaintext,
+    ) -> Result<(), RuntimeError> {
+        let key = (vault_id.to_owned(), entry_id.to_owned());
+        if revision == 0 {
+            return Err(RuntimeError::InvalidDiscoveryPayload);
+        }
+        if let Some(checkpoint) = self.entry_checkpoints.get(&key)
+            && (revision < checkpoint.revision
+                || (revision == checkpoint.revision
+                    && (!checkpoint.live || envelope_digest != checkpoint.envelope_digest)))
+        {
+            return Err(RuntimeError::InvalidDiscoveryPayload);
+        }
+        self.store_entry(key, revision, envelope_digest, plaintext)
+    }
+
+    fn store_entry(
+        &mut self,
+        key: (String, String),
+        revision: u64,
+        envelope_digest: [u8; 32],
+        mut plaintext: DiscoveryPlaintext,
+    ) -> Result<(), RuntimeError> {
+        plaintext.validate()?;
         let url_domain = plaintext
             .fields
             .iter()
@@ -249,8 +307,8 @@ impl LocalDiscoveryIndex {
             searchable.push_str(&field.value.to_lowercase());
         }
         let entry = IndexedEntry {
-            vault_id: vault_id.to_owned(),
-            entry_id: entry_id.to_owned(),
+            vault_id: key.0.clone(),
+            entry_id: key.1.clone(),
             label: std::mem::take(&mut plaintext.agent_label),
             url_domain,
             approved_fields,
@@ -261,7 +319,7 @@ impl LocalDiscoveryIndex {
             .get(&key)
             .map_or(0, IndexedEntry::logical_bytes);
         let next_count =
-            self.entry_revisions.len() + usize::from(!self.entry_revisions.contains_key(&key));
+            self.entry_checkpoints.len() + usize::from(!self.entry_checkpoints.contains_key(&key));
         let next_bytes = self
             .logical_bytes
             .saturating_sub(replaced_bytes)
@@ -269,19 +327,26 @@ impl LocalDiscoveryIndex {
         if next_count > MAX_INDEX_ENTRIES || next_bytes > MAX_LOGICAL_INDEX_BYTES {
             return Err(RuntimeError::DiscoveryIndexLimitExceeded);
         }
-        self.entries.insert(key, entry);
-        self.entry_revisions
-            .insert((vault_id.to_owned(), entry_id.to_owned()), revision);
+        self.entries.insert(key.clone(), entry);
+        self.entry_checkpoints.insert(
+            key,
+            EntryRevisionCheckpoint {
+                revision,
+                envelope_digest,
+                live: true,
+            },
+        );
         self.logical_bytes = next_bytes;
         Ok(())
     }
 
     pub(crate) fn remove(&mut self, vault_id: &str, entry_id: &str) {
-        if let Some(entry) = self
-            .entries
-            .remove(&(vault_id.to_owned(), entry_id.to_owned()))
-        {
+        let key = (vault_id.to_owned(), entry_id.to_owned());
+        if let Some(entry) = self.entries.remove(&key) {
             self.logical_bytes = self.logical_bytes.saturating_sub(entry.logical_bytes());
+        }
+        if let Some(checkpoint) = self.entry_checkpoints.get_mut(&key) {
+            checkpoint.live = false;
         }
     }
 
@@ -443,6 +508,10 @@ mod tests {
         }
     }
 
+    fn envelope_digest(revision: u8) -> [u8; 32] {
+        [revision; 32]
+    }
+
     #[test]
     fn local_search_distinguishes_accounts_using_only_approved_fields() {
         let mut index = LocalDiscoveryIndex::new();
@@ -451,6 +520,7 @@ mod tests {
                 "11111111-1111-4111-8111-111111111111",
                 "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                 1,
+                envelope_digest(1),
                 account("Production", "alice"),
             )
             .unwrap();
@@ -459,6 +529,7 @@ mod tests {
                 "11111111-1111-4111-8111-111111111111",
                 "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
                 1,
+                envelope_digest(1),
                 account("Production", "bob"),
             )
             .unwrap();
@@ -508,6 +579,7 @@ mod tests {
                     "11111111-1111-4111-8111-111111111111",
                     entry_id,
                     1,
+                    envelope_digest(1),
                     account("Example", suffix),
                 )
                 .unwrap();
@@ -526,6 +598,7 @@ mod tests {
                     "11111111-1111-4111-8111-111111111111",
                     entry_id,
                     1,
+                    envelope_digest(1),
                     account("Example", suffix),
                 )
                 .unwrap();
@@ -551,17 +624,35 @@ mod tests {
         let vault_id = "11111111-1111-4111-8111-111111111111";
         let entry_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         index
-            .upsert(vault_id, entry_id, 2, account("Current", "alice"))
+            .upsert(
+                vault_id,
+                entry_id,
+                2,
+                envelope_digest(2),
+                account("Current", "alice"),
+            )
             .expect("current head");
 
         assert!(
             index
-                .upsert(vault_id, entry_id, 1, account("Replayed", "mallory"))
+                .upsert(
+                    vault_id,
+                    entry_id,
+                    1,
+                    envelope_digest(1),
+                    account("Replayed", "mallory"),
+                )
                 .is_err()
         );
         assert!(
             index
-                .upsert(vault_id, entry_id, 2, account("Duplicate", "mallory"))
+                .upsert(
+                    vault_id,
+                    entry_id,
+                    2,
+                    envelope_digest(2),
+                    account("Duplicate", "mallory"),
+                )
                 .is_err()
         );
         assert_eq!(index.search("alice", None, None).unwrap().items.len(), 1);
@@ -569,12 +660,132 @@ mod tests {
         index.remove(vault_id, entry_id);
         assert!(
             index
-                .upsert(vault_id, entry_id, 2, account("Resurrected", "mallory"))
+                .upsert(
+                    vault_id,
+                    entry_id,
+                    2,
+                    envelope_digest(2),
+                    account("Resurrected", "mallory"),
+                )
                 .is_err()
         );
         index
-            .upsert(vault_id, entry_id, 3, account("Recreated", "alice"))
+            .upsert(
+                vault_id,
+                entry_id,
+                3,
+                envelope_digest(3),
+                account("Recreated", "alice"),
+            )
             .expect("strictly newer head");
+    }
+
+    #[test]
+    fn same_vdk_resnapshot_preserves_revision_high_water_marks() {
+        let mut index = LocalDiscoveryIndex::new();
+        let vault_id = "11111111-1111-4111-8111-111111111111";
+        let entry_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        index.prepare_vault(vault_id, 7);
+        index
+            .upsert(
+                vault_id,
+                entry_id,
+                2,
+                envelope_digest(2),
+                account("Current", "alice"),
+            )
+            .expect("current head");
+        index.mark_applied(vault_id, "12".to_owned());
+        index.require_resnapshot(vault_id);
+
+        assert!(
+            index
+                .replace_vault(
+                    vault_id,
+                    vec![(
+                        entry_id.to_owned(),
+                        1,
+                        envelope_digest(1),
+                        account("Replayed", "mallory"),
+                    )],
+                )
+                .is_err()
+        );
+        assert_eq!(index.search("alice", None, None).unwrap().items.len(), 1);
+
+        index
+            .replace_vault(
+                vault_id,
+                vec![(
+                    entry_id.to_owned(),
+                    2,
+                    envelope_digest(2),
+                    account("Current", "alice"),
+                )],
+            )
+            .expect("the already authenticated current head can rebuild the snapshot");
+        assert_eq!(index.search("alice", None, None).unwrap().items.len(), 1);
+        assert!(
+            index
+                .search("mallory", None, None)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+
+        index.clear_live_heads_and_cursors();
+        assert!(index.search("alice", None, None).unwrap().items.is_empty());
+        index
+            .replace_vault(
+                vault_id,
+                vec![(
+                    entry_id.to_owned(),
+                    2,
+                    envelope_digest(2),
+                    account("Current", "alice"),
+                )],
+            )
+            .expect("the same authenticated envelope can rebuild a cleared live head");
+        index.clear_live_heads_and_cursors();
+        assert!(
+            index
+                .replace_vault(
+                    vault_id,
+                    vec![(
+                        entry_id.to_owned(),
+                        2,
+                        envelope_digest(9),
+                        account("Substituted", "mallory"),
+                    )],
+                )
+                .is_err()
+        );
+
+        index.require_resnapshot(vault_id);
+        index
+            .replace_vault(vault_id, Vec::new())
+            .expect("a tombstoned head is omitted from the authoritative snapshot");
+        assert!(index.search("alice", None, None).unwrap().items.is_empty());
+        assert!(
+            index
+                .upsert(
+                    vault_id,
+                    entry_id,
+                    2,
+                    envelope_digest(2),
+                    account("Resurrected", "mallory"),
+                )
+                .is_err()
+        );
+        index
+            .upsert(
+                vault_id,
+                entry_id,
+                3,
+                envelope_digest(3),
+                account("Recreated", "alice"),
+            )
+            .expect("a strictly newer revision may recreate the Entry");
     }
 
     #[test]
@@ -587,6 +798,7 @@ mod tests {
                 vault_id,
                 "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                 1,
+                envelope_digest(1),
                 account("Private account", "sentinel-user"),
             )
             .unwrap();
@@ -595,6 +807,7 @@ mod tests {
         index.purge();
 
         assert!(index.entries.is_empty());
+        assert!(index.entry_checkpoints.is_empty());
         assert!(index.owner.is_none());
         assert!(index.vault_versions.is_empty());
         assert!(index.applied_sequences.is_empty());
@@ -618,6 +831,7 @@ mod tests {
                 vault_id,
                 "entry-a",
                 1,
+                envelope_digest(1),
                 account("Private account", "sentinel-user"),
             )
             .unwrap();
@@ -626,6 +840,7 @@ mod tests {
         index.scope_to_identity("profile-b", "agent-b");
 
         assert!(index.entries.is_empty());
+        assert!(index.entry_checkpoints.is_empty());
         assert!(index.vault_versions.is_empty());
         assert!(index.applied_sequences.is_empty());
         assert_eq!(
@@ -645,6 +860,7 @@ mod tests {
                     vault_id,
                     &entry_id,
                     1,
+                    envelope_digest(1),
                     account("entry", &format!("account-{position}")),
                 )
                 .unwrap();
@@ -656,6 +872,7 @@ mod tests {
                     vault_id,
                     &entry_id,
                     2,
+                    envelope_digest(2),
                     account("entry", &format!("updated-{position}")),
                 )
                 .unwrap();
@@ -696,6 +913,7 @@ mod tests {
                     vault_id,
                     &uuid::Uuid::from_u128(position as u128).to_string(),
                     1,
+                    envelope_digest(1),
                     account("entry", "bounded"),
                 )
                 .unwrap();
@@ -708,6 +926,7 @@ mod tests {
                     vault_id,
                     &uuid::Uuid::from_u128((MAX_INDEX_ENTRIES + 1) as u128).to_string(),
                     1,
+                    envelope_digest(1),
                     account("entry", "overflow"),
                 )
                 .is_err()
@@ -721,12 +940,19 @@ mod tests {
         let mut index = LocalDiscoveryIndex::new();
         assert!(!index.prepare_vault("vault-a", 6));
         index
-            .upsert("vault-a", "entry-a", 1, account("Production", "alice"))
+            .upsert(
+                "vault-a",
+                "entry-a",
+                1,
+                envelope_digest(1),
+                account("Production", "alice"),
+            )
             .unwrap();
         index.mark_applied("vault-a", "12".to_owned());
         assert!(index.prepare_vault("vault-a", 6));
         assert!(!index.prepare_vault("vault-a", 7));
         assert!(index.applied_sequence("vault-a").is_none());
+        assert!(index.entry_checkpoints.is_empty());
         assert!(index.search("alice", None, None).unwrap().items.is_empty());
     }
 }
