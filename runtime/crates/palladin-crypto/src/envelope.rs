@@ -1,6 +1,6 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use secrecy::{ExposeSecret, SecretSlice};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -14,6 +14,53 @@ use crate::{
 };
 
 const GRANT_PAYLOAD_PURPOSE: u16 = 10;
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ProtocolCodeWire {
+    Numeric(u16),
+    Named(String),
+}
+
+fn deserialize_protocol_code<'de, D>(
+    deserializer: D,
+    expected_name: &str,
+    expected_code: u16,
+) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match ProtocolCodeWire::deserialize(deserializer)? {
+        ProtocolCodeWire::Numeric(value) => Ok(value),
+        ProtocolCodeWire::Named(value) if value == expected_name => Ok(expected_code),
+        ProtocolCodeWire::Named(_) => Err(de::Error::custom("unsupported protocol enum value")),
+    }
+}
+
+fn deserialize_grant_payload_purpose<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_protocol_code(deserializer, "grantPayload", GRANT_PAYLOAD_PURPOSE)
+}
+
+fn deserialize_grant_dek_purpose<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_protocol_code(deserializer, "grantDek", WrapperPurpose::GrantDek as u16)
+}
+
+fn deserialize_agent_recipient_kind<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_protocol_code(
+        deserializer,
+        "agentX25519",
+        RecipientKeyKind::AgentX25519 as u16,
+    )
+}
 
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -36,11 +83,13 @@ pub struct WrappedGrantDek {
 pub struct WrappedGrantDekDescriptor {
     pub protocol_version: u16,
     pub wrapper_suite_id: String,
+    #[serde(deserialize_with = "deserialize_grant_dek_purpose")]
     pub purpose: u16,
     pub scope: GrantEnvelopeScope,
     pub resource_revision: String,
     pub wrapped_key_version: u32,
     pub member_key_generation: Option<u32>,
+    #[serde(deserialize_with = "deserialize_agent_recipient_kind")]
     pub recipient_key_kind: u16,
     pub recipient_key_version: u32,
     pub recipient_fingerprint: String,
@@ -88,6 +137,7 @@ impl std::fmt::Debug for EncryptedCredential {
 pub struct GrantEnvelopeDescriptor {
     pub protocol_version: u16,
     pub crypto_suite_id: String,
+    #[serde(deserialize_with = "deserialize_grant_payload_purpose")]
     pub purpose: u16,
     pub scope: GrantEnvelopeScope,
     pub resource_revision: String,
@@ -115,6 +165,7 @@ pub struct GrantEnvelopeBinding {
     pub recipient_key_version: u32,
     pub recipient_key_fingerprint: String,
     pub approved_methods: u16,
+    pub delivery_policy: u16,
     pub field_set_commitment: String,
     pub expires_at: Option<String>,
     pub remaining_uses: Option<u32>,
@@ -215,7 +266,11 @@ pub fn decrypt_credential_at(
         plaintext.expose_secret(),
         &envelope.field_ids,
         outer.requested_method,
-    )?;
+    )
+    .map_err(|error| match error {
+        CryptoError::InvalidEncoding => CryptoError::InvalidGrantPayloadEncoding,
+        error => error,
+    })?;
     Ok(DecryptedCredential {
         plaintext: normalized.plaintext.into(),
     })
@@ -370,8 +425,17 @@ fn normalize_grant_payload(
         }
         match field.kind.as_str() {
             "text" | "multiline" | "concealed" | "url" | "script" | "interpreter" => {
-                let Value::String(value) = std::mem::take(&mut field.value) else {
-                    return Err(CryptoError::InvalidEncoding);
+                let value = match std::mem::take(&mut field.value) {
+                    Value::String(value) => value,
+                    Value::Null
+                        if matches!(
+                            field.id.as_str(),
+                            "credential.url" | "credential.urlDomain" | "notes"
+                        ) =>
+                    {
+                        continue;
+                    }
+                    _ => return Err(CryptoError::InvalidEncoding),
                 };
                 let value = Zeroizing::new(value);
                 if field.kind == "interpreter"
@@ -385,8 +449,12 @@ fn normalize_grant_payload(
                 insert_scalar_field(normalized_object, &mut custom_fields.0, &field, &value)?;
             }
             "totp" => {
-                let value: TotpValue = serde_json::from_value(std::mem::take(&mut field.value))
-                    .map_err(|_| CryptoError::InvalidEncoding)?;
+                let raw_value = std::mem::take(&mut field.value);
+                if raw_value.is_null() && field.id == "credential.totp" {
+                    continue;
+                }
+                let value: TotpValue =
+                    serde_json::from_value(raw_value).map_err(|_| CryptoError::InvalidEncoding)?;
                 validate_totp(&value)?;
                 let value =
                     serde_json::to_value(&value).map_err(|_| CryptoError::InvalidEncoding)?;
@@ -603,6 +671,8 @@ fn to_descriptor(
         || outer.requested_method == 0
         || binding.approved_methods & outer.requested_method != outer.requested_method
         || binding.approved_methods & !0b111 != 0
+        || binding.delivery_policy > 1
+        || (binding.delivery_policy == 1 && outer.requested_method != 2)
         || wire.member_key_generation.is_none()
         || envelope.field_ids.is_empty()
     {
@@ -672,6 +742,7 @@ fn to_descriptor(
             recipient_agent_key_version: binding.recipient_key_version,
             recipient_agent_key_fingerprint: fingerprint,
             approved_methods: binding.approved_methods,
+            delivery_policy: binding.delivery_policy,
             field_set_commitment: expected_commitment,
             expires_at,
             remaining_uses: binding.remaining_uses,
@@ -887,6 +958,38 @@ mod tests {
     }
 
     #[test]
+    fn nullable_builtin_fields_are_authenticated_as_absent_without_weakening_types() {
+        let payload = br#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture"},{"id":"credential.totp","kind":"totp","mode":"derived","value":null},{"id":"credential.url","kind":"url","mode":"value","value":null},{"id":"credential.urlDomain","kind":"text","mode":"value","value":"example.test"},{"id":"notes","kind":"multiline","mode":"value","value":null}],"schema":"palladin.grant-payload.v1"}"#;
+        let field_ids = [
+            "credential.password",
+            "credential.totp",
+            "credential.url",
+            "credential.urlDomain",
+            "notes",
+        ]
+        .map(str::to_owned);
+        let normalized =
+            normalize_grant_payload(payload, &field_ids, 4).expect("nullable built-ins");
+        assert_eq!(
+            normalized.plaintext,
+            br#"{"password":"fixture","urlDomain":"example.test"}"#
+        );
+
+        let wrong_type = br#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":7},{"id":"credential.urlDomain","kind":"text","mode":"value","value":"example.test"}],"schema":"palladin.grant-payload.v1"}"#;
+        assert!(matches!(
+            normalize_grant_payload(
+                wrong_type,
+                &[
+                    "credential.password".to_owned(),
+                    "credential.urlDomain".to_owned()
+                ],
+                4
+            ),
+            Err(CryptoError::InvalidEncoding)
+        ));
+    }
+
+    #[test]
     fn canonical_totp_script_reference_preserves_its_field_id() {
         let payload = br#"{"entryType":"script","fields":[{"id":"script.refs","kind":"refs","mode":"runtime","value":[{"entryId":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","env":"TOTP_CODE","fieldId":"credential.totp","vaultId":"11112222-3333-4444-8555-666677778888"}]}],"schema":"palladin.grant-payload.v1"}"#;
         let normalized = normalize_grant_payload(payload, &["script.refs".to_owned()], 2)
@@ -934,6 +1037,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn backend_named_protocol_enums_decode_to_authenticated_numeric_codes() {
+        let mut value = serde_json::to_value(wire_envelope(None, Some(1))).expect("wire JSON");
+        value["descriptor"]["purpose"] = serde_json::Value::String("grantPayload".to_owned());
+        value["wrappedGrantDek"]["descriptor"]["purpose"] =
+            serde_json::Value::String("grantDek".to_owned());
+        value["wrappedGrantDek"]["descriptor"]["recipientKeyKind"] =
+            serde_json::Value::String("agentX25519".to_owned());
+
+        let decoded: EncryptedCredential =
+            serde_json::from_value(value.clone()).expect("current backend contract");
+        assert_eq!(decoded.descriptor.purpose, 10);
+        assert_eq!(
+            decoded.wrapped_grant_dek.descriptor.purpose,
+            WrapperPurpose::GrantDek as u16
+        );
+        assert_eq!(
+            decoded.wrapped_grant_dek.descriptor.recipient_key_kind,
+            RecipientKeyKind::AgentX25519 as u16
+        );
+
+        value["descriptor"]["purpose"] = serde_json::Value::String("unknown".to_owned());
+        assert!(serde_json::from_value::<EncryptedCredential>(value).is_err());
+    }
+
     fn wire_envelope(
         expires_at: Option<OffsetDateTime>,
         remaining_uses: Option<u32>,
@@ -962,6 +1090,7 @@ mod tests {
                     recipient_key_version: 1,
                     recipient_key_fingerprint: URL_SAFE_NO_PAD.encode([7_u8; 32]),
                     approved_methods: 1,
+                    delivery_policy: 0,
                     field_set_commitment: URL_SAFE_NO_PAD.encode(commitment),
                     expires_at: expires_at.map(|value| value.format(&Rfc3339).expect("RFC3339")),
                     remaining_uses,

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -8,9 +9,13 @@ use clap::Parser;
 use palladin_api::{
     AgentPairingStatus, CredentialMethod, ReportCredentialStaleInput, StaleReasonCode,
 };
+use palladin_browser_bridge::{
+    InjectionControl, InjectionCredential, InjectionFormDefinition, InjectionFormField,
+    InjectionTarget, ProviderId,
+};
 use palladin_cli::args::{
-    AgentsCommand, Cli, Commands, ConnectArgs, ExecArgs, GetArgs, McpCommand, ProgressArg,
-    ReportStaleArgs, SearchArgs, SecurityCommand, StaleCodeArg,
+    AgentsCommand, Cli, Commands, ConnectArgs, ExecArgs, GetArgs, InjectArgs, McpCommand,
+    ProgressArg, ReportStaleArgs, SearchArgs, SecurityCommand, StaleCodeArg,
 };
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
@@ -30,7 +35,9 @@ use palladin_core::profiles::ProfileRepository;
 use palladin_core::secret::OrganizationApiKey;
 use palladin_core::terminal::is_safe_terminal_text;
 use palladin_credential::access::{access_message, exit_code_for_access};
-use palladin_credential::fields::{FieldSelector, redact_totp_secrets, resolve_field};
+use palladin_credential::fields::{
+    FieldSelector, ResolvedField, ResolvedFieldType, redact_totp_secrets, resolve_field,
+};
 use palladin_credential::secret::parse_secret;
 use palladin_credential::wait::{
     ProgressMode, WaitOptions, heartbeat_line, parse_duration, parse_wait_duration,
@@ -51,7 +58,7 @@ use palladin_runtime::{
 #[cfg(windows)]
 use palladin_windows_broker::BrokerSecretStore;
 use secrecy::ExposeSecret;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -61,7 +68,7 @@ const EXIT_UNSAFE_ENVIRONMENT: u8 = 78;
 const WINDOWS_HARDENED_TIER: &str = "Hardened - restricted LocalService service-SID broker with authenticated AppContainer and Windows Hello consent";
 #[cfg(target_os = "linux")]
 const LINUX_HARDENED_TIER: &str = "Hardened - dedicated Agent UID, authenticated Unix broker, encrypted broker-owned store, and separate executor UID";
-const INJECT_UNAVAILABLE: &str = "browser injection is disabled because an unauthenticated CDP endpoint can spoof the page origin and receive plaintext; Palladin will enable inject only through a reviewed authenticated browser boundary; no profile was opened and no credential was requested";
+const INJECT_PROTOCOL: &str = "palladin.inject-provider.v1";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -86,8 +93,12 @@ async fn main() -> ExitCode {
     let environment = EnvironmentReport::inspect_current();
     let cli = Cli::parse();
 
-    if matches!(&cli.command, Commands::Inject(_)) {
-        eprintln!("Error: {INJECT_UNAVAILABLE}");
+    if let Commands::Inject(args) = &cli.command
+        && inject_uses_deprecated_browser_boundary(args)
+    {
+        eprintln!(
+            "Error: browser injection is disabled because an unauthenticated CDP endpoint can spoof the page origin and receive plaintext; Palladin will enable inject only through a reviewed authenticated browser boundary; no profile was opened and no credential was requested"
+        );
         return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
     }
 
@@ -169,7 +180,7 @@ async fn main() -> ExitCode {
         Commands::Search(args) => search(&service, cli.id.as_deref(), args).await,
         Commands::Get(args) => get(&service, cli.id.as_deref(), args).await,
         Commands::Exec(args) => exec(&service, cli.id.as_deref(), args).await,
-        Commands::Inject(_) => unreachable!("inject exits before identity initialization"),
+        Commands::Inject(args) => inject(&service, cli.id.as_deref(), args).await,
         Commands::ReportStale(args) => report_stale(&service, cli.id.as_deref(), args).await,
         Commands::Mcp { command } => mcp(Arc::clone(&service), cli.id.clone(), command).await,
         Commands::Agents { command } => agents(&service, command, runtime_storage_tier),
@@ -584,6 +595,10 @@ fn doctor(
     println!("storage-boundary: {runtime_storage_tier}");
     println!("hardened-candidate: {}", platform.hardened_candidate);
     println!("identity-opened: no");
+    match service.verify_public_metadata() {
+        Ok(()) => println!("public-metadata-chain: valid"),
+        Err(_) => println!("public-metadata-chain: invalid"),
+    }
     println!("project-runtime-dependencies: disabled");
     println!("palladin-home-override: rejected");
     let legacy_status = if hardened_runtime {
@@ -1105,6 +1120,431 @@ async fn exec(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProviderOpen {
+    protocol: String,
+    r#type: String,
+    provider: String,
+    nonce: String,
+    current_url: String,
+    form: InjectionFormDefinition,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderFieldValue<'a> {
+    entry_field_id: &'a str,
+    value: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderCredential<'a> {
+    protocol: &'static str,
+    r#type: &'static str,
+    provider: &'a str,
+    nonce: &'a str,
+    transaction_id: &'a str,
+    grant_id: &'a str,
+    entry_id: &'a str,
+    expected_domain: &'a str,
+    form: &'a InjectionFormDefinition,
+    values: Vec<ProviderFieldValue<'a>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProviderResult {
+    protocol: String,
+    r#type: String,
+    nonce: String,
+    transaction_id: String,
+    outcome: String,
+}
+
+async fn inject(
+    service: &RuntimeService<RuntimeSecretStore>,
+    profile: Option<&str>,
+    args: InjectArgs,
+) -> ExitCode {
+    debug_assert!(!inject_uses_deprecated_browser_boundary(&args));
+    if !args.provider_transport_stdio {
+        return fail("the selected Inject provider is not connected");
+    }
+    if io::stdin().is_terminal() || io::stdout().is_terminal() {
+        return fail(
+            "trusted provider transport requires private pipes and never writes credentials to a terminal",
+        );
+    }
+    let provider = match ProviderId::parse(args.provider.clone()) {
+        Ok(provider) => provider,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let mut provider_input = io::BufReader::new(io::stdin().lock());
+    let open: ProviderOpen = match read_provider_line(&mut provider_input) {
+        Ok(open) => open,
+        Err(error) => return fail(error),
+    };
+    if open.protocol != INJECT_PROTOCOL
+        || open.r#type != "open"
+        || open.provider != provider.as_str()
+        || open.nonce.len() < 32
+        || open.nonce.len() > 128
+        || !open.nonce.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        || open.form.validate().is_err()
+    {
+        return fail("trusted provider handshake is invalid");
+    }
+
+    let wait_ms = if args.no_wait {
+        Some(0)
+    } else {
+        match args.wait.as_deref().map(parse_wait_duration).transpose() {
+            Ok(value) => value,
+            Err(error) => return fail(&error.to_string()),
+        }
+    };
+    let poll_ms = match args
+        .poll_interval
+        .as_deref()
+        .map(parse_duration)
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let progress = args.progress.map(|value| match value {
+        ProgressArg::Plain => ProgressMode::Plain,
+        ProgressArg::Json => ProgressMode::Json,
+        ProgressArg::None => ProgressMode::None,
+    });
+    let wait = WaitOptions {
+        wait_ms,
+        poll_ms,
+        progress,
+    };
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let descriptor = OperationDescriptor::InjectCredential {
+        surface: InvocationSurface::Cli,
+        vault_id: args.vault_id.clone(),
+        entry_id: args.entry_id.clone(),
+        reason: args.reason.clone(),
+        wait,
+        provider: provider.as_str().to_owned(),
+        output: CredentialOutputPolicy::TrustedInjectionProvider,
+    };
+    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let cancellation = signal_cancellation_token();
+    let delivery = session
+        .deliver_for_inject(
+            CredentialDeliveryRequest {
+                vault_id: &args.vault_id,
+                entry_id: &args.entry_id,
+                reason: args.reason.as_deref(),
+                wait,
+            },
+            &cancellation,
+            |heartbeat| {
+                if let Some(line) = heartbeat_line(progress.unwrap_or_default(), &heartbeat) {
+                    eprint!("{line}");
+                }
+            },
+        )
+        .await;
+    let delivered = match delivery {
+        Ok(CredentialDelivery::Granted(delivered)) => delivered,
+        Ok(CredentialDelivery::NotGranted(access)) => {
+            if let Some(message) = access_message(&access, CredentialMethod::Inject) {
+                eprintln!("Error: {}", safe_terminal_text(&message));
+            }
+            return ExitCode::from(exit_code_for_access(&access));
+        }
+        Err(error) => return fail(&error.to_string()),
+    };
+    let parsed = match parse_secret(delivered.expose_for_authorized_operation()) {
+        Ok(parsed) => parsed,
+        Err(_) => return fail("the Inject credential payload is invalid"),
+    };
+    let target = match resolve_authenticated_injection_target(
+        parsed
+            .fields
+            .get("urlDomain")
+            .map(|domain| domain.expose_secret()),
+        delivered.authenticated_domain(),
+    ) {
+        Ok(target) => target,
+        Err(error) => return fail(&error),
+    };
+    if let Err(error) = target.verify_url(&open.current_url) {
+        return fail(&format!(
+            "{} (expected domain {})",
+            error,
+            target.expected_domain()
+        ));
+    }
+    let credential = match resolve_injection_credential(
+        &parsed,
+        delivered.authenticated_field("credential.username"),
+        &open.form,
+    ) {
+        Ok(credential) => credential,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let mut transaction_bytes = [0_u8; 16];
+    if getrandom::fill(&mut transaction_bytes).is_err() {
+        return fail("could not create an Inject transaction");
+    }
+    let transaction_id = hex::encode(transaction_bytes);
+    let values = credential
+        .fields()
+        .iter()
+        .map(|(entry_field_id, value)| ProviderFieldValue {
+            entry_field_id,
+            value,
+        })
+        .collect();
+    let wire = ProviderCredential {
+        protocol: INJECT_PROTOCOL,
+        r#type: "credential",
+        provider: provider.as_str(),
+        nonce: &open.nonce,
+        transaction_id: &transaction_id,
+        grant_id: &delivered.grant_id,
+        entry_id: &delivered.entry_id,
+        expected_domain: target.expected_domain(),
+        form: &open.form,
+        values,
+    };
+    let encoded = match serde_json::to_vec(&wire) {
+        Ok(encoded) => Zeroizing::new(encoded),
+        Err(_) => return fail("could not encode the trusted provider request"),
+    };
+    let mut provider_output = io::stdout().lock();
+    if provider_output.write_all(encoded.as_ref()).is_err()
+        || provider_output.write_all(b"\n").is_err()
+        || provider_output.flush().is_err()
+    {
+        return fail("trusted provider transport closed before credential delivery");
+    }
+    drop(encoded);
+    drop(credential);
+    drop(parsed);
+    drop(delivered);
+
+    let response: ProviderResult = match read_provider_line(&mut provider_input) {
+        Ok(response) => response,
+        Err(error) => return fail(error),
+    };
+    let valid_outcomes = [
+        "injected",
+        "rejected",
+        "no-password-field",
+        "no-submit-control",
+        "origin-mismatch",
+        "insecure-origin",
+        "ambiguous-form",
+        "provider-unavailable",
+    ];
+    if response.protocol != INJECT_PROTOCOL
+        || response.r#type != "result"
+        || response.nonce != open.nonce
+        || response.transaction_id != transaction_id
+        || !valid_outcomes.contains(&response.outcome.as_str())
+    {
+        return fail("trusted provider result is invalid");
+    }
+    if response.outcome != "injected" {
+        return fail(match response.outcome.as_str() {
+            "rejected" => "the trusted browser provider did not complete Inject (outcome=rejected)",
+            "no-password-field" => {
+                "the trusted browser provider did not complete Inject (outcome=no-password-field)"
+            }
+            "no-submit-control" => {
+                "the trusted browser provider did not complete Inject (outcome=no-submit-control)"
+            }
+            "origin-mismatch" => {
+                "the trusted browser provider did not complete Inject (outcome=origin-mismatch)"
+            }
+            "insecure-origin" => {
+                "the trusted browser provider did not complete Inject (outcome=insecure-origin)"
+            }
+            "ambiguous-form" => {
+                "the trusted browser provider did not complete Inject (outcome=ambiguous-form)"
+            }
+            "provider-unavailable" => {
+                "the trusted browser provider did not complete Inject (outcome=provider-unavailable)"
+            }
+            _ => "the trusted browser provider did not complete Inject (outcome=invalid)",
+        });
+    }
+    eprintln!(
+        "Credential injected through provider {}.",
+        provider.as_str()
+    );
+    ExitCode::SUCCESS
+}
+
+fn resolve_injection_credential(
+    parsed: &palladin_credential::secret::ParsedSecret,
+    authenticated_username: Option<&str>,
+    form: &InjectionFormDefinition,
+) -> Result<InjectionCredential, palladin_browser_bridge::InjectionError> {
+    form.validate()?;
+    let mut values = BTreeMap::new();
+    for step in &form.steps {
+        for field in &step.fields {
+            let value = resolve_injection_field(parsed, authenticated_username, field)?;
+            values.insert(field.entry_field_id.clone(), value);
+        }
+    }
+    InjectionCredential::from_fields(values)
+}
+
+fn resolve_injection_field(
+    parsed: &palladin_credential::secret::ParsedSecret,
+    authenticated_username: Option<&str>,
+    field: &InjectionFormField,
+) -> Result<String, palladin_browser_bridge::InjectionError> {
+    let (resolved, kind) = match field.entry_field_id.as_str() {
+        "credential.username" => {
+            let value = parsed
+                .username
+                .as_ref()
+                .map(|value| value.expose_secret())
+                .filter(|value| !value.is_empty())
+                .or(authenticated_username)
+                .ok_or(palladin_browser_bridge::InjectionError::InvalidCredential)?;
+            (value.to_owned(), ResolvedKind::Text)
+        }
+        "credential.password" => {
+            let value = parsed.password.expose_secret();
+            if value.is_empty() {
+                return Err(palladin_browser_bridge::InjectionError::InvalidCredential);
+            }
+            (value.to_owned(), ResolvedKind::Concealed)
+        }
+        "credential.url" => resolve_selected_field(parsed, "url", None)?,
+        "credential.notes" | "notes" => resolve_selected_field(parsed, "notes", None)?,
+        "credential.value" => resolve_selected_field(parsed, "value", None)?,
+        "credential.totp" => resolve_selected_field(parsed, "totp", None)?,
+        custom_id => resolve_selected_field(
+            parsed,
+            "",
+            Some(custom_id.strip_prefix("custom:").unwrap_or(custom_id)),
+        )?,
+    };
+    let compatible = match (kind, field.control) {
+        (ResolvedKind::Concealed, InjectionControl::Password)
+        | (
+            ResolvedKind::Otp,
+            InjectionControl::Otp | InjectionControl::Text | InjectionControl::Tel,
+        )
+        | (
+            ResolvedKind::Text,
+            InjectionControl::Username
+            | InjectionControl::Text
+            | InjectionControl::Email
+            | InjectionControl::Tel,
+        ) => true,
+        _ => false,
+    };
+    if !compatible {
+        return Err(palladin_browser_bridge::InjectionError::InvalidCredential);
+    }
+    Ok(resolved)
+}
+
+#[derive(Clone, Copy)]
+enum ResolvedKind {
+    Text,
+    Concealed,
+    Otp,
+}
+
+fn resolve_selected_field(
+    parsed: &palladin_credential::secret::ParsedSecret,
+    label: &str,
+    field_id: Option<&str>,
+) -> Result<(String, ResolvedKind), palladin_browser_bridge::InjectionError> {
+    let selected = resolve_field(
+        parsed,
+        &FieldSelector {
+            field: field_id.is_none().then(|| label.to_owned()),
+            field_id: field_id.map(str::to_owned),
+        },
+    )
+    .map_err(|_| palladin_browser_bridge::InjectionError::InvalidCredential)?;
+    let kind = match &selected {
+        ResolvedField::Totp { .. } => ResolvedKind::Otp,
+        ResolvedField::Value { field_type, .. } => match field_type {
+            ResolvedFieldType::Concealed => ResolvedKind::Concealed,
+            ResolvedFieldType::WellKnown
+            | ResolvedFieldType::Text
+            | ResolvedFieldType::Multiline => ResolvedKind::Text,
+        },
+    };
+    Ok((selected.expose_for_authorized_operation().to_owned(), kind))
+}
+
+fn inject_uses_deprecated_browser_boundary(args: &InjectArgs) -> bool {
+    args.cdp.is_some()
+        || args.page_url.is_some()
+        || args.username_selector.is_some()
+        || args.password_selector.is_some()
+        || args.submit_selector.is_some()
+        || args.no_submit
+        || args.fill_only
+        || args.field.is_some()
+        || args.field_id.is_some()
+        || args.verbose
+}
+
+fn resolve_authenticated_injection_target(
+    grant_domain: Option<&str>,
+    discovery_domain: Option<&str>,
+) -> Result<InjectionTarget, String> {
+    let grant_target = grant_domain
+        .map(|domain| InjectionTarget::parse(domain.to_owned()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let discovery_target = discovery_domain
+        .map(|domain| InjectionTarget::parse(domain.to_owned()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    match (grant_target, discovery_target) {
+        (Some(grant), Some(discovery)) if grant != discovery => {
+            Err("the grant and Discovery domains do not match".to_owned())
+        }
+        (Some(grant), _) => Ok(grant),
+        (None, Some(discovery)) => Ok(discovery),
+        (None, None) => Err("the Inject credential has no authenticated domain".to_owned()),
+    }
+}
+
+fn read_provider_line<T: for<'de> Deserialize<'de>>(
+    input: &mut impl BufRead,
+) -> Result<T, &'static str> {
+    let mut line = Zeroizing::new(String::new());
+    let read = input
+        .read_line(&mut line)
+        .map_err(|_| "trusted provider transport failed")?;
+    if read == 0 || read > 256 * 1024 {
+        return Err("trusted provider message is invalid");
+    }
+    serde_json::from_str(&line).map_err(|_| "trusted provider message is invalid")
+}
+
 async fn report_stale(
     service: &RuntimeService<RuntimeSecretStore>,
     profile: Option<&str>,
@@ -1621,5 +2061,131 @@ mod operation_descriptor_tests {
             "auth_failed"
         );
         assert_eq!(stale_reason_code_name(StaleReasonCode::Manual), "manual");
+    }
+}
+
+#[cfg(test)]
+mod authenticated_injection_target_tests {
+    use super::resolve_authenticated_injection_target;
+
+    #[test]
+    fn discovery_domain_can_bind_an_inject_grant_without_a_payload_domain() {
+        let target = resolve_authenticated_injection_target(None, Some("X.COM"))
+            .expect("authenticated Discovery domain");
+        assert_eq!(target.expected_domain(), "x.com");
+    }
+
+    #[test]
+    fn matching_grant_and_discovery_domains_are_accepted_after_normalization() {
+        let target = resolve_authenticated_injection_target(Some("X.COM"), Some("x.com"))
+            .expect("matching authenticated domains");
+        assert_eq!(target.expected_domain(), "x.com");
+    }
+
+    #[test]
+    fn mismatched_or_missing_authenticated_domains_fail_closed() {
+        assert_eq!(
+            resolve_authenticated_injection_target(Some("evil.test"), Some("x.com")),
+            Err("the grant and Discovery domains do not match".to_owned())
+        );
+        assert_eq!(
+            resolve_authenticated_injection_target(None, None),
+            Err("the Inject credential has no authenticated domain".to_owned())
+        );
+    }
+}
+
+#[cfg(test)]
+mod provider_credential_tests {
+    use super::{
+        INJECT_PROTOCOL, ProviderCredential, ProviderFieldValue, resolve_injection_credential,
+    };
+    use palladin_browser_bridge::{
+        InjectionControl, InjectionFormDefinition, InjectionFormField, InjectionFormStep,
+        InjectionSubmit, InjectionSubmitKind,
+    };
+
+    #[test]
+    fn private_provider_frame_contains_only_declared_field_values() {
+        let form = InjectionFormDefinition {
+            version: 1,
+            steps: vec![InjectionFormStep {
+                fields: vec![InjectionFormField {
+                    entry_field_id: "credential.password".to_owned(),
+                    selector: "#password".to_owned(),
+                    control: InjectionControl::Password,
+                }],
+                submit: InjectionSubmit {
+                    action: InjectionSubmitKind::PressEnter,
+                    selector: "#password".to_owned(),
+                },
+                wait_for: None,
+            }],
+        };
+        let wire = ProviderCredential {
+            protocol: INJECT_PROTOCOL,
+            r#type: "credential",
+            provider: "playwright",
+            nonce: "nonce",
+            transaction_id: "transaction",
+            grant_id: "grant",
+            entry_id: "entry",
+            expected_domain: "example.com",
+            form: &form,
+            values: vec![ProviderFieldValue {
+                entry_field_id: "credential.password",
+                value: "fixture-password-not-production",
+            }],
+        };
+        let encoded = serde_json::to_value(wire).expect("provider frame");
+        assert!(encoded.get("username").is_none());
+        assert!(encoded.get("password").is_none());
+        assert_eq!(encoded["values"][0]["entryFieldId"], "credential.password");
+    }
+
+    #[test]
+    fn canonical_grant_fields_and_authenticated_discovery_username_resolve_for_inject() {
+        let parsed = palladin_credential::secret::parse_secret(
+            br#"{"password":"fixture-password-not-production","urlDomain":"example.com"}"#,
+        )
+        .expect("normalized grant");
+        let form = InjectionFormDefinition {
+            version: 1,
+            steps: vec![InjectionFormStep {
+                fields: vec![
+                    InjectionFormField {
+                        entry_field_id: "credential.username".to_owned(),
+                        selector: "#username".to_owned(),
+                        control: InjectionControl::Username,
+                    },
+                    InjectionFormField {
+                        entry_field_id: "credential.password".to_owned(),
+                        selector: "#password".to_owned(),
+                        control: InjectionControl::Password,
+                    },
+                ],
+                submit: InjectionSubmit {
+                    action: InjectionSubmitKind::Click,
+                    selector: "button[type=submit]".to_owned(),
+                },
+                wait_for: None,
+            }],
+        };
+        let resolved = resolve_injection_credential(&parsed, Some("fixture-user"), &form)
+            .expect("resolved fields");
+        assert_eq!(
+            resolved
+                .fields()
+                .get("credential.username")
+                .map(String::as_str),
+            Some("fixture-user")
+        );
+        assert_eq!(
+            resolved
+                .fields()
+                .get("credential.password")
+                .map(String::as_str),
+            Some("fixture-password-not-production")
+        );
     }
 }

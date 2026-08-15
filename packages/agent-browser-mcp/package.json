@@ -1,0 +1,37 @@
+{
+  "name": "@palladin/agent-browser-mcp",
+  "version": "0.1.0",
+  "description": "AgentBrowser MCP provider for value-free Palladin credential Inject",
+  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Palladin-io/palladin-agent.git",
+    "directory": "packages/agent-browser-mcp"
+  },
+  "type": "module",
+  "bin": {
+    "palladin-agent-browser-mcp": "./dist/bin.js"
+  },
+  "files": ["dist/", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "agent-browser": "0.33.2",
+    "tldts": "7.4.8"
+  },
+  "peerDependencies": {
+    "@palladin/agent": "0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@palladin/agent": { "optional": true }
+  },
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": ">=11.0.0"
+  },
+  "publishConfig": { "access": "public", "provenance": true }
+}

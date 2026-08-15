@@ -25,11 +25,16 @@ function manifest(path: string): PackageManifest {
 }
 
 describe('public npm package boundary', () => {
-  it('publishes only the native dispatcher and an exact platform dependency', () => {
+  it('publishes only the native dispatcher, public contracts, browser host, and exact platform dependencies', () => {
     const root = manifest('package.json');
     const dispatcher = readFileSync('src/runtime/native-dispatch.ts', 'utf8');
     expect(root.files).toContain('dist/bin/');
+    expect(root.files).toContain('dist/browser-host/');
     expect(root.files).toContain('dist/runtime/');
+    expect(root.files).toContain('dist/inject-contract.js');
+    expect(root.files).toContain('dist/inject-contract.d.ts');
+    expect(root.files).toContain('dist/form-map.js');
+    expect(root.files).toContain('dist/form-map.d.ts');
     expect(root.files).not.toContain('dist/');
     expect(root.dependencies).toBeUndefined();
     expect(root.engines).toEqual({ node: '>=20.5.0', npm: '>=9.7.1' });
@@ -64,7 +69,7 @@ describe('public npm package boundary', () => {
     expect(readme).toContain('npm cache or proxy');
   });
 
-  it('excludes every legacy TypeScript implementation from the launcher tarball', () => {
+  it('publishes the narrow browser host without restoring legacy credential implementations', () => {
     const npmCli = process.env.npm_execpath;
     if (!npmCli) throw new Error('npm_execpath is unavailable');
     const output = execFileSync(process.execPath, [npmCli, 'pack', '--dry-run', '--json'], {
@@ -84,6 +89,34 @@ describe('public npm package boundary', () => {
       'dist/bin/palladin.d.ts.map',
       'dist/bin/palladin.js',
       'dist/bin/palladin.js.map',
+      'dist/browser-host/channel.d.ts',
+      'dist/browser-host/channel.d.ts.map',
+      'dist/browser-host/channel.js',
+      'dist/browser-host/channel.js.map',
+      'dist/browser-host/client.d.ts',
+      'dist/browser-host/client.d.ts.map',
+      'dist/browser-host/client.js',
+      'dist/browser-host/client.js.map',
+      'dist/browser-host/install.d.ts',
+      'dist/browser-host/install.d.ts.map',
+      'dist/browser-host/install.js',
+      'dist/browser-host/install.js.map',
+      'dist/browser-host/native-host.d.ts',
+      'dist/browser-host/native-host.d.ts.map',
+      'dist/browser-host/native-host.js',
+      'dist/browser-host/native-host.js.map',
+      'dist/browser-host/provider-contract.d.ts',
+      'dist/browser-host/provider-contract.d.ts.map',
+      'dist/browser-host/provider-contract.js',
+      'dist/browser-host/provider-contract.js.map',
+      'dist/browser-host/socket.d.ts',
+      'dist/browser-host/socket.d.ts.map',
+      'dist/browser-host/socket.js',
+      'dist/browser-host/socket.js.map',
+      'dist/form-map.d.ts',
+      'dist/form-map.js',
+      'dist/inject-contract.d.ts',
+      'dist/inject-contract.js',
       'dist/runtime/native-dispatch.d.ts',
       'dist/runtime/native-dispatch.d.ts.map',
       'dist/runtime/native-dispatch.js',

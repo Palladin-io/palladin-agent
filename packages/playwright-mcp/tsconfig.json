@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@palladin/agent/inject-contract": ["../../dist/inject-contract.d.ts"]
+      ,"@palladin/agent/form-map": ["../../dist/form-map.d.ts"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["dist"]
+}

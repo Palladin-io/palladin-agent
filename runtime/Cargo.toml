@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/palladin-api",
+    "crates/palladin-browser-bridge",
     "crates/palladin-cli",
     "crates/palladin-core",
     "crates/palladin-credential",

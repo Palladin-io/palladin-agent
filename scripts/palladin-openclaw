@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+# Local-only OpenClaw launcher. It selects this checkout explicitly; the native
+# runtime still performs its normal signed artifact and integrity checks.
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export PALLADIN_AGENT_PACKAGE_ROOT="$ROOT"
+export PALLADIN_AGENT_LAUNCHER="$ROOT/dist/bin/palladin.js"
+# OpenClaw may require a custom CA in its own Node process. The native Palladin
+# child intentionally rejects Node injection variables, so do not inherit it.
+unset NODE_EXTRA_CA_CERTS
+exec node "$ROOT/dist/bin/palladin.js" "$@"

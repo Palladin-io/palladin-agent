@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "mapVersion": 1,
+  "domain": "github.com",
+  "loginUrl": "https://github.com/login",
+  "provider": "playwright",
+  "status": "verified",
+  "fingerprint": "39b783a7309222d4163d3c1df1389dbc952d21891c134552767ea55f422334cf",
+  "form": {
+    "version": 1,
+    "steps": [{
+      "fields": [
+        { "entryFieldId": "username", "selector": "input#login_field", "control": "username" },
+        { "entryFieldId": "password", "selector": "input#password", "control": "password" }
+      ],
+      "submit": { "action": "click", "selector": "input[type=\"submit\"]" }
+    }]
+  }
+}

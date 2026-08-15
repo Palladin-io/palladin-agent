@@ -329,7 +329,10 @@ impl ApiClient {
             | StatusCode::TOO_MANY_REQUESTS => {
                 response.json().await.map_err(|_| ApiError::InvalidResponse)
             }
-            StatusCode::BAD_REQUEST => Err(ApiError::ReasonRequired),
+            StatusCode::BAD_REQUEST if options.encrypted_reason.is_none() => {
+                Err(ApiError::ReasonRequired)
+            }
+            StatusCode::BAD_REQUEST => Err(ApiError::Http(400)),
             status => Err(ApiError::Http(status.as_u16())),
         }
     }
@@ -517,22 +520,31 @@ async fn decode_discovery_sync<T: serde::de::DeserializeOwned>(
         }
         StatusCode::CONFLICT => {
             #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase", deny_unknown_fields)]
-            struct Reset {
-                outcome: String,
-                current_sequence: String,
-                min_retained_sequence: String,
-                new_snapshot_required: bool,
+            #[serde(tag = "outcome", rename_all_fields = "camelCase", deny_unknown_fields)]
+            enum Conflict {
+                #[serde(rename = "sync-state-changed")]
+                SyncStateChanged,
+                #[serde(rename = "resetRequired")]
+                ResetRequired {
+                    current_sequence: String,
+                    min_retained_sequence: String,
+                    new_snapshot_required: bool,
+                },
             }
-            let reset: Reset =
+            let conflict: Conflict =
                 serde_json::from_slice(&body).map_err(|_| ApiError::InvalidResponse)?;
-            if reset.outcome != "resetRequired" || !reset.new_snapshot_required {
-                return Err(ApiError::InvalidResponse);
+            match conflict {
+                Conflict::SyncStateChanged => Err(ApiError::SyncStateChanged),
+                Conflict::ResetRequired {
+                    current_sequence,
+                    min_retained_sequence,
+                    new_snapshot_required: true,
+                } => Err(ApiError::ResetRequired {
+                    current_sequence,
+                    min_retained_sequence,
+                }),
+                Conflict::ResetRequired { .. } => Err(ApiError::InvalidResponse),
             }
-            Err(ApiError::ResetRequired {
-                current_sequence: reset.current_sequence,
-                min_retained_sequence: reset.min_retained_sequence,
-            })
         }
         StatusCode::BAD_REQUEST | StatusCode::PAYLOAD_TOO_LARGE => {
             #[derive(serde::Deserialize)]
@@ -591,6 +603,8 @@ pub enum ApiError {
         current_sequence: String,
         min_retained_sequence: String,
     },
+    #[error("vault discovery authorization changed during synchronization")]
+    SyncStateChanged,
     #[error("vault discovery sync cursor is invalid")]
     InvalidCursor,
     #[error("API response exceeds the size limit")]
@@ -649,8 +663,8 @@ mod tests {
     #[tokio::test]
     async fn shared_organization_key_can_authenticate_distinct_agents() {
         let (host, requests) = response_server(vec![
-            (200, r#"{"items":[],"nextCursor":null}"#),
-            (200, r#"{"items":[],"nextCursor":null}"#),
+            (200, r#"{"agentAccessEpoch":1,"items":[]}"#),
+            (200, r#"{"agentAccessEpoch":1,"items":[]}"#),
         ])
         .await;
         let first = client(&host, vec![1; 32], Duration::from_secs(1));
@@ -677,8 +691,11 @@ mod tests {
 
     #[tokio::test]
     async fn retries_safe_get_but_never_duplicates_mutating_post() {
-        let (get_host, get_requests) =
-            response_server(vec![(503, ""), (200, r#"{"items":[],"nextCursor":null}"#)]).await;
+        let (get_host, get_requests) = response_server(vec![
+            (503, ""),
+            (200, r#"{"agentAccessEpoch":1,"items":[]}"#),
+        ])
+        .await;
         signed_client(&get_host, vec![3; 32], Duration::from_secs(1))
             .list_vault_manifests()
             .await
@@ -815,7 +832,7 @@ mod tests {
 
     #[tokio::test]
     async fn discovery_sync_sends_frozen_headers_and_decodes_exact_pages() {
-        let snapshot = r#"{"snapshotBaseSequence":"12","items":[{"entryId":"33333333-3333-4333-8333-333333333333","kind":"head","agentDiscoveryRevision":"7","agentDiscovery":{"organizationId":"11111111-1111-4111-8111-111111111111","vaultId":"22222222-2222-4222-8222-222222222222","entryId":"33333333-3333-4333-8333-333333333333","agentDiscoveryRevision":"7","vdkVersion":3,"header":{"protocolVersion":2,"algorithmSuite":1,"resourceKind":2,"projectionKind":4,"resourceRevision":"7","keyVersion":3,"memberKeyGeneration":5,"nonce":"nonce"},"ciphertext":"ciphertext"}}],"nextCursor":"next"}"#;
+        let snapshot = r#"{"snapshotBaseSequence":"12","items":[{"entryId":"33333333-3333-4333-8333-333333333333","kind":"head","agentDiscoveryRevision":"7","agentDiscovery":{"descriptor":{"protocolVersion":2,"cryptoSuiteId":"palladin-vault-xchacha-v1","purpose":"agentDiscovery","scope":{"organizationId":"11111111-1111-4111-8111-111111111111","vaultId":"22222222-2222-4222-8222-222222222222","entryId":"33333333-3333-4333-8333-333333333333","grantOrRequestId":null,"agentId":null,"memberId":null},"resourceRevision":"7","keyVersion":3,"memberKeyGeneration":5,"binding":{}},"encodedSuitePayload":"ciphertext"}}],"nextCursor":"next"}"#;
         let delta = r#"{"deltaUpperBound":"14","appliedThroughSequence":"14","items":[{"entryId":"33333333-3333-4333-8333-333333333333","kind":"tombstone","agentDiscoveryRevision":null,"agentDiscovery":null}],"continuationCursor":null}"#;
         let (host, requests) = response_server(vec![(200, snapshot), (200, delta)]).await;
         let api = client(&host, vec![13; 32], Duration::from_secs(1));
@@ -850,13 +867,22 @@ mod tests {
     #[tokio::test]
     async fn discovery_sync_maps_only_exact_structured_errors() {
         let (host, _) = response_server(vec![
+            (409, r#"{"outcome":"sync-state-changed"}"#),
             (409, r#"{"outcome":"resetRequired","currentSequence":"20","minRetainedSequence":"10","newSnapshotRequired":true}"#),
+            (409, r#"{"outcome":"state-changed"}"#),
             (400, r#"{"outcome":"invalid-cursor"}"#),
             (413, r#"{"outcome":"size-limit-exceeded"}"#),
             (404, r#"{"outcome":"invalid-cursor"}"#),
         ])
         .await;
         let api = client(&host, vec![14; 32], Duration::from_secs(1));
+
+        assert_eq!(
+            api.get_agent_discovery_snapshot("vault", None, None)
+                .await
+                .expect_err("concurrent authorization change"),
+            ApiError::SyncStateChanged
+        );
 
         assert_eq!(
             api.get_agent_discovery_delta("vault", Some("1"), None, None)
@@ -866,6 +892,12 @@ mod tests {
                 current_sequence: "20".to_owned(),
                 min_retained_sequence: "10".to_owned(),
             }
+        );
+        assert_eq!(
+            api.get_agent_discovery_snapshot("vault", None, None)
+                .await
+                .expect_err("other conflicts remain fail-closed"),
+            ApiError::InvalidResponse
         );
         assert_eq!(
             api.get_agent_discovery_snapshot("vault", Some("bad"), None)

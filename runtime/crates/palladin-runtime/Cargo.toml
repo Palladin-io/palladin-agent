@@ -37,6 +37,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
+palladin-core = { path = "../palladin-core", features = ["local-development"] }
 tempfile.workspace = true
 
 [build-dependencies]
