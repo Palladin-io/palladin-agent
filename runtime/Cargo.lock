@@ -1620,6 +1620,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "palladin-browser-bridge"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror",
+ "tokio",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "palladin-cli"
 version = "0.1.0"
 dependencies = [
@@ -1631,6 +1642,7 @@ dependencies = [
  "hostname",
  "nix 0.31.3",
  "palladin-api",
+ "palladin-browser-bridge",
  "palladin-core",
  "palladin-credential",
  "palladin-crypto",

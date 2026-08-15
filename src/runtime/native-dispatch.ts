@@ -304,6 +304,98 @@ export async function launchNativeRuntime(
   });
 }
 
+/**
+ * Start the same signed native runtime with private provider pipes. This is the only supported
+ * plaintext bridge for in-process browser providers: stdout is captured by the trusted adapter,
+ * never inherited by a terminal or forwarded as an MCP result.
+ */
+export async function spawnNativeProviderRuntime(
+  args: readonly string[],
+  host: NativeDispatchHost = systemHost(),
+): Promise<ChildProcess> {
+  const runtime = resolveNativeRuntimeSource(host);
+  const executableSha256 = host.hashFile(runtime.executable);
+  const workerExecutableSha256 = runtime.workerExecutable === undefined
+    ? undefined
+    : host.hashFile(runtime.workerExecutable);
+  const request = {
+    packageName: runtime.packageName,
+    version: NATIVE_RUNTIME_VERSION,
+    executableSha256,
+    sourceSha: RUNTIME_SOURCE_SHA,
+  };
+  const binding = await host.loadVerifiedArtifactBinding(request);
+  if (!binding.runtimeAllowed) throw new NativeRuntimeVersionBlockedError();
+  assertExactBinding(
+    runtime.packageName,
+    executableSha256,
+    binding,
+    true,
+    workerExecutableSha256,
+  );
+
+  let executable = runtime.executable;
+  let windowsLease: WindowsRuntimeLease | undefined;
+  if (host.platform === 'win32') {
+    windowsLease = host.prepareWindowsRuntime({
+      packageName: runtime.packageName,
+      version: NATIVE_RUNTIME_VERSION,
+      executable: runtime.executable,
+    }, binding);
+    windowsLease.verifyBeforeSpawn();
+    executable = windowsLease.executable;
+  } else {
+    if (host.hashFile(runtime.executable) !== binding.executableSha256) {
+      throw new Error('runtime changed after policy verification');
+    }
+    if (runtime.workerExecutable !== undefined
+      && host.hashFile(runtime.workerExecutable) !== binding.workerExecutableSha256) {
+      throw new Error('runtime worker changed after policy verification');
+    }
+  }
+
+  const options: SpawnOptions = {
+    shell: false,
+    stdio: ['pipe', 'pipe', 'inherit'],
+    windowsHide: true,
+    env: host.platform === 'win32' ? process.env : {
+      ...process.env,
+      PALLADIN_VERSION_POLICY_ENVELOPE_BASE64: binding.envelopeBase64,
+    },
+  };
+  let child: ChildProcess;
+  try {
+    child = windowsLease === undefined
+      ? host.spawnRuntime(executable, args, options)
+      : windowsLease.spawnLocked(args, options);
+    windowsLease?.bindToChild(child.pid);
+  } catch (error) {
+    windowsLease?.release();
+    throw error;
+  }
+  if (child.stdin === null || child.stdout === null) {
+    windowsLease?.release();
+    child.kill();
+    throw new Error('native provider pipes are unavailable');
+  }
+
+  const handlers = new Map<NodeJS.Signals, () => void>();
+  for (const signal of FORWARDED_SIGNALS) {
+    const handler = (): void => {
+      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+    };
+    handlers.set(signal, handler);
+    host.addSignalHandler(signal, handler);
+  }
+  const cleanup = (): void => {
+    for (const [signal, handler] of handlers) host.removeSignalHandler(signal, handler);
+    windowsLease?.release();
+  };
+  child.once('exit', cleanup);
+  child.once('error', cleanup);
+  return child;
+}
+
 function isPolicyIndependentDiagnostic(args: readonly string[]): boolean {
   return args.length === 1
     && (args[0] === '--help' || args[0] === '-h' || args[0] === '--version'

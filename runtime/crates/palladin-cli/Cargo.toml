@@ -23,8 +23,10 @@ path = "src/main.rs"
 base64.workspace = true
 clap.workspace = true
 getrandom.workspace = true
+hex.workspace = true
 hostname.workspace = true
 palladin-api = { path = "../palladin-api" }
+palladin-browser-bridge = { path = "../palladin-browser-bridge" }
 palladin-core = { path = "../palladin-core" }
 palladin-crypto = { path = "../palladin-crypto" }
 palladin-credential = { path = "../palladin-credential" }
@@ -45,7 +47,6 @@ zeroize.workspace = true
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
-hex.workspace = true
 palladin-core = { path = "../palladin-core", features = ["local-development"] }
 sha2.workspace = true
 tempfile.workspace = true

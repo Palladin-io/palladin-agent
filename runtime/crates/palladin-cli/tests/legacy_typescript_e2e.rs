@@ -317,7 +317,10 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
     ));
     assert_ne!(default_status.config.agent_id, build_status.config.agent_id);
 
-    api.enqueue(MockResponse::json(200, r#"{"items":[]}"#));
+    api.enqueue(MockResponse::json(
+        200,
+        r#"{"agentAccessEpoch":1,"items":[]}"#,
+    ));
     let search_session = restarted
         .open_session(
             Some("default"),
@@ -396,6 +399,10 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
             "grantEnvelope": envelope,
         })
         .to_string(),
+    ));
+    api.enqueue(MockResponse::json(
+        200,
+        r#"{"agentAccessEpoch":1,"items":[]}"#,
     ));
     let granted_request = delivery_request(0);
     let granted_session = restarted
@@ -781,7 +788,7 @@ fn assert_signed_lifecycle_requests(
         .iter()
         .filter(|request| request_header(request, "x-agent-signature").is_some())
         .collect::<Vec<_>>();
-    assert_eq!(signed.len(), 5);
+    assert_eq!(signed.len(), 6);
     let mut default_requests = 0;
     let mut build_requests = 0;
     let mut credential_requests = 0;
@@ -828,9 +835,9 @@ fn assert_signed_lifecycle_requests(
             credential_requests += 1;
         }
     }
-    assert_eq!(default_requests, 4);
+    assert_eq!(default_requests, 5);
     assert_eq!(build_requests, 1);
-    assert_eq!(search_requests, 1);
+    assert_eq!(search_requests, 2);
     assert_eq!(credential_requests, 2);
     assert_ne!(
         first_signature_by_agent
@@ -916,6 +923,7 @@ fn encrypt_for_recipient(recipient_public_key: &str, plaintext: &[u8]) -> Encryp
             recipient_agent_key_version: 1,
             recipient_agent_key_fingerprint: fingerprint,
             approved_methods: 1,
+            delivery_policy: 0,
             field_set_commitment: commitment,
             expires_at: None,
             remaining_uses: Some(1),
@@ -970,6 +978,7 @@ fn encrypt_for_recipient(recipient_public_key: &str, plaintext: &[u8]) -> Encryp
                 recipient_key_version: 1,
                 recipient_key_fingerprint: URL_SAFE_NO_PAD.encode(fingerprint),
                 approved_methods: 1,
+                delivery_policy: 0,
                 field_set_commitment: URL_SAFE_NO_PAD.encode(commitment),
                 expires_at: None,
                 remaining_uses: Some(1),

@@ -9,9 +9,9 @@ use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ApplicationFuture, BoundedLineReader, ExecInput, ExecToolResult, GetInput, MAX_BATCH_ITEMS,
-    MAX_FRAME_BYTES, McpApplication, PalladinMcpServer, ProtocolBridgeState, ReportStaleInput,
-    SearchInput, ToolOutcome, collect_batch_response, load_tools, parse_input,
+    ApplicationFuture, BoundedLineReader, ExecInput, ExecToolResult, GetInput, InjectInput,
+    MAX_BATCH_ITEMS, MAX_FRAME_BYTES, McpApplication, PalladinMcpServer, ProtocolBridgeState,
+    ReportStaleInput, SearchInput, ToolOutcome, collect_batch_response, load_tools, parse_input,
     prepare_incoming_message, pretty_result, serve_io, validate_get, validate_search, wait_options,
 };
 
@@ -56,6 +56,17 @@ impl McpApplication for FakeApplication {
         Box::pin(async move { ToolOutcome::success("synthetic-exec") })
     }
 
+    fn inject<'a>(
+        &'a self,
+        _input: InjectInput,
+        _cancellation: CancellationToken,
+    ) -> ApplicationFuture<'a> {
+        Box::pin(async move {
+            self.calls.lock().await.push("inject".to_owned());
+            ToolOutcome::success("synthetic-inject")
+        })
+    }
+
     fn report_stale<'a>(
         &'a self,
         _input: ReportStaleInput,
@@ -88,7 +99,7 @@ fn frozen_contract_exposes_exactly_five_legacy_tools() {
 }
 
 #[test]
-fn frozen_inject_contract_is_explicitly_fail_closed() {
+fn frozen_inject_contract_requires_the_trusted_inject_method() {
     let tools = load_tools().expect("contract");
     let inject = tools
         .iter()
@@ -96,11 +107,13 @@ fn frozen_inject_contract_is_explicitly_fail_closed() {
         .expect("inject compatibility tool");
     let description = inject.description.as_deref().expect("description");
 
-    assert!(description.contains("Fail closed"));
-    assert!(description.contains("without requesting or decrypting"));
+    assert_eq!(
+        description,
+        "Inject an approved credential through a trusted Palladin browser provider without returning the secret to the model. The provider re-checks HTTPS and the encrypted entry domain immediately before fill and submit."
+    );
     assert_eq!(
         inject.input_schema.get("required"),
-        Some(&json!(["vaultId", "entryId", "cdp"]))
+        Some(&json!(["vaultId", "entryId"]))
     );
 }
 
@@ -303,7 +316,7 @@ async fn declared_protocol_versions_complete_the_raw_stdio_lifecycle() {
                     "arguments":{
                         "vaultId":"vault-fixture",
                         "entryId":"entry-fixture",
-                        "cdp":"http://127.0.0.1:9222"
+                        "provider":"playwright"
                     }
                 }
             }),
@@ -311,12 +324,9 @@ async fn declared_protocol_versions_complete_the_raw_stdio_lifecycle() {
         .await;
         let rejected = receive(&mut client_read).await;
         assert_eq!(rejected["id"], 4);
-        assert_eq!(rejected["result"]["isError"], true);
-        assert_eq!(
-            rejected["result"]["content"][0]["text"],
-            super::INJECT_UNAVAILABLE
-        );
-        assert_eq!(calls.lock().await.as_slice(), ["search"]);
+        assert!(rejected["result"]["isError"].is_null());
+        assert_eq!(rejected["result"]["content"][0]["text"], "synthetic-inject");
+        assert_eq!(calls.lock().await.as_slice(), ["search", "inject"]);
 
         client_write
             .shutdown()

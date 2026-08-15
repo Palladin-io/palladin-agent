@@ -18,7 +18,7 @@ export const INJECT_UNAVAILABLE_EXIT_CODE = 78;
  */
 export function injectCommand(_getProfile: GetProfile): Command {
   const cmd = new Command('inject')
-    .description('Browser injection is unavailable until an authenticated browser boundary is installed')
+    .description('Inject a granted credential through an authenticated browser provider')
     .argument('<vaultId>', 'vault ID')
     .argument('<entryId>', 'entry ID')
     .requiredOption('--cdp <endpoint>', 'deprecated and rejected unauthenticated CDP endpoint')

@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
-use crate::{CryptoError, X25519Identity};
+use crate::{CryptoError, SecretBytes, X25519Identity};
 
 pub const VAULT_XCHACHA_V1: &str = "palladin-vault-xchacha-v1";
 pub const X25519_WRAPPER_V1: &str = "palladin-x25519-sealed-box-v1";
@@ -89,6 +89,7 @@ pub enum EnvelopeBinding {
         recipient_agent_key_version: u32,
         recipient_agent_key_fingerprint: [u8; 32],
         approved_methods: u16,
+        delivery_policy: u16,
         field_set_commitment: [u8; 32],
         expires_at: Option<InstantBinding>,
         remaining_uses: Option<u32>,
@@ -247,6 +248,15 @@ impl X25519SealedBoxSuite {
             .try_into()
             .map_err(|_| CryptoError::InvalidLength)?;
         Ok(SecretBox::new(Box::new(key)))
+    }
+
+    pub fn unwrap_secret(
+        wrapped: &SealedWrappedKey,
+        recipient: &X25519Identity,
+        context: &WrapperContext,
+    ) -> Result<SecretBytes, CryptoError> {
+        let key = Self::unwrap(wrapped, recipient, context)?;
+        Ok(SecretBytes::new(key.expose_secret().to_vec()))
     }
 }
 
@@ -624,10 +634,12 @@ fn validate_descriptor(descriptor: &EnvelopeDescriptor) -> Result<(), CryptoErro
             wrapper_suite_id,
             recipient_agent_key_version,
             recipient_agent_key_fingerprint,
+            delivery_policy,
             ..
         } if wrapper_suite_id != X25519_WRAPPER_V1
             || *recipient_agent_key_version == 0
-            || *recipient_agent_key_fingerprint == [0; 32] =>
+            || *recipient_agent_key_fingerprint == [0; 32]
+            || *delivery_policy > 1 =>
         {
             return Err(CryptoError::InvalidDescriptor);
         }
@@ -713,6 +725,7 @@ fn encode_binding(output: &mut Vec<u8>, binding: &EnvelopeBinding) {
             recipient_agent_key_version,
             recipient_agent_key_fingerprint,
             approved_methods,
+            delivery_policy,
             field_set_commitment,
             expires_at,
             remaining_uses,
@@ -722,6 +735,7 @@ fn encode_binding(output: &mut Vec<u8>, binding: &EnvelopeBinding) {
             push_u32(output, *recipient_agent_key_version);
             output.extend_from_slice(recipient_agent_key_fingerprint);
             push_u16(output, *approved_methods);
+            push_u16(output, *delivery_policy);
             output.extend_from_slice(field_set_commitment);
             match expires_at {
                 Some(instant) => {
@@ -850,6 +864,7 @@ mod tests {
                 recipient_agent_key_version: 4,
                 recipient_agent_key_fingerprint: [0x5a; 32],
                 approved_methods: 3,
+                delivery_policy: 0,
                 field_set_commitment: [0xa5; 32],
                 expires_at: Some(InstantBinding {
                     unix_seconds: 1_700_000_000,

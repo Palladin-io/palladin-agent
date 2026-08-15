@@ -118,7 +118,8 @@ API keys in argv or environment variables are rejected. Connecting a second prof
 | `palladin search <query>` | Search metadata visible to the Agent. |
 | `palladin get <vaultId> <entryId>` | Intentionally return a granted credential to the operator. |
 | `palladin exec <vaultId> <entryId> -- <program>` | Run an allowlisted program with delivered values in a sanitized child environment. |
-| `palladin inject ...` | Fail closed until an authenticated browser boundary exists. |
+| `palladin inject <vaultId> <entryId> --provider extension --form-json '<definition>'` | Execute an Agent-defined, value-free form plan with an approved Inject grant through the existing authenticated extension. Composite MCP providers transfer the same object over their private provider handshake instead of argv. |
+| `palladin browser install --extension-id <id> [--browser <browser>]` | Install the native host allowlisted to one Palladin extension ID. Supports Chrome, Chrome for Testing, and Chromium; custom profiles use `--user-data-dir <absolute-path>`. |
 | `palladin mcp serve` | Serve Palladin tools over MCP stdio. |
 | `palladin security upgrade` | Explicitly migrate pre-production schema v2 state and secret slots to integrity-bound schema v3. |
 | `palladin security legacy-status` | Inspect legacy TypeScript state without opening config or private-key contents. |
@@ -170,7 +171,7 @@ The Agent must be active before credential tools work.
 | `search_entries` | Search metadata without returning secret values. |
 | `get_credential` | Intentionally return a granted value; TOTP fields return only the current code. |
 | `exec_with_credential` | Execute without returning child stdout/stderr to the model. |
-| `inject_credential` | Fail closed without contacting CDP or requesting a credential. |
+| `inject_credential` | Inject through a trusted provider without returning the credential to the model. Provider-specific MCP packages select their own adapter. |
 | `report_credential_stale` | Report a stale credential without sending its value. |
 
 ## Security notes
@@ -179,9 +180,63 @@ The Agent must be active before credential tools work.
 - Native secret storage has no file or environment fallback.
 - The organization API key and private keys are never child-process environment variables.
 - `exec` uses no implicit shell, rebuilds the child environment from an allowlist, and supplies null stdin.
-- Browser injection is disabled because a caller-controlled CDP endpoint cannot attest the browser or page origin.
+- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. A reviewed embedded adapter receives the Agent-owned Playwright `Page` in-process; the model may supply only a bounded, value-free form definition. The versioned `palladin.inject-provider.v1` private-pipe contract re-checks HTTPS plus the encrypted Entry domain before every sensitive step.
 - The npm launcher has no third-party JavaScript runtime dependencies. Its only production dependency is the exact-version platform package.
 - Removing the npm package never deletes identity. Purge is always an explicit native command.
+
+## Browser providers
+
+`Inject` has an Open/Closed provider boundary. The native runtime owns grant delivery and
+credential decryption; provider adapters own only browser navigation/fill and return a value-free
+outcome. Adding another agent browser does not change the grant, crypto, CLI, or MCP core.
+
+| Provider | Receiver | Extension required | Secret transport |
+|---|---|---:|---|
+| `extension` | The existing Palladin Chromium extension | Yes — the same user-autofill extension | Native Messaging plus an owner-only local socket |
+| `playwright` | `@palladin/playwright-mcp` embedded in an Agent that owns the live `Page` | No | Private child-process pipes, then the existing in-process Playwright `Page` |
+| `agent-browser` | `@palladin/agent-browser-mcp` composed with AgentBrowser | No | Private child-process pipes, then its owner-only daemon socket |
+
+The extension provider uses the same Palladin extension rather than a provider-specific extension.
+Its installer writes the browser-specific Native Messaging manifest for `chrome`,
+`chrome-for-testing`, or `chromium`. A custom browser profile must be passed explicitly with
+`--user-data-dir`; the directory must already exist, be owned by the current user, and not be a
+symbolic link. The host allowlist contains exactly one extension ID and never uses a wildcard.
+
+Codex, Claude, and other MCP clients are callers, not browser providers. They use one of these MCP
+servers and never receive a dedicated extension or the credential value. A future provider registers
+a new lowercase identifier and implements the same value-free contract; unknown providers fail closed.
+
+For Playwright, the Agent owns the browser, `BrowserContext`, and active page. It embeds the shared
+Palladin adapter and passes that live `Page` object directly; Palladin never launches another
+browser. The CLI/MCP input never accepts a CDP URL, remote-debugging port, Playwright WebSocket
+endpoint, or unmanaged browser target. Use the extension provider when Inject must target an
+already-running ordinary Chrome profile that is not owned by the Agent's Playwright runtime.
+
+### Agent-defined form execution
+
+The Agent first prepares the public login surface with ordinary browser tools: it dismisses cookie and
+consent overlays, completes any allowed public navigation (and pauses for a human CAPTCHA when one is
+present), then inspects the visible login structure. Only after the page is ready does it pass a
+complete, versioned, value-free form definition to `inject_credential`.
+The definition is an ordered list of one or more steps mapping approved Entry field IDs to public
+control locators, with a bounded click or press-Enter action and an optional next-step transition
+expectation.
+
+The version 1 shape is `{"version":1,"steps":[...]}`. Every field mapping contains
+`entryFieldId`, `selector`, and one of the bounded controls `username`, `password`, `text`, `email`,
+`tel`, or `otp`. Every step declares one `click` or `press-enter` submit action; every intermediate
+step also declares `waitFor`. `--form-json` is value-free and exists only for the ordinary-extension
+CLI adapter—credential values are never accepted there or in MCP arguments.
+
+The native runtime retrieves and decrypts only the approved values after the grant is active. The
+selected provider validates each declared control, re-checks HTTPS and the authenticated Entry domain
+before every fill/submit and after every transition, injects the values, and performs the declared
+actions. It returns only a bounded result and leaves the authenticated browser session available to
+the Agent. Missing, stale, ambiguous, hidden, or semantically invalid definitions fail closed; the
+provider never guesses another form.
+
+See [ADR 0005](runtime/docs/adr/0005-authenticated-inject-form-contract.md) for the contract and test
+requirements. Caller-controlled CDP remains disabled under [ADR 0003](runtime/docs/adr/0003-browser-injection-boundary.md).
 
 ## Public local state
 

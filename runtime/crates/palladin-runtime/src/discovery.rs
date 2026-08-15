@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use palladin_api::{AgentVisibleField, EntrySearchItem, EntrySearchResult};
@@ -18,34 +18,55 @@ const CURSOR_BYTES: usize = 49;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct DiscoveryPlaintext {
+    pub schema: String,
     pub agent_label: String,
-    pub capabilities: u16,
-    pub discovery_fields: BTreeMap<String, String>,
-    pub entry_type: u16,
+    pub capabilities: Vec<String>,
+    pub fields: Vec<DiscoveryField>,
+    pub entry_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DiscoveryField {
+    pub id: String,
+    pub value: String,
 }
 
 impl Drop for DiscoveryPlaintext {
     fn drop(&mut self) {
+        self.schema.zeroize();
         self.agent_label.zeroize();
-        for (mut label, mut value) in std::mem::take(&mut self.discovery_fields) {
-            label.zeroize();
-            value.zeroize();
+        self.entry_type.zeroize();
+        for capability in &mut self.capabilities {
+            capability.zeroize();
+        }
+        for field in &mut self.fields {
+            field.id.zeroize();
+            field.value.zeroize();
         }
     }
 }
 
 impl DiscoveryPlaintext {
     pub(crate) fn validate(&self) -> Result<(), RuntimeError> {
-        if self.agent_label.trim().is_empty()
+        let mut field_ids = BTreeSet::new();
+        let mut capabilities = BTreeSet::new();
+        if self.schema != "palladin.agent-discovery.v1"
+            || self.agent_label.trim().is_empty()
             || self.agent_label.len() > 512
-            || self.capabilities == 0
-            || self.entry_type == 0
-            || self.discovery_fields.len() > 64
-            || self.discovery_fields.iter().any(|(label, value)| {
-                label.trim().is_empty()
-                    || label.len() > 128
-                    || value.is_empty()
-                    || value.len() > 2_048
+            || !matches!(self.entry_type.as_str(), "key" | "credential" | "script")
+            || self.capabilities.is_empty()
+            || self.capabilities.len() > 3
+            || self.capabilities.iter().any(|capability| {
+                !matches!(capability.as_str(), "get" | "exec" | "inject")
+                    || !capabilities.insert(capability)
+            })
+            || self.fields.len() > 64
+            || self.fields.iter().any(|field| {
+                field.id.trim().is_empty()
+                    || field.id.len() > 128
+                    || !field_ids.insert(field.id.as_str())
+                    || field.value.len() > 2_048
             })
         {
             return Err(RuntimeError::InvalidDiscoveryPayload);
@@ -95,6 +116,7 @@ impl IndexedEntry {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct LocalDiscoveryIndex {
     owner: Option<(String, String)>,
     entries: BTreeMap<(String, String), IndexedEntry>,
@@ -187,10 +209,17 @@ impl LocalDiscoveryIndex {
         mut plaintext: DiscoveryPlaintext,
     ) -> Result<(), RuntimeError> {
         plaintext.validate()?;
-        let url_domain = plaintext.discovery_fields.get("urlDomain").cloned();
-        let approved_fields = std::mem::take(&mut plaintext.discovery_fields)
+        let url_domain = plaintext
+            .fields
+            .iter()
+            .find(|field| field.id == "credential.urlDomain")
+            .map(|field| field.value.clone());
+        let approved_fields = std::mem::take(&mut plaintext.fields)
             .into_iter()
-            .map(|(label, value)| AgentVisibleField { label, value })
+            .map(|field| AgentVisibleField {
+                label: field.id,
+                value: field.value,
+            })
             .collect::<Vec<_>>();
         let mut searchable = plaintext.agent_label.to_lowercase();
         for field in &approved_fields {
@@ -232,6 +261,26 @@ impl LocalDiscoveryIndex {
         {
             self.logical_bytes = self.logical_bytes.saturating_sub(entry.logical_bytes());
         }
+    }
+
+    pub(crate) fn authenticated_url_domain(
+        &self,
+        vault_id: &str,
+        entry_id: &str,
+    ) -> Option<String> {
+        self.entries
+            .get(&(vault_id.to_owned(), entry_id.to_owned()))
+            .and_then(|entry| entry.url_domain.clone())
+    }
+
+    pub(crate) fn authenticated_fields(
+        &self,
+        vault_id: &str,
+        entry_id: &str,
+    ) -> Option<Vec<AgentVisibleField>> {
+        self.entries
+            .get(&(vault_id.to_owned(), entry_id.to_owned()))
+            .map(|entry| entry.approved_fields.clone())
     }
 
     pub(crate) fn search(
@@ -348,22 +397,27 @@ impl LocalDiscoveryIndex {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::{
-        DiscoveryPlaintext, LocalDiscoveryIndex, MAX_INDEX_ENTRIES, MAX_LOGICAL_INDEX_BYTES,
-        MAX_PAGE_SIZE,
+        DiscoveryField, DiscoveryPlaintext, LocalDiscoveryIndex, MAX_INDEX_ENTRIES,
+        MAX_LOGICAL_INDEX_BYTES, MAX_PAGE_SIZE,
     };
 
     fn account(label: &str, username: &str) -> DiscoveryPlaintext {
         DiscoveryPlaintext {
+            schema: "palladin.agent-discovery.v1".to_owned(),
             agent_label: label.to_owned(),
-            capabilities: 1,
-            discovery_fields: BTreeMap::from([
-                ("urlDomain".to_owned(), "example.com".to_owned()),
-                ("username".to_owned(), username.to_owned()),
-            ]),
-            entry_type: 1,
+            capabilities: vec!["get".to_owned(), "exec".to_owned()],
+            fields: vec![
+                DiscoveryField {
+                    id: "credential.urlDomain".to_owned(),
+                    value: "example.com".to_owned(),
+                },
+                DiscoveryField {
+                    id: "credential.username".to_owned(),
+                    value: username.to_owned(),
+                },
+            ],
+            entry_type: "credential".to_owned(),
         }
     }
 
@@ -391,6 +445,30 @@ mod tests {
             "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         );
         assert_eq!(alice.items[0].agent_fields[1].value, "alice");
+        assert_eq!(
+            index.authenticated_url_domain(
+                "11111111-1111-4111-8111-111111111111",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            ),
+            Some("example.com".to_owned())
+        );
+        assert_eq!(
+            index.authenticated_url_domain(
+                "11111111-1111-4111-8111-111111111111",
+                "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            ),
+            None
+        );
+        assert_eq!(
+            index
+                .authenticated_fields(
+                    "11111111-1111-4111-8111-111111111111",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                )
+                .expect("authenticated fields")[1]
+                .value,
+            "alice"
+        );
     }
 
     #[test]

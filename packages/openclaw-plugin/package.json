@@ -1,0 +1,38 @@
+{
+  "name": "openclaw-plugin-palladin-browser-inject",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json && esbuild ./dist/index.js --bundle --platform=node --format=esm --target=node22 --external:@palladin/* --external:playwright --external:typebox --outfile=./dist/plugin.js",
+    "plugin:build": "tsc -p tsconfig.json && esbuild ./dist/index.js --bundle --platform=node --format=esm --target=node22 --external:@palladin/* --external:playwright --external:typebox --outfile=./dist/plugin.js && openclaw plugins build --entry ./dist/plugin.js",
+    "plugin:validate": "tsc -p tsconfig.json && esbuild ./dist/index.js --bundle --platform=node --format=esm --target=node22 --external:@palladin/* --external:playwright --external:typebox --outfile=./dist/plugin.js && openclaw plugins validate --entry ./dist/plugin.js",
+    "test": "vitest run --config ./vitest.config.ts"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "openclaw": ">=2026.5.17"
+  },
+  "dependencies": {
+    "@palladin/agent": "file:../..",
+    "@palladin/playwright-mcp": "file:../playwright-mcp",
+    "playwright": "1.63.0-alpha-2026-08-05",
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "openclaw": "latest",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/plugin.js"
+    ]
+  }
+}

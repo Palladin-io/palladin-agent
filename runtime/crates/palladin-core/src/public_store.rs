@@ -6,7 +6,7 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 use thiserror::Error;
@@ -24,6 +24,13 @@ const ED25519_SIGNATURE_BYTES: usize = 64;
 const X25519_PUBLIC_KEY_BYTES: usize = 32;
 const SHA256_BYTES: usize = 32;
 pub const MAX_VAULT_TRUST_ANCHORS: usize = 256;
+
+fn deserialize_nullable_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -104,7 +111,11 @@ pub struct PublicProfileConfig {
     pub identity_id: String,
     pub host: String,
     pub organization_credential_id: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string_vec",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub retired_organization_credential_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
@@ -232,10 +243,10 @@ impl PublicProfileConfig {
                 .vault_trust_anchors
                 .iter()
                 .any(|anchor| !anchor.validate())
-            || !self
-                .vault_trust_anchors
-                .windows(2)
-                .all(|pair| pair[0].vault_id < pair[1].vault_id)
+            || !self.vault_trust_anchors.windows(2).all(|pair| {
+                pair[0].vault_id < pair[1].vault_id
+                    && pair[0].agent_access_epoch == pair[1].agent_access_epoch
+            })
         {
             return Err(PublicStoreError::InvalidPublicData);
         }
@@ -1082,6 +1093,12 @@ mod tests {
         let mut duplicate = fixture_config("https://api.palladin.io");
         duplicate.vault_trust_anchors = vec![valid.clone(), valid.clone()];
         assert!(profile_binding_bytes(&duplicate).is_err());
+
+        let mut different_epoch = fixture_config("https://api.palladin.io");
+        let mut later_epoch = fixture_anchor("22222222-2222-4222-8222-222222222222");
+        later_epoch.agent_access_epoch += 1;
+        different_epoch.vault_trust_anchors = vec![valid.clone(), later_epoch];
+        assert!(profile_binding_bytes(&different_epoch).is_err());
 
         let later = fixture_anchor("22222222-2222-4222-8222-222222222222");
         let mut reversed = fixture_config("https://api.palladin.io");

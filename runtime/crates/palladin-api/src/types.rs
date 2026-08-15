@@ -1,5 +1,5 @@
 use palladin_crypto::{EncryptedCredential, EncryptedReasonEnvelope};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,32 +69,55 @@ pub enum ApprovedCredentialMethods {
     GetExecInject,
 }
 
-#[derive(Debug, Deserialize, Eq, PartialEq)]
-#[serde(tag = "access", rename_all = "kebab-case", deny_unknown_fields)]
+impl ApprovedCredentialMethods {
+    const fn bits(self) -> u16 {
+        match self {
+            Self::Get => 1,
+            Self::Exec => 2,
+            Self::GetExec => 3,
+            Self::Inject => 4,
+            Self::GetInject => 5,
+            Self::ExecInject => 6,
+            Self::GetExecInject => 7,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(untagged)]
+enum ApprovedCredentialMethodsWire {
+    Named(ApprovedCredentialMethods),
+    Numeric(u16),
+}
+
+impl ApprovedCredentialMethodsWire {
+    fn into_bits<E: de::Error>(self) -> Result<u16, E> {
+        let bits = match self {
+            Self::Named(methods) => methods.bits(),
+            Self::Numeric(bits) => bits,
+        };
+        (1..=7)
+            .contains(&bits)
+            .then_some(bits)
+            .ok_or_else(|| E::custom("approved methods contain unsupported bits"))
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub enum CredentialAccess {
     Granted {
-        #[serde(rename = "organizationId")]
         organization_id: String,
-        #[serde(rename = "vaultId")]
         vault_id: String,
-        #[serde(rename = "grantId")]
         grant_id: String,
-        #[serde(rename = "agentId")]
         agent_id: String,
-        #[serde(rename = "approvedMethods")]
         approved_methods: u16,
-        #[serde(rename = "entryId")]
         entry_id: String,
-        #[serde(rename = "grantEnvelope")]
         envelope: Box<EncryptedCredential>,
     },
     Pending {
-        #[serde(rename = "grantId")]
         grant_id: String,
         created: Option<bool>,
-        #[serde(rename = "pollIntervalMs")]
         poll_interval_ms: Option<u64>,
-        #[serde(rename = "maxWaitMs")]
         max_wait_ms: Option<u64>,
     },
     Denied,
@@ -105,6 +128,98 @@ pub enum CredentialAccess {
     ScriptExecOnly,
     Unavailable,
     Blocked,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CredentialAccessWire {
+    access: String,
+    organization_id: Option<String>,
+    vault_id: Option<String>,
+    agent_id: Option<String>,
+    approved_methods: Option<ApprovedCredentialMethodsWire>,
+    entry_id: Option<String>,
+    grant_envelope: Option<Box<EncryptedCredential>>,
+    grant_id: Option<String>,
+    created: Option<bool>,
+    poll_interval_ms: Option<u64>,
+    max_wait_ms: Option<u64>,
+}
+
+impl<'de> Deserialize<'de> for CredentialAccess {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = CredentialAccessWire::deserialize(deserializer)?;
+        let approved_methods = wire
+            .approved_methods
+            .map(ApprovedCredentialMethodsWire::into_bits)
+            .transpose()?;
+        let granted_fields_absent = wire.organization_id.is_none()
+            && wire.vault_id.is_none()
+            && wire.agent_id.is_none()
+            && approved_methods.is_none()
+            && wire.entry_id.is_none()
+            && wire.grant_envelope.is_none();
+        let pending_fields_absent = wire.grant_id.is_none()
+            && wire.created.is_none()
+            && wire.poll_interval_ms.is_none()
+            && wire.max_wait_ms.is_none();
+        match wire.access.as_str() {
+            "granted"
+                if wire.created.is_none()
+                    && wire.poll_interval_ms.is_none()
+                    && wire.max_wait_ms.is_none() =>
+            {
+                Ok(Self::Granted {
+                    organization_id: wire
+                        .organization_id
+                        .ok_or_else(|| de::Error::missing_field("organizationId"))?,
+                    vault_id: wire
+                        .vault_id
+                        .ok_or_else(|| de::Error::missing_field("vaultId"))?,
+                    grant_id: wire
+                        .grant_id
+                        .ok_or_else(|| de::Error::missing_field("grantId"))?,
+                    agent_id: wire
+                        .agent_id
+                        .ok_or_else(|| de::Error::missing_field("agentId"))?,
+                    approved_methods: approved_methods
+                        .ok_or_else(|| de::Error::missing_field("approvedMethods"))?,
+                    entry_id: wire
+                        .entry_id
+                        .ok_or_else(|| de::Error::missing_field("entryId"))?,
+                    envelope: wire
+                        .grant_envelope
+                        .ok_or_else(|| de::Error::missing_field("grantEnvelope"))?,
+                })
+            }
+            "pending" if granted_fields_absent => Ok(Self::Pending {
+                grant_id: wire
+                    .grant_id
+                    .ok_or_else(|| de::Error::missing_field("grantId"))?,
+                created: wire.created,
+                poll_interval_ms: wire.poll_interval_ms,
+                max_wait_ms: wire.max_wait_ms,
+            }),
+            "denied" if granted_fields_absent && pending_fields_absent => Ok(Self::Denied),
+            "revoked" if granted_fields_absent && pending_fields_absent => Ok(Self::Revoked),
+            "expired" if granted_fields_absent && pending_fields_absent => Ok(Self::Expired),
+            "consumed" if granted_fields_absent && pending_fields_absent => Ok(Self::Consumed),
+            "method-not-allowed" if granted_fields_absent && pending_fields_absent => {
+                Ok(Self::MethodNotAllowed)
+            }
+            "script-exec-only" if granted_fields_absent && pending_fields_absent => {
+                Ok(Self::ScriptExecOnly)
+            }
+            "unavailable" if granted_fields_absent && pending_fields_absent => {
+                Ok(Self::Unavailable)
+            }
+            "blocked" if granted_fields_absent && pending_fields_absent => Ok(Self::Blocked),
+            _ => Err(de::Error::custom("invalid credential access response")),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -227,19 +342,52 @@ pub struct AgentVaultDiscoveryEnvelope {
     pub vault_id: String,
     pub agent_id: String,
     pub vdk_version: u32,
-    pub algorithm_suite: u16,
-    pub recipient_agent_key_version: u32,
-    pub recipient_agent_key_fingerprint: String,
-    pub agent_wrapped_vdk: String,
+    pub wrapped_vdk: X25519WrappedKey,
     pub manifest_revision: String,
     pub manifest_signature: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct X25519WrappedKey {
+    pub descriptor: X25519WrapperDescriptor,
+    pub encoded_sealed_key_package: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct X25519WrapperDescriptor {
+    pub protocol_version: u16,
+    pub wrapper_suite_id: String,
+    pub purpose: String,
+    pub scope: EnvelopeScopeContract,
+    pub resource_revision: String,
+    pub wrapped_key_version: u32,
+    pub member_key_generation: Option<u32>,
+    pub recipient_key_kind: String,
+    pub recipient_key_version: u32,
+    pub recipient_fingerprint: String,
+    pub parent_descriptor_hash: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvelopeScopeContract {
+    pub organization_id: String,
+    pub vault_id: String,
+    pub entry_id: Option<String>,
+    pub grant_or_request_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub member_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct VaultManifest {
     pub protocol_version: u16,
-    pub algorithm_suite: u16,
+    pub crypto_suite_id: String,
+    pub wrapper_suite_id: String,
+    pub signature_suite_id: String,
     pub organization_id: String,
     pub vault_id: String,
     pub agent_id: String,
@@ -267,34 +415,34 @@ pub struct AgentVaultManifestItem {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentVaultManifestsResponse {
+    pub agent_access_epoch: u32,
     pub items: Vec<AgentVaultManifestItem>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AgentDiscoveryEnvelopeHeader {
+pub struct AgentDiscoveryEnvelopeDescriptor {
     pub protocol_version: u16,
-    pub algorithm_suite: u16,
-    pub resource_kind: u16,
-    pub projection_kind: u16,
+    pub crypto_suite_id: String,
+    pub purpose: String,
+    pub scope: EnvelopeScopeContract,
     pub resource_revision: String,
     pub key_version: u32,
-    pub member_key_generation: u32,
-    pub nonce: String,
+    pub member_key_generation: Option<u32>,
+    pub binding: EmptyEnvelopeBinding,
 }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EmptyEnvelopeBinding {}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentDiscoveryEnvelope {
-    pub organization_id: String,
-    pub vault_id: String,
-    pub entry_id: String,
-    pub agent_discovery_revision: String,
-    pub vdk_version: u32,
-    pub header: AgentDiscoveryEnvelopeHeader,
-    pub ciphertext: String,
+    pub descriptor: AgentDiscoveryEnvelopeDescriptor,
+    pub encoded_suite_payload: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -404,7 +552,10 @@ pub(crate) struct StaleRequestBody<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentDiscoverySnapshotResponse, ApprovedCredentialMethods, CredentialAccess};
+    use super::{
+        AgentDiscoverySnapshotResponse, AgentVaultManifestsResponse, ApprovedCredentialMethods,
+        CredentialAccess,
+    };
 
     const GRANTED: &str = r#"{
         "access":"granted",
@@ -477,6 +628,100 @@ mod tests {
     }
 
     #[test]
+    fn pending_accepts_the_backend_record_shape_without_weakening_the_union() {
+        let pending = r#"{
+            "access":"pending","organizationId":null,"vaultId":null,"agentId":null,
+            "approvedMethods":null,"entryId":null,"grantEnvelope":null,
+            "grantId":"77777777-7777-4777-8777-777777777777","created":true,
+            "pollIntervalMs":30000,"maxWaitMs":180000
+        }"#;
+        assert!(matches!(
+            serde_json::from_str::<CredentialAccess>(pending).expect("pending"),
+            CredentialAccess::Pending {
+                created: Some(true),
+                ..
+            }
+        ));
+
+        let confused = pending.replace(
+            r#""organizationId":null"#,
+            r#""organizationId":"organization""#,
+        );
+        assert!(serde_json::from_str::<CredentialAccess>(&confused).is_err());
+    }
+
+    #[test]
+    fn granted_accepts_current_backend_named_enums() {
+        let scope = serde_json::json!({
+            "organizationId": "00112233-4455-4677-8899-aabbccddeeff",
+            "vaultId": "11112222-3333-4444-8555-666677778888",
+            "entryId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "grantOrRequestId": "12345678-1234-4234-8234-1234567890ab",
+            "agentId": "fedcba98-7654-4321-8765-abcdefabcdef"
+        });
+        let granted = serde_json::json!({
+            "access": "granted",
+            "organizationId": "00112233-4455-4677-8899-aabbccddeeff",
+            "vaultId": "11112222-3333-4444-8555-666677778888",
+            "grantId": "12345678-1234-4234-8234-1234567890ab",
+            "agentId": "fedcba98-7654-4321-8765-abcdefabcdef",
+            "approvedMethods": "inject",
+            "entryId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "grantEnvelope": {
+                "descriptor": {
+                    "protocolVersion": 2,
+                    "cryptoSuiteId": "palladin-vault-xchacha-v1",
+                    "purpose": "grantPayload",
+                    "scope": scope.clone(),
+                    "resourceRevision": "1",
+                    "keyVersion": 1,
+                    "memberKeyGeneration": 1,
+                    "binding": {
+                        "entryRevision": "1",
+                        "wrapperSuiteId": "palladin-x25519-sealed-box-v1",
+                        "recipientKeyVersion": 1,
+                        "recipientKeyFingerprint": "fingerprint",
+                        "approvedMethods": 4,
+                        "deliveryPolicy": 0,
+                        "fieldSetCommitment": "commitment",
+                        "expiresAt": null,
+                        "remainingUses": 1
+                    }
+                },
+                "encodedSuitePayload": "payload",
+                "wrappedGrantDek": {
+                    "descriptor": {
+                        "protocolVersion": 2,
+                        "wrapperSuiteId": "palladin-x25519-sealed-box-v1",
+                        "purpose": "grantDek",
+                        "scope": scope,
+                        "resourceRevision": "1",
+                        "wrappedKeyVersion": 1,
+                        "memberKeyGeneration": 1,
+                        "recipientKeyKind": "agentX25519",
+                        "recipientKeyVersion": 1,
+                        "recipientFingerprint": "fingerprint",
+                        "parentDescriptorHash": "hash"
+                    },
+                    "encodedSealedKeyPackage": "wrapped"
+                },
+                "fieldIds": ["credential.username"]
+            },
+            "created": null,
+            "pollIntervalMs": null,
+            "maxWaitMs": null
+        });
+
+        assert!(matches!(
+            serde_json::from_value::<CredentialAccess>(granted).expect("current granted response"),
+            CredentialAccess::Granted {
+                approved_methods: 4,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn discovery_snapshot_contract_cannot_embed_entry_history() {
         let snapshot = serde_json::json!({
             "snapshotBaseSequence":"10",
@@ -486,5 +731,21 @@ mod tests {
         });
 
         assert!(serde_json::from_value::<AgentDiscoverySnapshotResponse>(snapshot).is_err());
+    }
+
+    #[test]
+    fn manifest_list_requires_the_authenticated_agent_access_epoch_wrapper() {
+        let response = serde_json::from_str::<AgentVaultManifestsResponse>(
+            r#"{"agentAccessEpoch":7,"items":[]}"#,
+        )
+        .expect("current manifest response");
+        assert_eq!(response.agent_access_epoch, 7);
+
+        for rejected in [
+            r#"{"items":[]}"#,
+            r#"{"agentAccessEpoch":7,"items":[],"nextCursor":null}"#,
+        ] {
+            assert!(serde_json::from_str::<AgentVaultManifestsResponse>(rejected).is_err());
+        }
     }
 }

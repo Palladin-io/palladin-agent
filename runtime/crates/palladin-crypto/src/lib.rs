@@ -4,6 +4,7 @@ mod envelope;
 mod grant;
 mod identity;
 mod manifest;
+mod reason;
 mod signing;
 mod suite;
 mod vault_v2;
@@ -23,6 +24,11 @@ pub use manifest::{
     confirm_pairing, confirm_pairing_from_relay, prepare_pairing, verify_current_manifest,
     verify_manifest_update,
 };
+pub use reason::{
+    EncryptedReasonBinding, EncryptedReasonContext, EncryptedReasonDescriptor,
+    EncryptedReasonEnvelope, EncryptedReasonScope, ReasonWrapperDescriptor, WrappedReasonDek,
+    encrypt_reason,
+};
 pub use signing::{
     SignatureHeaders, body_sha256_base64, canonical_request, generate_nonce_base64, sign_request,
 };
@@ -33,10 +39,9 @@ pub use suite::{
     compute_field_set_commitment, compute_key_fingerprint,
 };
 pub use vault_v2::{
-    ALGORITHM_SUITE, AadField, AadProfile, AadValue, EncryptedReasonContext,
-    EncryptedReasonEnvelope, EncryptedReasonHeader, EnvelopeHeader, HkdfContext, PROTOCOL_VERSION,
+    ALGORITHM_SUITE, AadField, AadProfile, AadValue, EnvelopeHeader, HkdfContext, PROTOCOL_VERSION,
     SecretBytes, SignatureProfile, decode_base64url, decrypt_envelope, derive_projection_key,
-    encode_aad, encrypt_reason, key_fingerprint, open_sealed_box, verify_domain_signature,
+    encode_aad, key_fingerprint, open_sealed_box, verify_domain_signature,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -45,6 +50,8 @@ pub enum CryptoError {
     InvalidLength,
     #[error("cryptographic input has an invalid encoding")]
     InvalidEncoding,
+    #[error("decrypted grant payload has an invalid encoding")]
+    InvalidGrantPayloadEncoding,
     #[error("cryptographic authentication failed")]
     AuthenticationFailed,
     #[error("cryptographic random generation failed")]

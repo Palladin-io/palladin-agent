@@ -17,6 +17,25 @@ vendored under `runtime/contracts/vault-v2/fixtures/v2` from a pinned Palladin
 root-repository commit; tests verify the fixture manifest and every file digest
 before exercising all positive and corruption vectors.
 
+### Agent Discovery authorization snapshots
+
+The native runtime accepts Vault manifests only from the strict
+`{ agentAccessEpoch, items }` response. The non-zero epoch must match every
+integrity-bound local Vault anchor before any item is applied. It validates the
+complete canonical-descriptor manifest/envelope batch, including first-use
+public Vault trust anchors, in memory; only a fully valid batch can produce one
+signed atomic profile update. Discovery pages are decrypted into a cloned local
+index and replace the live index only after every Vault finishes and the anchor
+batch is durably committed.
+
+Snapshot or delta `409 { "outcome": "sync-state-changed" }` responses discard
+the complete working attempt. The runtime repeats the operation from a fresh
+manifest authorization read at most three times with bounded linear backoff.
+Other conflicts are not retried, retry exhaustion fails closed, and response
+bodies, ciphertext, credentials, and private identity material are never added
+to errors or diagnostics. Inject obtains its authenticated URL and field
+metadata through the same atomic Discovery synchronization path.
+
 ## Identity ownership
 
 - The API key belongs to an organization. Multiple Agent profiles may reference the same organization credential.

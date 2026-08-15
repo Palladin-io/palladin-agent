@@ -473,7 +473,7 @@ fn access(name: &str) -> CredentialAccess {
                     "binding": {
                         "entryRevision":"1","wrapperSuiteId":"palladin-x25519-sealed-box-v1",
                         "recipientKeyVersion":1,"recipientKeyFingerprint":"AA",
-                        "approvedMethods":1,"fieldSetCommitment":"AA",
+                        "approvedMethods":1,"deliveryPolicy":0,"fieldSetCommitment":"AA",
                         "expiresAt":null,"remainingUses":1
                     }
                 },

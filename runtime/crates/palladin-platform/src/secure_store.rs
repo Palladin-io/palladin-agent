@@ -153,6 +153,7 @@ pub enum AuthorizationPrompt {
     Status,
     SearchEntries,
     GetCredential,
+    InjectCredential,
     ExecWithCredential,
     ReportCredentialStale,
     IdentityManagement,
@@ -167,6 +168,9 @@ impl AuthorizationPrompt {
             Self::Status => "Allow Palladin to inspect Agent status",
             Self::SearchEntries => "Allow Palladin to search vault entries",
             Self::GetCredential => "Allow Palladin to retrieve a credential",
+            Self::InjectCredential => {
+                "Allow Palladin to inject a credential into a trusted browser provider"
+            }
             Self::ExecWithCredential => "Allow Palladin to run a command with a credential",
             Self::ReportCredentialStale => "Allow Palladin to report a stale credential",
             Self::IdentityManagement => "Allow Palladin to manage this Agent identity",

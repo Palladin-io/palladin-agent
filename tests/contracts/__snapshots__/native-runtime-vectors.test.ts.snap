@@ -25,7 +25,7 @@ exports[`frozen native runtime vectors in TypeScript > pins the exact public MCP
   "syntheticOnly": true,
   "tools": [
     {
-      "description": "Search vault entries by name, URL, or description across the Agent's organization. Returns metadata only: entryId, vaultId, label, urlDomain, description, and Agent-visible fields. Pick one result and call exec_with_credential, or get_credential only when plaintext must enter the model context. Browser injection is currently unavailable.",
+      "description": "Search vault entries by name, URL, or description across the Agent's organization. Returns metadata only: entryId, vaultId, label, urlDomain, description, and Agent-visible fields. Pick one result and call inject_credential for browser login, exec_with_credential for a local command, or get_credential only when plaintext must enter the model context.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -185,53 +185,19 @@ exports[`frozen native runtime vectors in TypeScript > pins the exact public MCP
       "requiredMethod": "Exec",
     },
     {
-      "description": "Fail closed without requesting or decrypting a credential. External CDP cannot attest the browser or page origin, so browser injection remains unavailable until a reviewed authenticated browser boundary is installed.",
+      "description": "Inject an approved credential through a trusted Palladin browser provider without returning the secret to the model. The provider re-checks HTTPS and the encrypted entry domain immediately before fill and submit.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "cdp": {
-            "description": "Deprecated unauthenticated CDP endpoint. It is accepted only to return a deterministic fail-closed error and is never contacted.",
-            "maxLength": 4096,
-            "minLength": 1,
-            "type": "string",
-          },
           "entryId": {
             "description": "Entry ID.",
             "maxLength": 256,
             "minLength": 1,
             "type": "string",
           },
-          "field": {
-            "description": "Fill one field by label instead of the primary password. TOTP yields only the current code.",
-            "maxLength": 2048,
-            "type": "string",
-          },
-          "fieldId": {
-            "description": "Fill one custom field by public ID. Takes precedence over field.",
-            "maxLength": 256,
-            "type": "string",
-          },
-          "fillOnly": {
-            "description": "Disable detection and fill only explicit selectors.",
-            "type": "boolean",
-          },
-          "noSubmit": {
-            "description": "Never click a submit control. Takes precedence over submitSelector.",
-            "type": "boolean",
-          },
           "noWait": {
             "description": "Return immediately when approval is pending. Takes precedence over wait.",
             "type": "boolean",
-          },
-          "pageUrl": {
-            "description": "Select an open page by exact parsed URL prefix; no match fails closed.",
-            "maxLength": 4096,
-            "type": "string",
-          },
-          "passwordSelector": {
-            "description": "CSS selector override for the password or selected field.",
-            "maxLength": 2048,
-            "type": "string",
           },
           "pollInterval": {
             "description": "Approval polling interval, with a five-second minimum.",
@@ -247,19 +213,16 @@ exports[`frozen native runtime vectors in TypeScript > pins the exact public MCP
             ],
             "type": "string",
           },
+          "provider": {
+            "default": "extension",
+            "description": "Trusted provider identifier. Use extension for the existing Palladin extension; provider-specific MCP servers select their own implementation.",
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string",
+          },
           "reason": {
             "description": "Justification shown to the approving user.",
             "maxLength": 4096,
-            "type": "string",
-          },
-          "submitSelector": {
-            "description": "CSS selector override for the submit control.",
-            "maxLength": 2048,
-            "type": "string",
-          },
-          "usernameSelector": {
-            "description": "CSS selector override for the username field.",
-            "maxLength": 2048,
             "type": "string",
           },
           "vaultId": {
@@ -277,12 +240,11 @@ exports[`frozen native runtime vectors in TypeScript > pins the exact public MCP
         "required": [
           "vaultId",
           "entryId",
-          "cdp",
         ],
         "type": "object",
       },
       "name": "inject_credential",
-      "requiredMethod": null,
+      "requiredMethod": "Inject",
     },
     {
       "description": "Report that a stored credential did not work so vault owners can rotate it. Send no secret and no typed values - only the entry reference, a machine-readable reason code, and an optional short note.",
