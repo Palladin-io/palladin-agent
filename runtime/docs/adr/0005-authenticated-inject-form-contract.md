@@ -29,6 +29,15 @@ delivery before opening a profile; only an explicit `local-development` build en
 pipes, hidden flags, nonces, filesystem ownership, and version files provide correlation or access
 control but do not authenticate the receiving provider.
 
+The accepted extension transport uses a durable Ed25519 host identity in OS secure storage and an
+explicit user pairing that pins only its public key and fingerprint in the extension. Each Native
+Messaging connection performs a host-signed ephemeral X25519 handshake and derives independent
+directional XChaCha20-Poly1305 keys with HKDF-SHA256. Strict per-direction sequences authenticate
+and replay-protect the existing `prepare`, `inject`, and value-free result messages. The canonical
+wire definition and interoperability vector live in `contracts/inject-provider/v1`. The production
+gate remains closed until the native host, pairing UI, and extension's shared crypto package all
+consume that contract end to end.
+
 ### Agent-owned Playwright Page transport
 
 The Agent owns the browser process, `BrowserContext`, and `Page` used before and after Inject. A

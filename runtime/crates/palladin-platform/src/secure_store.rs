@@ -11,12 +11,17 @@ use tokio_util::sync::CancellationToken;
 #[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]
 const SERVICE: &str = "io.palladin.agent";
 
+/// Fixed non-profile owner for the single installation-scoped browser host identity.
+pub const BROWSER_HOST_IDENTITY_OWNER_ID: &str = "64fbf85296544aed42010aa8584007a5";
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum SecretSlot {
     /// Small, non-secret integrity root for the public profile store.
     IntegrityTrustStateV1,
     /// Monotonic sequence and digest for the signed public runtime policy.
     VersionPolicyTrustStateV1,
+    /// Durable Ed25519 identity for the authenticated browser Native Messaging host.
+    BrowserHostEd25519SecretKeyV1,
     OrganizationApiKey,
     X25519PrivateKey,
     Ed25519SecretKey,
@@ -36,6 +41,7 @@ impl SecretSlot {
         match self {
             Self::IntegrityTrustStateV1 => "integrity-trust-state-v1",
             Self::VersionPolicyTrustStateV1 => "version-policy-trust-state-v1",
+            Self::BrowserHostEd25519SecretKeyV1 => "browser-host-ed25519-secret-key-v1",
             Self::OrganizationApiKey => "organization-api-key-v3",
             Self::X25519PrivateKey => "x25519-private-key-v3",
             Self::Ed25519SecretKey => "ed25519-secret-key-v3",
@@ -66,6 +72,7 @@ impl SecretSlot {
         match self {
             Self::IntegrityTrustStateV1 => "Palladin profile integrity root",
             Self::VersionPolicyTrustStateV1 => "Palladin version policy trust state",
+            Self::BrowserHostEd25519SecretKeyV1 => "Palladin browser host identity",
             Self::OrganizationApiKey => "Palladin organization credential",
             Self::X25519PrivateKey => "Palladin Agent encryption identity",
             Self::Ed25519SecretKey => "Palladin Agent signing identity",
@@ -137,6 +144,7 @@ impl OperationScope {
                 .is_ok(),
             SecretSlot::IntegrityTrustStateV1
             | SecretSlot::VersionPolicyTrustStateV1
+            | SecretSlot::BrowserHostEd25519SecretKeyV1
             | SecretSlot::LegacyOrganizationApiKeyV2
             | SecretSlot::LegacyX25519PrivateKeyV2
             | SecretSlot::LegacyEd25519SecretKeyV2 => false,
@@ -799,6 +807,10 @@ mod tests {
         assert_eq!(
             SecretSlot::VersionPolicyTrustStateV1.account_suffix(),
             "version-policy-trust-state-v1"
+        );
+        assert_eq!(
+            SecretSlot::BrowserHostEd25519SecretKeyV1.account_suffix(),
+            "browser-host-ed25519-secret-key-v1"
         );
         assert_eq!(
             SecretSlot::OrganizationApiKey.account_suffix(),

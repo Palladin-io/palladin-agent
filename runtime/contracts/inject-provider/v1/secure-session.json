@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "protocol": "palladin.inject-provider.v1",
+  "algorithms": {
+    "hostIdentity": "Ed25519",
+    "ephemeralAgreement": "X25519",
+    "keyDerivation": "HKDF-SHA256",
+    "frameEncryption": "XChaCha20-Poly1305"
+  },
+  "extensionOrigin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop/",
+  "syntheticInputs": {
+    "hostSigningSecretKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+    "extensionEphemeralSecretKey": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+    "extensionNonce": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+    "hostNonce": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+    "hostEphemeralSecretKey": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU"
+  },
+  "open": {
+    "protocol": "palladin.inject-provider.v1",
+    "type": "session.open",
+    "extensionNonce": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+    "extensionEphemeralPublicKey": "zo060cy2M-x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk"
+  },
+  "ready": {
+    "protocol": "palladin.inject-provider.v1",
+    "type": "session.ready",
+    "extensionNonce": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+    "hostNonce": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+    "hostEphemeralPublicKey": "UKYUCbHd0DJemxa3AOcZ6XcsBwALG9d4bpB8ZT0gSV0",
+    "hostSigningPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w",
+    "signature": "hl6ZUnsCo3GDoAHdD52zhj8ittLlf9gD8lQWVv5A9Fl8MYYor5YYoJGBS9BNRBxRi91OY3YJtEd9klMViaJJCg",
+    "sessionId": "0Q18UTksj-1bty-uQywo1i-e2sSq-LtxX3PmpXEA5pY"
+  },
+  "firstHostPlaintext": {
+    "type": "prepare",
+    "nonce": "fixture-nonce"
+  },
+  "firstHostFrame": {
+    "protocol": "palladin.inject-provider.v1",
+    "type": "secure",
+    "sessionId": "0Q18UTksj-1bty-uQywo1i-e2sSq-LtxX3PmpXEA5pY",
+    "sequence": "0",
+    "ciphertext": "iJ2kyOdf8WOIe92NY9Sb4JWzAD2orc0Si4-iW0UjXuU6wdpAJAHfPMgPPavwxwE1imF1zArvc5Sg0A"
+  },
+  "firstExtensionPlaintext": {
+    "type": "prepare.result",
+    "outcome": "ready"
+  },
+  "firstExtensionFrame": {
+    "protocol": "palladin.inject-provider.v1",
+    "type": "secure",
+    "sessionId": "0Q18UTksj-1bty-uQywo1i-e2sSq-LtxX3PmpXEA5pY",
+    "sequence": "0",
+    "ciphertext": "oaorEUKG0wiezfAopY2fz4xUZKdDi5dxzR-NKOidT6fdvxQPK_qtNflFjiXoCCxx_1qqXwJiYIisul4"
+  }
+}

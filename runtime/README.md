@@ -91,16 +91,21 @@ These controls are defense in depth inside the selected platform tier. The preci
 
 ## Browser injection
 
-The provider-neutral form and origin-validation contract is implemented, but the current stdio,
-extension-socket, and AgentBrowser-daemon transports do not cryptographically authenticate the
-secret receiver. Production runtimes therefore reject those transports before opening a profile or
-decrypting a credential. Their adapters are development fixtures available only with an explicit
+The provider-neutral form and origin-validation contract is implemented. The extension transport
+now also has a frozen signed-ephemeral-handshake and directional XChaCha20-Poly1305 wire contract,
+with the host's durable Ed25519 identity reserved in OS secure storage. The current Node
+extension-socket and AgentBrowser-daemon adapters do not yet use that authenticated session.
+Production runtimes therefore continue to reject them before opening a profile or decrypting a
+credential. Their adapters are development fixtures available only with an explicit
 `local-development` build; they are not a release security boundary.
 
 Production Inject requires a separately reviewed one-shot capability bound to the provider,
 browser session/document, Vault/Entry, form digest, authenticated domain, expiry, and replay guard.
-Extension support additionally requires installation pairing and end-to-end authenticated
-encryption. AgentBrowser support requires an upstream session-owned authenticated channel.
+Extension support additionally requires the explicit pairing UI, the shared extension crypto API,
+and Native Messaging host integration described in
+[`contracts/inject-provider/v1`](contracts/inject-provider/v1/README.md). AgentBrowser support
+requires an upstream session-owned authenticated channel. None of these requirements can be
+bypassed by selecting the `extension` provider ID or a hidden transport flag.
 
 Caller-provided CDP endpoints, remote-debugging ports, Playwright WebSocket endpoints, and unmanaged
 browser targets are never contacted. They cannot attest the browser or page origin: a fake endpoint

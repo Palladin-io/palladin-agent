@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod secure_transport;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,

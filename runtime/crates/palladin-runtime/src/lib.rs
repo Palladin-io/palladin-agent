@@ -17,6 +17,7 @@ use palladin_api::{
     CredentialAccess, CredentialMethod, EntrySearchResult, GetCredentialOptions, GrantStatus,
     ReportCredentialStaleInput, VaultManifest,
 };
+use palladin_browser_bridge::secure_transport::{BrowserHostIdentity, SecureTransportError};
 use palladin_core::host::ApiHost;
 use palladin_core::legacy_typescript::{LegacyTypeScriptError, LegacyTypeScriptRepository};
 use palladin_core::profiles::{
@@ -48,9 +49,9 @@ use palladin_exec::{
 };
 pub use palladin_platform::secure_store::SecretStore;
 use palladin_platform::secure_store::{
-    AuthorizationPrompt, OperationAuthorization, OperationLease, OperationScope, SecretSlot,
-    StoreError, delete_identity, delete_legacy_identity, delete_legacy_organization_credential,
-    delete_organization_credential,
+    AuthorizationPrompt, BROWSER_HOST_IDENTITY_OWNER_ID, OperationAuthorization, OperationLease,
+    OperationScope, SecretSlot, StoreError, delete_identity, delete_legacy_identity,
+    delete_legacy_organization_credential, delete_organization_credential,
 };
 use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
@@ -590,6 +591,41 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
     #[must_use]
     pub fn repository(&self) -> &ProfileRepository {
         &self.repository
+    }
+
+    /// Load the installation-scoped browser host identity. A Native Messaging host must never
+    /// create trust on first use; absence means explicit browser pairing has not completed.
+    pub fn browser_host_identity(&self) -> Result<BrowserHostIdentity, RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        let secret = self
+            .secrets
+            .get(
+                BROWSER_HOST_IDENTITY_OWNER_ID,
+                SecretSlot::BrowserHostEd25519SecretKeyV1,
+            )?
+            .ok_or(RuntimeError::BrowserHostNotPaired)?;
+        BrowserHostIdentity::from_secret_slice(secret.expose_secret()).map_err(RuntimeError::from)
+    }
+
+    /// Provision the durable host identity only from the explicit pairing flow. The repository
+    /// transaction lock prevents concurrent pairing processes from pinning different keys.
+    pub fn provision_browser_host_identity(&self) -> Result<BrowserHostIdentity, RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        if let Some(secret) = self.secrets.get(
+            BROWSER_HOST_IDENTITY_OWNER_ID,
+            SecretSlot::BrowserHostEd25519SecretKeyV1,
+        )? {
+            return BrowserHostIdentity::from_secret_slice(secret.expose_secret())
+                .map_err(RuntimeError::from);
+        }
+        let identity = BrowserHostIdentity::generate()?;
+        let secret = identity.secret_bytes();
+        self.secrets.set(
+            BROWSER_HOST_IDENTITY_OWNER_ID,
+            SecretSlot::BrowserHostEd25519SecretKeyV1,
+            secret.as_ref(),
+        )?;
+        Ok(identity)
     }
 
     /// Verifies the complete public registry/config/signature chain without opening any secret.
@@ -2621,6 +2657,10 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             .delete(TRUST_OWNER_ID, SecretSlot::VersionPolicyTrustStateV1)?;
         self.secrets
             .delete(TRUST_OWNER_ID, SecretSlot::IntegrityTrustStateV1)?;
+        self.secrets.delete(
+            BROWSER_HOST_IDENTITY_OWNER_ID,
+            SecretSlot::BrowserHostEd25519SecretKeyV1,
+        )?;
         Ok(())
     }
 
@@ -4471,6 +4511,10 @@ pub enum RuntimeError {
     ProfileNotFound,
     #[error("OS secure storage operation failed: {0}")]
     Store(#[from] StoreError),
+    #[error("browser host is not paired; complete explicit extension pairing first")]
+    BrowserHostNotPaired,
+    #[error("authenticated browser host transport failed: {0}")]
+    BrowserHostTransport(#[from] SecureTransportError),
     #[error("cryptographic identity operation failed: {0}")]
     Crypto(#[from] palladin_crypto::CryptoError),
     #[error("API client operation failed: {0}")]
@@ -4719,6 +4763,75 @@ mod tests {
                 .remove(&(owner_id.to_owned(), slot));
             Ok(())
         }
+    }
+
+    #[test]
+    fn browser_host_identity_requires_explicit_pairing_and_is_stable() {
+        let root = tempfile::tempdir().expect("root");
+        let repository = ProfileRepository::new(root.path().join("state")).expect("repository");
+        let store = MemorySecretStore::default();
+        let service = RuntimeService::new(repository, store.clone());
+
+        assert!(matches!(
+            service.browser_host_identity(),
+            Err(RuntimeError::BrowserHostNotPaired)
+        ));
+        let provisioned = service
+            .provision_browser_host_identity()
+            .expect("provision identity");
+        let reopened = service.browser_host_identity().expect("reopen identity");
+        let repeated = service
+            .provision_browser_host_identity()
+            .expect("repeat pairing");
+        assert_eq!(provisioned.public_key(), reopened.public_key());
+        assert_eq!(provisioned.public_key(), repeated.public_key());
+        assert_eq!(provisioned.fingerprint(), reopened.fingerprint());
+        assert_eq!(
+            store
+                .0
+                .lock()
+                .expect("store")
+                .get(&(
+                    BROWSER_HOST_IDENTITY_OWNER_ID.to_owned(),
+                    SecretSlot::BrowserHostEd25519SecretKeyV1,
+                ))
+                .map(Vec::len),
+            Some(32)
+        );
+    }
+
+    #[test]
+    fn malformed_browser_host_identity_never_rotates_on_load() {
+        let root = tempfile::tempdir().expect("root");
+        let repository = ProfileRepository::new(root.path().join("state")).expect("repository");
+        let store = MemorySecretStore::default();
+        store
+            .set(
+                BROWSER_HOST_IDENTITY_OWNER_ID,
+                SecretSlot::BrowserHostEd25519SecretKeyV1,
+                &[9_u8; 31],
+            )
+            .expect("seed malformed identity");
+        let service = RuntimeService::new(repository, store.clone());
+
+        assert!(matches!(
+            service.browser_host_identity(),
+            Err(RuntimeError::BrowserHostTransport(
+                SecureTransportError::InvalidHostIdentity
+            ))
+        ));
+        assert_eq!(
+            store
+                .0
+                .lock()
+                .expect("store")
+                .get(&(
+                    BROWSER_HOST_IDENTITY_OWNER_ID.to_owned(),
+                    SecretSlot::BrowserHostEd25519SecretKeyV1,
+                ))
+                .map(Vec::len),
+            Some(31)
+        );
     }
 
     fn test_lease() -> OperationLease {

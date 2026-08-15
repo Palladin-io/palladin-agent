@@ -17,6 +17,7 @@ getrandom.workspace = true
 libc.workspace = true
 nix.workspace = true
 palladin-api = { path = "../palladin-api" }
+palladin-browser-bridge = { path = "../palladin-browser-bridge" }
 palladin-core = { path = "../palladin-core" }
 palladin-credential = { path = "../palladin-credential" }
 palladin-crypto = { path = "../palladin-crypto" }
