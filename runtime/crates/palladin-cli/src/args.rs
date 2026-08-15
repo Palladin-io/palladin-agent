@@ -32,6 +32,8 @@ pub enum Commands {
     Connect(ConnectArgs),
     /// Show registration status for an Agent profile.
     Status,
+    /// Pair active vaults and pin their Member-confirmed signing keys locally.
+    Pair,
     /// Disconnect and deliberately remove one local Agent identity.
     Disconnect {
         /// Remove the selected profile's native identity and unreferenced organization key.

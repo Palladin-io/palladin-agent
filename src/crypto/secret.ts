@@ -90,6 +90,7 @@ export function parseSecret(plaintext: string): ParsedSecret {
 
   const obj = raw as Record<string, unknown>;
   const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+  const isCreditCard = str(obj.type)?.replace(/[_-]/g, '').toLowerCase() === 'creditcard';
 
   const customFields = parseCustomFields(obj.fields);
   const script = parseScript(obj);
@@ -100,7 +101,7 @@ export function parseSecret(plaintext: string): ParsedSecret {
 
   const fields: Record<string, string> = {};
   for (const [k, v] of Object.entries(obj)) {
-    if (typeof v === 'string' && !STRUCTURAL_KEYS.has(k)) {
+    if (typeof v === 'string' && !STRUCTURAL_KEYS.has(k) && !(k === 'type' && isCreditCard)) {
       fields[k] = v;
     }
   }

@@ -2,6 +2,21 @@
 
 The Rust runtime is the client-side security boundary for Agent identities. It does not change the backend authentication protocol.
 
+## Vault protocol 2 crypto boundary
+
+Vault protocol 2 parsing and cryptographic operations live in the native
+`palladin-crypto` crate. The crate rejects unknown protocol/suite values and
+stale revision, key-version, or Member-generation checkpoints before opening a
+payload. It constructs the registered binary AAD internally, derives projection
+keys with HKDF-SHA-256, opens XChaCha20-Poly1305 and libsodium sealed-box
+payloads, and verifies domain-separated Ed25519 signatures.
+
+Secret outputs use redacted, zeroizing buffers. The public Node launcher neither
+imports this crate nor receives its keys or plaintext. Canonical fixtures are
+vendored under `runtime/contracts/vault-v2/fixtures/v2` from a pinned Palladin
+root-repository commit; tests verify the fixture manifest and every file digest
+before exercising all positive and corruption vectors.
+
 ## Identity ownership
 
 - The API key belongs to an organization. Multiple Agent profiles may reference the same organization credential.

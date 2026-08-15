@@ -540,7 +540,7 @@ fn contains_profile_selector(arguments: &[String]) -> bool {
 fn validate_operation(arguments: &[String]) -> Result<(), ServiceError> {
     let operation = arguments.first().map(String::as_str);
     match operation {
-        Some("init" | "doctor" | "status") if arguments.len() == 1 => Ok(()),
+        Some("init" | "doctor" | "status" | "pair") if arguments.len() == 1 => Ok(()),
         Some("connect")
             if arguments
                 .iter()
@@ -633,6 +633,12 @@ mod tests {
     fn hardened_connect_requires_the_bounded_secret_input_mode() {
         assert!(validate_operation(&args(&["connect"])).is_err());
         assert!(validate_operation(&args(&["connect", "--api-key-stdin"])).is_ok());
+    }
+
+    #[test]
+    fn hardened_pairing_allows_only_the_exact_command() {
+        assert!(validate_operation(&args(&["pair"])).is_ok());
+        assert!(validate_operation(&args(&["pair", "unexpected"])).is_err());
     }
 
     #[cfg(target_os = "linux")]

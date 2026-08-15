@@ -22,6 +22,19 @@ describe('parseSecret', () => {
     expectSensitiveEqual(s.fields.value, 'sk-abc123', 'key injection value');
   });
 
+  it('parses CREDIT_CARD fields without choosing a primary secret', () => {
+    const s = parseSecret(JSON.stringify({ type: 'CREDIT_CARD', cardholderName: 'Ada Lovelace',
+      cardNumber: '4242424242424242', expiryMonth: '12', expiryYear: '2030', securityCode: '123' }));
+    expectSensitiveEqual(s.password, '', 'credit card has no implicit primary secret');
+    expectSensitiveEqual(s.fields.cardNumber, '4242424242424242', 'card number field');
+    expect(s.fields.type).toBeUndefined();
+  });
+
+  it('preserves a legacy non-card type field', () => {
+    const s = parseSecret(JSON.stringify({ value: 'token', type: 'bearer' }));
+    expectSensitiveEqual(s.fields.type, 'bearer', 'legacy type field');
+  });
+
   it('falls back to raw plaintext when not JSON', () => {
     const s = parseSecret('raw-secret-token');
     expect(s.username).toBeNull();

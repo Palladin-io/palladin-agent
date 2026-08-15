@@ -331,6 +331,7 @@ mod tests {
     use super::{
         FieldSelectionError, FieldSelector, ResolvedField, redact_totp_secrets, resolve_field_at,
     };
+
     use crate::secret::parse_secret;
 
     const TOTP: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
