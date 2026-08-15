@@ -4303,7 +4303,14 @@ fn prepare_manifest_anchors(
             verify_current_manifest(manifest, identity, &pinned_vault_trust(anchor)?)
                 .map_err(|_| RuntimeError::UntrustedVaultManifest)?
         } else {
-            initial_vault_trust(manifest, identity)?
+            #[cfg(feature = "local-development")]
+            {
+                initial_vault_trust(manifest, identity)?
+            }
+            #[cfg(not(feature = "local-development"))]
+            {
+                return Err(RuntimeError::UntrustedVaultManifest);
+            }
         };
         let public = PublicVaultTrustAnchor {
             organization_id: organization_id.clone(),
@@ -4328,6 +4335,7 @@ fn prepare_manifest_anchors(
     Ok(next)
 }
 
+#[cfg(feature = "local-development")]
 fn initial_vault_trust(
     manifest: &VaultManifestV2,
     identity: &AgentIdentityBinding,
@@ -4916,6 +4924,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "local-development"))]
+    fn manifest_batch_rejects_unpaired_vaults_in_production() {
+        let (identity, manifests) = signed_manifest_fixture();
+
+        assert!(matches!(
+            prepare_manifest_anchors(&[], 7, &manifests, &identity),
+            Err(RuntimeError::UntrustedVaultManifest)
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "local-development")]
     fn manifest_batch_pins_only_a_fully_valid_first_anchor_set() {
         let (identity, manifests) = signed_manifest_fixture();
         let anchors = prepare_manifest_anchors(&[], 7, &manifests, &identity)
@@ -4933,8 +4953,19 @@ mod tests {
     #[test]
     fn manifest_epoch_or_organization_mismatch_is_rejected_before_batch_application() {
         let (identity, manifests) = signed_manifest_fixture();
-        let current =
-            prepare_manifest_anchors(&[], 7, &manifests, &identity).expect("initial anchors");
+        let current = manifests
+            .iter()
+            .map(|manifest| PublicVaultTrustAnchor {
+                organization_id: identity.organization_id.to_string(),
+                vault_id: manifest.vault_id.clone(),
+                agent_access_epoch: 7,
+                vault_signing_public_key: manifest.vault_signing_public_key.clone(),
+                vault_signing_key_fingerprint: manifest.vault_signing_key_fingerprint.clone(),
+                manifest_revision: manifest.manifest_revision.clone(),
+                manifest_signing_key_version: manifest.manifest_signing_key_version,
+                vdk_version: manifest.vdk_version,
+            })
+            .collect::<Vec<_>>();
         let unchanged = current.clone();
 
         assert!(matches!(
