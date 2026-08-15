@@ -819,6 +819,7 @@ const fn operation_display_name(operation: SecureOperation) -> &'static str {
         SecureOperation::McpSearchEntries => "search vault metadata through MCP",
         SecureOperation::McpGetCredential => "release credential through MCP",
         SecureOperation::McpExecWithCredential => "execute with credential through MCP",
+        SecureOperation::McpInjectCredential => "inject credential through MCP",
         SecureOperation::McpReportCredentialStale => "report stale credential through MCP",
         SecureOperation::Agents => "manage Agent profiles",
         SecureOperation::Security => "manage runtime security",

@@ -3489,6 +3489,7 @@ impl RuntimeSession<'_> {
                         agent_discovery_revision,
                         agent_discovery,
                     } => {
+                        let revision = validate_sequence(&agent_discovery_revision)?;
                         let plaintext = self.decrypt_discovery(
                             vault_id,
                             vdk_version,
@@ -3497,7 +3498,7 @@ impl RuntimeSession<'_> {
                             agent_discovery,
                             vdk,
                         )?;
-                        heads.push((entry_id, plaintext));
+                        heads.push((entry_id, revision, plaintext));
                     }
                     AgentDiscoverySyncItem::Tombstone { .. } => {
                         return Err(RuntimeError::InvalidDiscoveryPayload);
@@ -3561,18 +3562,22 @@ impl RuntimeSession<'_> {
                         entry_id,
                         agent_discovery_revision,
                         agent_discovery,
-                    } => index.upsert(
-                        vault_id,
-                        &entry_id,
-                        self.decrypt_discovery(
+                    } => {
+                        let revision = validate_sequence(&agent_discovery_revision)?;
+                        index.upsert(
                             vault_id,
-                            vdk_version,
                             &entry_id,
-                            &agent_discovery_revision,
-                            agent_discovery,
-                            vdk,
-                        )?,
-                    )?,
+                            revision,
+                            self.decrypt_discovery(
+                                vault_id,
+                                vdk_version,
+                                &entry_id,
+                                &agent_discovery_revision,
+                                agent_discovery,
+                                vdk,
+                            )?,
+                        )?;
+                    }
                     AgentDiscoverySyncItem::Tombstone {
                         entry_id,
                         agent_discovery_revision,
@@ -5022,6 +5027,7 @@ mod tests {
             live.upsert(
                 TEST_VAULT_ID,
                 TEST_ENTRY_ID,
+                1,
                 serde_json::from_value(json!({
                     "schema": "palladin.agent-discovery.v1",
                     "agentLabel": "existing-live-entry",
@@ -5120,6 +5126,7 @@ mod tests {
             live.upsert(
                 TEST_VAULT_ID,
                 TEST_ENTRY_ID,
+                1,
                 serde_json::from_value(json!({
                     "schema": "palladin.agent-discovery.v1",
                     "agentLabel": "existing-live-entry",

@@ -39,7 +39,7 @@ describe('cross-platform CI gates', () => {
     }
 
     expect(portable).toContain('name: CI Gate');
-    expect(portable).toContain('needs: [test, minimum-npm-platform-selection, contracts]');
+    expect(portable).toContain('needs: [test, minimum-npm-platform-selection, openclaw-plugin, contracts]');
     expect(native).toContain('name: Native Platform Gate');
     expect(native).toContain('needs: [apple, windows, linux]');
   });

@@ -120,6 +120,7 @@ impl IndexedEntry {
 pub(crate) struct LocalDiscoveryIndex {
     owner: Option<(String, String)>,
     entries: BTreeMap<(String, String), IndexedEntry>,
+    entry_revisions: BTreeMap<(String, String), u64>,
     vault_versions: BTreeMap<String, u32>,
     applied_sequences: BTreeMap<String, String>,
     logical_bytes: usize,
@@ -130,6 +131,7 @@ impl LocalDiscoveryIndex {
         Self {
             owner: None,
             entries: BTreeMap::new(),
+            entry_revisions: BTreeMap::new(),
             vault_versions: BTreeMap::new(),
             applied_sequences: BTreeMap::new(),
             logical_bytes: 0,
@@ -168,6 +170,8 @@ impl LocalDiscoveryIndex {
     pub(crate) fn retain_vaults(&mut self, authorized: &std::collections::BTreeSet<String>) {
         self.entries
             .retain(|(vault, _), _| authorized.contains(vault));
+        self.entry_revisions
+            .retain(|(vault, _), _| authorized.contains(vault));
         self.vault_versions
             .retain(|vault, _| authorized.contains(vault));
         self.applied_sequences
@@ -178,6 +182,7 @@ impl LocalDiscoveryIndex {
     pub(crate) fn purge(&mut self) {
         self.owner = None;
         self.entries.clear();
+        self.entry_revisions.clear();
         self.vault_versions.clear();
         self.applied_sequences.clear();
         self.logical_bytes = 0;
@@ -185,6 +190,8 @@ impl LocalDiscoveryIndex {
 
     pub(crate) fn remove_vault(&mut self, vault_id: &str) {
         self.entries.retain(|(vault, _), _| vault != vault_id);
+        self.entry_revisions
+            .retain(|(vault, _), _| vault != vault_id);
         self.vault_versions.remove(vault_id);
         self.applied_sequences.remove(vault_id);
         self.recount_logical_bytes();
@@ -193,12 +200,14 @@ impl LocalDiscoveryIndex {
     pub(crate) fn replace_vault(
         &mut self,
         vault_id: &str,
-        heads: Vec<(String, DiscoveryPlaintext)>,
+        heads: Vec<(String, u64, DiscoveryPlaintext)>,
     ) -> Result<(), RuntimeError> {
         self.entries.retain(|(vault, _), _| vault != vault_id);
+        self.entry_revisions
+            .retain(|(vault, _), _| vault != vault_id);
         self.applied_sequences.remove(vault_id);
-        for (entry_id, plaintext) in heads {
-            self.upsert(vault_id, &entry_id, plaintext)?;
+        for (entry_id, revision, plaintext) in heads {
+            self.upsert(vault_id, &entry_id, revision, plaintext)?;
         }
         Ok(())
     }
@@ -207,9 +216,19 @@ impl LocalDiscoveryIndex {
         &mut self,
         vault_id: &str,
         entry_id: &str,
+        revision: u64,
         mut plaintext: DiscoveryPlaintext,
     ) -> Result<(), RuntimeError> {
         plaintext.validate()?;
+        let key = (vault_id.to_owned(), entry_id.to_owned());
+        if revision == 0
+            || self
+                .entry_revisions
+                .get(&key)
+                .is_some_and(|current| revision <= *current)
+        {
+            return Err(RuntimeError::InvalidDiscoveryPayload);
+        }
         let url_domain = plaintext
             .fields
             .iter()
@@ -229,7 +248,6 @@ impl LocalDiscoveryIndex {
             searchable.push('\u{0}');
             searchable.push_str(&field.value.to_lowercase());
         }
-        let key = (vault_id.to_owned(), entry_id.to_owned());
         let entry = IndexedEntry {
             vault_id: vault_id.to_owned(),
             entry_id: entry_id.to_owned(),
@@ -242,7 +260,8 @@ impl LocalDiscoveryIndex {
             .entries
             .get(&key)
             .map_or(0, IndexedEntry::logical_bytes);
-        let next_count = self.entries.len() + usize::from(!self.entries.contains_key(&key));
+        let next_count =
+            self.entry_revisions.len() + usize::from(!self.entry_revisions.contains_key(&key));
         let next_bytes = self
             .logical_bytes
             .saturating_sub(replaced_bytes)
@@ -251,6 +270,8 @@ impl LocalDiscoveryIndex {
             return Err(RuntimeError::DiscoveryIndexLimitExceeded);
         }
         self.entries.insert(key, entry);
+        self.entry_revisions
+            .insert((vault_id.to_owned(), entry_id.to_owned()), revision);
         self.logical_bytes = next_bytes;
         Ok(())
     }
@@ -429,6 +450,7 @@ mod tests {
             .upsert(
                 "11111111-1111-4111-8111-111111111111",
                 "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                1,
                 account("Production", "alice"),
             )
             .unwrap();
@@ -436,6 +458,7 @@ mod tests {
             .upsert(
                 "11111111-1111-4111-8111-111111111111",
                 "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                1,
                 account("Production", "bob"),
             )
             .unwrap();
@@ -484,6 +507,7 @@ mod tests {
                 .upsert(
                     "11111111-1111-4111-8111-111111111111",
                     entry_id,
+                    1,
                     account("Example", suffix),
                 )
                 .unwrap();
@@ -501,6 +525,7 @@ mod tests {
                 .upsert(
                     "11111111-1111-4111-8111-111111111111",
                     entry_id,
+                    1,
                     account("Example", suffix),
                 )
                 .unwrap();
@@ -521,6 +546,38 @@ mod tests {
     }
 
     #[test]
+    fn replayed_discovery_revisions_cannot_replace_or_resurrect_a_head() {
+        let mut index = LocalDiscoveryIndex::new();
+        let vault_id = "11111111-1111-4111-8111-111111111111";
+        let entry_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        index
+            .upsert(vault_id, entry_id, 2, account("Current", "alice"))
+            .expect("current head");
+
+        assert!(
+            index
+                .upsert(vault_id, entry_id, 1, account("Replayed", "mallory"))
+                .is_err()
+        );
+        assert!(
+            index
+                .upsert(vault_id, entry_id, 2, account("Duplicate", "mallory"))
+                .is_err()
+        );
+        assert_eq!(index.search("alice", None, None).unwrap().items.len(), 1);
+
+        index.remove(vault_id, entry_id);
+        assert!(
+            index
+                .upsert(vault_id, entry_id, 2, account("Resurrected", "mallory"))
+                .is_err()
+        );
+        index
+            .upsert(vault_id, entry_id, 3, account("Recreated", "alice"))
+            .expect("strictly newer head");
+    }
+
+    #[test]
     fn deactivation_purge_removes_all_discovery_heads_and_sync_state() {
         let mut index = LocalDiscoveryIndex::new();
         let vault_id = "11111111-1111-4111-8111-111111111111";
@@ -529,6 +586,7 @@ mod tests {
             .upsert(
                 vault_id,
                 "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                1,
                 account("Private account", "sentinel-user"),
             )
             .unwrap();
@@ -559,6 +617,7 @@ mod tests {
             .upsert(
                 vault_id,
                 "entry-a",
+                1,
                 account("Private account", "sentinel-user"),
             )
             .unwrap();
@@ -585,6 +644,7 @@ mod tests {
                 .upsert(
                     vault_id,
                     &entry_id,
+                    1,
                     account("entry", &format!("account-{position}")),
                 )
                 .unwrap();
@@ -595,6 +655,7 @@ mod tests {
                 .upsert(
                     vault_id,
                     &entry_id,
+                    2,
                     account("entry", &format!("updated-{position}")),
                 )
                 .unwrap();
@@ -634,6 +695,7 @@ mod tests {
                 .upsert(
                     vault_id,
                     &uuid::Uuid::from_u128(position as u128).to_string(),
+                    1,
                     account("entry", "bounded"),
                 )
                 .unwrap();
@@ -645,6 +707,7 @@ mod tests {
                 .upsert(
                     vault_id,
                     &uuid::Uuid::from_u128((MAX_INDEX_ENTRIES + 1) as u128).to_string(),
+                    1,
                     account("entry", "overflow"),
                 )
                 .is_err()
@@ -658,7 +721,7 @@ mod tests {
         let mut index = LocalDiscoveryIndex::new();
         assert!(!index.prepare_vault("vault-a", 6));
         index
-            .upsert("vault-a", "entry-a", account("Production", "alice"))
+            .upsert("vault-a", "entry-a", 1, account("Production", "alice"))
             .unwrap();
         index.mark_applied("vault-a", "12".to_owned());
         assert!(index.prepare_vault("vault-a", 6));

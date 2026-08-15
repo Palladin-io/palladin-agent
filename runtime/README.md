@@ -91,13 +91,16 @@ These controls are defense in depth inside the selected platform tier. The preci
 
 ## Browser injection
 
-Browser injection is available only through authenticated providers registered behind the
-`palladin.inject-provider.v1` boundary. The Agent prepares a complete value-free form definition;
-the native runtime obtains the approved credential and sends only the declared field values through
-private process pipes to the provider that already owns the browser session. The provider re-checks
-HTTPS and the encrypted Entry domain before every fill, transition, and submit. Playwright and
-AgentBrowser adapters are supplied by their dedicated MCP packages; an ordinary browser profile
-uses the existing Palladin extension provider.
+The provider-neutral form and origin-validation contract is implemented, but the current stdio,
+extension-socket, and AgentBrowser-daemon transports do not cryptographically authenticate the
+secret receiver. Production runtimes therefore reject those transports before opening a profile or
+decrypting a credential. Their adapters are development fixtures available only with an explicit
+`local-development` build; they are not a release security boundary.
+
+Production Inject requires a separately reviewed one-shot capability bound to the provider,
+browser session/document, Vault/Entry, form digest, authenticated domain, expiry, and replay guard.
+Extension support additionally requires installation pairing and end-to-end authenticated
+encryption. AgentBrowser support requires an upstream session-owned authenticated channel.
 
 Caller-provided CDP endpoints, remote-debugging ports, Playwright WebSocket endpoints, and unmanaged
 browser targets are never contacted. They cannot attest the browser or page origin: a fake endpoint

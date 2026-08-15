@@ -1,8 +1,13 @@
 # Palladin Playwright MCP provider
 
-This package composes the official Playwright MCP server with Palladin's
+This development package composes the official Playwright MCP server with Palladin's
 `inject_credential` tool. The credential is transferred through private process pipes,
 filled by Playwright, and never returned in MCP tool results or model-visible arguments.
+
+The pipe protocol does not authenticate the provider process and is therefore enabled only by a
+Rust runtime compiled with `--features local-development`. Production runtimes reject it before
+opening a profile or decrypting a credential. Publishing this provider requires a separately
+reviewed one-shot provider capability; a hidden CLI flag, nonce, or private pipe is not sufficient.
 
 It uses no browser extension. Install it at the exact same version as `@palladin/agent`.
 
