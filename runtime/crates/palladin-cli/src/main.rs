@@ -1466,10 +1466,26 @@ async fn inject_extension(
             target.expected_domain()
         ));
     }
+    let form_map = match session
+        .resolve_form_discovery_map(target.expected_domain(), provider.as_str(), false)
+        .await
+    {
+        Ok(Some(map)) if map.applies_to_url(current_url) => Some(map),
+        Ok(_) => None,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let form = match form_map
+        .as_ref()
+        .map(|map| &map.map.form)
+        .or(Some(&form))
+    {
+        Some(form) => form,
+        None => return fail("no verified Form Discovery Map or fallback form is available"),
+    };
     let credential = match resolve_injection_credential(
         &parsed,
         delivered.authenticated_field("credential.username"),
-        &form,
+        form,
     ) {
         Ok(credential) => credential,
         Err(error) => return fail(&error.to_string()),
@@ -1514,7 +1530,7 @@ async fn inject_extension(
         grant_id: &delivered.grant_id,
         entry_id: &delivered.entry_id,
         expected_domain: target.expected_domain(),
-        form: &form,
+        form,
         values,
     };
     let sealed = match extension.seal_inject(&wire, not_after_monotonic_ns) {
@@ -1533,8 +1549,12 @@ async fn inject_extension(
         Err(error) => return fail(&error.to_string()),
     };
     drop(forward);
-
     if response.outcome != "injected" {
+        if response.outcome == "stale-form-map" && form_map.is_some() {
+            let _ = session
+                .resolve_form_discovery_map(target.expected_domain(), provider.as_str(), true)
+                .await;
+        }
         return fail(match response.outcome.as_str() {
             "rejected" => "the trusted browser provider did not complete Inject (outcome=rejected)",
             "no-password-field" => {
@@ -1554,6 +1574,9 @@ async fn inject_extension(
             }
             "provider-unavailable" => {
                 "the trusted browser provider did not complete Inject (outcome=provider-unavailable)"
+            }
+            "stale-form-map" => {
+                "the trusted browser provider did not complete Inject (outcome=stale-form-map); the cached map was invalidated and refresh was attempted for the next request"
             }
             _ => "the trusted browser provider did not complete Inject (outcome=invalid)",
         });

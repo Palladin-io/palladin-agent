@@ -17,9 +17,26 @@ const form = {
 describe('AgentBrowser MCP Inject provider boundary', () => {
   it('accepts only bounded value-free tool arguments', () => {
     expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry', form })).not.toBeNull();
-    expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry' })).toBeNull();
+    expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry' })).not.toBeNull();
     expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry', form, selector: '#password' }))
       .toBeNull();
+  });
+
+  it('accepts a verified runtime-owned map when no manual form was supplied', () => {
+    const frame = JSON.stringify({
+      protocol: 'palladin.inject-provider.v1', type: 'credential', provider: 'agent-browser',
+      nonce: 'nonce', transactionId: 'tx', grantId: 'grant', entryId: 'entry',
+      expectedDomain: 'example.com', form,
+      formMap: {
+        version: 1, mapVersion: 1, domain: 'example.com', loginUrl: 'https://example.com/login',
+        provider: 'agent-browser', status: 'verified', fingerprint: 'a'.repeat(64), form,
+      },
+      values: [{ entryFieldId: 'credential.password', value: 'fixture-value-not-production' }],
+    });
+    expect(parseProviderCredential(frame, 'nonce', 'entry')).not.toBeNull();
+    expect(parseProviderCredential(
+      frame.replace('"status":"verified"', '"status":"candidate"'), 'nonce', 'entry',
+    )).toBeNull();
   });
 
   it('binds a credential frame to nonce, entry and exact form', () => {

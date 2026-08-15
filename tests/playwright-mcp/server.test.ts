@@ -139,7 +139,7 @@ describe('Playwright MCP Inject provider boundary', () => {
   });
   it('accepts only a bounded value-free form definition', () => {
     expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry', form: twoStepForm })).not.toBeNull();
-    expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry' })).toBeNull();
+    expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry' })).not.toBeNull();
     expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry', form: twoStepForm, selector: '#password' }))
       .toBeNull();
     expect(parseInjectArguments({
@@ -150,6 +150,20 @@ describe('Playwright MCP Inject provider boundary', () => {
       vaultId: 'vault', entryId: 'entry',
       form: { ...twoStepForm, javascript: 'document.body.innerHTML = "owned"' },
     })).toBeNull();
+  });
+
+  it('accepts a verified runtime-owned map when no manual form was supplied', () => {
+    const frame = JSON.stringify({
+      ...credential(), nonce: 'nonce', entryId: 'entry',
+      formMap: {
+        version: 1, mapVersion: 1, domain: 'example.com', loginUrl: 'https://example.com/login',
+        provider: 'playwright', status: 'verified', fingerprint: 'a'.repeat(64), form: twoStepForm,
+      },
+    });
+    expect(parseProviderCredential(frame, 'nonce', 'entry')).not.toBeNull();
+    expect(parseProviderCredential(
+      frame.replace('"status":"verified"', '"status":"observed"'), 'nonce', 'entry',
+    )).toBeNull();
   });
 
   it('binds the private credential frame to nonce, entry and the exact form', () => {

@@ -351,6 +351,8 @@ impl ProfileRepository {
                     ("registry.json", "public registry"),
                     ("cleanup-journal.json", "cleanup journal"),
                     ("integrity-journal.json", "integrity journal"),
+                    ("runtime-config.json", "runtime configuration"),
+                    ("form-map-cache.json", "Form Discovery Map cache"),
                 ] {
                     remove_known_file_if_present(&self.root.join(name), kind)?;
                 }
@@ -741,6 +743,12 @@ fn validate_public_root_contents(root: &Path) -> Result<(), std::io::Error> {
             Some("integrity-journal.json") => {
                 validate_private_file(&metadata, "integrity journal")?
             }
+            Some("runtime-config.json") => {
+                validate_private_file(&metadata, "runtime configuration")?
+            }
+            Some("form-map-cache.json") => {
+                validate_private_file(&metadata, "Form Discovery Map cache")?
+            }
             Some("identities") => {
                 validate_private_directory(&metadata, "identities directory")?;
                 if fs::read_dir(entry.path())?.next().transpose()?.is_some() {
@@ -772,6 +780,12 @@ fn validate_public_root_before_purge(
             Some("cleanup-journal.json") => validate_private_file(&metadata, "cleanup journal")?,
             Some("integrity-journal.json") => {
                 validate_private_file(&metadata, "integrity journal")?
+            }
+            Some("runtime-config.json") => {
+                validate_private_file(&metadata, "runtime configuration")?
+            }
+            Some("form-map-cache.json") => {
+                validate_private_file(&metadata, "Form Discovery Map cache")?
             }
             Some("identities") => {
                 validate_private_directory(&metadata, "identities directory")?;
@@ -1130,6 +1144,8 @@ mod tests {
             "registry.json",
             "cleanup-journal.json",
             "integrity-journal.json",
+            "runtime-config.json",
+            "form-map-cache.json",
         ] {
             write_private_file(&root_path.join(name), b"{}");
         }

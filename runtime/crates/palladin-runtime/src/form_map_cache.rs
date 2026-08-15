@@ -1,0 +1,524 @@
+use std::collections::BTreeSet;
+use std::fs::{self, File};
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
+
+use palladin_browser_bridge::FormDiscoveryMap;
+use serde::{Deserialize, Serialize};
+use tempfile::NamedTempFile;
+use thiserror::Error;
+use url::Url;
+
+const CACHE_SCHEMA_VERSION: u8 = 1;
+const DEFAULT_MAX_ENTRIES: usize = 100;
+const MAX_CONFIG_BYTES: u64 = 16 * 1024;
+const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_ENTRIES: usize = 500;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RuntimeConfig {
+    form_map_cache: FormMapCacheConfig,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FormMapCacheConfig {
+    max_entries: usize,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            form_map_cache: FormMapCacheConfig {
+                max_entries: DEFAULT_MAX_ENTRIES,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CacheKey {
+    profile_identity_id: String,
+    agent_id: String,
+    api_origin: String,
+    domain: String,
+    provider: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CacheEntry {
+    key: CacheKey,
+    map: FormDiscoveryMap,
+    last_used: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CacheFile {
+    schema_version: u8,
+    entries: Vec<CacheEntry>,
+}
+
+pub(crate) struct FormMapCache {
+    path: PathBuf,
+    maximum_entries: usize,
+    next_usage: u64,
+    entries: Vec<CacheEntry>,
+}
+
+impl FormMapCache {
+    pub(crate) fn load(root: &Path) -> Result<Self, FormMapCacheError> {
+        let maximum_entries = load_runtime_config(root)?.form_map_cache.max_entries;
+        let path = root.join("form-map-cache.json");
+        let file = match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                validate_private_file(&metadata)?;
+                if metadata.len() > MAX_CACHE_BYTES {
+                    return Err(FormMapCacheError::InvalidCache);
+                }
+                let value: CacheFile = read_json(&path)?;
+                if value.schema_version != CACHE_SCHEMA_VERSION || value.entries.len() > MAX_ENTRIES
+                {
+                    return Err(FormMapCacheError::InvalidCache);
+                }
+                value
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => CacheFile {
+                schema_version: CACHE_SCHEMA_VERSION,
+                entries: Vec::new(),
+            },
+            Err(error) => return Err(error.into()),
+        };
+        validate_entries(&file.entries)?;
+        let next_usage = file
+            .entries
+            .iter()
+            .map(|entry| entry.last_used)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .unwrap_or(1);
+        let mut cache = Self {
+            path,
+            maximum_entries,
+            next_usage,
+            entries: file.entries,
+        };
+        cache.evict();
+        Ok(cache)
+    }
+
+    pub(crate) fn get(
+        &mut self,
+        profile_identity_id: &str,
+        agent_id: &str,
+        api_origin: &str,
+        domain: &str,
+        provider: &str,
+    ) -> Result<Option<FormDiscoveryMap>, FormMapCacheError> {
+        let key = cache_key(profile_identity_id, agent_id, api_origin, domain, provider)?;
+        let Some(index) = self.entries.iter().position(|entry| entry.key == key) else {
+            return Ok(None);
+        };
+        self.entries[index].last_used = self.take_usage();
+        let map = self.entries[index].map.clone();
+        self.save()?;
+        Ok(Some(map))
+    }
+
+    pub(crate) fn put(
+        &mut self,
+        profile_identity_id: &str,
+        agent_id: &str,
+        api_origin: &str,
+        map: FormDiscoveryMap,
+    ) -> Result<(), FormMapCacheError> {
+        map.validate(&map.domain, &map.provider)
+            .map_err(|_| FormMapCacheError::InvalidCache)?;
+        let key = cache_key(
+            profile_identity_id,
+            agent_id,
+            api_origin,
+            &map.domain,
+            &map.provider,
+        )?;
+        let last_used = self.take_usage();
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.key == key) {
+            entry.map = map;
+            entry.last_used = last_used;
+        } else {
+            self.entries.push(CacheEntry {
+                key,
+                map,
+                last_used,
+            });
+        }
+        self.evict();
+        self.save()
+    }
+
+    pub(crate) fn invalidate(
+        &mut self,
+        profile_identity_id: &str,
+        agent_id: &str,
+        api_origin: &str,
+        domain: &str,
+        provider: &str,
+    ) -> Result<(), FormMapCacheError> {
+        let key = cache_key(profile_identity_id, agent_id, api_origin, domain, provider)?;
+        self.entries.retain(|entry| entry.key != key);
+        self.save()
+    }
+
+    fn take_usage(&mut self) -> u64 {
+        let usage = self.next_usage;
+        self.next_usage = self.next_usage.checked_add(1).unwrap_or_else(|| {
+            self.entries.sort_by_key(|entry| entry.last_used);
+            for (index, entry) in self.entries.iter_mut().enumerate() {
+                entry.last_used = index as u64 + 1;
+            }
+            self.entries.len() as u64 + 2
+        });
+        usage
+    }
+
+    fn evict(&mut self) {
+        if self.entries.len() <= self.maximum_entries {
+            return;
+        }
+        self.entries.sort_by_key(|entry| entry.last_used);
+        self.entries
+            .drain(..self.entries.len().saturating_sub(self.maximum_entries));
+    }
+
+    fn save(&self) -> Result<(), FormMapCacheError> {
+        let parent = self.path.parent().ok_or(FormMapCacheError::InvalidCache)?;
+        validate_private_directory(&fs::symlink_metadata(parent)?)?;
+        match fs::symlink_metadata(&self.path) {
+            Ok(metadata) => validate_private_file(&metadata)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let mut temporary = NamedTempFile::new_in(parent)?;
+        set_private_permissions(temporary.as_file())?;
+        {
+            let mut writer = BufWriter::new(temporary.as_file_mut());
+            serde_json::to_writer(
+                &mut writer,
+                &CacheFile {
+                    schema_version: CACHE_SCHEMA_VERSION,
+                    entries: self.entries.clone(),
+                },
+            )?;
+            writer.write_all(b"\n")?;
+            writer.flush()?;
+        }
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist(&self.path)
+            .map_err(|_| FormMapCacheError::Persist)?;
+        validate_private_file(&fs::symlink_metadata(&self.path)?)?;
+        Ok(())
+    }
+}
+
+fn load_runtime_config(root: &Path) -> Result<RuntimeConfig, FormMapCacheError> {
+    let path = root.join("runtime-config.json");
+    let config = match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            validate_private_file(&metadata)?;
+            if metadata.len() > MAX_CONFIG_BYTES {
+                return Err(FormMapCacheError::InvalidConfiguration);
+            }
+            read_json(&path).map_err(|_| FormMapCacheError::InvalidConfiguration)?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => RuntimeConfig::default(),
+        Err(error) => return Err(error.into()),
+    };
+    if !(1..=MAX_ENTRIES).contains(&config.form_map_cache.max_entries) {
+        return Err(FormMapCacheError::InvalidConfiguration);
+    }
+    Ok(config)
+}
+
+fn validate_entries(entries: &[CacheEntry]) -> Result<(), FormMapCacheError> {
+    let mut keys = BTreeSet::new();
+    for entry in entries {
+        validate_cache_key(&entry.key)?;
+        entry
+            .map
+            .validate(&entry.key.domain, &entry.key.provider)
+            .map_err(|_| FormMapCacheError::InvalidCache)?;
+        if entry.last_used == 0 || !keys.insert(entry.key.clone()) {
+            return Err(FormMapCacheError::InvalidCache);
+        }
+    }
+    Ok(())
+}
+
+fn cache_key(
+    profile_identity_id: &str,
+    agent_id: &str,
+    api_origin: &str,
+    domain: &str,
+    provider: &str,
+) -> Result<CacheKey, FormMapCacheError> {
+    let key = CacheKey {
+        profile_identity_id: profile_identity_id.to_owned(),
+        agent_id: agent_id.to_owned(),
+        api_origin: api_origin.to_owned(),
+        domain: domain.to_owned(),
+        provider: provider.to_owned(),
+    };
+    validate_cache_key(&key)?;
+    Ok(key)
+}
+
+fn validate_cache_key(key: &CacheKey) -> Result<(), FormMapCacheError> {
+    let origin = Url::parse(&key.api_origin).map_err(|_| FormMapCacheError::InvalidCache)?;
+    if key.profile_identity_id.is_empty()
+        || key.profile_identity_id.len() > 256
+        || key.agent_id.is_empty()
+        || key.agent_id.len() > 256
+        || key.domain.is_empty()
+        || key.domain.len() > 253
+        || key.provider.is_empty()
+        || key.provider.len() > 64
+        || !matches!(origin.scheme(), "http" | "https")
+        || origin.host_str().is_none()
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+    {
+        return Err(FormMapCacheError::InvalidCache);
+    }
+    Ok(())
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, FormMapCacheError> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(MAX_CACHE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CACHE_BYTES {
+        return Err(FormMapCacheError::InvalidCache);
+    }
+    serde_json::from_reader(BufReader::new(bytes.as_slice())).map_err(Into::into)
+}
+
+fn validate_private_directory(metadata: &fs::Metadata) -> Result<(), FormMapCacheError> {
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(FormMapCacheError::UnsafePath);
+    }
+    #[cfg(unix)]
+    validate_unix_permissions(metadata, 0o700)?;
+    Ok(())
+}
+
+fn validate_private_file(metadata: &fs::Metadata) -> Result<(), FormMapCacheError> {
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(FormMapCacheError::UnsafePath);
+    }
+    #[cfg(unix)]
+    validate_unix_permissions(metadata, 0o600)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_unix_permissions(
+    metadata: &fs::Metadata,
+    expected_mode: u32,
+) -> Result<(), FormMapCacheError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    if metadata.uid() != nix::unistd::geteuid().as_raw()
+        || metadata.permissions().mode() & 0o777 != expected_mode
+    {
+        return Err(FormMapCacheError::UnsafePath);
+    }
+    Ok(())
+}
+
+fn set_private_permissions(file: &File) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum FormMapCacheError {
+    #[error("Form Discovery Map cache configuration is invalid")]
+    InvalidConfiguration,
+    #[error("Form Discovery Map cache is invalid")]
+    InvalidCache,
+    #[error("Form Discovery Map cache path is unsafe")]
+    UnsafePath,
+    #[error("Form Discovery Map cache could not be persisted")]
+    Persist,
+    #[error("Form Discovery Map cache filesystem operation failed")]
+    Io(#[from] std::io::Error),
+    #[error("Form Discovery Map cache JSON is invalid")]
+    Json(#[from] serde_json::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map() -> FormDiscoveryMap {
+        serde_json::from_str(r#"{
+          "mapId":"11111111-1111-4111-8111-111111111111","mapVersion":1,"scope":"system",
+          "domain":"accounts.google.com","loginUrl":"https://accounts.google.com/","provider":"playwright",
+          "fingerprint":"b556b71b0235e2afbbbaab4d9b65223e47c126c3a952e6ef946321e1602e3288",
+          "map":{"version":1,"form":{"version":1,"steps":[
+            {"fields":[{"entryFieldId":"credential.username","selector":"input[autocomplete=\"username\"]","control":"username"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"},"waitFor":{"selector":"input[type=\"password\"]"}},
+            {"fields":[{"entryFieldId":"credential.password","selector":"input[type=\"password\"]","control":"password"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"}}
+          ]}},"updatedAt":"2026-08-15T12:00:00Z"
+        }"#).expect("map")
+    }
+
+    fn private_root() -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).expect("mode");
+        }
+        root
+    }
+
+    fn write_config(root: &Path, maximum_entries: usize) {
+        let path = root.join("runtime-config.json");
+        fs::write(
+            &path,
+            format!("{{\"formMapCache\":{{\"maxEntries\":{maximum_entries}}}}}\n"),
+        )
+        .expect("config");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("mode");
+        }
+    }
+
+    #[test]
+    fn cache_is_persistent_lru_and_scoped_by_profile_agent_and_api_origin() {
+        let root = private_root();
+        write_config(root.path(), 2);
+        let mut cache = FormMapCache::load(root.path()).expect("load");
+        cache
+            .put("profile-a", "agent-a", "https://one.example", map())
+            .expect("first");
+        cache
+            .put("profile-a", "agent-a", "https://two.example", map())
+            .expect("second");
+        assert!(
+            cache
+                .get(
+                    "profile-a",
+                    "agent-a",
+                    "https://one.example",
+                    "accounts.google.com",
+                    "playwright"
+                )
+                .expect("touch")
+                .is_some()
+        );
+        cache
+            .put("profile-a", "agent-a", "https://three.example", map())
+            .expect("third");
+
+        let mut reloaded = FormMapCache::load(root.path()).expect("reload");
+        assert!(
+            reloaded
+                .get(
+                    "profile-a",
+                    "agent-a",
+                    "https://two.example",
+                    "accounts.google.com",
+                    "playwright"
+                )
+                .expect("evicted")
+                .is_none()
+        );
+        assert!(
+            reloaded
+                .get(
+                    "profile-a",
+                    "agent-a",
+                    "https://one.example",
+                    "accounts.google.com",
+                    "playwright"
+                )
+                .expect("retained")
+                .is_some()
+        );
+        assert!(
+            reloaded
+                .get(
+                    "profile-b",
+                    "agent-a",
+                    "https://one.example",
+                    "accounts.google.com",
+                    "playwright"
+                )
+                .expect("profile scoped")
+                .is_none()
+        );
+        reloaded
+            .invalidate(
+                "profile-a",
+                "agent-a",
+                "https://one.example",
+                "accounts.google.com",
+                "playwright",
+            )
+            .expect("invalidate");
+        assert!(
+            reloaded
+                .get(
+                    "profile-a",
+                    "agent-a",
+                    "https://one.example",
+                    "accounts.google.com",
+                    "playwright"
+                )
+                .expect("invalidated")
+                .is_none()
+        );
+        assert!(
+            reloaded
+                .get(
+                    "profile-a",
+                    "agent-b",
+                    "https://three.example",
+                    "accounts.google.com",
+                    "playwright"
+                )
+                .expect("agent scoped")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cache_limit_is_configurable_but_hard_bounded() {
+        let root = private_root();
+        write_config(root.path(), 0);
+        assert!(matches!(
+            FormMapCache::load(root.path()),
+            Err(FormMapCacheError::InvalidConfiguration)
+        ));
+
+        write_config(root.path(), MAX_ENTRIES + 1);
+        assert!(matches!(
+            FormMapCache::load(root.path()),
+            Err(FormMapCacheError::InvalidConfiguration)
+        ));
+    }
+}

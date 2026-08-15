@@ -12,6 +12,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
 use zeroize::Zeroize;
@@ -165,6 +166,166 @@ impl ProviderId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InjectionTarget {
     expected_domain: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FormDiscoveryMapScope {
+    System,
+    Organization,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CookieOverlayDismiss {
+    pub selector: String,
+    pub action: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CookieOverlay {
+    pub selectors: Vec<String>,
+    pub dismiss: CookieOverlayDismiss,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disappears: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FormDiscoveryMapDefinition {
+    pub version: u8,
+    pub form: InjectionFormDefinition,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cookie_overlays: Vec<CookieOverlay>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FormDiscoveryMap {
+    pub map_id: String,
+    pub map_version: u32,
+    pub scope: FormDiscoveryMapScope,
+    pub domain: String,
+    pub login_url: String,
+    pub provider: String,
+    pub fingerprint: String,
+    pub map: FormDiscoveryMapDefinition,
+    pub updated_at: String,
+}
+
+impl FormDiscoveryMap {
+    pub fn validate(
+        &self,
+        expected_domain: &str,
+        expected_provider: &str,
+    ) -> Result<(), InjectionError> {
+        let provider = ProviderId::parse(self.provider.clone())?;
+        if self.map_id.is_empty()
+            || self.map_id.len() > 64
+            || self.map_version == 0
+            || self.domain != expected_domain
+            || provider.as_str() != expected_provider
+            || !valid_catalog_domain(&self.domain)
+            || self.updated_at.is_empty()
+            || self.updated_at.len() > 128
+            || self.fingerprint.len() != 64
+            || !self
+                .fingerprint
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || self.map.version != 1
+            || self.map.form.validate().is_err()
+            || !valid_map_login_url(&self.login_url, &self.domain)
+            || !valid_cookie_overlays(&self.map.cookie_overlays)
+            || self.fingerprint != map_fingerprint(self)?
+        {
+            return Err(InjectionError::InvalidFormDiscoveryMap);
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn applies_to_url(&self, value: &str) -> bool {
+        Url::parse(value).is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host_str() == Some(self.domain.as_str())
+                && url.port_or_known_default() == Some(443)
+                && url.username().is_empty()
+                && url.password().is_none()
+        })
+    }
+}
+
+fn valid_cookie_overlays(overlays: &[CookieOverlay]) -> bool {
+    overlays.len() <= 4
+        && overlays.iter().all(|overlay| {
+            !overlay.selectors.is_empty()
+                && overlay.selectors.len() <= 8
+                && overlay
+                    .selectors
+                    .iter()
+                    .all(|selector| valid_selector(selector))
+                && overlay.dismiss.action == "click"
+                && valid_selector(&overlay.dismiss.selector)
+                && overlay.disappears.as_deref().is_none_or(valid_selector)
+                && overlay
+                    .frame
+                    .as_deref()
+                    .is_none_or(|frame| matches!(frame, "top" | "same-origin"))
+        })
+}
+
+fn valid_map_login_url(value: &str, domain: &str) -> bool {
+    Url::parse(value).is_ok_and(|url| {
+        value.len() <= 2_048
+            && url.scheme() == "https"
+            && url.host_str() == Some(domain)
+            && url.port_or_known_default() == Some(443)
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none()
+    })
+}
+
+fn valid_catalog_domain(value: &str) -> bool {
+    value.len() <= MAX_DOMAIN_BYTES
+        && value.contains('.')
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-')
+        })
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
+        && value.rsplit('.').next().is_some_and(|label| {
+            label.len() >= 2 && label.bytes().all(|byte| byte.is_ascii_lowercase())
+        })
+}
+
+fn map_fingerprint(map: &FormDiscoveryMap) -> Result<String, InjectionError> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FingerprintInput<'a> {
+        domain: &'a str,
+        login_url: &'a str,
+        form: &'a InjectionFormDefinition,
+    }
+
+    let login_url =
+        Url::parse(&map.login_url).map_err(|_| InjectionError::InvalidFormDiscoveryMap)?;
+    let input = serde_json::to_vec(&FingerprintInput {
+        domain: &map.domain,
+        login_url: login_url.path(),
+        form: &map.map.form,
+    })
+    .map_err(|_| InjectionError::InvalidFormDiscoveryMap)?;
+    let digest = Sha256::digest(input);
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 impl InjectionTarget {
@@ -380,6 +541,8 @@ pub enum InjectionError {
     InvalidCredential,
     #[error("invalid Inject form definition")]
     InvalidFormDefinition,
+    #[error("invalid Form Discovery Map")]
+    InvalidFormDiscoveryMap,
     #[error("invalid credential domain")]
     InvalidDomain,
     #[error("invalid browser origin")]
@@ -557,6 +720,40 @@ mod tests {
         assert_eq!(
             duplicate.validate(),
             Err(InjectionError::InvalidFormDefinition)
+        );
+    }
+
+    #[test]
+    fn backend_form_map_wire_contract_is_fingerprint_bound_and_exact_origin() {
+        let map: FormDiscoveryMap = serde_json::from_str(r#"{
+          "mapId":"11111111-1111-4111-8111-111111111111",
+          "mapVersion":1,
+          "scope":"system",
+          "domain":"accounts.google.com",
+          "loginUrl":"https://accounts.google.com/",
+          "provider":"playwright",
+          "fingerprint":"b556b71b0235e2afbbbaab4d9b65223e47c126c3a952e6ef946321e1602e3288",
+          "map":{"version":1,"form":{"version":1,"steps":[
+            {"fields":[{"entryFieldId":"credential.username","selector":"input[autocomplete=\"username\"]","control":"username"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"},"waitFor":{"selector":"input[type=\"password\"]"}},
+            {"fields":[{"entryFieldId":"credential.password","selector":"input[type=\"password\"]","control":"password"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"}}
+          ]}},
+          "updatedAt":"2026-08-15T12:00:00Z"
+        }"#).expect("backend map");
+
+        assert!(map.validate("accounts.google.com", "playwright").is_ok());
+        assert!(map.applies_to_url("https://accounts.google.com/signin"));
+        assert!(!map.applies_to_url("https://login.accounts.google.com/signin"));
+        let mut wrong_origin = map.clone();
+        wrong_origin.login_url = "https://login.accounts.google.com/".to_owned();
+        assert_eq!(
+            wrong_origin.validate("accounts.google.com", "playwright"),
+            Err(InjectionError::InvalidFormDiscoveryMap)
+        );
+        let mut wrong_fingerprint = map;
+        wrong_fingerprint.map.form.steps[0].fields[0].selector = "#changed".to_owned();
+        assert_eq!(
+            wrong_fingerprint.validate("accounts.google.com", "playwright"),
+            Err(InjectionError::InvalidFormDiscoveryMap)
         );
     }
 

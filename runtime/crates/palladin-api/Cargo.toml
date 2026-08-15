@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 base64.workspace = true
 palladin-core = { path = "../palladin-core" }
+palladin-browser-bridge = { path = "../palladin-browser-bridge" }
 palladin-crypto = { path = "../palladin-crypto" }
 percent-encoding.workspace = true
 reqwest.workspace = true

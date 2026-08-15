@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 mod discovery;
+mod form_map_cache;
 mod integrity;
 pub mod version_policy;
 
@@ -14,8 +15,8 @@ use palladin_api::{
     AgentDiscoveryEnvelope, AgentDiscoveryEnvelopeDescriptor, AgentDiscoverySyncItem,
     AgentPairingActivationResponse, AgentPairingStatus, AgentPairingStatusResponse,
     AgentRegistrationResult, AgentVaultManifestsResponse, AgentVisibleField, ApiClient, ApiError,
-    CredentialAccess, CredentialMethod, EntrySearchResult, GetCredentialOptions, GrantStatus,
-    ReportCredentialStaleInput, VaultManifest,
+    CredentialAccess, CredentialMethod, EntrySearchResult, FormDiscoveryMap, GetCredentialOptions,
+    GrantStatus, ReportCredentialStaleInput, VaultManifest,
 };
 use palladin_browser_bridge::secure_transport::{BrowserHostIdentity, SecureTransportError};
 use palladin_core::host::ApiHost;
@@ -69,6 +70,7 @@ const AGENT_X25519_RECIPIENT_KEY_KIND: &str = "agentX25519";
 const AGENT_WRAPPED_VDK_DIGEST_PREFIX: &[u8] = b"PLDNV2DG:AGENT-WRAPPED-VDK:";
 
 use discovery::{DiscoveryPlaintext, LocalDiscoveryIndex};
+use form_map_cache::{FormMapCache, FormMapCacheError};
 
 use integrity::{
     ConfigWrite, DiscoveryCacheWrite, IntegrityJournal, MAX_DISCOVERY_CACHE_CIPHERTEXT_BYTES,
@@ -1716,6 +1718,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             discovery: Arc::clone(&self.discovery),
             manifest_persistence: Some(self),
             profile_signing: Some(profile_signing),
+            form_map_root: self.repository.root().to_path_buf(),
         })
     }
 
@@ -3245,6 +3248,7 @@ pub struct RuntimeSession<'a> {
     discovery: Arc<tokio::sync::Mutex<LocalDiscoveryIndex>>,
     manifest_persistence: Option<&'a dyn ManifestRevisionPersistence>,
     profile_signing: Option<Ed25519Identity>,
+    form_map_root: std::path::PathBuf,
 }
 
 trait ManifestRevisionPersistence: Sync {
@@ -3494,6 +3498,38 @@ impl RuntimeSession<'_> {
             return Err(RuntimeError::OperationAuthorizationMismatch);
         }
         Ok(())
+    }
+
+    pub async fn resolve_form_discovery_map(
+        &self,
+        domain: &str,
+        provider: &str,
+        force_refresh: bool,
+    ) -> Result<Option<FormDiscoveryMap>, RuntimeError> {
+        self.ensure_operation(RuntimeOperation::InjectCredential)?;
+        let mut cache = FormMapCache::load(&self.form_map_root)?;
+        let profile_identity_id = &self.profile.identity_id;
+        let agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::AgentNotActive)?;
+        let api_origin = &self.config.host;
+        if force_refresh {
+            cache.invalidate(profile_identity_id, agent_id, api_origin, domain, provider)?;
+        } else if let Some(map) =
+            cache.get(profile_identity_id, agent_id, api_origin, domain, provider)?
+        {
+            self.ensure_authorized()?;
+            return Ok(Some(map));
+        }
+
+        let map = self.api.get_form_discovery_map(domain, provider).await?;
+        self.ensure_authorized()?;
+        if let Some(map) = map.as_ref() {
+            cache.put(profile_identity_id, agent_id, api_origin, map.clone())?;
+        }
+        Ok(map)
     }
 
     /// Consumes a renewed PairVaults authorization for polling an existing, exactly bound
@@ -5114,6 +5150,8 @@ pub enum RuntimeError {
     Crypto(#[from] palladin_crypto::CryptoError),
     #[error("API client operation failed: {0}")]
     Api(#[from] ApiError),
+    #[error("local Form Discovery Map cache operation failed")]
+    FormMapCache,
     #[error("API key is invalid; it must start with pl_")]
     InvalidApiKey,
     #[error("stored Agent identity is incomplete")]
@@ -5210,6 +5248,12 @@ pub enum RuntimeError {
     InvalidEnvironmentField,
     #[error("a Script entry reference was not granted")]
     ScriptReferenceNotGranted,
+}
+
+impl From<FormMapCacheError> for RuntimeError {
+    fn from(_: FormMapCacheError) -> Self {
+        Self::FormMapCache
+    }
 }
 
 fn prepare_explicit_environment(
@@ -6549,6 +6593,7 @@ mod tests {
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
             manifest_persistence: None,
             profile_signing: None,
+            form_map_root: std::path::PathBuf::new(),
         };
 
         let get = session
@@ -6976,6 +7021,7 @@ mod tests {
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
             manifest_persistence: None,
             profile_signing: None,
+            form_map_root: std::path::PathBuf::new(),
         }
     }
 
@@ -7158,6 +7204,7 @@ mod tests {
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
             manifest_persistence: None,
             profile_signing: None,
+            form_map_root: std::path::PathBuf::new(),
         };
 
         let candidate = session
@@ -7196,6 +7243,7 @@ mod tests {
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
             manifest_persistence: None,
             profile_signing: None,
+            form_map_root: std::path::PathBuf::new(),
         };
         assert!(matches!(
             renewed.resume_pairing_polling("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),

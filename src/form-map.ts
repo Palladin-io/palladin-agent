@@ -49,12 +49,14 @@ export function parseFormDiscoveryMap(value: unknown): FormDiscoveryMap | null {
     || !['candidate', 'observed', 'verified'].includes(String(value.status))
     || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint)
     || (value.mapVersion !== undefined && (typeof value.mapVersion !== 'number' || !Number.isSafeInteger(value.mapVersion) || value.mapVersion < 1))
-    || parseInjectForm(value.form) === null) return null;
+    ) return null;
+  const form = parseInjectForm(value.form);
+  if (form === null) return null;
   if (value.cookieOverlays !== undefined) {
     if (!Array.isArray(value.cookieOverlays) || value.cookieOverlays.length > MAX_MAP_OVERLAYS
       || value.cookieOverlays.some((overlay) => !validOverlay(overlay))) return null;
   }
-  return { ...value, form: parseInjectForm(value.form)! } as unknown as FormDiscoveryMap;
+  return { ...value, form } as FormDiscoveryMap;
 }
 
 function validOverlay(value: unknown): value is CookieOverlay {
@@ -71,12 +73,13 @@ function isHttpsOrigin(value: string, domain: string): boolean {
   try {
     const url = new URL(value);
     return url.protocol === 'https:' && url.pathname.length <= 2048
-      && (url.hostname === domain || url.hostname.endsWith(`.${domain}`));
+      && url.hostname === domain && (url.port === '' || url.port === '443')
+      && url.username === '' && url.password === '' && url.hash === '';
   } catch { return false; }
 }
 function onlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const allowed = new Set(keys); return Object.keys(value).every((key) => allowed.has(key));
 }
-function record(value: unknown): value is Record<string, any> {
+function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -39,8 +39,7 @@ interface InjectArguments {
   wait?: string;
   noWait?: boolean;
   pollInterval?: string;
-  form: InjectFormDefinition;
-  formMap?: unknown;
+  form?: InjectFormDefinition;
 }
 
 interface ProviderCredential {
@@ -53,6 +52,7 @@ interface ProviderCredential {
   entryId: string;
   expectedDomain: string;
   form: InjectFormDefinition;
+  formMap?: FormDiscoveryMap;
   values: InjectFieldValue[];
 }
 
@@ -71,9 +71,8 @@ const injectTool: Tool = {
       noWait: { type: 'boolean' },
       pollInterval: { type: 'string', maxLength: 32 },
       form: injectFormJsonSchema,
-      formMap: { type: 'object', additionalProperties: true },
     },
-    required: ['vaultId', 'entryId', 'form'],
+    required: ['vaultId', 'entryId'],
   },
 };
 
@@ -144,11 +143,6 @@ export async function injectWithPalladin(
   args: InjectArguments,
   spawnRuntime: typeof spawnAgentRuntime = spawnAgentRuntime,
 ): Promise<CallToolResult> {
-  if (args.formMap !== undefined) {
-    const map = parseFormDiscoveryMap(args.formMap);
-    if (map === null || JSON.stringify(map.form) !== JSON.stringify(args.form)) return toolError('Form discovery map does not match the Inject form.');
-    await browser.dismissCookieOverlays(map);
-  }
   const nonce = randomBytes(32).toString('hex');
   const runtimeArgs: string[] = [];
   if (PROFILE_ARGUMENT) runtimeArgs.push('--id', PROFILE_ARGUMENT);
@@ -163,6 +157,7 @@ export async function injectWithPalladin(
 
   let child: ChildProcess | undefined;
   let credential: ProviderCredential | undefined;
+  let resultSent = false;
   try {
     const currentUrl = await browser.currentUrl();
     child = spawnRuntime(runtimeArgs);
@@ -182,6 +177,7 @@ export async function injectWithPalladin(
     credential = received;
     const verify = (url: string): void => verifyDomain(url, credential?.expectedDomain ?? '');
     verify(currentUrl);
+    if (credential.formMap !== undefined) await browser.dismissCookieOverlays(credential.formMap);
     await browser.inject(credential, verify);
     child.stdin.end(`${JSON.stringify({
       protocol: INJECT_PROTOCOL,
@@ -190,22 +186,25 @@ export async function injectWithPalladin(
       transactionId: credential.transactionId,
       outcome: 'injected',
     })}\n`);
+    resultSent = true;
     if (await waitForExit(child) !== 0) throw new Error('provider runtime failed');
     return {
       content: [{ type: 'text', text: JSON.stringify({ status: 'injected', provider: 'agent-browser' }) }],
       isError: false,
     };
   } catch {
-    if (child?.stdin !== null && child?.stdin !== undefined && credential !== undefined) {
+    if (!resultSent && child?.stdin !== null && child?.stdin !== undefined && credential !== undefined) {
       child.stdin.end(`${JSON.stringify({
         protocol: INJECT_PROTOCOL,
         type: 'result',
         nonce,
         transactionId: credential.transactionId,
-        outcome: 'provider-unavailable',
+        outcome: credential.formMap === undefined ? 'provider-unavailable' : 'stale-form-map',
       })}\n`);
+      await waitForExit(child).catch(() => undefined);
+    } else {
+      child?.kill();
     }
-    child?.kill();
     return toolError('The trusted AgentBrowser Inject provider failed.');
   } finally {
     if (credential !== undefined) {
@@ -218,31 +217,37 @@ export async function injectWithPalladin(
 
 export function parseInjectArguments(value: unknown): InjectArguments | null {
   if (!isRecord(value)) return null;
-  const allowed = new Set(['vaultId', 'entryId', 'reason', 'wait', 'noWait', 'pollInterval', 'form', 'formMap']);
+  const allowed = new Set(['vaultId', 'entryId', 'reason', 'wait', 'noWait', 'pollInterval', 'form']);
   if (Object.keys(value).some((key) => !allowed.has(key))) return null;
   if (!boundedString(value.vaultId, 256) || !boundedString(value.entryId, 256)) return null;
   if (value.reason !== undefined && !boundedString(value.reason, 4096, true)) return null;
   if (value.wait !== undefined && !boundedString(value.wait, 32)) return null;
   if (value.pollInterval !== undefined && !boundedString(value.pollInterval, 32)) return null;
   if (value.noWait !== undefined && typeof value.noWait !== 'boolean') return null;
-  const form = parseInjectForm(value.form);
-  if (form === null) return null;
-  if (value.formMap !== undefined && parseFormDiscoveryMap(value.formMap) === null) return null;
-  return { ...(value as unknown as Omit<InjectArguments, 'form'>), form };
+  let form: InjectFormDefinition | undefined;
+  if (value.form !== undefined) {
+    const parsedForm = parseInjectForm(value.form);
+    if (parsedForm === null) return null;
+    form = parsedForm;
+  }
+  return {
+    ...(value as unknown as Omit<InjectArguments, 'form'>),
+    ...(form === undefined ? {} : { form }),
+  };
 }
 
 export function parseProviderCredential(
   line: string,
   nonce: string,
   entryId: string,
-  expectedForm: InjectFormDefinition,
+  expectedForm?: InjectFormDefinition,
 ): ProviderCredential | null {
   let value: unknown;
   try { value = JSON.parse(line); } catch { return null; }
   if (!isRecord(value)) return null;
   const allowed = new Set([
     'protocol', 'type', 'provider', 'nonce', 'transactionId', 'grantId', 'entryId',
-    'expectedDomain', 'form', 'values',
+    'expectedDomain', 'form', 'formMap', 'values',
   ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) return null;
   if (value.protocol !== INJECT_PROTOCOL || value.type !== 'credential'
@@ -253,10 +258,47 @@ export function parseProviderCredential(
     return null;
   }
   const form = parseInjectForm(value.form);
-  if (form === null || JSON.stringify(form) !== JSON.stringify(expectedForm)) return null;
+  if (form === null) return null;
+  let formMap: FormDiscoveryMap | undefined;
+  if (value.formMap !== undefined) {
+    const parsedMap = parseFormDiscoveryMap(value.formMap);
+    if (parsedMap === null || parsedMap.status !== 'verified'
+      || parsedMap.provider !== 'agent-browser' || parsedMap.domain !== value.expectedDomain
+      || !sameInjectForm(parsedMap.form, form)) return null;
+    formMap = parsedMap;
+  }
+  if (formMap === undefined && (expectedForm === undefined || !sameInjectForm(form, expectedForm))) return null;
   const values = parseInjectValues(value.values, form);
   if (values === null) return null;
-  return { ...(value as unknown as Omit<ProviderCredential, 'form' | 'values'>), form, values };
+  return {
+    ...(value as unknown as Omit<ProviderCredential, 'form' | 'formMap' | 'values'>),
+    form,
+    ...(formMap === undefined ? {} : { formMap }),
+    values,
+  };
+}
+
+function sameInjectForm(left: InjectFormDefinition, right: InjectFormDefinition): boolean {
+  if (left.version !== right.version || left.steps.length !== right.steps.length) return false;
+  return left.steps.every((step, stepIndex) => {
+    const expected = right.steps[stepIndex];
+    if (expected === undefined || step.fields.length !== expected.fields.length
+      || step.submit.action !== expected.submit.action
+      || step.submit.selector !== expected.submit.selector) return false;
+    const sameFields = step.fields.every((field, fieldIndex) => {
+      const expectedField = expected.fields[fieldIndex];
+      return expectedField !== undefined
+        && field.entryFieldId === expectedField.entryFieldId
+        && field.selector === expectedField.selector
+        && field.control === expectedField.control;
+    });
+    if (!sameFields) return false;
+    if (step.waitFor === undefined || expected.waitFor === undefined) {
+      return step.waitFor === undefined && expected.waitFor === undefined;
+    }
+    return step.waitFor.selector === expected.waitFor.selector
+      && step.waitFor.timeoutMs === expected.waitFor.timeoutMs;
+  });
 }
 
 export function verifyDomain(url: string, expectedDomain: string): void {

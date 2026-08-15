@@ -1,6 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
+use palladin_browser_bridge::FormDiscoveryMap;
 use palladin_core::{
     host::ApiHost, public_store::MAX_VAULT_TRUST_ANCHORS, secret::OrganizationApiKey,
 };
@@ -19,6 +20,7 @@ use crate::types::{
 };
 
 const MAX_BOUNDED_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_FORM_MAP_RESPONSE_BYTES: usize = 128 * 1024;
 
 const ENCODE_URI_COMPONENT: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -289,6 +291,32 @@ impl ApiClient {
         decode_bounded_success(response).await
     }
 
+    pub async fn get_form_discovery_map(
+        &self,
+        domain: &str,
+        provider: &str,
+    ) -> Result<Option<FormDiscoveryMap>, ApiError> {
+        let path = format!(
+            "/api/agent/form-discovery-maps/{}?provider={}",
+            encode_component(domain),
+            encode_component(provider),
+        );
+        let response = self.send(Method::GET, &path, None, &[]).await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let (status, body) =
+            read_bounded_response_with_limit(response, MAX_FORM_MAP_RESPONSE_BYTES).await?;
+        if !status.is_success() {
+            return Err(ApiError::Http(status.as_u16()));
+        }
+        let map: FormDiscoveryMap =
+            serde_json::from_slice(&body).map_err(|_| ApiError::InvalidResponse)?;
+        map.validate(domain, provider)
+            .map_err(|_| ApiError::InvalidResponse)?;
+        Ok(Some(map))
+    }
+
     pub async fn get_credential(
         &self,
         vault_id: &str,
@@ -456,18 +484,25 @@ async fn decode_bounded_success<T: serde::de::DeserializeOwned>(
 }
 
 async fn read_bounded_response(
+    response: reqwest::Response,
+) -> Result<(StatusCode, Vec<u8>), ApiError> {
+    read_bounded_response_with_limit(response, MAX_BOUNDED_RESPONSE_BYTES).await
+}
+
+async fn read_bounded_response_with_limit(
     mut response: reqwest::Response,
+    maximum_bytes: usize,
 ) -> Result<(StatusCode, Vec<u8>), ApiError> {
     let status = response.status();
     if response
         .content_length()
-        .is_some_and(|length| length > MAX_BOUNDED_RESPONSE_BYTES as u64)
+        .is_some_and(|length| length > maximum_bytes as u64)
     {
         return Err(ApiError::SizeLimitExceeded);
     }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| ApiError::Transport)? {
-        if body.len().saturating_add(chunk.len()) > MAX_BOUNDED_RESPONSE_BYTES {
+        if body.len().saturating_add(chunk.len()) > maximum_bytes {
             return Err(ApiError::SizeLimitExceeded);
         }
         body.extend_from_slice(&chunk);
@@ -642,6 +677,42 @@ mod tests {
 
         assert!(matches!(error, ApiError::InvalidResponse));
         assert!(!format!("{error:?} {error}").contains(CANARY));
+    }
+
+    #[tokio::test]
+    async fn form_map_lookup_is_provider_bound_and_treats_not_found_as_cacheable_absence() {
+        const MAP: &str = r#"{
+          "mapId":"11111111-1111-4111-8111-111111111111","mapVersion":1,"scope":"system",
+          "domain":"accounts.google.com","loginUrl":"https://accounts.google.com/","provider":"playwright",
+          "fingerprint":"b556b71b0235e2afbbbaab4d9b65223e47c126c3a952e6ef946321e1602e3288",
+          "map":{"version":1,"form":{"version":1,"steps":[
+            {"fields":[{"entryFieldId":"credential.username","selector":"input[autocomplete=\"username\"]","control":"username"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"},"waitFor":{"selector":"input[type=\"password\"]"}},
+            {"fields":[{"entryFieldId":"credential.password","selector":"input[type=\"password\"]","control":"password"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"}}
+          ]}},"updatedAt":"2026-08-15T12:00:00Z"
+        }"#;
+        let (host, requests) = response_server(vec![(200, MAP), (404, "")]).await;
+        let api = client(&host, vec![21; 32], Duration::from_secs(1));
+
+        let map = api
+            .get_form_discovery_map("accounts.google.com", "playwright")
+            .await
+            .expect("lookup")
+            .expect("map");
+        assert_eq!(
+            map.scope,
+            palladin_browser_bridge::FormDiscoveryMapScope::System
+        );
+        assert!(
+            api.get_form_discovery_map("missing.example", "playwright")
+                .await
+                .expect("missing lookup")
+                .is_none()
+        );
+
+        let requests = requests.lock().expect("requests");
+        assert!(requests[0].starts_with(
+            "GET /api/agent/form-discovery-maps/accounts.google.com?provider=playwright HTTP/1.1"
+        ));
     }
 
     #[tokio::test]

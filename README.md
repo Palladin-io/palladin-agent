@@ -179,7 +179,7 @@ The Agent must be active before credential tools work.
 - Native secret storage has no file or environment fallback.
 - The organization API key and private keys are never child-process environment variables.
 - `exec` uses no implicit shell, rebuilds the child environment from an allowlist, and supplies null stdin.
-- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. The model may supply only a bounded, value-free form definition. The macOS Chrome extension route authenticates both encrypted transport hops and prepares the live page before the runtime requests a grant or decrypts a credential; it then re-checks HTTPS and the encrypted Entry domain before delivery.
+- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. The Rust runtime may resolve a verified global Form Discovery Map, while the model may supply only a bounded, value-free fallback definition. The macOS Chrome extension route authenticates both encrypted transport hops and prepares the live page before the runtime requests a grant or decrypts a credential; it then re-checks HTTPS and the encrypted Entry domain before delivery.
 - The npm launcher has no third-party JavaScript runtime dependencies. Its only production dependency is the exact-version platform package.
 - Removing the npm package never deletes identity. Purge is always an explicit native command.
 
@@ -224,12 +224,14 @@ build. A future provider requires a separately reviewed authenticated transport 
 lowercase identifier; unknown providers fail closed. The CLI/MCP input never accepts a CDP URL,
 remote-debugging port, Playwright WebSocket endpoint, unmanaged browser target, or plaintext pipe.
 
-### Agent-defined form execution
+### Verified and Agent-defined form execution
 
-The Agent first prepares the public login surface with ordinary browser tools: it dismisses cookie and
-consent overlays, completes any allowed public navigation (and pauses for a human CAPTCHA when one is
-present), then inspects the visible login structure. Only after the page is ready does it pass a
-complete, versioned, value-free form definition to `inject_credential`.
+The native Rust runtime first looks up a verified Form Discovery Map for the authenticated Entry
+domain and selected provider. Organization-verified maps take precedence over system-verified maps;
+candidate and observed maps are never executed. A returned map is accepted only when its fingerprint,
+bounded action contract, provider, domain, and exact HTTPS origin validate locally. When no verified
+map applies, the Agent may prepare the public login surface with ordinary browser tools, inspect it,
+and pass a complete, versioned, value-free form definition to `inject_credential` as a fallback.
 The definition is an ordered list of one or more steps mapping approved Entry field IDs to public
 control locators, with a bounded click or press-Enter action and an optional next-step transition
 expectation.
@@ -245,14 +247,36 @@ selected provider validates each declared control, re-checks HTTPS and the authe
 before every fill/submit and after every transition, injects the values, and performs the declared
 actions. It returns only a bounded result and leaves the authenticated browser session available to
 the Agent. Missing, stale, ambiguous, hidden, or semantically invalid definitions fail closed; the
-provider never guesses another form.
+provider never guesses another form. A failure while executing a cached map invalidates that cache
+entry and asks the API for a fresh revision for the next request; Palladin never retries a partially
+filled or submitted login automatically.
+
+### Form Discovery Map cache
+
+Verified maps are public and value-free. The native runtime stores them in
+`~/.palladin/form-map-cache.json` with owner-only permissions and an LRU key scoped by Agent profile,
+registered Agent ID, API origin, domain, and provider. The default maximum is 100 entries. Configure it with the
+owner-only `~/.palladin/runtime-config.json` file:
+
+```json
+{
+  "formMapCache": {
+    "maxEntries": 100
+  }
+}
+```
+
+`maxEntries` must be an integer from 1 through 500. Unknown properties, unsafe permissions, symbolic
+links, malformed maps, or an out-of-range limit fail closed. Neither file contains credential values,
+cookies, API keys, private keys, or decrypted vault data. Explicit full-runtime purge recognizes and
+removes both files.
 
 See [ADR 0005](runtime/docs/adr/0005-authenticated-inject-form-contract.md) for the contract and test
 requirements. Caller-controlled CDP remains disabled under [ADR 0003](runtime/docs/adr/0003-browser-injection-boundary.md).
 
 ## Public local state
 
-Convenience public state lives under `~/.palladin`. Linux Hardened public state lives in a broker-owned random principal namespace that is never derived from a reusable numeric UID. Both contain only profile aliases, opaque identity/organization references, host, Agent ID, public keys, signatures, and SHA-256 commitments. Secret values and the small registry trust root remain in the selected secure store. `PALLADIN_HOME` is rejected by identity-opening commands.
+Convenience public state lives under `~/.palladin`. Linux Hardened public state lives in a broker-owned random principal namespace that is never derived from a reusable numeric UID. Both contain only profile aliases, opaque identity/organization references, host, Agent ID, public keys, signatures, SHA-256 commitments, public runtime configuration, and verified value-free Form Discovery Maps. Secret values and the small registry trust root remain in the selected secure store. `PALLADIN_HOME` is rejected by identity-opening commands.
 
 ## Development
 
