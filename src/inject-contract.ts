@@ -37,9 +37,34 @@ export interface InjectFieldValue {
   value: string;
 }
 
+// JSON Schema cannot sum nested array lengths. Tightening each step by the
+// declared step count gives the same deterministic <= MAX_FORM_FIELDS bound
+// that the TypeScript and Rust validators enforce.
+const aggregateFieldLimitSchema = Array.from({ length: MAX_FORM_STEPS }, (_, index) => {
+  const minimumStepCount = index + 1;
+  return {
+    if: {
+      properties: { steps: { minItems: minimumStepCount } },
+      required: ['steps'],
+    },
+    then: {
+      properties: {
+        steps: {
+          items: {
+            properties: {
+              fields: { maxItems: Math.floor(MAX_FORM_FIELDS / minimumStepCount) },
+            },
+          },
+        },
+      },
+    },
+  };
+});
+
 export const injectFormJsonSchema = {
   type: 'object',
   additionalProperties: false,
+  allOf: aggregateFieldLimitSchema,
   properties: {
     version: { const: 1 },
     steps: {
@@ -91,11 +116,13 @@ export function parseInjectForm(value: unknown): InjectFormDefinition | null {
     || value.version !== INJECT_FORM_VERSION || !Array.isArray(value.steps)
     || value.steps.length < 1 || value.steps.length > MAX_FORM_STEPS) return null;
   let fieldCount = 0;
+  const maxFieldsPerStep = Math.floor(MAX_FORM_FIELDS / value.steps.length);
   const steps: InjectFormStep[] = [];
   for (let index = 0; index < value.steps.length; index += 1) {
     const rawStep = value.steps[index];
     if (!isRecord(rawStep) || !onlyKeys(rawStep, ['fields', 'submit', 'waitFor'])
-      || !Array.isArray(rawStep.fields) || rawStep.fields.length < 1) return null;
+      || !Array.isArray(rawStep.fields) || rawStep.fields.length < 1
+      || rawStep.fields.length > maxFieldsPerStep) return null;
     const fields: InjectFormField[] = [];
     const stepFieldIds = new Set<string>();
     for (const rawField of rawStep.fields) {

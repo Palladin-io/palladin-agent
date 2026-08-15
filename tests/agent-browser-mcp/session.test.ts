@@ -24,7 +24,7 @@ const form = {
   ],
 };
 
-interface Command { action: string; selector?: string; value?: string; key?: string }
+interface Command { action: string; selector?: string; value?: string; key?: string; script?: string }
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => { while (cleanups.length > 0) await cleanups.pop()?.(); });
@@ -85,6 +85,35 @@ describeAgentBrowser('AgentBrowser owner-only Inject channel', () => {
       form: passwordOnly,
       values: [{ entryFieldId: 'credential.password', value: FIXTURE_SECRET }],
     }, () => undefined)).rejects.toThrow('password field attestation failed');
+  });
+
+  it('rejects a CSS selector union when its unique match is an OTP input', async () => {
+    const commands: Command[] = [];
+    const fixture = await daemonFixture(async (command) => {
+      commands.push(command);
+      if (command.action === 'url') return { url: 'https://x.com/i/flow/login' };
+      if (command.action === 'count') return { count: 1 };
+      if (command.action === 'evaluate') return { result: false };
+      return {};
+    });
+    const session = new AgentBrowserSession(SESSION, undefined, fixture.directory);
+    const passwordOnly = { version: 1 as const, steps: [{
+      fields: [{
+        entryFieldId: 'credential.password',
+        selector: 'input[type="password"], input[name="otp"]',
+        control: 'password' as const,
+      }],
+      submit: { action: 'press-enter' as const, selector: 'input[name="otp"]' },
+    }] };
+
+    await expect(session.inject({
+      form: passwordOnly,
+      values: [{ entryFieldId: 'credential.password', value: FIXTURE_SECRET }],
+    }, () => undefined)).rejects.toThrow('password field attestation failed');
+
+    expect(commands.some((command) => command.action === 'evaluate')).toBe(true);
+    expect(commands.some((command) => command.action === 'fill')).toBe(false);
+    expect(commands.map((command) => command.script ?? '').join('')).not.toContain(FIXTURE_SECRET);
   });
 
   it('retains the Discovery-visible username but clears a filled password after rejection', async () => {

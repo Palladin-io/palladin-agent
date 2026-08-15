@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
+import type { JsonSchemaType } from '@modelcontextprotocol/sdk/validation';
 
-import { parseInjectForm, parseInjectValues } from '../../src/inject-contract.js';
+import {
+  injectFormJsonSchema,
+  parseInjectForm,
+  parseInjectValues,
+} from '../../src/inject-contract.js';
 
 const form = {
   version: 1,
@@ -38,6 +44,40 @@ describe('Inject form contract', () => {
         submit: { action: 'click', selector: '#submit' },
       }],
     })).toBeNull();
+  });
+
+  it('publishes the same aggregate field bound enforced by the parser', () => {
+    const validateSchema = new AjvJsonSchemaValidator().getValidator(
+      injectFormJsonSchema as unknown as JsonSchemaType,
+    );
+    const fields = (step: number, count: number) => Array.from({ length: count }, (_, index) => ({
+      entryFieldId: `credential.step${step}.${index}`,
+      selector: `#step-${step}-${index}`,
+      control: 'text',
+    }));
+    const bounded = {
+      version: 1,
+      steps: [
+        {
+          fields: fields(1, 8),
+          submit: { action: 'click', selector: '#next' },
+          waitFor: { selector: '#step-2' },
+        },
+        { fields: fields(2, 8), submit: { action: 'click', selector: '#submit' } },
+      ],
+    };
+    const oversized = {
+      ...bounded,
+      steps: [
+        { ...bounded.steps[0], fields: fields(1, 9) },
+        { ...bounded.steps[1], fields: fields(2, 9) },
+      ],
+    };
+
+    expect(validateSchema(bounded).valid).toBe(true);
+    expect(parseInjectForm(bounded)).not.toBeNull();
+    expect(validateSchema(oversized).valid).toBe(false);
+    expect(parseInjectForm(oversized)).toBeNull();
   });
 
   it('requires exactly one private value for each declared field', () => {

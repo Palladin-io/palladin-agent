@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
+import { MAX_FORM_FIELDS, MAX_FORM_STEPS } from "@palladin/agent/inject-contract";
 
 import { PalladinBrowserSessions } from "./sessions.js";
 
@@ -58,7 +59,7 @@ const formFieldSchema = Type.Object(
 
 const formStepSchema = Type.Object(
   {
-    fields: Type.Array(formFieldSchema, { minItems: 1, maxItems: 16 }),
+    fields: Type.Array(formFieldSchema, { minItems: 1, maxItems: MAX_FORM_FIELDS }),
     submit: Type.Object(
       {
         action: Type.Union([Type.Literal("click"), Type.Literal("press-enter")]),
@@ -82,9 +83,31 @@ const formStepSchema = Type.Object(
 const formSchema = Type.Object(
   {
     version: Type.Literal(1),
-    steps: Type.Array(formStepSchema, { minItems: 1, maxItems: 8 }),
+    steps: Type.Array(formStepSchema, { minItems: 1, maxItems: MAX_FORM_STEPS }),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    allOf: Array.from({ length: MAX_FORM_STEPS }, (_, index) => {
+      const minimumStepCount = index + 1;
+      return {
+        if: {
+          properties: { steps: { minItems: minimumStepCount } },
+          required: ["steps"],
+        },
+        then: {
+          properties: {
+            steps: {
+              items: {
+                properties: {
+                  fields: { maxItems: Math.floor(MAX_FORM_FIELDS / minimumStepCount) },
+                },
+              },
+            },
+          },
+        },
+      };
+    }),
+  },
 );
 
 const browserParameters = Type.Object(

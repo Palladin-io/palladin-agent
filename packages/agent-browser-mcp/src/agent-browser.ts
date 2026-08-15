@@ -98,10 +98,8 @@ export class AgentBrowserSession {
 
   private async validateTarget(selector: string, control: InjectControl): Promise<void> {
     if (!/^@e[0-9]+$/.test(selector)) {
-      if (control === 'password' && !/type\s*=\s*["']?password["']?/i.test(selector)) {
-        throw new Error('AgentBrowser cannot attest the declared password control');
-      }
       await this.ensureUnique(selector);
+      if (control === 'password') await this.attestCssPasswordInput(selector);
       return;
     }
     const data = await this.command({ action: 'snapshot', interactive: true });
@@ -119,6 +117,19 @@ export class AgentBrowserSession {
     if (control === 'username'
       && (typeof name !== 'string' || !/(?:e-?mail|user(?:name)?|login)/i.test(name))) {
       throw new Error('AgentBrowser username field attestation failed');
+    }
+  }
+
+  private async attestCssPasswordInput(selector: string): Promise<void> {
+    const selectorLiteral = JSON.stringify(selector);
+    // The script is provider-owned and the selector is encoded as a JSON
+    // literal. It inspects only public DOM metadata and never receives a value.
+    const data = await this.command({
+      action: 'evaluate',
+      script: `(() => { const matches = document.querySelectorAll(${selectorLiteral}); const element = matches[0]; return matches.length === 1 && element instanceof HTMLInputElement && element.type.toLowerCase() === 'password'; })()`,
+    });
+    if (data.result !== true) {
+      throw new Error('AgentBrowser password field attestation failed');
     }
   }
 

@@ -85,8 +85,10 @@ impl InjectionFormDefinition {
             return Err(InjectionError::InvalidFormDefinition);
         }
         let mut field_count = 0_usize;
+        let max_fields_per_step = MAX_FORM_FIELDS / self.steps.len();
         for (step_index, step) in self.steps.iter().enumerate() {
             if step.fields.is_empty()
+                || step.fields.len() > max_fields_per_step
                 || (step_index + 1 < self.steps.len() && step.wait_for.is_none())
                 || !valid_selector(&step.submit.selector)
             {
@@ -543,6 +545,18 @@ mod tests {
             ],
         };
         assert!(valid.validate().is_ok());
+        let mut oversized_step = valid.clone();
+        for index in 1..9 {
+            oversized_step.steps[0].fields.push(InjectionFormField {
+                entry_field_id: format!("credential.extra{index}"),
+                selector: format!("#extra-{index}"),
+                control: InjectionControl::Text,
+            });
+        }
+        assert_eq!(
+            oversized_step.validate(),
+            Err(InjectionError::InvalidFormDefinition)
+        );
         let mut missing_transition = valid.clone();
         missing_transition.steps[0].wait_for = None;
         assert_eq!(

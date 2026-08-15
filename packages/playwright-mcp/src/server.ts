@@ -14,7 +14,13 @@ import {
   type CallToolResult,
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import { chromium, type BrowserContext, type Locator, type Page } from 'playwright';
+import {
+  chromium,
+  type BrowserContext,
+  type ElementHandle,
+  type Locator,
+  type Page,
+} from 'playwright';
 import {
   injectFormJsonSchema,
   parseInjectForm,
@@ -325,7 +331,7 @@ export async function fillAndSubmit(
 ): Promise<'injected'> {
   const values = new Map(credential.values.map((field) => [field.entryFieldId, field.value]));
   const filled: Array<{
-    target: Locator;
+    target: ElementHandle<HTMLElement | SVGElement>;
     entryFieldId: string;
     control: ProviderCredential['form']['steps'][number]['fields'][number]['control'];
   }> = [];
@@ -337,7 +343,14 @@ export async function fillAndSubmit(
         if (value === undefined) throw new Error('declared field value is missing');
         const target = await uniqueUsableControl(page, field.selector, field.control);
         verifyDomain(page.url(), credential.expectedDomain);
-        await target.fill(value);
+        // ElementHandle is bound to the document that was just verified. A
+        // Locator would re-resolve in a replacement document after navigation.
+        try {
+          await target.fill(value);
+        } catch (error) {
+          await target.dispose().catch(() => undefined);
+          throw error;
+        }
         filled.push({ target, entryFieldId: field.entryFieldId, control: field.control });
         verifyDomain(page.url(), credential.expectedDomain);
       }
@@ -351,7 +364,11 @@ export async function fillAndSubmit(
           step.submit.selector,
           step.fields.find((field) => field.selector === step.submit.selector)?.control ?? 'text',
         );
-        await submitField.press('Enter');
+        try {
+          await submitField.press('Enter');
+        } finally {
+          await submitField.dispose().catch(() => undefined);
+        }
       }
       if (step.waitFor !== undefined) {
         await waitForUniqueTransition(
@@ -369,6 +386,8 @@ export async function fillAndSubmit(
       await field.target.fill('').catch(() => undefined);
     }
     throw error;
+  } finally {
+    await Promise.all(filled.map(async (field) => field.target.dispose().catch(() => undefined)));
   }
 }
 
@@ -444,16 +463,19 @@ async function uniqueUsableControl(
   selector: string,
   control: InjectControl,
   timeoutMs = 20_000,
-): Promise<Locator> {
+): Promise<ElementHandle<HTMLElement | SVGElement>> {
   const deadline = Date.now() + timeoutMs;
-  let target: Locator | undefined;
+  let target: ElementHandle<HTMLElement | SVGElement> | undefined;
   while (Date.now() < deadline) {
     const candidates = await usableInputs(page.locator(selector));
     if (candidates.length === 1) {
       target = candidates[0];
       break;
     }
-    if (candidates.length > 1) throw new Error('declared field is missing or ambiguous');
+    if (candidates.length > 1) {
+      await Promise.all(candidates.map(async (candidate) => candidate.dispose()));
+      throw new Error('declared field is missing or ambiguous');
+    }
     await page.waitForTimeout(100);
   }
   if (target === undefined) throw new Error('declared field is missing or ambiguous');
@@ -466,14 +488,19 @@ async function uniqueUsableControl(
     if (expected === 'tel' || expected === 'otp') return ['tel', 'text', 'number'].includes(type);
     return ['text', 'email', 'tel', 'search', 'url'].includes(type);
   }, control);
-  if (!matches) throw new Error('declared field control does not match');
+  if (!matches) {
+    await target.dispose();
+    throw new Error('declared field control does not match');
+  }
   return target;
 }
 
-async function usableInputs(locator: Locator): Promise<Locator[]> {
-  const candidates: Locator[] = [];
+async function usableInputs(locator: Locator): Promise<Array<ElementHandle<HTMLElement | SVGElement>>> {
+  const candidates: Array<ElementHandle<HTMLElement | SVGElement>> = [];
   for (const candidate of await locator.all()) {
-    const usable = await candidate.evaluate((element) => {
+    const handle = await candidate.elementHandle();
+    if (handle === null) continue;
+    const usable = await handle.evaluate((element) => {
       if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)
         || element.disabled || element.readOnly || element.hidden
         || (element instanceof HTMLInputElement && element.type === 'hidden')
@@ -498,7 +525,8 @@ async function usableInputs(locator: Locator): Promise<Locator[]> {
         && hit !== null
         && (hit === element || element.contains(hit) || hit.contains(element));
     });
-    if (usable) candidates.push(candidate);
+    if (usable) candidates.push(handle);
+    else await handle.dispose();
   }
   return candidates;
 }
