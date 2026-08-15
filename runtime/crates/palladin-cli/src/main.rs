@@ -1168,6 +1168,11 @@ async fn inject(
     profile: Option<&str>,
     args: InjectArgs,
 ) -> ExitCode {
+    if !provider_transport_enabled() {
+        return fail(
+            "authenticated Inject providers are unavailable in this build; plaintext provider pipes are development-only",
+        );
+    }
     debug_assert!(!inject_uses_deprecated_browser_boundary(&args));
     if !args.provider_transport_stdio {
         return fail("the selected Inject provider is not connected");
@@ -1393,6 +1398,10 @@ async fn inject(
         provider.as_str()
     );
     ExitCode::SUCCESS
+}
+
+const fn provider_transport_enabled() -> bool {
+    cfg!(feature = "local-development")
 }
 
 fn resolve_injection_credential(
@@ -2086,6 +2095,16 @@ mod authenticated_injection_target_tests {
             resolve_authenticated_injection_target(None, None),
             Err("the Inject credential has no authenticated domain".to_owned())
         );
+    }
+}
+
+#[cfg(all(test, not(feature = "local-development")))]
+mod provider_release_gate_tests {
+    use super::provider_transport_enabled;
+
+    #[test]
+    fn plaintext_provider_transport_is_disabled_in_release_builds() {
+        assert!(!provider_transport_enabled());
     }
 }
 

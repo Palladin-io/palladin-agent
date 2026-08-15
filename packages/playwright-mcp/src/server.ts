@@ -471,8 +471,10 @@ async function usableInputs(locator: Locator): Promise<Locator[]> {
   const candidates: Locator[] = [];
   for (const candidate of await locator.all()) {
     const usable = await candidate.evaluate((element) => {
-      if (!(element instanceof HTMLInputElement) || element.disabled || element.readOnly
-        || element.hidden || element.type === 'hidden' || element.getAttribute('aria-hidden') === 'true') {
+      if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)
+        || element.disabled || element.readOnly || element.hidden
+        || (element instanceof HTMLInputElement && element.type === 'hidden')
+        || element.getAttribute('aria-hidden') === 'true') {
         return false;
       }
       const style = getComputedStyle(element);

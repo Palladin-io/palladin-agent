@@ -118,8 +118,7 @@ API keys in argv or environment variables are rejected. Connecting a second prof
 | `palladin search <query>` | Search metadata visible to the Agent. |
 | `palladin get <vaultId> <entryId>` | Intentionally return a granted credential to the operator. |
 | `palladin exec <vaultId> <entryId> -- <program>` | Run an allowlisted program with delivered values in a sanitized child environment. |
-| `palladin inject <vaultId> <entryId> --provider extension --form-json '<definition>'` | Execute an Agent-defined, value-free form plan with an approved Inject grant through the existing authenticated extension. Composite MCP providers transfer the same object over their private provider handshake instead of argv. |
-| `palladin browser install --extension-id <id> [--browser <browser>]` | Install the native host allowlisted to one Palladin extension ID. Supports Chrome, Chrome for Testing, and Chromium; custom profiles use `--user-data-dir <absolute-path>`. |
+| `palladin inject <vaultId> <entryId> ...` | Reserved for an authenticated browser-provider capability. Production builds currently fail closed before opening the profile; plaintext provider pipes exist only in explicit `local-development` builds. |
 | `palladin mcp serve` | Serve Palladin tools over MCP stdio. |
 | `palladin security upgrade` | Explicitly migrate pre-production schema v2 state and secret slots to integrity-bound schema v3. |
 | `palladin security legacy-status` | Inspect legacy TypeScript state without opening config or private-key contents. |

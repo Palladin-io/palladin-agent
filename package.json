@@ -15,7 +15,6 @@
   },
   "files": [
     "dist/bin/",
-    "dist/browser-host/",
     "dist/runtime/",
     "dist/inject-contract.js",
     "dist/inject-contract.d.ts",
@@ -47,8 +46,7 @@
     }
   },
   "bin": {
-    "palladin": "./dist/bin/palladin.js",
-    "palladin-browser-host": "./dist/browser-host/native-host.js"
+    "palladin": "./dist/bin/palladin.js"
   },
   "scripts": {
     "build": "tsc && npm --prefix packages/playwright-mcp run build && npm --prefix packages/agent-browser-mcp run build",

@@ -238,6 +238,38 @@ describe('Playwright MCP Inject provider boundary', () => {
     }
   });
 
+  it('fills a declared text control backed by a textarea', async () => {
+    const browser = await chromium.launch({ channel: 'chrome', headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.route('https://example.com/login', async (route) => route.fulfill({
+        contentType: 'text/html',
+        body: `<form id="login-form"><textarea id="username"></textarea>
+          <button id="submit" type="submit">Continue</button></form>
+          <script>document.querySelector('#login-form').addEventListener('submit', (event) => {
+            event.preventDefault(); document.body.dataset.submitted = 'yes';
+          });</script>`,
+      }));
+      await page.goto('https://example.com/login');
+      const textareaForm = {
+        version: 1 as const,
+        steps: [{
+          fields: [{
+            entryFieldId: 'credential.username', selector: '#username', control: 'text' as const,
+          }],
+          submit: { action: 'click' as const, selector: '#submit' },
+        }],
+      };
+
+      await fillAndSubmit(page, credential(textareaForm));
+
+      expect(await page.locator('#username').inputValue()).toBe('fixture-user');
+      expect(await page.locator('body').getAttribute('data-submitted')).toBe('yes');
+    } finally {
+      await browser.close();
+    }
+  });
+
   it('re-resolves selectors after a same-origin document navigation', async () => {
     const browser = await chromium.launch({ channel: 'chrome', headless: true });
     try {

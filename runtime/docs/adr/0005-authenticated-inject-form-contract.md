@@ -1,6 +1,6 @@
 # ADR 0005: Authenticated Inject and Agent-defined form contract
 
-- Status: Accepted
+- Status: Accepted design; production transport pending
 - Date: 2026-08-11
 - Supersedes: ADR 0003 only for authenticated browser providers
 
@@ -22,6 +22,12 @@ already controls public navigation and can inspect the form without seeing crede
 
 `Inject` is enabled only through an authenticated, registered browser provider. Caller-controlled
 CDP remains disabled.
+
+The current stdio, extension-socket, and AgentBrowser-daemon adapters are conformance/development
+fixtures, not authenticated production transports. A production Rust build rejects their secret
+delivery before opening a profile; only an explicit `local-development` build enables them. Private
+pipes, hidden flags, nonces, filesystem ownership, and version files provide correlation or access
+control but do not authenticate the receiving provider.
 
 ### Agent-owned Playwright Page transport
 
