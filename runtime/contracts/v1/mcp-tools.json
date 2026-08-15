@@ -24,7 +24,7 @@
   "tools": [
     {
       "name": "search_entries",
-      "description": "Search vault entries by name, URL, or description across the Agent's organization. Returns metadata only: entryId, vaultId, label, urlDomain, description, and Agent-visible fields. Pick one result and call inject_credential for browser login, exec_with_credential for a local command, or get_credential only when plaintext must enter the model context.",
+      "description": "Search vault entries by name, URL, or description across the Agent's organization. Returns metadata only: entryId, vaultId, label, urlDomain, description, and Agent-visible fields. Pick one result and call exec_with_credential for a local command, or get_credential only when plaintext must enter the model context. Browser inject_credential is available only when a reviewed local browser provider is explicitly installed and authenticated; do not assume it is available in hosted production runtimes.",
       "requiredMethod": null,
       "inputSchema": {
         "type": "object",
