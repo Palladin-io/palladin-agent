@@ -172,7 +172,7 @@ impl ProfileRepository {
         loop {
             match fs2::FileExt::try_lock_shared(&file) {
                 Ok(()) => return Ok(Some(TransactionLock { file })),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(error) if is_lock_contention(&error) => {
                     let Some(remaining) = max_wait.checked_sub(started.elapsed()) else {
                         return Ok(None);
                     };
@@ -438,6 +438,25 @@ impl ProfileRepository {
             .ok_or(ProfileError::InvalidRoot)?;
         Ok(parent.join(format!(".{name}.palladin-runtime.lock")))
     }
+}
+
+fn is_lock_contention(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // Stable Win32 system error values returned by LockFileEx/CreateFile contention. Rust
+        // currently classifies ERROR_LOCK_VIOLATION as Uncategorized rather than WouldBlock.
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        const ERROR_LOCK_VIOLATION: i32 = 33;
+        matches!(
+            error.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+        )
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 pub fn add_profile(
@@ -796,7 +815,7 @@ fn private_path_error(message: &str) -> std::io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProfileName, ProfileRepository, add_profile, rename_profile};
+    use super::{ProfileName, ProfileRepository, add_profile, is_lock_contention, rename_profile};
     use crate::public_store::PublicRegistry;
 
     const IDENTITY_ID: &str = "11111111111111111111111111111111";
@@ -867,6 +886,22 @@ mod tests {
                 .expect("shared lock after release")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn lock_contention_classification_is_platform_exact() {
+        assert!(is_lock_contention(&std::io::Error::from(
+            std::io::ErrorKind::WouldBlock
+        )));
+        assert!(!is_lock_contention(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
+        #[cfg(windows)]
+        {
+            assert!(is_lock_contention(&std::io::Error::from_raw_os_error(32)));
+            assert!(is_lock_contention(&std::io::Error::from_raw_os_error(33)));
+            assert!(!is_lock_contention(&std::io::Error::from_raw_os_error(34)));
+        }
     }
 
     #[test]
