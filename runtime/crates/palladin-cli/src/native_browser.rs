@@ -1,5 +1,8 @@
 use std::collections::BTreeSet;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use palladin_browser_bridge::InjectionFormDefinition;
@@ -447,6 +450,10 @@ fn validate_local_inject_command(
 }
 
 fn authorization_remaining_until(value: &str) -> Result<Duration, NativeBrowserError> {
+    authorization_remaining_from(parse_not_after_monotonic_ns(value)?)
+}
+
+fn parse_not_after_monotonic_ns(value: &str) -> Result<u64, NativeBrowserError> {
     if value.is_empty()
         || value.len() > 20
         || (value.len() > 1 && value.starts_with('0'))
@@ -454,15 +461,91 @@ fn authorization_remaining_until(value: &str) -> Result<Duration, NativeBrowserE
     {
         return Err(NativeBrowserError::InvalidMessage);
     }
-    let not_after = value
+    value
         .parse::<u64>()
-        .map_err(|_| NativeBrowserError::InvalidMessage)?;
+        .map_err(|_| NativeBrowserError::InvalidMessage)
+}
+
+fn authorization_remaining_from(not_after: u64) -> Result<Duration, NativeBrowserError> {
     let now = monotonic_now_ns()?;
     let remaining = not_after
         .checked_sub(now)
         .filter(|remaining| *remaining != 0)
         .ok_or(NativeBrowserError::AuthorizationExpired)?;
     Ok(Duration::from_nanos(remaining))
+}
+
+type MonotonicNow = fn() -> Result<u64, NativeBrowserError>;
+
+struct MonotonicDeadlineWriter<W, N = MonotonicNow> {
+    inner: W,
+    not_after_monotonic_ns: u64,
+    monotonic_now: N,
+}
+
+impl<W> MonotonicDeadlineWriter<W, MonotonicNow> {
+    fn new(inner: W, not_after_monotonic_ns: u64) -> Self {
+        Self {
+            inner,
+            not_after_monotonic_ns,
+            monotonic_now: monotonic_now_ns,
+        }
+    }
+}
+
+impl<W, N> MonotonicDeadlineWriter<W, N>
+where
+    N: Fn() -> Result<u64, NativeBrowserError>,
+{
+    fn ensure_authorized(&self) -> io::Result<()> {
+        match (self.monotonic_now)() {
+            Ok(now) if now < self.not_after_monotonic_ns => Ok(()),
+            _ => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "browser authorization expired",
+            )),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_clock(inner: W, not_after_monotonic_ns: u64, monotonic_now: N) -> Self {
+        Self {
+            inner,
+            not_after_monotonic_ns,
+            monotonic_now,
+        }
+    }
+}
+
+impl<W, N> tokio::io::AsyncWrite for MonotonicDeadlineWriter<W, N>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+    N: Fn() -> Result<u64, NativeBrowserError> + Unpin,
+{
+    fn poll_write(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        if let Err(error) = this.ensure_authorized() {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut this.inner).poll_write(context, buffer)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        if let Err(error) = this.ensure_authorized() {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut this.inner).poll_flush(context)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.inner).poll_shutdown(context)
+    }
 }
 
 /// This is the final secret-forwarding gate. The caller holds the shared lifecycle lock, and the
@@ -475,11 +558,20 @@ async fn write_authorized_extension_frame<W>(
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let authorization_remaining = authorization_remaining_until(not_after_monotonic_ns)?;
-    let deadline = Instant::now() + OPERATION_TIMEOUT.min(authorization_remaining);
-    timeout_at(deadline, write_message(writer, frame))
-        .await
-        .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
+    let timer_sample = Instant::now();
+    let not_after_monotonic_ns = parse_not_after_monotonic_ns(not_after_monotonic_ns)?;
+    let authorization_remaining = authorization_remaining_from(not_after_monotonic_ns)?;
+    let deadline = timer_sample + OPERATION_TIMEOUT.min(authorization_remaining);
+    let mut guarded_writer = MonotonicDeadlineWriter::new(writer, not_after_monotonic_ns);
+    let write = write_message(&mut guarded_writer, frame);
+    tokio::pin!(write);
+    let timer = tokio::time::sleep_until(deadline);
+    tokio::pin!(timer);
+    tokio::select! {
+        biased;
+        _ = &mut timer => return Err(NativeBrowserError::AuthorizationExpired),
+        result = &mut write => result?,
+    }
     Ok(deadline)
 }
 
@@ -650,8 +742,9 @@ pub enum NativeBrowserError {
 
 #[cfg(test)]
 mod tests {
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::task::Waker;
 
     use super::*;
 
@@ -681,6 +774,39 @@ mod tests {
             self: Pin<&mut Self>,
             _context: &mut Context<'_>,
         ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct PendingThenReadyWriter {
+        ready: Arc<AtomicBool>,
+        polls: Arc<AtomicUsize>,
+        bytes_written: Arc<AtomicUsize>,
+        first_poll: Arc<tokio::sync::Notify>,
+        waker: Arc<Mutex<Option<Waker>>>,
+    }
+
+    impl tokio::io::AsyncWrite for PendingThenReadyWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            if !self.ready.load(Ordering::SeqCst) {
+                *self.waker.lock().expect("waker lock") = Some(context.waker().clone());
+                self.first_poll.notify_one();
+                return Poll::Pending;
+            }
+            self.bytes_written.fetch_add(buffer.len(), Ordering::SeqCst);
+            Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
     }
@@ -887,6 +1013,53 @@ mod tests {
         command.zeroize();
         assert_eq!(extension_output.bytes_written, 0);
         assert!(command.request.values[0].value.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deadline_writer_refuses_ready_second_poll_after_expiry() {
+        use tokio::io::AsyncWriteExt;
+
+        let ready = Arc::new(AtomicBool::new(false));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let bytes_written = Arc::new(AtomicUsize::new(0));
+        let first_poll = Arc::new(tokio::sync::Notify::new());
+        let waker = Arc::new(Mutex::new(None));
+        let clock = Arc::new(AtomicU64::new(100));
+        let deadline = 200;
+        let writer = PendingThenReadyWriter {
+            ready: ready.clone(),
+            polls: polls.clone(),
+            bytes_written: bytes_written.clone(),
+            first_poll: first_poll.clone(),
+            waker: waker.clone(),
+        };
+        let writer_clock = clock.clone();
+        let write = tokio::spawn(async move {
+            let mut guarded = MonotonicDeadlineWriter::with_clock(writer, deadline, move || {
+                Ok(writer_clock.load(Ordering::SeqCst))
+            });
+            guarded.write_all(b"fixture-frame").await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), first_poll.notified())
+            .await
+            .expect("first pending poll");
+        clock.store(deadline, Ordering::SeqCst);
+        ready.store(true, Ordering::SeqCst);
+        waker
+            .lock()
+            .expect("waker lock")
+            .take()
+            .expect("pending waker")
+            .wake();
+
+        let error = write
+            .await
+            .expect("writer task")
+            .expect_err("expired write must fail");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+        assert_eq!(bytes_written.load(Ordering::SeqCst), 0);
     }
 
     #[test]
