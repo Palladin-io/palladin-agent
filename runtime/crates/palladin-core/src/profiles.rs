@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -159,7 +160,43 @@ impl ProfileRepository {
         self.acquire_lock(false)
     }
 
+    /// Try to acquire the shared repository rendezvous lock without waiting past `max_wait`.
+    /// A timeout is a normal fail-closed result so callers can bind the wait to an authorization
+    /// deadline instead of letting filesystem lock contention extend a secret-bearing operation.
+    pub fn acquire_shared_transaction_lock_for(
+        &self,
+        max_wait: Duration,
+    ) -> Result<Option<TransactionLock>, ProfileError> {
+        let file = self.open_transaction_lock_file()?;
+        let started = Instant::now();
+        loop {
+            match fs2::FileExt::try_lock_shared(&file) {
+                Ok(()) => return Ok(Some(TransactionLock { file })),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    let Some(remaining) = max_wait.checked_sub(started.elapsed()) else {
+                        return Ok(None);
+                    };
+                    if remaining.is_zero() {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(remaining.min(Duration::from_millis(5)));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
     fn acquire_lock(&self, exclusive: bool) -> Result<TransactionLock, ProfileError> {
+        let file = self.open_transaction_lock_file()?;
+        if exclusive {
+            fs2::FileExt::lock_exclusive(&file)?;
+        } else {
+            fs2::FileExt::lock_shared(&file)?;
+        }
+        Ok(TransactionLock { file })
+    }
+
+    fn open_transaction_lock_file(&self) -> Result<File, ProfileError> {
         let path = self.transaction_lock_path()?;
         let parent = path.parent().ok_or(ProfileError::InvalidRoot)?;
         let parent_metadata = fs::symlink_metadata(parent)?;
@@ -179,12 +216,7 @@ impl ProfileRepository {
         }
         let file = options.open(path)?;
         validate_private_file(&file.metadata()?, "transaction lock")?;
-        if exclusive {
-            fs2::FileExt::lock_exclusive(&file)?;
-        } else {
-            fs2::FileExt::lock_shared(&file)?;
-        }
-        Ok(TransactionLock { file })
+        Ok(file)
     }
 
     pub fn load_config(&self, identity_id: &str) -> Result<PublicProfileConfig, ProfileError> {
@@ -809,6 +841,32 @@ mod tests {
         for invalid in ["../escape", "Build", "con", "nul", "a/b", ""] {
             assert!(ProfileName::parse(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn shared_transaction_lock_respects_a_bounded_authorization_wait() {
+        let root = private_tempdir();
+        let state = root.path().join("state");
+        let owner = ProfileRepository::new(state.clone()).expect("owner repository");
+        let contender = ProfileRepository::new(state).expect("contender repository");
+        let exclusive = owner.acquire_transaction_lock().expect("exclusive lock");
+
+        let started = std::time::Instant::now();
+        assert!(
+            contender
+                .acquire_shared_transaction_lock_for(std::time::Duration::from_millis(25))
+                .expect("bounded shared wait")
+                .is_none()
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+
+        drop(exclusive);
+        assert!(
+            contender
+                .acquire_shared_transaction_lock_for(std::time::Duration::from_millis(25))
+                .expect("shared lock after release")
+                .is_some()
+        );
     }
 
     #[test]

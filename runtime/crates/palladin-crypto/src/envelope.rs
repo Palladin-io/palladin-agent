@@ -185,12 +185,33 @@ pub struct CredentialEnvelopeContext<'a> {
 
 pub struct DecryptedCredential {
     plaintext: SecretSlice<u8>,
+    grant_expires_at: Option<InstantBinding>,
 }
 
 impl DecryptedCredential {
     #[must_use]
     pub fn expose_for_authorized_operation(&self) -> &[u8] {
         self.plaintext.expose_secret()
+    }
+
+    /// Remaining authenticated grant lifetime at the point of use. A lifetime grant returns
+    /// `None`; an expired bounded grant always fails closed even if it decrypted earlier.
+    pub fn remaining_validity_at(
+        &self,
+        now: OffsetDateTime,
+    ) -> Result<Option<std::time::Duration>, CryptoError> {
+        let Some(expires_at) = self.grant_expires_at else {
+            return Ok(None);
+        };
+        let expires_at = OffsetDateTime::from_unix_timestamp(expires_at.unix_seconds)
+            .and_then(|value| value.replace_nanosecond(expires_at.nanosecond))
+            .map_err(|_| CryptoError::InvalidDescriptor)?;
+        if expires_at <= now {
+            return Err(CryptoError::StaleInput);
+        }
+        std::time::Duration::try_from(expires_at - now)
+            .map(Some)
+            .map_err(|_| CryptoError::StaleInput)
     }
 }
 
@@ -271,8 +292,13 @@ pub fn decrypt_credential_at(
         CryptoError::InvalidEncoding => CryptoError::InvalidGrantPayloadEncoding,
         error => error,
     })?;
+    let grant_expires_at = match &descriptor.binding {
+        EnvelopeBinding::Grant { expires_at, .. } => *expires_at,
+        _ => return Err(CryptoError::InvalidDescriptor),
+    };
     Ok(DecryptedCredential {
         plaintext: normalized.plaintext.into(),
+        grant_expires_at,
     })
 }
 
@@ -878,11 +904,34 @@ mod tests {
             plaintext: br#"{"urlDomain":"sensitive.example","password":"synthetic-plaintext"}"#
                 .to_vec()
                 .into(),
+            grant_expires_at: None,
         };
         let debug = format!("{plaintext:?}");
         assert_eq!(debug, "DecryptedCredential([REDACTED])");
         assert!(!debug.contains("synthetic-plaintext"));
         assert!(!debug.contains("sensitive.example"));
+    }
+
+    #[test]
+    fn decrypted_grant_is_rechecked_at_final_use_time() {
+        let expires_at = OffsetDateTime::from_unix_timestamp(1_800_000_001).expect("expiry");
+        let credential = DecryptedCredential {
+            plaintext: b"fixture-sensitive-value".to_vec().into(),
+            grant_expires_at: Some(crate::InstantBinding {
+                unix_seconds: expires_at.unix_timestamp(),
+                nanosecond: expires_at.nanosecond(),
+            }),
+        };
+        assert_eq!(
+            credential
+                .remaining_validity_at(expires_at - Duration::SECOND)
+                .expect("fresh grant"),
+            Some(std::time::Duration::from_secs(1))
+        );
+        assert_eq!(
+            credential.remaining_validity_at(expires_at),
+            Err(CryptoError::StaleInput)
+        );
     }
 
     #[test]

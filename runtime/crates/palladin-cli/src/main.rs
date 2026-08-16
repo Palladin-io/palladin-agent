@@ -256,9 +256,9 @@ async fn chrome_native_host_main() -> ExitCode {
         return match palladin_cli::native_browser::serve_native_host(
             &root,
             pairing.identity(),
-            || {
+            |max_wait| {
                 service
-                    .browser_host_lifecycle_guard(pairing.lifecycle_token())
+                    .browser_host_lifecycle_guard_within(pairing.lifecycle_token(), max_wait)
                     .map_err(|_| palladin_cli::native_browser::NativeBrowserError::Revoked)
             },
         )
@@ -1348,7 +1348,10 @@ async fn inject_extension(
         return fail("could not create an Inject transaction");
     }
     let nonce = hex::encode(operation_nonce);
-    let lifecycle = match service.browser_host_lifecycle_guard(pairing.lifecycle_token()) {
+    let lifecycle = match service.browser_host_lifecycle_guard_within(
+        pairing.lifecycle_token(),
+        palladin_cli::native_browser::OPERATION_TIMEOUT,
+    ) {
         Ok(lifecycle) => lifecycle,
         Err(error) => return fail(&error.to_string()),
     };
@@ -1482,6 +1485,14 @@ async fn inject_extension(
             value,
         })
         .collect();
+    let forward = match session.browser_inject_forward_guard(
+        service,
+        pairing.lifecycle_token(),
+        &delivered,
+    ) {
+        Ok(forward) => forward,
+        Err(error) => return fail(&error.to_string()),
+    };
     let wire = InjectRequest {
         protocol: palladin_browser_bridge::secure_transport::INJECT_PROVIDER_PROTOCOL,
         message_type: "inject",
@@ -1492,19 +1503,22 @@ async fn inject_extension(
         form: &form,
         values,
     };
-    let lifecycle = match service.browser_host_lifecycle_guard(pairing.lifecycle_token()) {
-        Ok(lifecycle) => lifecycle,
+    let sealed = match extension.seal_inject(&wire) {
+        Ok(sealed) => sealed,
         Err(error) => return fail(&error.to_string()),
     };
-    let response = match extension.inject(&wire).await {
-        Ok(response) => response,
-        Err(error) => return fail(&error.to_string()),
-    };
-    drop(lifecycle);
     drop(wire);
     drop(credential);
     drop(parsed);
     drop(delivered);
+    let Some(authorization_remaining) = forward.remaining() else {
+        return fail("the authenticated browser authorization expired");
+    };
+    let response = match extension.send_inject(sealed, authorization_remaining).await {
+        Ok(response) => response,
+        Err(error) => return fail(&error.to_string()),
+    };
+    drop(forward);
 
     if response.outcome != "injected" {
         return fail(match response.outcome.as_str() {

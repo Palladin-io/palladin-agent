@@ -91,23 +91,24 @@ These controls are defense in depth inside the selected platform tier. The preci
 
 ## Browser injection
 
-The provider-neutral form and origin-validation contract is implemented. The extension transport
-now also has a frozen signed-ephemeral-handshake and directional XChaCha20-Poly1305 wire contract,
-with the host's durable Ed25519 identity reserved in OS secure storage. The current Node
-extension-socket adapter does not yet use that authenticated session. Production runtimes therefore
-continue to reject it before opening a profile or decrypting a credential; it is a development
-fixture available only with an explicit `local-development` build, not a release security boundary.
-AgentBrowser Inject is unavailable in every build because version 0.33.2 cannot atomically bind
-secret text insertion to the attested element; its MCP package returns before grant, runtime, or
-secret-bearing daemon access.
+The provider-neutral form and origin-validation contract is implemented. The macOS Rust runtime now
+has a code-enabled, one-shot Chrome Native Messaging route with explicit out-of-band key pinning, a
+signed ephemeral extension session, mutually authenticated local CLI-to-host IPC, lifecycle
+revocation, and directional XChaCha20-Poly1305 frames. It accepts only the compiled Chromium origin
+and the exact schemas in [`contracts/inject-provider/v1`](contracts/inject-provider/v1/README.md).
+The legacy Node extension socket remains unshipped and is never a fallback.
 
-Production Inject requires a separately reviewed one-shot capability bound to the provider,
-browser session/document, Vault/Entry, form digest, authenticated domain, expiry, and replay guard.
-Extension support additionally requires the explicit pairing UI, the shared extension crypto API,
-and Native Messaging host integration described in
-[`contracts/inject-provider/v1`](contracts/inject-provider/v1/README.md). AgentBrowser support
-requires both an upstream session-owned authenticated channel and an atomic element-bound fill
-primitive. None of these requirements can be bypassed by selecting a provider ID or hidden flag.
+This code-enabled branch is not by itself a production acceptance claim. Release readiness remains
+blocked until the exact signed/notarized packaged binary passes a real Chrome Native Messaging E2E
+with the paired extension, including wrong-pin, revocation, expiry, and disconnect negatives. Source
+and synthetic process tests do not replace that browser gate. Platforms without a completed native
+host adapter fail closed before profile, grant, or credential access.
+
+AgentBrowser Inject remains unavailable in every build because version 0.33.2 cannot atomically bind
+secret text insertion to the attested element; its MCP package returns before grant, runtime, or
+secret-bearing daemon access. AgentBrowser support requires both an upstream session-owned
+authenticated channel and an atomic element-bound fill primitive. These requirements cannot be
+bypassed by selecting a provider ID or hidden flag.
 
 Caller-provided CDP endpoints, remote-debugging ports, Playwright WebSocket endpoints, and unmanaged
 browser targets are never contacted. They cannot attest the browser or page origin: a fake endpoint

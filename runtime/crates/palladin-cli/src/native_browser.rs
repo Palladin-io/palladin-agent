@@ -16,14 +16,14 @@ use palladin_credential::wait::MAX_WAIT_MS;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout, timeout_at};
 use zeroize::Zeroize;
 
 use crate::browser::{CHROME_EXTENSION_ORIGIN, local_socket_path};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
-const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
+pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 const APPROVAL_TIMEOUT_MARGIN_MS: u64 = 30_000;
 const GRANT_APPROVAL_TIMEOUT: Duration =
     Duration::from_millis(MAX_WAIT_MS + APPROVAL_TIMEOUT_MARGIN_MS);
@@ -121,6 +121,20 @@ struct OwnedInjectRequest {
     values: Vec<OwnedInjectFieldValue>,
 }
 
+impl Drop for OwnedInjectRequest {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl Zeroize for OwnedInjectRequest {
+    fn zeroize(&mut self) {
+        for value in &mut self.values {
+            value.zeroize();
+        }
+    }
+}
+
 impl Serialize for OwnedInjectFieldValue {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -137,6 +151,11 @@ impl Serialize for OwnedInjectFieldValue {
 pub struct ExtensionClient {
     stream: UnixStream,
     session: palladin_browser_bridge::local_transport::LocalSecureSession,
+}
+
+pub struct SealedInject {
+    frame: LocalSecureFrame,
+    transaction_id: String,
 }
 
 impl ExtensionClient {
@@ -180,19 +199,37 @@ impl ExtensionClient {
         Ok(result)
     }
 
-    pub async fn inject(
+    /// Seal the only plaintext-bearing request synchronously. Callers can then destroy every
+    /// owned credential buffer before any socket write or response wait begins.
+    pub fn seal_inject(
         &mut self,
         request: &InjectRequest<'_>,
-    ) -> Result<InjectResult, NativeBrowserError> {
+    ) -> Result<SealedInject, NativeBrowserError> {
         let frame = self.session.seal(request)?;
-        timeout(OPERATION_TIMEOUT, write_message(&mut self.stream, &frame))
+        Ok(SealedInject {
+            frame,
+            transaction_id: request.transaction_id.to_owned(),
+        })
+    }
+
+    pub async fn send_inject(
+        &mut self,
+        sealed: SealedInject,
+        authorization_remaining: Duration,
+    ) -> Result<InjectResult, NativeBrowserError> {
+        let operation_timeout = OPERATION_TIMEOUT.min(authorization_remaining);
+        if operation_timeout.is_zero() {
+            return Err(NativeBrowserError::AuthorizationExpired);
+        }
+        let deadline = Instant::now() + operation_timeout;
+        timeout_at(deadline, write_message(&mut self.stream, &sealed.frame))
             .await
-            .map_err(|_| NativeBrowserError::Unavailable)??;
-        let response: LocalSecureFrame = timeout(OPERATION_TIMEOUT, read_message(&mut self.stream))
+            .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
+        let response: LocalSecureFrame = timeout_at(deadline, read_message(&mut self.stream))
             .await
-            .map_err(|_| NativeBrowserError::Unavailable)??;
+            .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
         let result: InjectResult = self.session.open(&response)?;
-        validate_inject_result(&result, request.transaction_id)?;
+        validate_inject_result(&result, &sealed.transaction_id)?;
         Ok(result)
     }
 }
@@ -203,7 +240,7 @@ pub async fn serve_native_host<F, G>(
     lifecycle_guard: F,
 ) -> Result<(), NativeBrowserError>
 where
-    F: Fn() -> Result<G, NativeBrowserError>,
+    F: Fn(Duration) -> Result<G, NativeBrowserError>,
 {
     let mut native_input = tokio::io::stdin();
     let mut native_output = tokio::io::stdout();
@@ -211,7 +248,7 @@ where
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
     let (ready, mut extension_session) = identity.accept(CHROME_EXTENSION_ORIGIN, &open)?;
-    let _lifecycle = lifecycle_guard()?;
+    let _lifecycle = lifecycle_guard(HANDSHAKE_TIMEOUT)?;
     timeout(
         HANDSHAKE_TIMEOUT,
         write_message::<HostSessionReady>(&mut native_output, &ready),
@@ -230,7 +267,7 @@ where
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
     let (local_ready, mut local_session) = accept_local_client(identity, &local_open)?;
-    let _lifecycle = lifecycle_guard()?;
+    let _lifecycle = lifecycle_guard(HANDSHAKE_TIMEOUT)?;
     timeout(HANDSHAKE_TIMEOUT, write_message(&mut local, &local_ready))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
@@ -241,7 +278,7 @@ where
         .map_err(|_| NativeBrowserError::Unavailable)??;
     let prepare: OwnedPrepareRequest = local_session.open(&local_frame)?;
     validate_prepare(&prepare)?;
-    let _lifecycle = lifecycle_guard()?;
+    let _lifecycle = lifecycle_guard(OPERATION_TIMEOUT)?;
     let extension_frame = extension_session.seal(&prepare)?;
     timeout(
         OPERATION_TIMEOUT,
@@ -273,8 +310,9 @@ where
     let injection: OwnedInjectRequest = local_session.open(&local_frame)?;
     validate_inject_request(&injection)?;
     let transaction_id = injection.transaction_id.clone();
-    let _lifecycle = lifecycle_guard()?;
+    let _lifecycle = lifecycle_guard(OPERATION_TIMEOUT)?;
     let extension_frame = extension_session.seal(&injection)?;
+    drop(injection);
     timeout(
         OPERATION_TIMEOUT,
         write_message(&mut native_output, &extension_frame),
@@ -476,6 +514,8 @@ pub enum NativeBrowserError {
     UnsafeSocket,
     #[error("the authenticated browser host pairing was revoked")]
     Revoked,
+    #[error("the authenticated browser authorization expired")]
+    AuthorizationExpired,
     #[error(transparent)]
     Framing(#[from] palladin_browser_bridge::framing::FramingError),
     #[error(transparent)]
@@ -518,13 +558,70 @@ mod tests {
 
     #[test]
     fn decrypted_owned_field_value_has_explicit_zeroization() {
-        let mut field = OwnedInjectFieldValue {
-            entry_field_id: "credential.password".to_owned(),
-            value: "fixture-sensitive-value".to_owned(),
+        let mut request = OwnedInjectRequest {
+            protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
+            message_type: "inject".to_owned(),
+            transaction_id: "transaction-1".to_owned(),
+            grant_id: "grant-1".to_owned(),
+            entry_id: "entry-1".to_owned(),
+            expected_domain: "example.test".to_owned(),
+            form: InjectionFormDefinition {
+                version: 1,
+                steps: Vec::new(),
+            },
+            values: vec![OwnedInjectFieldValue {
+                entry_field_id: "credential.password".to_owned(),
+                value: "fixture-sensitive-value".to_owned(),
+            }],
         };
-        field.zeroize();
-        assert!(field.value.is_empty());
-        assert_eq!(field.entry_field_id, "credential.password");
+        request.zeroize();
+        assert!(request.values[0].value.is_empty());
+        assert_eq!(request.values[0].entry_field_id, "credential.password");
+    }
+
+    #[tokio::test]
+    async fn sealed_inject_has_no_plaintext_owner_lifetime() {
+        let identity = BrowserHostIdentity::from_secret_bytes([31_u8; 32]);
+        let (open, pending) = LocalClientHandshake::start(&identity).expect("client open");
+        let (ready, _host_session) = accept_local_client(&identity, &open).expect("host accept");
+        let session = pending.finish(&ready).expect("client session");
+        let (stream, _peer) = UnixStream::pair().expect("socket pair");
+        let mut client = ExtensionClient { stream, session };
+        let sealed = {
+            let sensitive = "fixture-sensitive-value".to_owned();
+            let form = InjectionFormDefinition {
+                version: 1,
+                steps: vec![palladin_browser_bridge::InjectionFormStep {
+                    fields: vec![palladin_browser_bridge::InjectionFormField {
+                        entry_field_id: "credential.password".to_owned(),
+                        selector: "#password".to_owned(),
+                        control: palladin_browser_bridge::InjectionControl::Password,
+                    }],
+                    submit: palladin_browser_bridge::InjectionSubmit {
+                        action: palladin_browser_bridge::InjectionSubmitKind::Click,
+                        selector: "#submit".to_owned(),
+                    },
+                    wait_for: None,
+                }],
+            };
+            let request = InjectRequest {
+                protocol: INJECT_PROVIDER_PROTOCOL,
+                message_type: "inject",
+                transaction_id: "transaction-1",
+                grant_id: "grant-1",
+                entry_id: "entry-1",
+                expected_domain: "example.test",
+                form: &form,
+                values: vec![InjectFieldValue {
+                    entry_field_id: "credential.password",
+                    value: &sensitive,
+                }],
+            };
+            client.seal_inject(&request).expect("seal inject")
+        };
+        let encoded = serde_json::to_string(&sealed.frame).expect("sealed frame");
+        assert!(!encoded.contains("fixture-sensitive-value"));
+        assert_eq!(sealed.transaction_id, "transaction-1");
     }
 
     #[tokio::test]

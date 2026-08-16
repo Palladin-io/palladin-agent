@@ -538,7 +538,11 @@ mod tests {
 
         let (open, pending) = LocalClientHandshake::start(&identity).expect("client open");
         let (mut ready, _) = accept_local_client(&identity, &open).expect("host accept");
-        ready.host_signature.replace_range(0..1, "A");
+        let mut tampered_signature = URL_SAFE_NO_PAD
+            .decode(&ready.host_signature)
+            .expect("canonical host signature");
+        tampered_signature[0] ^= 1;
+        ready.host_signature = URL_SAFE_NO_PAD.encode(tampered_signature);
         assert!(matches!(
             pending.finish(&ready),
             Err(SecureTransportError::InvalidSignature | SecureTransportError::InvalidHandshake)
