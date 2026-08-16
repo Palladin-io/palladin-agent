@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+#[cfg(any(target_os = "macos", test))]
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::process::ExitCode;
@@ -9,10 +10,11 @@ use clap::Parser;
 use palladin_api::{
     AgentPairingStatus, CredentialMethod, ReportCredentialStaleInput, StaleReasonCode,
 };
+#[cfg(any(target_os = "macos", test))]
 use palladin_browser_bridge::{
-    InjectionControl, InjectionCredential, InjectionFormDefinition, InjectionFormField,
-    InjectionTarget, ProviderId,
+    InjectionControl, InjectionCredential, InjectionFormField, InjectionTarget,
 };
+use palladin_browser_bridge::{InjectionFormDefinition, ProviderId};
 use palladin_cli::args::{
     AgentsCommand, BrowserCommand, Cli, Commands, ConnectArgs, ExecArgs, GetArgs, InjectArgs,
     McpCommand, ProgressArg, ReportStaleArgs, SearchArgs, SecurityCommand, StaleCodeArg,
@@ -38,9 +40,9 @@ use palladin_core::profiles::ProfileRepository;
 use palladin_core::secret::OrganizationApiKey;
 use palladin_core::terminal::is_safe_terminal_text;
 use palladin_credential::access::{access_message, exit_code_for_access};
-use palladin_credential::fields::{
-    FieldSelector, ResolvedField, ResolvedFieldType, redact_totp_secrets, resolve_field,
-};
+use palladin_credential::fields::{FieldSelector, redact_totp_secrets, resolve_field};
+#[cfg(any(target_os = "macos", test))]
+use palladin_credential::fields::{ResolvedField, ResolvedFieldType};
 use palladin_credential::secret::parse_secret;
 use palladin_credential::wait::{
     ProgressMode, WaitOptions, heartbeat_line, parse_duration, parse_wait_duration,
@@ -1303,7 +1305,7 @@ async fn inject(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (service, profile, args, provider, form);
-        return fail("the authenticated Chrome extension provider is unavailable on this platform");
+        fail("the authenticated Chrome extension provider is unavailable on this platform")
     }
     #[cfg(target_os = "macos")]
     {
@@ -1512,6 +1514,7 @@ async fn inject_extension(
     ExitCode::SUCCESS
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn resolve_injection_credential(
     parsed: &palladin_credential::secret::ParsedSecret,
     authenticated_username: Option<&str>,
@@ -1528,6 +1531,7 @@ fn resolve_injection_credential(
     InjectionCredential::from_fields(values)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn resolve_injection_field(
     parsed: &palladin_credential::secret::ParsedSecret,
     authenticated_username: Option<&str>,
@@ -1583,12 +1587,14 @@ fn resolve_injection_field(
 }
 
 #[derive(Clone, Copy)]
+#[cfg(any(target_os = "macos", test))]
 enum ResolvedKind {
     Text,
     Concealed,
     Otp,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn resolve_selected_field(
     parsed: &palladin_credential::secret::ParsedSecret,
     label: &str,
@@ -1627,6 +1633,7 @@ fn inject_uses_deprecated_browser_boundary(args: &InjectArgs) -> bool {
         || args.verbose
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn resolve_authenticated_injection_target(
     grant_domain: Option<&str>,
     discovery_domain: Option<&str>,
