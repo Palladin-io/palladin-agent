@@ -5,8 +5,8 @@ use std::time::Duration;
 use palladin_browser_bridge::InjectionFormDefinition;
 use palladin_browser_bridge::framing::{read_message, write_message};
 use palladin_browser_bridge::local_transport::{
-    LocalClientHandshake, LocalSecureFrame, LocalSessionOpen, LocalSessionReady,
-    accept_local_client,
+    LOCAL_TRANSPORT_PROTOCOL, LocalClientHandshake, LocalSecureFrame, LocalSessionOpen,
+    LocalSessionReady, accept_local_client,
 };
 use palladin_browser_bridge::secure_transport::{
     BrowserHostIdentity, ExtensionSessionOpen, HostSessionReady, INJECT_PROVIDER_PROTOCOL,
@@ -27,6 +27,7 @@ pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 const APPROVAL_TIMEOUT_MARGIN_MS: u64 = 30_000;
 const GRANT_APPROVAL_TIMEOUT: Duration =
     Duration::from_millis(MAX_WAIT_MS + APPROVAL_TIMEOUT_MARGIN_MS);
+const MAX_LOCAL_INJECT_VALIDITY: Duration = Duration::from_millis(MAX_WAIT_MS);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +68,16 @@ pub struct InjectRequest<'a> {
     pub expected_domain: &'a str,
     pub form: &'a InjectionFormDefinition,
     pub values: Vec<InjectFieldValue<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalInjectCommand<'a> {
+    protocol: &'static str,
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    not_after_monotonic_ns: String,
+    request: &'a InjectRequest<'a>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -119,6 +130,28 @@ struct OwnedInjectRequest {
     expected_domain: String,
     form: InjectionFormDefinition,
     values: Vec<OwnedInjectFieldValue>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OwnedLocalInjectCommand {
+    protocol: String,
+    #[serde(rename = "type")]
+    message_type: String,
+    not_after_monotonic_ns: String,
+    request: OwnedInjectRequest,
+}
+
+impl Drop for OwnedLocalInjectCommand {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl Zeroize for OwnedLocalInjectCommand {
+    fn zeroize(&mut self) {
+        self.request.zeroize();
+    }
 }
 
 impl Drop for OwnedInjectRequest {
@@ -204,8 +237,15 @@ impl ExtensionClient {
     pub fn seal_inject(
         &mut self,
         request: &InjectRequest<'_>,
+        not_after_monotonic_ns: u64,
     ) -> Result<SealedInject, NativeBrowserError> {
-        let frame = self.session.seal(request)?;
+        let command = LocalInjectCommand {
+            protocol: LOCAL_TRANSPORT_PROTOCOL,
+            message_type: "inject.forward",
+            not_after_monotonic_ns: not_after_monotonic_ns.to_string(),
+            request,
+        };
+        let frame = self.session.seal(&command)?;
         Ok(SealedInject {
             frame,
             transaction_id: request.transaction_id.to_owned(),
@@ -307,22 +347,24 @@ where
     let local_frame: LocalSecureFrame = timeout(GRANT_APPROVAL_TIMEOUT, read_message(&mut local))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
-    let injection: OwnedInjectRequest = local_session.open(&local_frame)?;
-    validate_inject_request(&injection)?;
-    let transaction_id = injection.transaction_id.clone();
-    let _lifecycle = lifecycle_guard(OPERATION_TIMEOUT)?;
-    let extension_frame = extension_session.seal(&injection)?;
+    let injection: OwnedLocalInjectCommand = local_session.open(&local_frame)?;
+    let authorization_remaining = validate_local_inject_command(&injection)?;
+    let transaction_id = injection.request.transaction_id.clone();
+    let _lifecycle = lifecycle_guard(OPERATION_TIMEOUT.min(authorization_remaining))?;
+    authorization_remaining_until(&injection.not_after_monotonic_ns)?;
+    let extension_frame = extension_session.seal(&injection.request)?;
+    let not_after_monotonic_ns = injection.not_after_monotonic_ns.clone();
     drop(injection);
-    timeout(
-        OPERATION_TIMEOUT,
-        write_message(&mut native_output, &extension_frame),
+    let extension_deadline = write_authorized_extension_frame(
+        &mut native_output,
+        &extension_frame,
+        &not_after_monotonic_ns,
     )
-    .await
-    .map_err(|_| NativeBrowserError::Unavailable)??;
+    .await?;
     let extension_response: SecureFrame =
-        timeout(OPERATION_TIMEOUT, read_message(&mut native_input))
+        timeout_at(extension_deadline, read_message(&mut native_input))
             .await
-            .map_err(|_| NativeBrowserError::Unavailable)??;
+            .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
     let result: InjectResult = extension_session.open(&extension_response)?;
     validate_inject_result(&result, &transaction_id)?;
     let local_response = local_session.seal(&result)?;
@@ -388,6 +430,88 @@ fn validate_inject_request(request: &OwnedInjectRequest) -> Result<(), NativeBro
         return Err(NativeBrowserError::InvalidMessage);
     }
     Ok(())
+}
+
+fn validate_local_inject_command(
+    command: &OwnedLocalInjectCommand,
+) -> Result<Duration, NativeBrowserError> {
+    if command.protocol != LOCAL_TRANSPORT_PROTOCOL || command.message_type != "inject.forward" {
+        return Err(NativeBrowserError::InvalidMessage);
+    }
+    validate_inject_request(&command.request)?;
+    let remaining = authorization_remaining_until(&command.not_after_monotonic_ns)?;
+    if remaining > MAX_LOCAL_INJECT_VALIDITY {
+        return Err(NativeBrowserError::InvalidMessage);
+    }
+    Ok(remaining)
+}
+
+fn authorization_remaining_until(value: &str) -> Result<Duration, NativeBrowserError> {
+    if value.is_empty()
+        || value.len() > 20
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(NativeBrowserError::InvalidMessage);
+    }
+    let not_after = value
+        .parse::<u64>()
+        .map_err(|_| NativeBrowserError::InvalidMessage)?;
+    let now = monotonic_now_ns()?;
+    let remaining = not_after
+        .checked_sub(now)
+        .filter(|remaining| *remaining != 0)
+        .ok_or(NativeBrowserError::AuthorizationExpired)?;
+    Ok(Duration::from_nanos(remaining))
+}
+
+/// This is the final secret-forwarding gate. The caller holds the shared lifecycle lock, and the
+/// clock check occurs inside this helper immediately before the first extension write is polled.
+async fn write_authorized_extension_frame<W>(
+    writer: &mut W,
+    frame: &SecureFrame,
+    not_after_monotonic_ns: &str,
+) -> Result<Instant, NativeBrowserError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let authorization_remaining = authorization_remaining_until(not_after_monotonic_ns)?;
+    let deadline = Instant::now() + OPERATION_TIMEOUT.min(authorization_remaining);
+    timeout_at(deadline, write_message(writer, frame))
+        .await
+        .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
+    Ok(deadline)
+}
+
+/// Read the system-wide Unix monotonic clock shared by the CLI and Native Messaging host.
+pub fn monotonic_now_ns() -> Result<u64, NativeBrowserError> {
+    let now = nix::time::ClockId::CLOCK_MONOTONIC
+        .now()
+        .map_err(|_| NativeBrowserError::AuthorizationClockUnavailable)?;
+    let seconds = u64::try_from(now.tv_sec())
+        .map_err(|_| NativeBrowserError::AuthorizationClockUnavailable)?;
+    let nanoseconds = u64::try_from(now.tv_nsec())
+        .map_err(|_| NativeBrowserError::AuthorizationClockUnavailable)?;
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or(NativeBrowserError::AuthorizationClockUnavailable)
+}
+
+/// Convert an already sampled monotonic time and remaining authorization into a not-after. The
+/// caller samples before reading the remaining lease so this conversion can only narrow it.
+pub fn monotonic_not_after_ns(
+    sampled_now_ns: u64,
+    authorization_remaining: Duration,
+) -> Result<u64, NativeBrowserError> {
+    let remaining_ns = u64::try_from(authorization_remaining.as_nanos())
+        .map_err(|_| NativeBrowserError::AuthorizationExpired)?;
+    if remaining_ns == 0 || authorization_remaining > MAX_LOCAL_INJECT_VALIDITY {
+        return Err(NativeBrowserError::AuthorizationExpired);
+    }
+    sampled_now_ns
+        .checked_add(remaining_ns)
+        .ok_or(NativeBrowserError::AuthorizationExpired)
 }
 
 fn validate_inject_result(
@@ -516,6 +640,8 @@ pub enum NativeBrowserError {
     Revoked,
     #[error("the authenticated browser authorization expired")]
     AuthorizationExpired,
+    #[error("the authenticated browser authorization clock is unavailable")]
+    AuthorizationClockUnavailable,
     #[error(transparent)]
     Framing(#[from] palladin_browser_bridge::framing::FramingError),
     #[error(transparent)]
@@ -524,7 +650,74 @@ pub enum NativeBrowserError {
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
     use super::*;
+
+    #[derive(Default)]
+    struct CountingWriter {
+        bytes_written: usize,
+    }
+
+    impl tokio::io::AsyncWrite for CountingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.bytes_written += buffer.len();
+            Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn valid_form() -> InjectionFormDefinition {
+        InjectionFormDefinition {
+            version: 1,
+            steps: vec![palladin_browser_bridge::InjectionFormStep {
+                fields: vec![palladin_browser_bridge::InjectionFormField {
+                    entry_field_id: "credential.password".to_owned(),
+                    selector: "#password".to_owned(),
+                    control: palladin_browser_bridge::InjectionControl::Password,
+                }],
+                submit: palladin_browser_bridge::InjectionSubmit {
+                    action: palladin_browser_bridge::InjectionSubmitKind::Click,
+                    selector: "#submit".to_owned(),
+                },
+                wait_for: None,
+            }],
+        }
+    }
+
+    fn owned_inject_request() -> OwnedInjectRequest {
+        OwnedInjectRequest {
+            protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
+            message_type: "inject".to_owned(),
+            transaction_id: "transaction-1".to_owned(),
+            grant_id: "grant-1".to_owned(),
+            entry_id: "entry-1".to_owned(),
+            expected_domain: "example.test".to_owned(),
+            form: valid_form(),
+            values: vec![OwnedInjectFieldValue {
+                entry_field_id: "credential.password".to_owned(),
+                value: "fixture-sensitive-value".to_owned(),
+            }],
+        }
+    }
 
     #[test]
     fn host_operation_window_covers_maximum_grant_approval_wait_with_margin() {
@@ -617,11 +810,110 @@ mod tests {
                     value: &sensitive,
                 }],
             };
-            client.seal_inject(&request).expect("seal inject")
+            let not_after = monotonic_now_ns()
+                .and_then(|now| monotonic_not_after_ns(now, Duration::from_secs(1)))
+                .expect("deadline");
+            client
+                .seal_inject(&request, not_after)
+                .expect("seal inject")
         };
         let encoded = serde_json::to_string(&sealed.frame).expect("sealed frame");
         assert!(!encoded.contains("fixture-sensitive-value"));
         assert_eq!(sealed.transaction_id, "transaction-1");
+    }
+
+    #[tokio::test]
+    async fn fully_queued_local_inject_expires_before_host_forward_and_wipes() {
+        let identity = BrowserHostIdentity::from_secret_bytes([37_u8; 32]);
+        let (open, pending) = LocalClientHandshake::start(&identity).expect("client open");
+        let (ready, mut host_session) = accept_local_client(&identity, &open).expect("host accept");
+        let mut client_session = pending.finish(&ready).expect("client session");
+        let (mut sender, mut receiver) = UnixStream::pair().expect("socket pair");
+        let form = valid_form();
+        let request = InjectRequest {
+            protocol: INJECT_PROVIDER_PROTOCOL,
+            message_type: "inject",
+            transaction_id: "transaction-queued",
+            grant_id: "grant-queued",
+            entry_id: "entry-queued",
+            expected_domain: "example.test",
+            form: &form,
+            values: vec![InjectFieldValue {
+                entry_field_id: "credential.password",
+                value: "fixture-sensitive-queued-value",
+            }],
+        };
+        let deadline = monotonic_now_ns()
+            .and_then(|now| monotonic_not_after_ns(now, Duration::from_millis(20)))
+            .expect("deadline");
+        let command = LocalInjectCommand {
+            protocol: LOCAL_TRANSPORT_PROTOCOL,
+            message_type: "inject.forward",
+            not_after_monotonic_ns: deadline.to_string(),
+            request: &request,
+        };
+        let frame = client_session.seal(&command).expect("seal command");
+
+        write_message(&mut sender, &frame)
+            .await
+            .expect("fully queue frame");
+        tokio::time::sleep(Duration::from_millis(40)).await;
+
+        let frame: LocalSecureFrame = read_message(&mut receiver).await.expect("queued frame");
+        let mut command: OwnedLocalInjectCommand =
+            host_session.open(&frame).expect("decrypt queued command");
+        let authorization = validate_local_inject_command(&command);
+        assert!(matches!(
+            authorization,
+            Err(NativeBrowserError::AuthorizationExpired)
+        ));
+        let extension_frame = SecureFrame {
+            protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
+            message_type: "secure".to_owned(),
+            session_id: "test-session".to_owned(),
+            sequence: "0".to_owned(),
+            ciphertext: "AA".to_owned(),
+        };
+        let mut extension_output = CountingWriter::default();
+        assert!(matches!(
+            write_authorized_extension_frame(
+                &mut extension_output,
+                &extension_frame,
+                &command.not_after_monotonic_ns,
+            )
+            .await,
+            Err(NativeBrowserError::AuthorizationExpired)
+        ));
+        command.zeroize();
+        assert_eq!(extension_output.bytes_written, 0);
+        assert!(command.request.values[0].value.is_empty());
+    }
+
+    #[test]
+    fn local_inject_deadline_is_canonical_and_bounded() {
+        let now = monotonic_now_ns().expect("clock");
+        let mut command = OwnedLocalInjectCommand {
+            protocol: LOCAL_TRANSPORT_PROTOCOL.to_owned(),
+            message_type: "inject.forward".to_owned(),
+            not_after_monotonic_ns: format!("0{}", now + 1_000_000_000),
+            request: owned_inject_request(),
+        };
+        assert!(matches!(
+            validate_local_inject_command(&command),
+            Err(NativeBrowserError::InvalidMessage)
+        ));
+        command.not_after_monotonic_ns = (monotonic_now_ns().expect("clock")
+            + u64::try_from((MAX_LOCAL_INJECT_VALIDITY + Duration::from_secs(1)).as_nanos())
+                .expect("bounded duration"))
+        .to_string();
+        assert!(matches!(
+            validate_local_inject_command(&command),
+            Err(NativeBrowserError::InvalidMessage)
+        ));
+        assert!(matches!(
+            monotonic_not_after_ns(now, MAX_LOCAL_INJECT_VALIDITY + Duration::from_nanos(1)),
+            Err(NativeBrowserError::AuthorizationExpired)
+        ));
     }
 
     #[tokio::test]

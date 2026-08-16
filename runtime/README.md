@@ -112,7 +112,9 @@ bypassed by selecting a provider ID or hidden flag.
 
 Caller-provided CDP endpoints, remote-debugging ports, Playwright WebSocket endpoints, and unmanaged
 browser targets are never contacted. They cannot attest the browser or page origin: a fake endpoint
-can report an allowed URL and then receive the plaintext fill operation. The rejected legacy path is
-recorded in [ADR 0003](docs/adr/0003-browser-injection-boundary.md); the authenticated provider
-contract and its extension/Playwright adapters are recorded in
-[ADR 0005](docs/adr/0005-authenticated-inject-form-contract.md).
+can report an allowed URL and then receive the plaintext fill operation. The hidden historical
+`--provider-transport-stdio` flag is rejected before profile, grant, or credential access; the
+unshipped Node and Playwright wrappers that still name it are disabled fixtures, not supported
+transports or fallbacks. The rejected legacy path is recorded in
+[ADR 0003](docs/adr/0003-browser-injection-boundary.md). ADR 0005 records the earlier contract design;
+the only code-enabled production direction is the authenticated Chrome extension route above.

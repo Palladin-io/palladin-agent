@@ -118,7 +118,7 @@ API keys in argv or environment variables are rejected. Connecting a second prof
 | `palladin search <query>` | Search metadata visible to the Agent. |
 | `palladin get <vaultId> <entryId>` | Intentionally return a granted credential to the operator. |
 | `palladin exec <vaultId> <entryId> -- <program>` | Run an allowlisted program with delivered values in a sanitized child environment. |
-| `palladin inject <vaultId> <entryId> ...` | Reserved for an authenticated browser-provider capability. Production builds currently fail closed before opening the profile; plaintext provider pipes exist only in explicit `local-development` builds. |
+| `palladin inject <vaultId> <entryId> --provider extension --form-json <JSON>` | Use the code-enabled authenticated Chrome extension route on macOS. Other providers and platforms fail closed before profile, grant, or credential access. Release acceptance remains gated on the signed/notarized package and real Chrome E2E. |
 | `palladin mcp serve` | Serve Palladin tools over MCP stdio. |
 | `palladin security upgrade` | Explicitly migrate pre-production schema v2 state and secret slots to integrity-bound schema v3. |
 | `palladin security legacy-status` | Inspect legacy TypeScript state without opening config or private-key contents. |
@@ -192,7 +192,7 @@ outcome. Adding another agent browser does not change the grant, crypto, CLI, or
 | Provider | Receiver | Extension required | Secret transport |
 |---|---|---:|---|
 | `extension` | The existing Palladin Chrome extension | Yes — the same user-autofill extension | Two authenticated encrypted hops: CLI↔Rust host and Native Messaging host↔extension |
-| `playwright` | `@palladin/playwright-mcp` embedded in an Agent that owns the live `Page` | No | Private child-process pipes, then the existing in-process Playwright `Page` |
+| `playwright` | Disabled historical development wrapper | No | None — its old private-pipe flag is rejected before profile, grant, or credential access |
 | `agent-browser` | `@palladin/agent-browser-mcp` public navigation proxy | No | None — `inject_credential` fails closed before grant/runtime/secret-bearing daemon commands |
 
 The extension provider uses the same Palladin extension rather than a provider-specific extension.
@@ -205,7 +205,10 @@ key and manifest. Browser forwards hold a shared cross-process lease from the fi
 through the value-free response, while unpair holds the exclusive lease through cleanup, so no
 loaded session can finish after unpair reports success. The post-prepare wait is derived from the
 canonical five-minute grant window plus a 30-second margin; secret-bearing browser round trips stay
-bounded to 60 seconds. The host allowlist contains only the compiled extension origin
+bounded to 60 seconds. The local AEAD payload also binds the minimum operation-lease/grant expiry as
+a canonical `CLOCK_MONOTONIC` not-after; the host rechecks it under the shared lifecycle lease
+immediately before writing to the extension, so queued socket ciphertext cannot outlive its grant.
+The host allowlist contains only the compiled extension origin
 `chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/`.
 
 The local socket is only a rendezvous point. The CLI signs a fresh ephemeral handshake with the
@@ -214,15 +217,12 @@ XChaCha20-Poly1305 keys. The host also dynamically validates that Google-signed 
 before loading the identity. Windows, Linux, other Chromium browsers, Firefox, and Safari fail
 closed until their platform-specific launch attestation and installation paths are implemented.
 
-Codex, Claude, and other MCP clients are callers, not browser providers. They use one of these MCP
-servers and never receive a dedicated extension or the credential value. A future provider registers
-a new lowercase identifier and implements the same value-free contract; unknown providers fail closed.
-
-For Playwright, the Agent owns the browser, `BrowserContext`, and active page. It embeds the shared
-Palladin adapter and passes that live `Page` object directly; Palladin never launches another
-browser. The CLI/MCP input never accepts a CDP URL, remote-debugging port, Playwright WebSocket
-endpoint, or unmanaged browser target. Use the extension provider when Inject must target an
-already-running ordinary Chrome profile that is not owned by the Agent's Playwright runtime.
+Codex, Claude, and other MCP clients are callers, not browser providers. They never receive a
+dedicated extension or the credential value. The unshipped Node/Playwright adapters are disabled
+fixtures: their hidden `--provider-transport-stdio` invocation is rejected by the Rust CLI in every
+build. A future provider requires a separately reviewed authenticated transport and registers a new
+lowercase identifier; unknown providers fail closed. The CLI/MCP input never accepts a CDP URL,
+remote-debugging port, Playwright WebSocket endpoint, unmanaged browser target, or plaintext pipe.
 
 AgentBrowser 0.33.2 cannot atomically bind secret insertion to the element selected for fill;
 page focus handlers can redirect its final text insertion. Its Palladin MCP package therefore

@@ -21,7 +21,9 @@ use palladin_cli::args::{
 };
 use palladin_cli::browser::{PairingBundle, install_manifest, manifest_status, remove_manifest};
 #[cfg(target_os = "macos")]
-use palladin_cli::native_browser::{ExtensionClient, InjectFieldValue, InjectRequest};
+use palladin_cli::native_browser::{
+    ExtensionClient, InjectFieldValue, InjectRequest, monotonic_not_after_ns, monotonic_now_ns,
+};
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
     render_agent_list, render_connect, render_init, render_legacy_cleanup, render_legacy_cutover,
@@ -1493,6 +1495,18 @@ async fn inject_extension(
         Ok(forward) => forward,
         Err(error) => return fail(&error.to_string()),
     };
+    let monotonic_sample = match monotonic_now_ns() {
+        Ok(sample) => sample,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let Some(authorization_remaining) = forward.remaining() else {
+        return fail("the authenticated browser authorization expired");
+    };
+    let not_after_monotonic_ns =
+        match monotonic_not_after_ns(monotonic_sample, authorization_remaining) {
+            Ok(deadline) => deadline,
+            Err(error) => return fail(&error.to_string()),
+        };
     let wire = InjectRequest {
         protocol: palladin_browser_bridge::secure_transport::INJECT_PROVIDER_PROTOCOL,
         message_type: "inject",
@@ -1503,7 +1517,7 @@ async fn inject_extension(
         form: &form,
         values,
     };
-    let sealed = match extension.seal_inject(&wire) {
+    let sealed = match extension.seal_inject(&wire, not_after_monotonic_ns) {
         Ok(sealed) => sealed,
         Err(error) => return fail(&error.to_string()),
     };

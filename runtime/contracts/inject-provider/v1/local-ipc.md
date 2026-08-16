@@ -32,3 +32,42 @@ material[88..112] = client-to-host nonce base
 acceptance, and direction-bound AAD. Plaintext is limited to 768 KiB; outer frames are limited to
 1 MiB. Authentication, replay, ordering, framing, timeout, or schema failure closes the one-shot
 operation without fallback.
+
+The CLI encrypts the final local-only Inject command with this exact inner shape:
+
+```json
+{
+  "protocol": "palladin.browser-host-ipc.v1",
+  "type": "inject.forward",
+  "notAfterMonotonicNs": "1234567890",
+  "request": {
+    "protocol": "palladin.inject-provider.v1",
+    "type": "inject",
+    "transactionId": "...",
+    "grantId": "...",
+    "entryId": "...",
+    "expectedDomain": "example.com",
+    "form": {
+      "version": 1,
+      "steps": [{
+        "fields": [{
+          "entryFieldId": "credential.password",
+          "selector": "#password",
+          "control": "password"
+        }],
+        "submit": { "action": "click", "selector": "#submit" }
+      }]
+    },
+    "values": [{ "entryFieldId": "credential.password", "value": "..." }]
+  }
+}
+```
+
+`request` is the complete exact Inject-provider request; the host unwraps it before creating the
+extension secure frame, so the extension schema is unchanged. `notAfterMonotonicNs` is a canonical
+decimal `u64` on Unix `CLOCK_MONOTONIC`, without leading zeroes. The CLI samples this shared clock
+before reading the remaining OS operation lease and authenticated grant validity, then selects their
+minimum, so the transmitted deadline can only narrow authorization. The host rejects expired or
+more-than-five-minutes-ahead values, bounds lifecycle-lock acquisition by the remaining duration,
+and checks the same deadline again immediately before the extension write while holding that shared
+lock. A ciphertext already buffered in the Unix socket therefore cannot outlive its authorization.
