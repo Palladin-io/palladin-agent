@@ -118,6 +118,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Get(_) => "get",
         Commands::Exec(_) => "exec",
         Commands::Inject(_) => "inject",
+        Commands::Browser { .. } => "browser",
         Commands::ReportStale(_) => "report-stale",
         Commands::Mcp { .. } => "mcp",
         Commands::Agents { .. } => "agents",

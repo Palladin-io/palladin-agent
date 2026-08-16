@@ -628,6 +628,16 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         Ok(identity)
     }
 
+    /// Remove the installation-scoped browser trust anchor during an explicit unpair operation.
+    pub fn unpair_browser_host_identity(&self) -> Result<(), RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.secrets.delete(
+            BROWSER_HOST_IDENTITY_OWNER_ID,
+            SecretSlot::BrowserHostEd25519SecretKeyV1,
+        )?;
+        Ok(())
+    }
+
     /// Verifies the complete public registry/config/signature chain without opening any secret.
     /// The protected trust-state commitment remains a separate secure-store check performed when
     /// an authorized operation opens a profile.

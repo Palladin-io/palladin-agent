@@ -5,8 +5,8 @@ This directory freezes the authenticated session used to carry existing
 the browser's Native Messaging allowlist. It does not change the inner `prepare`, `inject`, or
 value-free result schemas.
 
-Production remains fail-closed until the native host, explicit pairing UI, and extension all use
-this session. A plaintext stdio or owner-only socket is not this security boundary.
+The production macOS Chrome path uses this session. A plaintext stdio or owner-only socket is not
+this security boundary.
 
 ## Pairing
 
@@ -18,9 +18,26 @@ fingerprint after the user confirms the same value in both surfaces:
 fingerprint = base64url-no-pad(SHA-256(raw-host-ed25519-public-key))
 ```
 
+`palladin browser install` emits this exact out-of-band bundle as one stdout JSON value. The
+extension rejects unknown fields and recomputes the fingerprint before persisting the key:
+
+```json
+{
+  "protocol": "palladin.inject-pairing.v1",
+  "hostSigningPublicKey": "...",
+  "fingerprint": "..."
+}
+```
+
 Chrome Native Messaging's exact `allowed_origins` entry authenticates the extension to the host.
-The signed handshake below authenticates the host to the extension. Neither side treats a socket,
-process ID, argv value, or nonce alone as authentication.
+The compiled origin is
+`chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/`. On macOS the host additionally requires a
+Google-signed Chrome parent process before it loads the key. The signed handshake below
+authenticates the host to the extension. Neither side treats a socket, process ID, argv value, or
+nonce alone as authentication.
+
+The CLI reaches this host through the separately mutually authenticated local protocol documented
+in [`local-ipc.md`](local-ipc.md). Plaintext never crosses that socket.
 
 ## Handshake
 

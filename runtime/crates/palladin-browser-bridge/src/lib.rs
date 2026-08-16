@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod framing;
+pub mod local_transport;
 pub mod secure_transport;
 
 use std::{
