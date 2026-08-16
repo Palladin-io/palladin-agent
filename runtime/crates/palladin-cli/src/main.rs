@@ -1302,29 +1302,28 @@ async fn inject(
     if provider.as_str() != "extension" || args.provider_transport_stdio {
         return fail("only the authenticated Palladin extension provider is supported");
     }
-    let form_json = match args.form_json.as_deref() {
-        Some(value) if !value.is_empty() && value.len() <= 256 * 1024 => value,
-        _ => {
-            return fail(
-                "extension Inject requires --form-json with a bounded value-free form plan",
-            );
+    let fallback_form = match args.form_json.as_deref() {
+        None => None,
+        Some(value) if !value.is_empty() && value.len() <= 256 * 1024 => {
+            let form: InjectionFormDefinition = match serde_json::from_str(value) {
+                Ok(form) => form,
+                Err(_) => return fail("the Inject form definition is invalid"),
+            };
+            if form.validate().is_err() {
+                return fail("the Inject form definition is invalid");
+            }
+            Some(form)
         }
+        Some(_) => return fail("the Inject form definition is invalid"),
     };
-    let form: InjectionFormDefinition = match serde_json::from_str(form_json) {
-        Ok(form) => form,
-        Err(_) => return fail("the Inject form definition is invalid"),
-    };
-    if form.validate().is_err() {
-        return fail("the Inject form definition is invalid");
-    }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (service, profile, args, provider, form);
+        let _ = (service, profile, args, provider, fallback_form);
         fail("the authenticated Chrome extension provider is unavailable on this platform")
     }
     #[cfg(target_os = "macos")]
     {
-        inject_extension(service, profile, args, provider, form).await
+        inject_extension(service, profile, args, provider, fallback_form).await
     }
 }
 
@@ -1334,7 +1333,7 @@ async fn inject_extension(
     profile: Option<&str>,
     args: InjectArgs,
     provider: ProviderId,
-    form: InjectionFormDefinition,
+    fallback_form: Option<InjectionFormDefinition>,
 ) -> ExitCode {
     let pairing = match service.browser_host_pairing() {
         Ok(pairing) => pairing,
@@ -1472,13 +1471,13 @@ async fn inject_extension(
     {
         Ok(Some(map)) if map.applies_to_url(current_url) => Some(map),
         Ok(_) => None,
-        Err(error) if map_lookup_allows_fallback(&error) => None,
+        Err(error) if fallback_form.is_some() && map_lookup_allows_fallback(&error) => None,
         Err(error) => return fail(&error.to_string()),
     };
     let form = match form_map
         .as_ref()
         .map(|map| &map.map.form)
-        .or(Some(&form))
+        .or(fallback_form.as_ref())
     {
         Some(form) => form,
         None => return fail("no verified Form Discovery Map or fallback form is available"),
@@ -1592,11 +1591,11 @@ async fn inject_extension(
         });
     }
     if form_map.is_none()
-        && let Some(fallback) = open.form.as_ref()
+        && let Some(fallback) = fallback_form.as_ref()
         && session
             .submit_form_discovery_map_candidate(
                 target.expected_domain(),
-                &open.current_url,
+                current_url,
                 provider.as_str(),
                 fallback,
             )

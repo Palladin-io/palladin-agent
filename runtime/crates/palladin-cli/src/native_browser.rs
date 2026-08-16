@@ -620,6 +620,7 @@ fn validate_inject_result(
             | "insecure-origin"
             | "ambiguous-form"
             | "provider-unavailable"
+            | "stale-form-map"
     );
     if result.protocol != INJECT_PROVIDER_PROTOCOL
         || result.message_type != "inject.result"
@@ -873,6 +874,14 @@ mod tests {
             outcome: "injected".to_owned(),
         };
         assert!(validate_inject_result(&missing_transaction, "tx").is_err());
+
+        let stale_map = InjectResult {
+            protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
+            message_type: "inject.result".to_owned(),
+            transaction_id: Some("tx".to_owned()),
+            outcome: "stale-form-map".to_owned(),
+        };
+        assert!(validate_inject_result(&stale_map, "tx").is_ok());
     }
 
     #[test]
