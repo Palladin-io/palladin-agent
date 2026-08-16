@@ -40,8 +40,7 @@ export interface InjectArguments {
   wait?: string;
   noWait?: boolean;
   pollInterval?: string;
-  form: InjectFormDefinition;
-  formMap?: unknown;
+  form?: InjectFormDefinition;
 }
 
 export interface ProviderCredential {
@@ -54,6 +53,7 @@ export interface ProviderCredential {
   entryId: string;
   expectedDomain: string;
   form: InjectFormDefinition;
+  formMap?: FormDiscoveryMap;
   values: InjectFieldValue[];
 }
 
@@ -72,9 +72,8 @@ const injectTool: Tool = {
       noWait: { type: 'boolean' },
       pollInterval: { type: 'string', maxLength: 32 },
       form: injectFormJsonSchema,
-      formMap: { type: 'object', additionalProperties: true },
     },
-    required: ['vaultId', 'entryId', 'form'],
+    required: ['vaultId', 'entryId'],
   },
 };
 
@@ -148,11 +147,6 @@ export async function injectWithPalladin(
   args: InjectArguments,
   spawnRuntime: typeof spawnAgentRuntime = spawnAgentRuntime,
 ): Promise<CallToolResult> {
-  if (args.formMap !== undefined) {
-    const map = parseFormDiscoveryMap(args.formMap);
-    if (map === null || JSON.stringify(map.form) !== JSON.stringify(args.form)) return toolError('Form discovery map does not match the Inject form.');
-    await applyCookieOverlays(page, map);
-  }
   const nonce = randomBytes(32).toString('hex');
   const runtimeArgs: string[] = [];
   const profile = args.profile?.trim() || PROFILE_ARGUMENT;
@@ -200,6 +194,7 @@ export async function injectWithPalladin(
     credential = received;
     failureStage = 'origin-verification';
     verifyDomain(page.url(), credential.expectedDomain);
+    if (credential.formMap !== undefined) await applyCookieOverlays(page, credential.formMap);
     failureStage = 'form-fill';
     const outcome = await fillAndSubmit(page, credential);
     failureStage = 'runtime-result';
@@ -233,10 +228,12 @@ export async function injectWithPalladin(
         type: 'result',
         nonce,
         transactionId: credential.transactionId,
-        outcome: providerOutcomeForError(error),
+        outcome: providerOutcomeForError(error, credential.formMap !== undefined),
       })}\n`);
+      await waitForExit(child).catch(() => undefined);
+    } else {
+      child?.kill();
     }
-    child?.kill();
     return toolError(
       `The trusted Playwright Inject provider failed at ${failureStage} (${failureCode}).`,
     );
@@ -263,12 +260,16 @@ export async function applyCookieOverlays(page: Page, map: FormDiscoveryMap): Pr
   }
 }
 
-function providerOutcomeForError(error: unknown):
+export function providerOutcomeForError(error: unknown, runtimeMap = false):
   'rejected' | 'no-password-field' | 'no-submit-control' | 'origin-mismatch'
-  | 'insecure-origin' | 'ambiguous-form' | 'provider-unavailable' {
+  | 'insecure-origin' | 'ambiguous-form' | 'provider-unavailable' | 'stale-form-map' {
   const message = error instanceof Error ? error.message : '';
   if (message.includes('origin mismatch')) return 'origin-mismatch';
   if (message.includes('insecure origin')) return 'insecure-origin';
+  if (runtimeMap && (message.includes('declared field is missing or ambiguous')
+    || message.includes('declared field control does not match')
+    || message.includes('transition target')
+    || message.includes('submit control is missing or ambiguous'))) return 'stale-form-map';
   if (message.includes('ambiguous')) return 'ambiguous-form';
   if (message.includes('password field is missing')) return 'no-password-field';
   if (message.includes('submit control is missing')) return 'no-submit-control';
@@ -506,7 +507,7 @@ async function usableInputs(locator: Locator): Promise<Locator[]> {
 
 export function parseInjectArguments(value: unknown): InjectArguments | null {
   if (!isRecord(value)) return null;
-  const allowed = new Set(['profile', 'vaultId', 'entryId', 'reason', 'wait', 'noWait', 'pollInterval', 'form', 'formMap']);
+  const allowed = new Set(['profile', 'vaultId', 'entryId', 'reason', 'wait', 'noWait', 'pollInterval', 'form']);
   if (Object.keys(value).some((key) => !allowed.has(key))) return null;
   if (value.profile !== undefined && !boundedString(value.profile, 128)) return null;
   if (!boundedString(value.vaultId, 256) || !boundedString(value.entryId, 256)) return null;
@@ -514,17 +515,23 @@ export function parseInjectArguments(value: unknown): InjectArguments | null {
   if (value.wait !== undefined && !boundedString(value.wait, 32)) return null;
   if (value.pollInterval !== undefined && !boundedString(value.pollInterval, 32)) return null;
   if (value.noWait !== undefined && typeof value.noWait !== 'boolean') return null;
-  const form = parseInjectForm(value.form);
-  if (form === null) return null;
-  if (value.formMap !== undefined && parseFormDiscoveryMap(value.formMap) === null) return null;
-  return { ...(value as unknown as Omit<InjectArguments, 'form'>), form };
+  let form: InjectFormDefinition | undefined;
+  if (value.form !== undefined) {
+    const parsedForm = parseInjectForm(value.form);
+    if (parsedForm === null) return null;
+    form = parsedForm;
+  }
+  return {
+    ...(value as unknown as Omit<InjectArguments, 'form'>),
+    ...(form === undefined ? {} : { form }),
+  };
 }
 
 export function parseProviderCredential(
   line: string,
   nonce: string,
   entryId: string,
-  expectedForm: InjectFormDefinition,
+  expectedForm?: InjectFormDefinition,
 ): ProviderCredential | null {
   return parseProviderCredentialDiagnostic(line, nonce, entryId, expectedForm).credential;
 }
@@ -540,7 +547,7 @@ export function parseProviderCredentialDiagnostic(
   line: string,
   nonce: string,
   entryId: string,
-  expectedForm: InjectFormDefinition,
+  expectedForm?: InjectFormDefinition,
 ): { credential: ProviderCredential | null; code: ProviderFrameDiagnostic | null } {
   let value: unknown;
   try {
@@ -551,7 +558,7 @@ export function parseProviderCredentialDiagnostic(
   if (!isRecord(value)) return { credential: null, code: 'provider-frame-unexpected-fields' };
   const allowed = new Set([
     'protocol', 'type', 'provider', 'nonce', 'transactionId', 'grantId', 'entryId',
-    'expectedDomain', 'form', 'values',
+    'expectedDomain', 'form', 'formMap', 'values',
   ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) return { credential: null, code: 'provider-frame-unexpected-fields' };
   if (value.protocol !== INJECT_PROTOCOL
@@ -565,13 +572,31 @@ export function parseProviderCredentialDiagnostic(
     return { credential: null, code: 'provider-frame-binding-mismatch' };
   }
   const form = parseInjectForm(value.form);
-  if (form === null || !sameInjectForm(form, expectedForm)) {
+  if (form === null) {
+    return { credential: null, code: 'provider-frame-form-mismatch' };
+  }
+  let formMap: FormDiscoveryMap | undefined;
+  if (value.formMap !== undefined) {
+    const parsedMap = parseFormDiscoveryMap(value.formMap);
+    if (parsedMap === null || parsedMap.status !== 'verified'
+      || parsedMap.provider !== 'playwright' || parsedMap.domain !== value.expectedDomain
+      || !sameInjectForm(parsedMap.form, form)) {
+      return { credential: null, code: 'provider-frame-form-mismatch' };
+    }
+    formMap = parsedMap;
+  }
+  if (formMap === undefined && (expectedForm === undefined || !sameInjectForm(form, expectedForm))) {
     return { credential: null, code: 'provider-frame-form-mismatch' };
   }
   const values = parseInjectValues(value.values, form);
   if (values === null) return { credential: null, code: 'provider-frame-values-invalid' };
   return {
-    credential: { ...(value as unknown as Omit<ProviderCredential, 'form' | 'values'>), form, values },
+    credential: {
+      ...(value as unknown as Omit<ProviderCredential, 'form' | 'formMap' | 'values'>),
+      form,
+      ...(formMap === undefined ? {} : { formMap }),
+      values,
+    },
     code: null,
   };
 }

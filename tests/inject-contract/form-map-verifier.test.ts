@@ -7,7 +7,7 @@ describe('form map verifier', () => {
     const map = parseFormDiscoveryMap({
       version: 1, domain: 'example.com', loginUrl: 'https://example.com/login', provider: 'playwright',
       status: 'verified', fingerprint: 'a'.repeat(64), form: { version: 1, steps: [{
-        fields: [{ entryFieldId: 'username', selector: '#username', control: 'username' }],
+        fields: [{ entryFieldId: 'credential.username', selector: '#username', control: 'username' }],
         submit: { action: 'click', selector: '#submit' },
       }] },
     });

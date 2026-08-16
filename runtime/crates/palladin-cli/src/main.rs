@@ -1302,29 +1302,28 @@ async fn inject(
     if provider.as_str() != "extension" || args.provider_transport_stdio {
         return fail("only the authenticated Palladin extension provider is supported");
     }
-    let form_json = match args.form_json.as_deref() {
-        Some(value) if !value.is_empty() && value.len() <= 256 * 1024 => value,
-        _ => {
-            return fail(
-                "extension Inject requires --form-json with a bounded value-free form plan",
-            );
+    let fallback_form = match args.form_json.as_deref() {
+        None => None,
+        Some(value) if !value.is_empty() && value.len() <= 256 * 1024 => {
+            let form: InjectionFormDefinition = match serde_json::from_str(value) {
+                Ok(form) => form,
+                Err(_) => return fail("the Inject form definition is invalid"),
+            };
+            if form.validate().is_err() {
+                return fail("the Inject form definition is invalid");
+            }
+            Some(form)
         }
+        Some(_) => return fail("the Inject form definition is invalid"),
     };
-    let form: InjectionFormDefinition = match serde_json::from_str(form_json) {
-        Ok(form) => form,
-        Err(_) => return fail("the Inject form definition is invalid"),
-    };
-    if form.validate().is_err() {
-        return fail("the Inject form definition is invalid");
-    }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (service, profile, args, provider, form);
+        let _ = (service, profile, args, provider, fallback_form);
         fail("the authenticated Chrome extension provider is unavailable on this platform")
     }
     #[cfg(target_os = "macos")]
     {
-        inject_extension(service, profile, args, provider, form).await
+        inject_extension(service, profile, args, provider, fallback_form).await
     }
 }
 
@@ -1334,7 +1333,7 @@ async fn inject_extension(
     profile: Option<&str>,
     args: InjectArgs,
     provider: ProviderId,
-    form: InjectionFormDefinition,
+    fallback_form: Option<InjectionFormDefinition>,
 ) -> ExitCode {
     let pairing = match service.browser_host_pairing() {
         Ok(pairing) => pairing,
@@ -1466,10 +1465,27 @@ async fn inject_extension(
             target.expected_domain()
         ));
     }
+    let form_map = match session
+        .resolve_form_discovery_map(target.expected_domain(), provider.as_str(), None)
+        .await
+    {
+        Ok(Some(map)) if map.applies_to_url(current_url) => Some(map),
+        Ok(_) => None,
+        Err(error) if fallback_form.is_some() && map_lookup_allows_fallback(&error) => None,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let form = match form_map
+        .as_ref()
+        .map(|map| &map.map.form)
+        .or(fallback_form.as_ref())
+    {
+        Some(form) => form,
+        None => return fail("no verified Form Discovery Map or fallback form is available"),
+    };
     let credential = match resolve_injection_credential(
         &parsed,
         delivered.authenticated_field("credential.username"),
-        &form,
+        form,
     ) {
         Ok(credential) => credential,
         Err(error) => return fail(&error.to_string()),
@@ -1514,7 +1530,7 @@ async fn inject_extension(
         grant_id: &delivered.grant_id,
         entry_id: &delivered.entry_id,
         expected_domain: target.expected_domain(),
-        form: &form,
+        form,
         values,
     };
     let sealed = match extension.seal_inject(&wire, not_after_monotonic_ns) {
@@ -1533,8 +1549,21 @@ async fn inject_extension(
         Err(error) => return fail(&error.to_string()),
     };
     drop(forward);
-
     if response.outcome != "injected" {
+        if response.outcome == "stale-form-map"
+            && let Some(rejected) = form_map.as_ref()
+            && let Err(error) = session
+                .resolve_form_discovery_map(
+                    target.expected_domain(),
+                    provider.as_str(),
+                    Some(rejected),
+                )
+                .await
+        {
+            return fail(&format!(
+                "the trusted browser provider reported a stale Form Discovery Map, but cache invalidation or refresh failed: {error}"
+            ));
+        }
         return fail(match response.outcome.as_str() {
             "rejected" => "the trusted browser provider did not complete Inject (outcome=rejected)",
             "no-password-field" => {
@@ -1555,14 +1584,42 @@ async fn inject_extension(
             "provider-unavailable" => {
                 "the trusted browser provider did not complete Inject (outcome=provider-unavailable)"
             }
+            "stale-form-map" => {
+                "the trusted browser provider did not complete Inject (outcome=stale-form-map); the cached map was invalidated and refresh was attempted for the next request"
+            }
             _ => "the trusted browser provider did not complete Inject (outcome=invalid)",
         });
+    }
+    if form_map.is_none()
+        && let Some(fallback) = fallback_form.as_ref()
+        && session
+            .submit_form_discovery_map_candidate(
+                target.expected_domain(),
+                current_url,
+                provider.as_str(),
+                fallback,
+            )
+            .await
+            .is_err()
+    {
+        eprintln!(
+            "Warning: the value-free login form candidate could not be recorded; the completed Inject result is unchanged."
+        );
     }
     eprintln!(
         "Credential injected through provider {}.",
         provider.as_str()
     );
     ExitCode::SUCCESS
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn map_lookup_allows_fallback(error: &RuntimeError) -> bool {
+    match error {
+        RuntimeError::Api(palladin_api::ApiError::Transport) => true,
+        RuntimeError::Api(palladin_api::ApiError::Http(status)) => (500..=599).contains(status),
+        _ => false,
+    }
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -2255,13 +2312,32 @@ mod authenticated_injection_target_tests {
 
 #[cfg(all(test, unix))]
 mod provider_credential_tests {
-    use super::resolve_injection_credential;
+    use super::{map_lookup_allows_fallback, resolve_injection_credential};
+    use palladin_api::ApiError;
     use palladin_browser_bridge::secure_transport::INJECT_PROVIDER_PROTOCOL;
     use palladin_browser_bridge::{
         InjectionControl, InjectionFormDefinition, InjectionFormField, InjectionFormStep,
         InjectionSubmit, InjectionSubmitKind,
     };
     use palladin_cli::native_browser::{InjectFieldValue, InjectRequest};
+    use palladin_runtime::RuntimeError;
+
+    #[test]
+    fn fallback_form_is_used_only_for_transient_map_lookup_unavailability() {
+        assert!(map_lookup_allows_fallback(&RuntimeError::Api(
+            ApiError::Transport
+        )));
+        assert!(map_lookup_allows_fallback(&RuntimeError::Api(
+            ApiError::Http(503)
+        )));
+        assert!(!map_lookup_allows_fallback(&RuntimeError::Api(
+            ApiError::Http(401)
+        )));
+        assert!(!map_lookup_allows_fallback(&RuntimeError::Api(
+            ApiError::InvalidResponse
+        )));
+        assert!(!map_lookup_allows_fallback(&RuntimeError::FormMapCache));
+    }
 
     #[test]
     fn private_provider_frame_contains_only_declared_field_values() {

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   parseInjectArguments,
   parseProviderCredential,
+  providerOutcomeForError,
   verifyDomain,
 } from '../../packages/agent-browser-mcp/src/server.js';
 
@@ -17,9 +18,26 @@ const form = {
 describe('AgentBrowser MCP Inject provider boundary', () => {
   it('accepts only bounded value-free tool arguments', () => {
     expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry', form })).not.toBeNull();
-    expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry' })).toBeNull();
+    expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry' })).not.toBeNull();
     expect(parseInjectArguments({ vaultId: 'vault', entryId: 'entry', form, selector: '#password' }))
       .toBeNull();
+  });
+
+  it('accepts a verified runtime-owned map when no manual form was supplied', () => {
+    const frame = JSON.stringify({
+      protocol: 'palladin.inject-provider.v1', type: 'credential', provider: 'agent-browser',
+      nonce: 'nonce', transactionId: 'tx', grantId: 'grant', entryId: 'entry',
+      expectedDomain: 'example.com', form,
+      formMap: {
+        version: 1, mapVersion: 1, domain: 'example.com', loginUrl: 'https://example.com/login',
+        provider: 'agent-browser', status: 'verified', fingerprint: 'a'.repeat(64), form,
+      },
+      values: [{ entryFieldId: 'credential.password', value: 'fixture-value-not-production' }],
+    });
+    expect(parseProviderCredential(frame, 'nonce', 'entry')).not.toBeNull();
+    expect(parseProviderCredential(
+      frame.replace('"status":"verified"', '"status":"candidate"'), 'nonce', 'entry',
+    )).toBeNull();
   });
 
   it('binds a credential frame to nonce, entry and exact form', () => {
@@ -44,5 +62,19 @@ describe('AgentBrowser MCP Inject provider boundary', () => {
     expect(() => verifyDomain('https://example.com/path', 'login.example.com')).toThrow('origin mismatch');
     expect(() => verifyDomain('http://example.com', 'example.com')).toThrow('insecure origin');
     expect(() => verifyDomain('https://example.net', 'example.com')).toThrow('origin mismatch');
+  });
+
+  it('invalidates runtime maps only for attested selector failures', () => {
+    expect(providerOutcomeForError(new Error('AgentBrowser declared field is unavailable'), true))
+      .toBe('stale-form-map');
+    expect(providerOutcomeForError(new Error('AgentBrowser declared transition timed out'), true))
+      .toBe('stale-form-map');
+    expect(providerOutcomeForError(new Error('AgentBrowser command timed out'), true))
+      .toBe('provider-unavailable');
+    expect(providerOutcomeForError(new Error('origin mismatch'), true)).toBe('origin-mismatch');
+    expect(providerOutcomeForError(new Error('AgentBrowser daemon is unavailable'), true))
+      .toBe('provider-unavailable');
+    expect(providerOutcomeForError(new Error('AgentBrowser declared field is unavailable'), false))
+      .toBe('provider-unavailable');
   });
 });

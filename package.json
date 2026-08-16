@@ -56,7 +56,6 @@
     "test": "vitest run && npm run test:release",
     "test:e2e:inject-x": "vite-node tests/e2e/inject-x.ts",
     "verify:form-maps": "PALLADIN_VERIFY_FORM_MAPS=1 vite-node scripts/verify-form-maps.ts",
-    "verify:form-maps:catalog": "PALLADIN_VERIFY_FORM_MAPS=1 vite-node scripts/verify-form-maps.ts --catalog",
     "test:release": "node --test packaging/npm/release-scripts.security.mjs",
     "oss:generate": "node packaging/npm/generate-oss-metadata.mjs",
     "oss:check": "node packaging/npm/generate-oss-metadata.mjs --check",

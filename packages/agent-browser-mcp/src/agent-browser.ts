@@ -86,7 +86,14 @@ export class AgentBrowserSession {
   }
 
   private async waitVisible(selector: string, timeout: number): Promise<void> {
-    await this.command({ action: 'wait', selector, state: 'visible', timeout }, timeout + 5_000);
+    try {
+      await this.command({ action: 'wait', selector, state: 'visible', timeout }, timeout + 5_000);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'AgentBrowser command timed out') {
+        throw new Error('AgentBrowser declared transition timed out');
+      }
+      throw error;
+    }
   }
 
   private async count(selector: string): Promise<number> {

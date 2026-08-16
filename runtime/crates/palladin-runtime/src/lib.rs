@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 mod discovery;
+mod form_map_cache;
 mod integrity;
 pub mod version_policy;
 
@@ -14,10 +15,14 @@ use palladin_api::{
     AgentDiscoveryEnvelope, AgentDiscoveryEnvelopeDescriptor, AgentDiscoverySyncItem,
     AgentPairingActivationResponse, AgentPairingStatus, AgentPairingStatusResponse,
     AgentRegistrationResult, AgentVaultManifestsResponse, AgentVisibleField, ApiClient, ApiError,
-    CredentialAccess, CredentialMethod, EntrySearchResult, GetCredentialOptions, GrantStatus,
-    ReportCredentialStaleInput, VaultManifest,
+    CredentialAccess, CredentialMethod, EntrySearchResult, FormDiscoveryMap, GetCredentialOptions,
+    GrantStatus, ReportCredentialStaleInput, VaultManifest,
 };
 use palladin_browser_bridge::secure_transport::{BrowserHostIdentity, SecureTransportError};
+use palladin_browser_bridge::{
+    FormDiscoveryMapDefinition, InjectionFormDefinition, form_discovery_map_fingerprint,
+    form_discovery_map_login_url,
+};
 use palladin_core::host::ApiHost;
 use palladin_core::legacy_typescript::{LegacyTypeScriptError, LegacyTypeScriptRepository};
 use palladin_core::profiles::{
@@ -69,6 +74,7 @@ const AGENT_X25519_RECIPIENT_KEY_KIND: &str = "agentX25519";
 const AGENT_WRAPPED_VDK_DIGEST_PREFIX: &[u8] = b"PLDNV2DG:AGENT-WRAPPED-VDK:";
 
 use discovery::{DiscoveryPlaintext, LocalDiscoveryIndex};
+use form_map_cache::{FormMapCache, FormMapCacheError};
 
 use integrity::{
     ConfigWrite, DiscoveryCacheWrite, IntegrityJournal, MAX_DISCOVERY_CACHE_CIPHERTEXT_BYTES,
@@ -1716,6 +1722,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             discovery: Arc::clone(&self.discovery),
             manifest_persistence: Some(self),
             profile_signing: Some(profile_signing),
+            form_map_root: self.repository.root().to_path_buf(),
         })
     }
 
@@ -3245,6 +3252,7 @@ pub struct RuntimeSession<'a> {
     discovery: Arc<tokio::sync::Mutex<LocalDiscoveryIndex>>,
     manifest_persistence: Option<&'a dyn ManifestRevisionPersistence>,
     profile_signing: Option<Ed25519Identity>,
+    form_map_root: std::path::PathBuf,
 }
 
 trait ManifestRevisionPersistence: Sync {
@@ -3494,6 +3502,81 @@ impl RuntimeSession<'_> {
             return Err(RuntimeError::OperationAuthorizationMismatch);
         }
         Ok(())
+    }
+
+    pub async fn resolve_form_discovery_map(
+        &self,
+        domain: &str,
+        provider: &str,
+        rejected: Option<&FormDiscoveryMap>,
+    ) -> Result<Option<FormDiscoveryMap>, RuntimeError> {
+        self.ensure_operation(RuntimeOperation::InjectCredential)?;
+        let api_origin = &self.config.host;
+        if let Some(rejected) = rejected {
+            rejected
+                .validate(domain, provider)
+                .map_err(|_| RuntimeError::FormMapCache)?;
+            FormMapCache::invalidate_matching_serialized(
+                &self.form_map_root,
+                api_origin,
+                domain,
+                provider,
+                rejected,
+            )?;
+        } else if let Some(map) =
+            FormMapCache::get_serialized(&self.form_map_root, api_origin, domain, provider)?
+        {
+            self.ensure_authorized()?;
+            return Ok(Some(map));
+        }
+
+        let map = self.api.get_form_discovery_map(domain, provider).await?;
+        self.ensure_authorized()?;
+        if let (Some(rejected), Some(refreshed)) = (rejected, map.as_ref())
+            && refreshed.map_version == rejected.map_version
+            && refreshed.fingerprint == rejected.fingerprint
+        {
+            // Another process may have re-cached the rejected response while this request was in
+            // flight. Remove only that exact revision and never delete a concurrently published
+            // replacement.
+            FormMapCache::invalidate_matching_serialized(
+                &self.form_map_root,
+                api_origin,
+                domain,
+                provider,
+                rejected,
+            )?;
+            return Ok(None);
+        }
+        let map = if let Some(map) = map {
+            FormMapCache::put_serialized(&self.form_map_root, api_origin, map)?
+        } else {
+            None
+        };
+        Ok(map)
+    }
+
+    pub async fn submit_form_discovery_map_candidate(
+        &self,
+        domain: &str,
+        current_url: &str,
+        provider: &str,
+        form: &InjectionFormDefinition,
+    ) -> Result<(), RuntimeError> {
+        self.ensure_operation(RuntimeOperation::InjectCredential)?;
+        let login_url = form_discovery_map_login_url(current_url, domain)
+            .map_err(|_| RuntimeError::InvalidFormDiscoveryMap)?;
+        let map = FormDiscoveryMapDefinition {
+            version: 1,
+            form: form.clone(),
+            cookie_overlays: Vec::new(),
+        };
+        let fingerprint = form_discovery_map_fingerprint(domain, &login_url, provider, &map)
+            .map_err(|_| RuntimeError::InvalidFormDiscoveryMap)?;
+        self.api
+            .submit_form_discovery_map_candidate(domain, &login_url, provider, &fingerprint, &map)
+            .await?;
+        self.ensure_authorized()
     }
 
     /// Consumes a renewed PairVaults authorization for polling an existing, exactly bound
@@ -5114,6 +5197,10 @@ pub enum RuntimeError {
     Crypto(#[from] palladin_crypto::CryptoError),
     #[error("API client operation failed: {0}")]
     Api(#[from] ApiError),
+    #[error("local Form Discovery Map cache operation failed")]
+    FormMapCache,
+    #[error("the value-free Form Discovery Map candidate is invalid")]
+    InvalidFormDiscoveryMap,
     #[error("API key is invalid; it must start with pl_")]
     InvalidApiKey,
     #[error("stored Agent identity is incomplete")]
@@ -5210,6 +5297,12 @@ pub enum RuntimeError {
     InvalidEnvironmentField,
     #[error("a Script entry reference was not granted")]
     ScriptReferenceNotGranted,
+}
+
+impl From<FormMapCacheError> for RuntimeError {
+    fn from(_: FormMapCacheError) -> Self {
+        Self::FormMapCache
+    }
 }
 
 fn prepare_explicit_environment(
@@ -5324,11 +5417,61 @@ mod tests {
     const TEST_REFERENCE_ENTRY_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const TEST_GRANT_ID: &str = "12345678-1234-4234-8234-1234567890ab";
     const TEST_AGENT_ID: &str = "fedcba98-7654-4321-8765-abcdefabcdef";
+    const TEST_FORM_MAP: &str = r#"{
+      "mapId":"11111111-1111-4111-8111-111111111111","mapVersion":1,
+      "domain":"accounts.google.com","loginUrl":"https://accounts.google.com/","provider":"playwright",
+      "fingerprint":"f6f9b42f136c52f404542e6596a7aae9af598d05d49004a29615a83e3479aa35",
+      "map":{"version":1,"form":{"version":1,"steps":[
+        {"fields":[{"entryFieldId":"credential.username","selector":"input[autocomplete=\"username\"]","control":"username"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"},"waitFor":{"selector":"input[type=\"password\"]"}},
+        {"fields":[{"entryFieldId":"credential.password","selector":"input[type=\"password\"]","control":"password"}],"submit":{"action":"click","selector":"button[type=\"submit\"],input[type=\"submit\"]"}}
+      ]}},"updatedAt":"2026-08-15T12:00:00Z"
+    }"#;
 
     type MemorySecretValues = BTreeMap<(String, SecretSlot), Vec<u8>>;
 
     #[derive(Clone, Default)]
     struct MemorySecretStore(Arc<Mutex<MemorySecretValues>>);
+
+    #[tokio::test]
+    async fn stale_refresh_never_recaches_the_rejected_revision() {
+        let (host, _) = single_response_server(200, TEST_FORM_MAP.to_owned()).await;
+        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let root = tempfile::tempdir().expect("cache root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("cache root mode");
+        }
+        let rejected: FormDiscoveryMap = serde_json::from_str(TEST_FORM_MAP).expect("map");
+        FormMapCache::put_serialized(root.path(), &host, rejected.clone())
+            .expect("cache rejected revision")
+            .expect("accepted initial revision");
+        let mut session = runtime_session(host.clone(), api, encryption);
+        session.operation = RuntimeOperation::InjectCredential;
+        session.form_map_root = root.path().to_path_buf();
+
+        assert!(
+            session
+                .resolve_form_discovery_map("accounts.google.com", "playwright", Some(&rejected))
+                .await
+                .expect("refresh")
+                .is_none()
+        );
+        assert!(
+            FormMapCache::get_serialized(root.path(), &host, "accounts.google.com", "playwright")
+                .expect("cache lookup")
+                .is_none()
+        );
+    }
 
     impl SecretStore for MemorySecretStore {
         fn get(
@@ -6549,6 +6692,7 @@ mod tests {
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
             manifest_persistence: None,
             profile_signing: None,
+            form_map_root: std::path::PathBuf::new(),
         };
 
         let get = session
@@ -6976,6 +7120,7 @@ mod tests {
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
             manifest_persistence: None,
             profile_signing: None,
+            form_map_root: std::path::PathBuf::new(),
         }
     }
 
@@ -7158,6 +7303,7 @@ mod tests {
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
             manifest_persistence: None,
             profile_signing: None,
+            form_map_root: std::path::PathBuf::new(),
         };
 
         let candidate = session
@@ -7196,6 +7342,7 @@ mod tests {
             discovery: Arc::new(tokio::sync::Mutex::new(LocalDiscoveryIndex::new())),
             manifest_persistence: None,
             profile_signing: None,
+            form_map_root: std::path::PathBuf::new(),
         };
         assert!(matches!(
             renewed.resume_pairing_polling("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),

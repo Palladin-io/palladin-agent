@@ -179,7 +179,7 @@ The Agent must be active before credential tools work.
 - Native secret storage has no file or environment fallback.
 - The organization API key and private keys are never child-process environment variables.
 - `exec` uses no implicit shell, rebuilds the child environment from an allowlist, and supplies null stdin.
-- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. The model may supply only a bounded, value-free form definition. The macOS Chrome extension route authenticates both encrypted transport hops and prepares the live page before the runtime requests a grant or decrypts a credential; it then re-checks HTTPS and the encrypted Entry domain before delivery.
+- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. The Rust runtime may resolve a verified global Form Discovery Map, while the model may supply only a bounded, value-free fallback definition. The macOS Chrome extension route authenticates both encrypted transport hops and prepares the live page before the runtime requests a grant or decrypts a credential; it then re-checks HTTPS and the encrypted Entry domain before delivery.
 - The npm launcher has no third-party JavaScript runtime dependencies. Its only production dependency is the exact-version platform package.
 - Removing the npm package never deletes identity. Purge is always an explicit native command.
 
@@ -220,23 +220,35 @@ closed until their platform-specific launch attestation and installation paths a
 Codex, Claude, and other MCP clients are callers, not browser providers. They never receive a
 dedicated extension or the credential value. The unshipped Node/Playwright adapters are disabled
 fixtures: their hidden `--provider-transport-stdio` invocation is rejected by the Rust CLI in every
-build. A future provider requires a separately reviewed authenticated transport and registers a new
-lowercase identifier; unknown providers fail closed. The CLI/MCP input never accepts a CDP URL,
+build. Provider identifiers are an open namespace rather than a catalog allowlist; execution fails
+closed until the matching separately reviewed authenticated transport is registered. The CLI/MCP input never accepts a CDP URL,
 remote-debugging port, Playwright WebSocket endpoint, unmanaged browser target, or plaintext pipe.
 
-### Agent-defined form execution
+### Verified and Agent-defined form execution
 
-The Agent first prepares the public login surface with ordinary browser tools: it dismisses cookie and
-consent overlays, completes any allowed public navigation (and pauses for a human CAPTCHA when one is
-present), then inspects the visible login structure. Only after the page is ready does it pass a
-complete, versioned, value-free form definition to `inject_credential`.
-The definition is an ordered list of one or more steps mapping approved Entry field IDs to public
+The native Rust runtime first looks up a verified Form Discovery Map for the authenticated Entry
+domain and selected provider. The catalog is global; candidate and observed maps are never executed.
+A returned map is accepted only when its fingerprint, bounded action contract, provider identifier,
+domain, and exact HTTPS origin validate locally. Login paths are data and may represent any locale or
+site route; the contract contains no list of known URLs. Persisted login URLs omit query and fragment
+data so one-time flow state or tokens cannot enter the catalog. When no verified map
+applies, the Agent may prepare the public login surface with ordinary browser tools, inspect it,
+and pass a complete, versioned, value-free form definition to `inject_credential` as a fallback.
+The definition is an ordered list of one or more steps mapping schema-valid Entry field IDs to public
 control locators, with a bounded click or press-Enter action and an optional next-step transition
 expectation.
 
-The version 1 shape is `{"version":1,"steps":[...]}`. Every field mapping contains
-`entryFieldId`, `selector`, and one of the bounded controls `username`, `password`, `text`, `email`,
-`tel`, or `otp`. Every step declares one `click` or `press-enter` submit action; every intermediate
+After a fallback form completes every declared Inject step, the native Runtime submits that
+value-free definition to the global API as a `candidate`. The request uses the authenticated Agent
+identity as provenance, strips query and fragment state from the current HTTPS URL, and never
+contains field values. Candidate recording is best-effort after the completed Inject, is idempotent
+for the same fingerprint, and cannot make the map executable; only the trusted catalog process may
+promote it to `verified`.
+
+The version 1 shape is `{"version":1,"steps":[...]}`. A verified map may use any schema-valid Entry
+field identifier needed by the login flow. The runtime resolves only fields from the already
+authorized credential and checks their value kind against the declared control before delivery.
+Every step declares one `click` or `press-enter` submit action; every intermediate
 step also declares `waitFor`. `--form-json` is value-free and exists only for the ordinary-extension
 CLI adapter—credential values are never accepted there or in MCP arguments.
 
@@ -245,14 +257,47 @@ selected provider validates each declared control, re-checks HTTPS and the authe
 before every fill/submit and after every transition, injects the values, and performs the declared
 actions. It returns only a bounded result and leaves the authenticated browser session available to
 the Agent. Missing, stale, ambiguous, hidden, or semantically invalid definitions fail closed; the
-provider never guesses another form.
+provider never guesses another form. A failed declared selector, control attestation, submit selector,
+or transition invalidates that cached map and asks the API for a fresh revision for the next request.
+If the API still returns the rejected version and fingerprint, a public rejection tombstone keeps
+that exact revision unavailable while later requests continue checking for a replacement; a
+concurrently stored higher version is neither removed nor overwritten by a delayed
+response. Cache invalidation/refresh persistence failures are reported to the operator. A separately
+validated caller fallback form remains
+available during transient map lookup transport/5xx failures, while invalid payloads, authentication,
+and unsafe local cache/configuration errors still fail closed.
+Origin mismatch and provider transport/browser failures keep their specific outcome and do not evict
+a valid map. Palladin never retries a partially filled or submitted login automatically.
+
+### Form Discovery Map cache
+
+Verified maps are public and value-free. The native runtime stores them in
+`~/.palladin/form-map-cache.json` with owner-only permissions and an LRU key scoped by API origin,
+domain, and provider. Global maps are shared by local Agent profiles connected to the same
+API origin. The default maximum is 100 entries. Configure it with the
+owner-only `~/.palladin/runtime-config.json` file:
+
+```json
+{
+  "formMapCache": {
+    "maxEntries": 100
+  }
+}
+```
+
+`maxEntries` must be an integer from 1 through 500. Unknown properties, unsafe permissions, symbolic
+links, malformed maps, or an out-of-range limit fail closed. Every cache read/update/invalidation is
+serialized with the cross-process profile transaction lock. Active maps and rejection tombstones
+share the same LRU capacity. Neither file contains credential values,
+cookies, API keys, private keys, or decrypted vault data. Explicit full-runtime purge recognizes and
+removes both files.
 
 See [ADR 0005](runtime/docs/adr/0005-authenticated-inject-form-contract.md) for the contract and test
 requirements. Caller-controlled CDP remains disabled under [ADR 0003](runtime/docs/adr/0003-browser-injection-boundary.md).
 
 ## Public local state
 
-Convenience public state lives under `~/.palladin`. Linux Hardened public state lives in a broker-owned random principal namespace that is never derived from a reusable numeric UID. Both contain only profile aliases, opaque identity/organization references, host, Agent ID, public keys, signatures, and SHA-256 commitments. Secret values and the small registry trust root remain in the selected secure store. `PALLADIN_HOME` is rejected by identity-opening commands.
+Convenience public state lives under `~/.palladin`. Linux Hardened public state lives in a broker-owned random principal namespace that is never derived from a reusable numeric UID. Both contain only profile aliases, opaque identity/organization references, host, Agent ID, public keys, signatures, SHA-256 commitments, public runtime configuration, and verified value-free Form Discovery Maps. Secret values and the small registry trust root remain in the selected secure store. `PALLADIN_HOME` is rejected by identity-opening commands.
 
 ## Development
 
