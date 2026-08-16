@@ -1,7 +1,7 @@
 {
   "name": "@palladin/agent-browser-mcp",
   "version": "0.1.0",
-  "description": "AgentBrowser MCP provider for value-free Palladin credential Inject",
+  "description": "AgentBrowser MCP proxy with fail-closed Palladin Inject",
   "private": true,
   "license": "Apache-2.0",
   "repository": {
@@ -15,13 +15,14 @@
   },
   "files": ["dist/", "README.md"],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "lint": "tsc -p tsconfig.lint.json"
+    "build": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "clean": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "lint": "tsc -p tsconfig.lint.json",
+    "prepack": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
-    "agent-browser": "0.33.2",
-    "css-what": "8.0.0"
+    "agent-browser": "0.33.2"
   },
   "peerDependencies": {
     "@palladin/agent": "0.1.0"

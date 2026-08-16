@@ -94,22 +94,24 @@ These controls are defense in depth inside the selected platform tier. The preci
 The provider-neutral form and origin-validation contract is implemented. The extension transport
 now also has a frozen signed-ephemeral-handshake and directional XChaCha20-Poly1305 wire contract,
 with the host's durable Ed25519 identity reserved in OS secure storage. The current Node
-extension-socket and AgentBrowser-daemon adapters do not yet use that authenticated session.
-Production runtimes therefore continue to reject them before opening a profile or decrypting a
-credential. Their adapters are development fixtures available only with an explicit
-`local-development` build; they are not a release security boundary.
+extension-socket adapter does not yet use that authenticated session. Production runtimes therefore
+continue to reject it before opening a profile or decrypting a credential; it is a development
+fixture available only with an explicit `local-development` build, not a release security boundary.
+AgentBrowser Inject is unavailable in every build because version 0.33.2 cannot atomically bind
+secret text insertion to the attested element; its MCP package returns before grant, runtime, or
+secret-bearing daemon access.
 
 Production Inject requires a separately reviewed one-shot capability bound to the provider,
 browser session/document, Vault/Entry, form digest, authenticated domain, expiry, and replay guard.
 Extension support additionally requires the explicit pairing UI, the shared extension crypto API,
 and Native Messaging host integration described in
 [`contracts/inject-provider/v1`](contracts/inject-provider/v1/README.md). AgentBrowser support
-requires an upstream session-owned authenticated channel. None of these requirements can be
-bypassed by selecting the `extension` provider ID or a hidden transport flag.
+requires both an upstream session-owned authenticated channel and an atomic element-bound fill
+primitive. None of these requirements can be bypassed by selecting a provider ID or hidden flag.
 
 Caller-provided CDP endpoints, remote-debugging ports, Playwright WebSocket endpoints, and unmanaged
 browser targets are never contacted. They cannot attest the browser or page origin: a fake endpoint
 can report an allowed URL and then receive the plaintext fill operation. The rejected legacy path is
 recorded in [ADR 0003](docs/adr/0003-browser-injection-boundary.md); the authenticated provider
-contract and its extension/Playwright/AgentBrowser adapters are recorded in
+contract and its extension/Playwright adapters are recorded in
 [ADR 0005](docs/adr/0005-authenticated-inject-form-contract.md).

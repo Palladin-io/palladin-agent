@@ -23,11 +23,19 @@ already controls public navigation and can inspect the form without seeing crede
 `Inject` is enabled only through an authenticated, registered browser provider. Caller-controlled
 CDP remains disabled.
 
-The current stdio, extension-socket, and AgentBrowser-daemon adapters are conformance/development
-fixtures, not authenticated production transports. A production Rust build rejects their secret
-delivery before opening a profile; only an explicit `local-development` build enables them. Private
-pipes, hidden flags, nonces, filesystem ownership, and version files provide correlation or access
-control but do not authenticate the receiving provider.
+The current stdio and extension-socket adapters are conformance/development fixtures, not
+authenticated production transports. A production Rust build rejects their secret delivery before
+opening a profile; only an explicit `local-development` build enables them. Private pipes, hidden
+flags, nonces, and filesystem ownership provide correlation or access control but do not
+authenticate the receiving provider.
+
+AgentBrowser Inject is disabled in every build. AgentBrowser 0.33.2 resolves and focuses a selected
+element, then performs the final text insertion against whichever element is focused at that later
+moment. A page focus/input handler can redirect the secret to an unattested control, so selector
+hardening and an owner-only daemon socket cannot form a safe delivery boundary. Its Palladin MCP
+package proxies public navigation but returns `provider-unavailable` before requesting a grant,
+spawning the Palladin runtime, or sending a secret-bearing daemon command. Re-enablement requires an
+upstream atomic element-bound fill primitive in addition to an authenticated session channel.
 
 The accepted extension transport uses a durable Ed25519 host identity in OS secure storage and an
 explicit user pairing that pins only its public key and fingerprint in the extension. Each Native

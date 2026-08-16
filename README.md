@@ -193,7 +193,7 @@ outcome. Adding another agent browser does not change the grant, crypto, CLI, or
 |---|---|---:|---|
 | `extension` | The existing Palladin Chromium extension | Yes — the same user-autofill extension | Native Messaging plus an owner-only local socket |
 | `playwright` | `@palladin/playwright-mcp` embedded in an Agent that owns the live `Page` | No | Private child-process pipes, then the existing in-process Playwright `Page` |
-| `agent-browser` | `@palladin/agent-browser-mcp` composed with AgentBrowser | No | Private child-process pipes, then its owner-only daemon socket |
+| `agent-browser` | `@palladin/agent-browser-mcp` public navigation proxy | No | None — `inject_credential` fails closed before grant/runtime/secret-bearing daemon commands |
 
 The extension provider uses the same Palladin extension rather than a provider-specific extension.
 Its installer writes the browser-specific Native Messaging manifest for `chrome`,
@@ -210,6 +210,10 @@ Palladin adapter and passes that live `Page` object directly; Palladin never lau
 browser. The CLI/MCP input never accepts a CDP URL, remote-debugging port, Playwright WebSocket
 endpoint, or unmanaged browser target. Use the extension provider when Inject must target an
 already-running ordinary Chrome profile that is not owned by the Agent's Playwright runtime.
+
+AgentBrowser 0.33.2 cannot atomically bind secret insertion to the element selected for fill;
+page focus handlers can redirect its final text insertion. Its Palladin MCP package therefore
+keeps public navigation proxying but reports Inject as unavailable in every build.
 
 ### Agent-defined form execution
 
