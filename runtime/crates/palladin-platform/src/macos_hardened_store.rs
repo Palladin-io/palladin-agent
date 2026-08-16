@@ -209,6 +209,7 @@ fn direct_read_allowed(slot: SecretSlot) -> bool {
         SecretSlot::IntegrityTrustStateV1
             | SecretSlot::VersionPolicyTrustStateV1
             | SecretSlot::BrowserHostEd25519SecretKeyV1
+            | SecretSlot::BrowserHostLifecycleTokenV1
     )
 }
 
@@ -220,7 +221,8 @@ fn service_for(slot: SecretSlot) -> &'static str {
         | SecretSlot::InvocationAuthorizationSeedV2 => IDENTITY_SERVICE_V2,
         SecretSlot::IntegrityTrustStateV1
         | SecretSlot::VersionPolicyTrustStateV1
-        | SecretSlot::BrowserHostEd25519SecretKeyV1 => STATE_SERVICE_V2,
+        | SecretSlot::BrowserHostEd25519SecretKeyV1
+        | SecretSlot::BrowserHostLifecycleTokenV1 => STATE_SERVICE_V2,
         SecretSlot::LegacyOrganizationApiKeyV2
         | SecretSlot::LegacyX25519PrivateKeyV2
         | SecretSlot::LegacyEd25519SecretKeyV2 => LEGACY_SERVICE,
@@ -366,6 +368,7 @@ mod tests {
         assert!(!SecretSlot::IntegrityTrustStateV1.requires_user_presence());
         assert!(!SecretSlot::VersionPolicyTrustStateV1.requires_user_presence());
         assert!(!SecretSlot::BrowserHostEd25519SecretKeyV1.requires_user_presence());
+        assert!(!SecretSlot::BrowserHostLifecycleTokenV1.requires_user_presence());
         assert!(SecretSlot::X25519PrivateKey.requires_user_presence());
         assert!(SecretSlot::Ed25519SecretKey.requires_user_presence());
         assert_eq!(
@@ -394,6 +397,7 @@ mod tests {
         assert!(direct_read_allowed(
             SecretSlot::BrowserHostEd25519SecretKeyV1
         ));
+        assert!(direct_read_allowed(SecretSlot::BrowserHostLifecycleTokenV1));
         for slot in [
             SecretSlot::OrganizationApiKey,
             SecretSlot::X25519PrivateKey,
@@ -423,6 +427,10 @@ mod tests {
         );
         assert_eq!(
             service_for(SecretSlot::BrowserHostEd25519SecretKeyV1),
+            STATE_SERVICE_V2
+        );
+        assert_eq!(
+            service_for(SecretSlot::BrowserHostLifecycleTokenV1),
             STATE_SERVICE_V2
         );
         assert!(IDENTITY_SERVICE_V2.contains("session-v2"));

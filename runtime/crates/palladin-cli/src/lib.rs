@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 
 pub mod args;
+pub mod browser;
+#[cfg(unix)]
+pub mod native_browser;
 pub mod output;
 
 pub use palladin_core::terminal::{safe_terminal_text, shorten_identifier};

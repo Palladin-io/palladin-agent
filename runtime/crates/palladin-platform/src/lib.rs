@@ -11,6 +11,12 @@ pub mod secure_store;
 #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
 mod macos_hardened_store;
 
+#[cfg(target_os = "macos")]
+mod macos_browser;
+
+#[cfg(target_os = "macos")]
+pub use macos_browser::authenticate_chrome_native_messaging_parent;
+
 #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
 #[allow(unsafe_code)]
 mod macos_lifecycle;
@@ -36,6 +42,8 @@ pub enum PlatformError {
     AccountDirectoryUnavailable,
     #[error("the operating system account lookup failed")]
     AccountLookupFailed,
+    #[error("the Native Messaging host was not launched by authenticated Google Chrome")]
+    BrowserHostParentInvalid,
 }
 
 #[must_use]

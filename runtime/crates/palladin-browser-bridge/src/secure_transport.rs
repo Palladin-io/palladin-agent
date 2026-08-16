@@ -89,10 +89,12 @@ impl BrowserHostIdentity {
     }
 
     pub fn from_secret_slice(bytes: &[u8]) -> Result<Self, SecureTransportError> {
-        let secret: [u8; 32] = bytes
+        let mut secret: [u8; 32] = bytes
             .try_into()
             .map_err(|_| SecureTransportError::InvalidHostIdentity)?;
-        Ok(Self::from_secret_bytes(secret))
+        let identity = Self::from_secret_bytes(secret);
+        secret.zeroize();
+        Ok(identity)
     }
 
     #[must_use]
@@ -108,6 +110,14 @@ impl BrowserHostIdentity {
     #[must_use]
     pub fn fingerprint(&self) -> String {
         URL_SAFE_NO_PAD.encode(Sha256::digest(self.signing.verifying_key().as_bytes()))
+    }
+
+    pub(crate) fn sign_message(&self, message: &[u8]) -> [u8; SIGNATURE_BYTES] {
+        self.signing.sign(message).to_bytes()
+    }
+
+    pub(crate) fn verifying_key_bytes(&self) -> [u8; PUBLIC_KEY_BYTES] {
+        self.signing.verifying_key().to_bytes()
     }
 
     /// Accept one extension-created ephemeral challenge and create a fresh encrypted session.

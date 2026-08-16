@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -148,6 +149,54 @@ impl ProfileRepository {
     }
 
     pub fn acquire_transaction_lock(&self) -> Result<TransactionLock, ProfileError> {
+        self.acquire_lock(true)
+    }
+
+    /// Acquire the repository rendezvous lock in shared mode. Browser transport operations use
+    /// this only while revalidating their secure-store lifecycle token and forwarding a bounded
+    /// request. Destructive lifecycle changes take the exclusive transaction lock, which makes
+    /// successful revocation linearizable across processes.
+    pub fn acquire_shared_transaction_lock(&self) -> Result<TransactionLock, ProfileError> {
+        self.acquire_lock(false)
+    }
+
+    /// Try to acquire the shared repository rendezvous lock without waiting past `max_wait`.
+    /// A timeout is a normal fail-closed result so callers can bind the wait to an authorization
+    /// deadline instead of letting filesystem lock contention extend a secret-bearing operation.
+    pub fn acquire_shared_transaction_lock_for(
+        &self,
+        max_wait: Duration,
+    ) -> Result<Option<TransactionLock>, ProfileError> {
+        let file = self.open_transaction_lock_file()?;
+        let started = Instant::now();
+        loop {
+            match fs2::FileExt::try_lock_shared(&file) {
+                Ok(()) => return Ok(Some(TransactionLock { file })),
+                Err(error) if is_lock_contention(&error) => {
+                    let Some(remaining) = max_wait.checked_sub(started.elapsed()) else {
+                        return Ok(None);
+                    };
+                    if remaining.is_zero() {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(remaining.min(Duration::from_millis(5)));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    fn acquire_lock(&self, exclusive: bool) -> Result<TransactionLock, ProfileError> {
+        let file = self.open_transaction_lock_file()?;
+        if exclusive {
+            fs2::FileExt::lock_exclusive(&file)?;
+        } else {
+            fs2::FileExt::lock_shared(&file)?;
+        }
+        Ok(TransactionLock { file })
+    }
+
+    fn open_transaction_lock_file(&self) -> Result<File, ProfileError> {
         let path = self.transaction_lock_path()?;
         let parent = path.parent().ok_or(ProfileError::InvalidRoot)?;
         let parent_metadata = fs::symlink_metadata(parent)?;
@@ -167,8 +216,7 @@ impl ProfileRepository {
         }
         let file = options.open(path)?;
         validate_private_file(&file.metadata()?, "transaction lock")?;
-        fs2::FileExt::lock_exclusive(&file)?;
-        Ok(TransactionLock { file })
+        Ok(file)
     }
 
     pub fn load_config(&self, identity_id: &str) -> Result<PublicProfileConfig, ProfileError> {
@@ -390,6 +438,25 @@ impl ProfileRepository {
             .ok_or(ProfileError::InvalidRoot)?;
         Ok(parent.join(format!(".{name}.palladin-runtime.lock")))
     }
+}
+
+fn is_lock_contention(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // Stable Win32 system error values returned by LockFileEx/CreateFile contention. Rust
+        // currently classifies ERROR_LOCK_VIOLATION as Uncategorized rather than WouldBlock.
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        const ERROR_LOCK_VIOLATION: i32 = 33;
+        matches!(
+            error.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+        )
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 pub fn add_profile(
@@ -748,7 +815,7 @@ fn private_path_error(message: &str) -> std::io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProfileName, ProfileRepository, add_profile, rename_profile};
+    use super::{ProfileName, ProfileRepository, add_profile, is_lock_contention, rename_profile};
     use crate::public_store::PublicRegistry;
 
     const IDENTITY_ID: &str = "11111111111111111111111111111111";
@@ -792,6 +859,48 @@ mod tests {
         assert!(ProfileName::parse("build-agent_1").is_ok());
         for invalid in ["../escape", "Build", "con", "nul", "a/b", ""] {
             assert!(ProfileName::parse(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn shared_transaction_lock_respects_a_bounded_authorization_wait() {
+        let root = private_tempdir();
+        let state = root.path().join("state");
+        let owner = ProfileRepository::new(state.clone()).expect("owner repository");
+        let contender = ProfileRepository::new(state).expect("contender repository");
+        let exclusive = owner.acquire_transaction_lock().expect("exclusive lock");
+
+        let started = std::time::Instant::now();
+        assert!(
+            contender
+                .acquire_shared_transaction_lock_for(std::time::Duration::from_millis(25))
+                .expect("bounded shared wait")
+                .is_none()
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+
+        drop(exclusive);
+        assert!(
+            contender
+                .acquire_shared_transaction_lock_for(std::time::Duration::from_millis(25))
+                .expect("shared lock after release")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn lock_contention_classification_is_platform_exact() {
+        assert!(is_lock_contention(&std::io::Error::from(
+            std::io::ErrorKind::WouldBlock
+        )));
+        assert!(!is_lock_contention(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
+        #[cfg(windows)]
+        {
+            assert!(is_lock_contention(&std::io::Error::from_raw_os_error(32)));
+            assert!(is_lock_contention(&std::io::Error::from_raw_os_error(33)));
+            assert!(!is_lock_contention(&std::io::Error::from_raw_os_error(34)));
         }
     }
 
