@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use palladin_api::{
-    AgentPairingStatus, ApiError, CredentialMethod, ReportCredentialStaleInput, StaleReasonCode,
+    AgentPairingStatus, CredentialMethod, ReportCredentialStaleInput, StaleReasonCode,
 };
 #[cfg(any(target_os = "macos", all(test, unix)))]
 use palladin_browser_bridge::{
@@ -1616,8 +1616,8 @@ async fn inject_extension(
 #[cfg(any(target_os = "macos", all(test, unix)))]
 fn map_lookup_allows_fallback(error: &RuntimeError) -> bool {
     match error {
-        RuntimeError::Api(ApiError::Transport) => true,
-        RuntimeError::Api(ApiError::Http(status)) => (500..=599).contains(status),
+        RuntimeError::Api(palladin_api::ApiError::Transport) => true,
+        RuntimeError::Api(palladin_api::ApiError::Http(status)) => (500..=599).contains(status),
         _ => false,
     }
 }
