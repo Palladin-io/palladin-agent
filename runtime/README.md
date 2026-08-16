@@ -17,6 +17,25 @@ vendored under `runtime/contracts/vault-v2/fixtures/v2` from a pinned Palladin
 root-repository commit; tests verify the fixture manifest and every file digest
 before exercising all positive and corruption vectors.
 
+### Agent Discovery authorization snapshots
+
+The native runtime accepts Vault manifests only from the strict
+`{ agentAccessEpoch, items }` response. The non-zero epoch must match every
+integrity-bound local Vault anchor before any item is applied. It validates the
+complete canonical-descriptor manifest/envelope batch, including first-use
+public Vault trust anchors, in memory; only a fully valid batch can produce one
+signed atomic profile update. Discovery pages are decrypted into a cloned local
+index and replace the live index only after every Vault finishes and the anchor
+batch is durably committed.
+
+Snapshot or delta `409 { "outcome": "sync-state-changed" }` responses discard
+the complete working attempt. The runtime repeats the operation from a fresh
+manifest authorization read at most three times with bounded linear backoff.
+Other conflicts are not retried, retry exhaustion fails closed, and response
+bodies, ciphertext, credentials, and private identity material are never added
+to errors or diagnostics. Inject obtains its authenticated URL and field
+metadata through the same atomic Discovery synchronization path.
+
 ## Identity ownership
 
 - The API key belongs to an organization. Multiple Agent profiles may reference the same organization credential.
@@ -72,6 +91,27 @@ These controls are defense in depth inside the selected platform tier. The preci
 
 ## Browser injection
 
-Browser injection is currently unavailable on macOS, Windows, and Linux for Chrome, Edge, Brave, Chromium, Firefox, and Safari. The CLI fails before opening an Agent profile. MCP may already have an Agent session open in order to serve other tools, but `inject_credential` never contacts a browser endpoint, requests a credential, or decrypts one.
+The provider-neutral form and origin-validation contract is implemented. The extension transport
+now also has a frozen signed-ephemeral-handshake and directional XChaCha20-Poly1305 wire contract,
+with the host's durable Ed25519 identity reserved in OS secure storage. The current Node
+extension-socket adapter does not yet use that authenticated session. Production runtimes therefore
+continue to reject it before opening a profile or decrypting a credential; it is a development
+fixture available only with an explicit `local-development` build, not a release security boundary.
+AgentBrowser Inject is unavailable in every build because version 0.33.2 cannot atomically bind
+secret text insertion to the attested element; its MCP package returns before grant, runtime, or
+secret-bearing daemon access.
 
-Caller-provided CDP endpoints are never contacted. CDP cannot attest the browser or page origin: a fake endpoint can report an allowed URL and then receive the plaintext fill operation. The decision, support matrix, and requirements for a future authenticated browser component are recorded in [ADR 0003](docs/adr/0003-browser-injection-boundary.md).
+Production Inject requires a separately reviewed one-shot capability bound to the provider,
+browser session/document, Vault/Entry, form digest, authenticated domain, expiry, and replay guard.
+Extension support additionally requires the explicit pairing UI, the shared extension crypto API,
+and Native Messaging host integration described in
+[`contracts/inject-provider/v1`](contracts/inject-provider/v1/README.md). AgentBrowser support
+requires both an upstream session-owned authenticated channel and an atomic element-bound fill
+primitive. None of these requirements can be bypassed by selecting a provider ID or hidden flag.
+
+Caller-provided CDP endpoints, remote-debugging ports, Playwright WebSocket endpoints, and unmanaged
+browser targets are never contacted. They cannot attest the browser or page origin: a fake endpoint
+can report an allowed URL and then receive the plaintext fill operation. The rejected legacy path is
+recorded in [ADR 0003](docs/adr/0003-browser-injection-boundary.md); the authenticated provider
+contract and its extension/Playwright adapters are recorded in
+[ADR 0005](docs/adr/0005-authenticated-inject-form-contract.md).

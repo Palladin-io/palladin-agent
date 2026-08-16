@@ -1,0 +1,4 @@
+interface:
+  display_name: "Palladin Browser Login"
+  short_description: "Login through Palladin without exposing secrets"
+  default_prompt: "Use $palladin-browser-login to discover the requested account and sign in through the retained Playwright session."

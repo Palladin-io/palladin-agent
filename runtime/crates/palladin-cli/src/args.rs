@@ -50,7 +50,7 @@ pub enum Commands {
     Get(GetArgs),
     /// Run a command with a credential in a sanitized child environment.
     Exec(ExecArgs),
-    /// Refuse browser injection until an authenticated browser boundary is installed.
+    /// Inject a granted credential into an authenticated browser provider session.
     Inject(InjectArgs),
     /// Report that a credential is stale without sending its value.
     ReportStale(ReportStaleArgs),
@@ -170,15 +170,21 @@ pub struct InjectArgs {
     pub vault_id: String,
     pub entry_id: String,
     /// Deprecated and rejected unauthenticated CDP endpoint.
-    #[arg(long)]
-    pub cdp: String,
-    /// Reserved for a future reviewed implementation.
+    #[arg(long, hide = true)]
+    pub cdp: Option<String>,
+    /// Trusted Inject provider. The default uses the existing Palladin extension.
+    #[arg(long, default_value = "extension")]
+    pub provider: String,
+    /// Private provider protocol used by Palladin-owned adapters; never emits to a terminal.
+    #[arg(long, hide = true)]
+    pub provider_transport_stdio: bool,
+    /// Explain why this Agent needs access.
     #[arg(long)]
     pub reason: Option<String>,
-    /// Reserved for a future reviewed implementation.
+    /// Deprecated and rejected caller-controlled page URL.
     #[arg(long)]
     pub page_url: Option<String>,
-    /// Reserved for a future reviewed implementation.
+    /// Deprecated and rejected caller-controlled selector.
     #[arg(long)]
     pub username_selector: Option<String>,
     /// Reserved for a future reviewed implementation.
@@ -211,7 +217,7 @@ pub struct InjectArgs {
     /// Reserved for a future reviewed implementation.
     #[arg(long)]
     pub poll_interval: Option<String>,
-    /// Reserved for the reviewed browser extension.
+    /// Approval heartbeat format written to stderr.
     #[arg(long, value_enum)]
     pub progress: Option<ProgressArg>,
 }
@@ -230,9 +236,6 @@ pub struct ReportStaleArgs {
     /// Machine-readable stale reason.
     #[arg(long, value_enum, default_value_t = StaleCodeArg::Manual)]
     pub code: StaleCodeArg,
-    /// Optional secret-free context for the vault owner.
-    #[arg(long)]
-    pub note: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]

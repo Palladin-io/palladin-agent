@@ -51,8 +51,7 @@ const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 const UNSUPPORTED_VERSION_SENTINEL: &str = "palladin-unsupported-version";
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
     ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
-const GET_EXPOSURE_WARNING: &str = "Note: this secret is now in the Agent's context. On a hosted LLM it may leave your machine. Prefer palladin exec when the credential only needs to authenticate a child process. Browser injection is disabled until an authenticated browser boundary is installed.";
-const INJECT_UNAVAILABLE: &str = "Browser injection is disabled because an unauthenticated CDP endpoint can spoof the page origin and receive plaintext. Palladin will enable inject only through a reviewed authenticated browser boundary. No browser endpoint was contacted and no credential was requested or decrypted.";
+const GET_EXPOSURE_WARNING: &str = "Note: this secret is now in the Agent's context. On a hosted LLM it may leave your machine. Prefer exec_with_credential or inject_credential when the credential only needs to authenticate another operation.";
 const CONTRACT_JSON: &str = include_str!("../../../contracts/v1/mcp-tools.json");
 
 type ApplicationFuture<'a> = Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
@@ -75,6 +74,18 @@ pub trait McpApplication: Send + Sync + 'static {
         Box::pin(async {
             ToolOutcome::error(
                 "Native exec is not available in this runtime build. Update Palladin Runtime after the reviewed process-isolation component is installed.",
+            )
+        })
+    }
+
+    fn inject<'a>(
+        &'a self,
+        _input: InjectInput,
+        _cancellation: CancellationToken,
+    ) -> ApplicationFuture<'a> {
+        Box::pin(async {
+            ToolOutcome::error(
+                "The requested trusted Inject provider is not connected to this MCP server.",
             )
         })
     }
@@ -360,17 +371,12 @@ where
                 vault_id: input.vault_id.trim().to_owned(),
                 entry_id: input.entry_id.trim().to_owned(),
                 code: input.code.unwrap_or_default().into(),
-                note: input
-                    .note
-                    .map(|note| note.trim().to_owned())
-                    .filter(|note| !note.is_empty()),
             };
             let descriptor = OperationDescriptor::ReportCredentialStale {
                 surface: InvocationSurface::Mcp,
                 vault_id: request.vault_id.clone(),
                 entry_id: request.entry_id.clone(),
                 code: stale_reason_code_name(request.code).to_owned(),
-                note: request.note.clone(),
             };
             let session = match self.service.open_session(
                 self.profile.as_deref(),
@@ -469,7 +475,10 @@ impl<A: McpApplication> PalladinMcpServer<A> {
             "inject_credential" => {
                 let input = parse_input::<InjectInput>(arguments)?;
                 validate_inject(&input)?;
-                ToolOutcome::error(INJECT_UNAVAILABLE)
+                let _secret = self.secret_limit.clone().try_acquire_owned().map_err(|_| {
+                    McpError::internal_error("Another credential operation is in progress", None)
+                })?;
+                self.application.inject(input, cancellation).await
             }
             "report_credential_stale" => {
                 let input = parse_input::<ReportStaleInput>(arguments)?;
@@ -500,7 +509,7 @@ impl<A: McpApplication> ServerHandler for PalladinMcpServer<A> {
                     .with_description("Zero-knowledge credential tools for AI Agents"),
             )
             .with_instructions(
-                "Prefer exec_with_credential. Use get_credential only when plaintext must enter the model context. Browser injection is fail-closed until an authenticated browser boundary is installed.",
+                "Prefer exec_with_credential or inject_credential. Use get_credential only when plaintext must enter the model context. Inject providers never return credential fields to the model.",
             )
     }
 
@@ -1187,7 +1196,7 @@ fn load_tools() -> Result<Vec<Tool>, ContractError> {
         ("search_entries", None),
         ("get_credential", Some("Get")),
         ("exec_with_credential", Some("Exec")),
-        ("inject_credential", None),
+        ("inject_credential", Some("Inject")),
         ("report_credential_stale", None),
     ];
     if contract.tools.len() != expected.len()
@@ -1298,40 +1307,19 @@ fn validate_exec(input: &ExecInput) -> Result<(), McpError> {
 fn validate_inject(input: &InjectInput) -> Result<(), McpError> {
     if !valid_required(&input.vault_id, 256)
         || !valid_required(&input.entry_id, 256)
-        || !valid_required(&input.cdp, 4096)
+        || input.provider.as_ref().is_some_and(|value| {
+            !valid_required(value, 64)
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
         || input
             .reason
             .as_ref()
             .is_some_and(|value| exceeds_chars(value, 4096))
-        || input
-            .page_url
-            .as_ref()
-            .is_some_and(|value| exceeds_chars(value, 4096))
-        || [
-            input.username_selector.as_ref(),
-            input.password_selector.as_ref(),
-            input.submit_selector.as_ref(),
-            input.field.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|value| exceeds_chars(value, 2048))
-        || input
-            .field_id
-            .as_ref()
-            .is_some_and(|value| exceeds_chars(value, 256))
     {
         return Err(McpError::invalid_params(
             "Inject arguments are invalid",
-            None,
-        ));
-    }
-    if input.fill_only.unwrap_or(false)
-        && input.username_selector.is_none()
-        && input.password_selector.is_none()
-    {
-        return Err(McpError::invalid_params(
-            "fillOnly requires usernameSelector or passwordSelector",
             None,
         ));
     }
@@ -1342,13 +1330,7 @@ fn validate_inject(input: &InjectInput) -> Result<(), McpError> {
 }
 
 fn validate_report(input: &ReportStaleInput) -> Result<(), McpError> {
-    if !valid_required(&input.vault_id, 256)
-        || !valid_required(&input.entry_id, 256)
-        || input
-            .note
-            .as_ref()
-            .is_some_and(|value| exceeds_chars(value, 4096))
-    {
+    if !valid_required(&input.vault_id, 256) || !valid_required(&input.entry_id, 256) {
         return Err(McpError::invalid_params(
             "Report arguments are invalid",
             None,
@@ -1419,16 +1401,8 @@ impl ExecInput {
 pub struct InjectInput {
     pub vault_id: String,
     pub entry_id: String,
-    pub cdp: String,
+    pub provider: Option<String>,
     pub reason: Option<String>,
-    pub page_url: Option<String>,
-    pub username_selector: Option<String>,
-    pub password_selector: Option<String>,
-    pub submit_selector: Option<String>,
-    pub field: Option<String>,
-    pub field_id: Option<String>,
-    pub fill_only: Option<bool>,
-    pub no_submit: Option<bool>,
     pub wait: Option<String>,
     pub no_wait: Option<bool>,
     pub poll_interval: Option<String>,
@@ -1479,7 +1453,6 @@ pub struct ReportStaleInput {
     pub vault_id: String,
     pub entry_id: String,
     pub code: Option<StaleCodeInput>,
-    pub note: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]

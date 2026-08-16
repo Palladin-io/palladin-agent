@@ -1,0 +1,52 @@
+{
+  "id": "palladin-browser-inject",
+  "name": "Palladin Browser Inject",
+  "description": "Agent-owned Playwright browser with value-free Palladin Discovery/Inject integration.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "agentProfile": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "Palladin Agent profile used for Discovery and Inject."
+      },
+      "agentPackageRoot": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "description": "Absolute @palladin/agent package root for local development."
+      },
+      "agentLauncher": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "description": "Absolute Palladin launcher path inside agentPackageRoot."
+      },
+      "browserChannel": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "description": "Optional Playwright browser channel. Omit it to use the separately visible bundled browser."
+      },
+      "headless": {
+        "type": "boolean",
+        "description": "Run the trusted browser headless."
+      }
+    },
+    "additionalProperties": false
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "skills": [
+    "./skills"
+  ],
+  "contracts": {
+    "tools": [
+      "palladin_browser",
+      "palladin_inject"
+    ]
+  }
+}

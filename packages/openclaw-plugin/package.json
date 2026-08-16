@@ -1,0 +1,41 @@
+{
+  "name": "openclaw-plugin-palladin-browser-inject",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json && esbuild ./dist/index.js --bundle --platform=node --format=esm --target=node22 --external:@palladin/* --external:openclaw/* --external:playwright --external:typebox --outfile=./dist/plugin.js",
+    "test": "vitest run --config ./vitest.config.ts"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "openclaw": ">=2026.5.17"
+  },
+  "dependencies": {
+    "@palladin/agent": "file:../..",
+    "@palladin/playwright-mcp": "file:../playwright-mcp",
+    "playwright": "1.63.0-alpha-2026-08-05",
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/plugin.js"
+    ]
+  }
+}

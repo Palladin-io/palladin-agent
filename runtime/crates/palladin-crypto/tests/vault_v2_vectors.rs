@@ -136,7 +136,7 @@ fn vendored_fixture_manifest_is_pinned_and_every_file_digest_matches() {
     let manifest_bytes = fs::read(root.join("manifest.json")).expect("manifest bytes");
     assert_eq!(
         hex::encode(Sha256::digest(&manifest_bytes)),
-        "13c43defd459e95d50bf2f0a76a5a5446ca41903c36a38beef8b8af3aa208050"
+        "9d32eedec794ef9033299587ce66c369654e97568bd0df485d9870c8749e824e"
     );
     let manifest: Value = serde_json::from_slice(&manifest_bytes).expect("manifest");
     for file in manifest["files"].as_array().expect("files") {

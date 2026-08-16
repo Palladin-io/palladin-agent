@@ -5,12 +5,12 @@ mod types;
 
 pub use client::{ApiClient, ApiError, SigningContext};
 pub use types::{
-    AgentDiscoveryDeltaResponse, AgentDiscoveryEnvelope, AgentDiscoveryEnvelopeHeader,
+    AgentDiscoveryDeltaResponse, AgentDiscoveryEnvelope, AgentDiscoveryEnvelopeDescriptor,
     AgentDiscoverySnapshotResponse, AgentDiscoverySyncItem, AgentPairingActivationResponse,
     AgentPairingStatus, AgentPairingStatusResponse, AgentRegistrationResult,
     AgentVaultDiscoveryEnvelope, AgentVaultManifestItem, AgentVaultManifestsResponse,
     AgentVisibleField, ApprovedCredentialMethods, CredentialAccess, CredentialMethod,
-    EntrySearchItem, EntrySearchResult, GetCredentialOptions, GrantStatus, GrantStatusResponse,
-    GrantedCredential, InjectFailureUpload, ReportCredentialStaleInput, StaleReasonCode,
-    VaultManifest,
+    EntrySearchItem, EntrySearchResult, EnvelopeScopeContract, GetCredentialOptions, GrantStatus,
+    GrantStatusResponse, GrantedCredential, ReportCredentialStaleInput, StaleReasonCode,
+    VaultManifest, X25519WrappedKey, X25519WrapperDescriptor,
 };

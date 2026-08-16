@@ -25,15 +25,23 @@ function manifest(path: string): PackageManifest {
 }
 
 describe('public npm package boundary', () => {
-  it('publishes only the native dispatcher and an exact platform dependency', () => {
+  it('publishes only the native dispatcher, public contracts, and exact platform dependencies', () => {
     const root = manifest('package.json');
     const dispatcher = readFileSync('src/runtime/native-dispatch.ts', 'utf8');
+    const launcher = readFileSync('src/bin/palladin.ts', 'utf8');
     expect(root.files).toContain('dist/bin/');
+    expect(root.files).not.toContain('dist/browser-host/');
     expect(root.files).toContain('dist/runtime/');
+    expect(root.files).toContain('dist/inject-contract.js');
+    expect(root.files).toContain('dist/inject-contract.d.ts');
+    expect(root.files).toContain('dist/form-map.js');
+    expect(root.files).toContain('dist/form-map.d.ts');
     expect(root.files).not.toContain('dist/');
     expect(root.dependencies).toBeUndefined();
     expect(root.engines).toEqual({ node: '>=20.5.0', npm: '>=9.7.1' });
     expect(dispatcher).toContain(`const NATIVE_RUNTIME_VERSION = '${root.version}'`);
+    expect(launcher).not.toContain('browser-host');
+    expect(launcher).not.toContain('runExtensionInject');
     expect(root.optionalDependencies).toEqual({
       '@palladin/runtime-darwin-arm64': root.version,
       '@palladin/runtime-darwin-x64': root.version,
@@ -64,7 +72,7 @@ describe('public npm package boundary', () => {
     expect(readme).toContain('npm cache or proxy');
   });
 
-  it('excludes every legacy TypeScript implementation from the launcher tarball', () => {
+  it('keeps development-only browser transports out of the public launcher package', () => {
     const npmCli = process.env.npm_execpath;
     if (!npmCli) throw new Error('npm_execpath is unavailable');
     const output = execFileSync(process.execPath, [npmCli, 'pack', '--dry-run', '--json'], {
@@ -84,6 +92,10 @@ describe('public npm package boundary', () => {
       'dist/bin/palladin.d.ts.map',
       'dist/bin/palladin.js',
       'dist/bin/palladin.js.map',
+      'dist/form-map.d.ts',
+      'dist/form-map.js',
+      'dist/inject-contract.d.ts',
+      'dist/inject-contract.js',
       'dist/runtime/native-dispatch.d.ts',
       'dist/runtime/native-dispatch.d.ts.map',
       'dist/runtime/native-dispatch.js',

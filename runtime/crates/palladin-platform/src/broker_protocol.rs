@@ -50,6 +50,7 @@ pub enum SecureOperation {
     McpSearchEntries,
     McpGetCredential,
     McpExecWithCredential,
+    McpInjectCredential,
     McpReportCredentialStale,
     Agents,
     Security,
@@ -684,12 +685,8 @@ pub fn mcp_secret_operations(message: &[u8]) -> Result<Vec<McpSecretOperation>, 
             Some("search_entries") => SecureOperation::McpSearchEntries,
             Some("get_credential") => SecureOperation::McpGetCredential,
             Some("exec_with_credential") => SecureOperation::McpExecWithCredential,
+            Some("inject_credential") => SecureOperation::McpInjectCredential,
             Some("report_credential_stale") => SecureOperation::McpReportCredentialStale,
-            // The frozen MCP contract advertises inject_credential, but the
-            // version-matched worker always returns INJECT_UNAVAILABLE before
-            // opening identity or requesting a credential. Forward that
-            // fail-closed response without terminating the MCP transport.
-            Some("inject_credential") => continue,
             Some(_) | None => return Err(ProtocolError::OperationForbidden),
         };
         let item_index = u32::try_from(index).map_err(|_| ProtocolError::InvalidRequest)?;
@@ -722,6 +719,7 @@ pub fn mcp_operation_hash(
             SecureOperation::McpSearchEntries
                 | SecureOperation::McpGetCredential
                 | SecureOperation::McpExecWithCredential
+                | SecureOperation::McpInjectCredential
                 | SecureOperation::McpReportCredentialStale
         )
     {
@@ -1186,8 +1184,11 @@ mod tests {
             mcp_secret_operations(
                 br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"inject_credential","arguments":{"vaultId":"vault-a","entryId":"entry-a"}}}"#
             )
-            .expect("known fail-closed inject tool"),
-            Vec::<McpSecretOperation>::new()
+            .expect("known Inject tool"),
+            vec![McpSecretOperation {
+                operation: SecureOperation::McpInjectCredential,
+                item_index: 0,
+            }]
         );
         let mixed = mcp_secret_operations(
             br#"[{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"inject_credential","arguments":{}}},{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"get_credential","arguments":{}}}]"#,
@@ -1195,10 +1196,16 @@ mod tests {
         .expect("mixed batch");
         assert_eq!(
             mixed,
-            vec![McpSecretOperation {
-                operation: SecureOperation::McpGetCredential,
-                item_index: 1,
-            }]
+            vec![
+                McpSecretOperation {
+                    operation: SecureOperation::McpInjectCredential,
+                    item_index: 0,
+                },
+                McpSecretOperation {
+                    operation: SecureOperation::McpGetCredential,
+                    item_index: 1,
+                },
+            ]
         );
     }
 

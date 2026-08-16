@@ -1,0 +1,38 @@
+{
+  "name": "@palladin/agent-browser-mcp",
+  "version": "0.1.0",
+  "description": "AgentBrowser MCP proxy with fail-closed Palladin Inject",
+  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Palladin-io/palladin-agent.git",
+    "directory": "packages/agent-browser-mcp"
+  },
+  "type": "module",
+  "bin": {
+    "palladin-agent-browser-mcp": "./dist/bin.js"
+  },
+  "files": ["dist/", "README.md"],
+  "scripts": {
+    "build": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "clean": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "lint": "tsc -p tsconfig.lint.json",
+    "prepack": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "agent-browser": "0.33.2"
+  },
+  "peerDependencies": {
+    "@palladin/agent": "0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@palladin/agent": { "optional": true }
+  },
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": ">=11.0.0"
+  },
+  "publishConfig": { "access": "public", "provenance": true }
+}

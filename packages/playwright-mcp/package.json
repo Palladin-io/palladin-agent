@@ -1,0 +1,55 @@
+{
+  "name": "@palladin/playwright-mcp",
+  "version": "0.1.0",
+  "description": "Playwright MCP provider for value-free Palladin credential Inject",
+  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Palladin-io/palladin-agent.git",
+    "directory": "packages/playwright-mcp"
+  },
+  "type": "module",
+  "bin": {
+    "palladin-playwright-mcp": "./dist/bin.js"
+  },
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./embedded": {
+      "types": "./dist/embedded.d.ts",
+      "import": "./dist/embedded.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.lint.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@playwright/mcp": "0.0.79",
+    "playwright": "1.63.0-alpha-2026-08-05"
+  },
+  "peerDependencies": {
+    "@palladin/agent": "0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@palladin/agent": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=20.5.0",
+    "npm": ">=9.7.1"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

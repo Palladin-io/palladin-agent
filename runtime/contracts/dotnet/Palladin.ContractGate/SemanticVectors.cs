@@ -172,7 +172,7 @@ internal static class SemanticVectors
             ["search_entries"] = (null, ["query"]),
             ["get_credential"] = ("Get", ["vaultId", "entryId"]),
             ["exec_with_credential"] = ("Exec", ["vaultId", "entryId"]),
-            ["inject_credential"] = (null, ["vaultId", "entryId", "cdp"]),
+            ["inject_credential"] = ("Inject", ["vaultId", "entryId"]),
             ["report_credential_stale"] = (null, ["vaultId", "entryId"]),
         };
         var tools = root.GetProperty("tools").EnumerateArray().ToArray();

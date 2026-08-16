@@ -95,9 +95,8 @@ export function reportStaleCommand(getProfile: GetProfile): Command {
     .description('Report a credential as not working - notifies the vault owners so they can rotate it (sends no secret)')
     .argument('<vaultId>', 'vault ID')
     .argument('<entryId>', 'entry ID')
-    .option('--note <text>', 'short note for the owner (never include the secret or any typed value)')
     .option(`--code <code>`, `cause: ${STALE_REASON_CODES.join(' | ')} (default: manual)`)
-    .action(async (vaultId: string, entryId: string, opts: { note?: string; code?: string }) => {
+    .action(async (vaultId: string, entryId: string, opts: { code?: string }) => {
       const code = opts.code?.trim();
       if (code !== undefined && !STALE_REASON_CODES.includes(code as StaleReasonCode)) {
         fail(`invalid --code "${code}". Use one of: ${STALE_REASON_CODES.join(', ')}.`);
@@ -109,7 +108,6 @@ export function reportStaleCommand(getProfile: GetProfile): Command {
           vaultId: vaultId.trim(),
           entryId: entryId.trim(),
           code: (code as StaleReasonCode) ?? 'manual',
-          note: opts.note?.trim() || undefined,
         }, signing);
       } catch (err) {
         fail(describe(err));

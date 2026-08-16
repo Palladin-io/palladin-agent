@@ -1620,6 +1620,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "palladin-browser-bridge"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "hkdf",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "url",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "palladin-cli"
 version = "0.1.0"
 dependencies = [
@@ -1631,6 +1650,7 @@ dependencies = [
  "hostname",
  "nix 0.31.3",
  "palladin-api",
+ "palladin-browser-bridge",
  "palladin-core",
  "palladin-credential",
  "palladin-crypto",
@@ -1843,6 +1863,7 @@ dependencies = [
  "libc",
  "nix 0.31.3",
  "palladin-api",
+ "palladin-browser-bridge",
  "palladin-core",
  "palladin-credential",
  "palladin-crypto",

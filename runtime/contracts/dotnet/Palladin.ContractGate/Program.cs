@@ -25,7 +25,7 @@ internal static partial class ContractGate
             ["credential-blobs.json"] = "96f4f9598620c20ca3625b8f0fc5125b90682a7cb272be9beb3f885d43742507",
             ["encrypted-envelope.json"] = "98f288511c590e1bc983a0c299748f2ae2f183d056f3b7b182fe6338d97481ee",
             ["grant-access.json"] = "825efb7d3d34b05f6d32b1f4166c0606acf105cd550eef393e1f435fc3e0122f",
-            ["mcp-tools.json"] = "c673d367cbd15d9692fc277000fa77d3efb69824851f1c12efedb241788da2c0",
+            ["mcp-tools.json"] = "460ee0a53dadc93103a6008ba97131c8db6a496b9ed300077f169b2b2a5784be",
             ["request-signing.json"] = "364a87c2dce913cb470057c548f1ded55fd26ee63209bffddc9d16b2371f563a",
             [SourceManifest] = "348dd4400392b6a6a94aebf68a67497ffc87743809310f3a526f3105b8c8c94c",
         };

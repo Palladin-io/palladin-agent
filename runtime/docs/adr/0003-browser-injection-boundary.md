@@ -1,6 +1,6 @@
 # ADR 0003: Browser injection boundary
 
-- Status: Accepted
+- Status: Superseded by ADR 0005 for authenticated providers; the caller-controlled CDP rejection remains accepted
 - Date: 2026-07-13
 
 ## Context
@@ -11,9 +11,13 @@ The legacy client accepted a caller-provided Chrome DevTools Protocol endpoint. 
 
 ## Decision
 
-External CDP browser injection is disabled. The compatibility CLI and MCP inputs remain parseable, but the endpoint is never contacted. The CLI rejects before resolving an Agent profile. MCP may already hold an Agent session to serve its other tools, but the inject handler never accesses the organization API key, requests a grant, delivers a credential, or decrypts one.
+The legacy external-CDP injection path is disabled. Its compatibility CLI and MCP inputs remain
+parseable, but the supplied endpoint is never contacted. That path rejects before resolving an
+Agent profile; it never accesses the organization API key, requests a grant, delivers a credential,
+or decrypts one. This decision does not disable the `Inject` grant method through an authenticated
+provider defined by ADR 0005.
 
-The production support matrix is deliberately explicit:
+The production support matrix for the legacy caller-controlled CDP path is deliberately explicit:
 
 | Operating system | Chrome / Chromium | Edge | Brave | Firefox | Safari |
 | --- | --- | --- | --- | --- | --- |
@@ -23,12 +27,15 @@ The production support matrix is deliberately explicit:
 
 No injection diagnostics or stale-credential reports are produced on this path because no browser action and no secret delivery occurred. Errors contain only static, value-free text.
 
-## Future secure boundaries
+## Secure boundaries required for re-enablement
 
 A future implementation must use one of two reviewed designs:
 
-1. A Rust-runtime-managed Chromium-family process connected through a private inherited remote-debugging pipe, with no caller-supplied port, WebSocket URL, or endpoint.
-2. A browser extension and native-messaging host with user-mediated pairing, installation-specific keys, authenticated encryption, freshness and replay protection, browser-owned document identity, and origin validation before every release.
+1. An Agent-owned Playwright `Page` passed directly to the reviewed embedded provider described by
+   ADR 0005, with no caller-supplied port, WebSocket URL, or CDP endpoint.
+2. A browser extension and native-messaging host with user-mediated pairing, installation-specific
+   keys, authenticated encryption, freshness and replay protection, browser-owned document
+   identity, and origin validation before every release.
 
 Native Messaging by itself is not a same-user security boundary. A future design must also account for a malicious local process or an Agent controlling the same browser after a fill. Firefox requires its own extension/native host integration. Safari requires a signed containing application and Safari Web Extension, so it is not an npm-only path.
 
@@ -38,4 +45,6 @@ Any enabled implementation must bind release to HTTPS, a trusted backend-provide
 
 - The fake-CDP plaintext exfiltration path is removed without changing the organization-wide API key or backend.
 - Existing callers receive a deterministic exit/error rather than silently falling back to an unsafe browser connection.
-- Browser injection remains unavailable until its cross-platform client component has a separately reviewed trust boundary.
+- At the time of this ADR, browser injection remained unavailable pending a separately reviewed
+  trust boundary. ADR 0005 records the authenticated provider boundary that enables `Inject` while
+  preserving this ADR's rejection of caller-controlled CDP.

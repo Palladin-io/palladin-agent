@@ -43,15 +43,15 @@
     },
     {
       "path": "vectors/envelopes.json",
-      "sha256": "bb642e737fda2c77e89f181b342bf9c24c6bc3dbfeafe0ebd38af1f3041e9a62"
+      "sha256": "0a9bbe39fe442a5d684653821464521b20e8c9ab635dd1d59bb0827de2c3b379"
     },
     {
       "path": "vectors/signatures.json",
-      "sha256": "2b9fa47e377e92a5c7d5a9299761ca42dc12f2024bef736ef372be3a16ca840a"
+      "sha256": "caa6edce08b557feaf1232464ffafebc601023601f35e6a6a30bb5d243abc876"
     },
     {
       "path": "vectors/pairing.json",
-      "sha256": "d4f7d8a586cacf53896f9fe609163a88cc292646f3d010bb807a7d1cfc215ec8"
+      "sha256": "bc542ef27f2470727b06669e8bbcaff339c25d40742dbfd70c7efa37d861e8a8"
     },
     {
       "path": "vectors/rotation.json",
@@ -59,7 +59,7 @@
     },
     {
       "path": "negative/corruption.json",
-      "sha256": "2368188c7a0b686eac105c252527b0e6e8c6434f1d326eb00868f57869c30c8e"
+      "sha256": "5998a50bf150603045f7dd1c1091932842e0e36e305769b95cb78344c2fbce2a"
     }
   ]
 }

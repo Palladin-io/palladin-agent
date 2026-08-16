@@ -7,18 +7,21 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::{
-    ALGORITHM_SUITE, CryptoError, PROTOCOL_VERSION, SecretBytes, SignatureProfile,
-    decode_base64url, key_fingerprint, verify_domain_signature,
+    CryptoError, PROTOCOL_VERSION, SecretBytes, SignatureProfile, VAULT_XCHACHA_V1,
+    X25519_WRAPPER_V1, decode_base64url, key_fingerprint, verify_domain_signature,
 };
 
 const PAIRING_DOMAIN: &[u8] = b"PLDNV2PAIR:TRANSCRIPT:";
 const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const ED25519_SIGNATURE_V1: &str = "palladin-ed25519-v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultManifestV2 {
     pub protocol_version: u16,
-    pub algorithm_suite: u16,
+    pub crypto_suite_id: String,
+    pub wrapper_suite_id: String,
+    pub signature_suite_id: String,
     pub organization_id: String,
     pub vault_id: String,
     pub agent_id: String,
@@ -62,7 +65,7 @@ pub struct PairingTranscript {
     pub agent_ed25519_fingerprint: String,
     pub agent_id: String,
     pub agent_x25519_fingerprint: String,
-    pub algorithm_suite: u16,
+    pub crypto_suite_id: String,
     pub organization_id: String,
     pub protocol_version: u16,
     pub vaults: Vec<PairingVault>,
@@ -126,19 +129,21 @@ struct UnsignedManifest<'a> {
     agent_message_key_version: u32,
     agent_wrapped_vdk_digest: &'a str,
     agent_x25519_fingerprint: &'a str,
-    algorithm_suite: u16,
+    crypto_suite_id: &'a str,
     issued_at: &'a str,
     manifest_revision: &'a str,
     manifest_signing_key_version: u32,
     minimum_agent_runtime_protocol: u16,
     organization_id: &'a str,
     protocol_version: u16,
+    signature_suite_id: &'a str,
     vault_agent_message_key_fingerprint: &'a str,
     vault_agent_message_public_key: &'a str,
     vault_id: &'a str,
     vault_signing_key_fingerprint: &'a str,
     vault_signing_public_key: &'a str,
     vdk_version: u32,
+    wrapper_suite_id: &'a str,
 }
 
 #[derive(Serialize)]
@@ -149,7 +154,7 @@ struct SignedManifest<'a> {
     agent_message_key_version: u32,
     agent_wrapped_vdk_digest: &'a str,
     agent_x25519_fingerprint: &'a str,
-    algorithm_suite: u16,
+    crypto_suite_id: &'a str,
     issued_at: &'a str,
     manifest_revision: &'a str,
     manifest_signing_key_version: u32,
@@ -157,12 +162,14 @@ struct SignedManifest<'a> {
     organization_id: &'a str,
     protocol_version: u16,
     signature: &'a str,
+    signature_suite_id: &'a str,
     vault_agent_message_key_fingerprint: &'a str,
     vault_agent_message_public_key: &'a str,
     vault_id: &'a str,
     vault_signing_key_fingerprint: &'a str,
     vault_signing_public_key: &'a str,
     vdk_version: u32,
+    wrapper_suite_id: &'a str,
 }
 
 fn unsigned_manifest(manifest: &VaultManifestV2) -> UnsignedManifest<'_> {
@@ -172,19 +179,21 @@ fn unsigned_manifest(manifest: &VaultManifestV2) -> UnsignedManifest<'_> {
         agent_message_key_version: manifest.agent_message_key_version,
         agent_wrapped_vdk_digest: &manifest.agent_wrapped_vdk_digest,
         agent_x25519_fingerprint: &manifest.agent_x25519_fingerprint,
-        algorithm_suite: manifest.algorithm_suite,
+        crypto_suite_id: &manifest.crypto_suite_id,
         issued_at: &manifest.issued_at,
         manifest_revision: &manifest.manifest_revision,
         manifest_signing_key_version: manifest.manifest_signing_key_version,
         minimum_agent_runtime_protocol: manifest.minimum_agent_runtime_protocol,
         organization_id: &manifest.organization_id,
         protocol_version: manifest.protocol_version,
+        signature_suite_id: &manifest.signature_suite_id,
         vault_agent_message_key_fingerprint: &manifest.vault_agent_message_key_fingerprint,
         vault_agent_message_public_key: &manifest.vault_agent_message_public_key,
         vault_id: &manifest.vault_id,
         vault_signing_key_fingerprint: &manifest.vault_signing_key_fingerprint,
         vault_signing_public_key: &manifest.vault_signing_public_key,
         vdk_version: manifest.vdk_version,
+        wrapper_suite_id: &manifest.wrapper_suite_id,
     }
 }
 
@@ -196,7 +205,7 @@ fn signed_manifest(manifest: &VaultManifestV2) -> SignedManifest<'_> {
         agent_message_key_version: unsigned.agent_message_key_version,
         agent_wrapped_vdk_digest: unsigned.agent_wrapped_vdk_digest,
         agent_x25519_fingerprint: unsigned.agent_x25519_fingerprint,
-        algorithm_suite: unsigned.algorithm_suite,
+        crypto_suite_id: unsigned.crypto_suite_id,
         issued_at: unsigned.issued_at,
         manifest_revision: unsigned.manifest_revision,
         manifest_signing_key_version: unsigned.manifest_signing_key_version,
@@ -204,12 +213,14 @@ fn signed_manifest(manifest: &VaultManifestV2) -> SignedManifest<'_> {
         organization_id: unsigned.organization_id,
         protocol_version: unsigned.protocol_version,
         signature: &manifest.signature,
+        signature_suite_id: unsigned.signature_suite_id,
         vault_agent_message_key_fingerprint: unsigned.vault_agent_message_key_fingerprint,
         vault_agent_message_public_key: unsigned.vault_agent_message_public_key,
         vault_id: unsigned.vault_id,
         vault_signing_key_fingerprint: unsigned.vault_signing_key_fingerprint,
         vault_signing_public_key: unsigned.vault_signing_public_key,
         vdk_version: unsigned.vdk_version,
+        wrapper_suite_id: unsigned.wrapper_suite_id,
     }
 }
 
@@ -232,7 +243,9 @@ fn validate_identity(
     identity: &AgentIdentityBinding,
 ) -> Result<(), CryptoError> {
     if manifest.protocol_version != PROTOCOL_VERSION
-        || manifest.algorithm_suite != ALGORITHM_SUITE
+        || manifest.crypto_suite_id != VAULT_XCHACHA_V1
+        || manifest.wrapper_suite_id != X25519_WRAPPER_V1
+        || manifest.signature_suite_id != ED25519_SIGNATURE_V1
         || manifest.minimum_agent_runtime_protocol > PROTOCOL_VERSION
         || manifest.organization_id != identity.organization_id.to_string()
         || manifest.agent_id != identity.agent_id.to_string()
@@ -295,7 +308,7 @@ pub fn prepare_pairing(
         agent_ed25519_fingerprint: URL_SAFE_NO_PAD.encode(identity.ed25519_fingerprint),
         agent_id: identity.agent_id.to_string(),
         agent_x25519_fingerprint: URL_SAFE_NO_PAD.encode(identity.x25519_fingerprint),
-        algorithm_suite: ALGORITHM_SUITE,
+        crypto_suite_id: VAULT_XCHACHA_V1.to_owned(),
         organization_id: identity.organization_id.to_string(),
         protocol_version: PROTOCOL_VERSION,
         vaults,
