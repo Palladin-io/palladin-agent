@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::process::ExitCode;
@@ -10,7 +10,7 @@ use clap::Parser;
 use palladin_api::{
     AgentPairingStatus, CredentialMethod, ReportCredentialStaleInput, StaleReasonCode,
 };
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 use palladin_browser_bridge::{
     InjectionControl, InjectionCredential, InjectionFormField, InjectionTarget,
 };
@@ -41,7 +41,7 @@ use palladin_core::secret::OrganizationApiKey;
 use palladin_core::terminal::is_safe_terminal_text;
 use palladin_credential::access::{access_message, exit_code_for_access};
 use palladin_credential::fields::{FieldSelector, redact_totp_secrets, resolve_field};
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 use palladin_credential::fields::{ResolvedField, ResolvedFieldType};
 use palladin_credential::secret::parse_secret;
 use palladin_credential::wait::{
@@ -249,11 +249,21 @@ async fn chrome_native_host_main() -> ExitCode {
         } else if !cfg!(debug_assertions) {
             return ExitCode::from(EXIT_FAILURE);
         }
-        let identity = match service.browser_host_identity() {
-            Ok(identity) => identity,
+        let pairing = match service.browser_host_pairing() {
+            Ok(pairing) => pairing,
             Err(_) => return ExitCode::from(EXIT_FAILURE),
         };
-        return match palladin_cli::native_browser::serve_native_host(&root, &identity).await {
+        return match palladin_cli::native_browser::serve_native_host(
+            &root,
+            pairing.identity(),
+            || {
+                service
+                    .browser_host_lifecycle_guard(pairing.lifecycle_token())
+                    .map_err(|_| palladin_cli::native_browser::NativeBrowserError::Revoked)
+            },
+        )
+        .await
+        {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::from(EXIT_FAILURE),
         };
@@ -267,15 +277,15 @@ async fn chrome_native_host_main() -> ExitCode {
 fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand) -> ExitCode {
     match command {
         BrowserCommand::Install => {
+            let provisioning = match service.provision_browser_host_pairing_locked() {
+                Ok(pairing) => pairing,
+                Err(error) => return fail(&error.to_string()),
+            };
             let path = match install_manifest(service.repository().root()) {
                 Ok(path) => path,
                 Err(error) => return fail(&error.to_string()),
             };
-            let identity = match service.provision_browser_host_identity() {
-                Ok(identity) => identity,
-                Err(error) => return fail(&error.to_string()),
-            };
-            let bundle = PairingBundle::from_identity(&identity);
+            let bundle = PairingBundle::from_identity(provisioning.identity());
             let encoded = match serde_json::to_string(&bundle) {
                 Ok(encoded) => encoded,
                 Err(_) => return fail("could not encode the browser pairing bundle"),
@@ -284,8 +294,9 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
             eprintln!(
                 "Palladin Chrome host installed at {}.\nFingerprint: {}\nPaste the JSON pairing bundle into the Palladin extension and confirm this fingerprint in both surfaces.",
                 safe_terminal_text(&path.to_string_lossy()),
-                shorten_public_identifier(&identity.fingerprint())
+                shorten_public_identifier(&provisioning.identity().fingerprint())
             );
+            drop(provisioning);
             ExitCode::SUCCESS
         }
         BrowserCommand::Status => {
@@ -329,12 +340,14 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
             if !confirm {
                 return fail("browser unpair requires --confirm");
             }
+            let revocation = match service.unpair_browser_host_identity() {
+                Ok(revocation) => revocation,
+                Err(error) => return fail(&error.to_string()),
+            };
             if let Err(error) = remove_manifest(service.repository().root()) {
                 return fail(&error.to_string());
             }
-            if let Err(error) = service.unpair_browser_host_identity() {
-                return fail(&error.to_string());
-            }
+            drop(revocation);
             println!("Palladin Chrome host unpaired and its manifest removed.");
             ExitCode::SUCCESS
         }
@@ -1321,24 +1334,29 @@ async fn inject_extension(
     provider: ProviderId,
     form: InjectionFormDefinition,
 ) -> ExitCode {
-    let identity = match service.browser_host_identity() {
-        Ok(identity) => identity,
+    let pairing = match service.browser_host_pairing() {
+        Ok(pairing) => pairing,
         Err(error) => return fail(&error.to_string()),
     };
-    let mut extension = match ExtensionClient::connect(service.repository().root(), &identity).await
-    {
-        Ok(extension) => extension,
-        Err(error) => return fail(&error.to_string()),
-    };
+    let mut extension =
+        match ExtensionClient::connect(service.repository().root(), pairing.identity()).await {
+            Ok(extension) => extension,
+            Err(error) => return fail(&error.to_string()),
+        };
     let mut operation_nonce = [0_u8; 32];
     if getrandom::fill(&mut operation_nonce).is_err() {
         return fail("could not create an Inject transaction");
     }
     let nonce = hex::encode(operation_nonce);
+    let lifecycle = match service.browser_host_lifecycle_guard(pairing.lifecycle_token()) {
+        Ok(lifecycle) => lifecycle,
+        Err(error) => return fail(&error.to_string()),
+    };
     let prepared = match extension.prepare(&nonce).await {
         Ok(prepared) => prepared,
         Err(error) => return fail(&error.to_string()),
     };
+    drop(lifecycle);
     if prepared.outcome != "ready" {
         return fail("the authenticated Palladin extension is not ready for Inject");
     }
@@ -1474,10 +1492,15 @@ async fn inject_extension(
         form: &form,
         values,
     };
+    let lifecycle = match service.browser_host_lifecycle_guard(pairing.lifecycle_token()) {
+        Ok(lifecycle) => lifecycle,
+        Err(error) => return fail(&error.to_string()),
+    };
     let response = match extension.inject(&wire).await {
         Ok(response) => response,
         Err(error) => return fail(&error.to_string()),
     };
+    drop(lifecycle);
     drop(wire);
     drop(credential);
     drop(parsed);
@@ -1514,7 +1537,7 @@ async fn inject_extension(
     ExitCode::SUCCESS
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn resolve_injection_credential(
     parsed: &palladin_credential::secret::ParsedSecret,
     authenticated_username: Option<&str>,
@@ -1531,7 +1554,7 @@ fn resolve_injection_credential(
     InjectionCredential::from_fields(values)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn resolve_injection_field(
     parsed: &palladin_credential::secret::ParsedSecret,
     authenticated_username: Option<&str>,
@@ -1587,14 +1610,14 @@ fn resolve_injection_field(
 }
 
 #[derive(Clone, Copy)]
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 enum ResolvedKind {
     Text,
     Concealed,
     Otp,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn resolve_selected_field(
     parsed: &palladin_credential::secret::ParsedSecret,
     label: &str,
@@ -1633,7 +1656,7 @@ fn inject_uses_deprecated_browser_boundary(args: &InjectArgs) -> bool {
         || args.verbose
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn resolve_authenticated_injection_target(
     grant_domain: Option<&str>,
     discovery_domain: Option<&str>,
@@ -2171,7 +2194,7 @@ mod operation_descriptor_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod authenticated_injection_target_tests {
     use super::resolve_authenticated_injection_target;
 

@@ -22,6 +22,8 @@ pub enum SecretSlot {
     VersionPolicyTrustStateV1,
     /// Durable Ed25519 identity for the authenticated browser Native Messaging host.
     BrowserHostEd25519SecretKeyV1,
+    /// Random integrity token rotated whenever browser-host sessions are revoked.
+    BrowserHostLifecycleTokenV1,
     OrganizationApiKey,
     X25519PrivateKey,
     Ed25519SecretKey,
@@ -42,6 +44,7 @@ impl SecretSlot {
             Self::IntegrityTrustStateV1 => "integrity-trust-state-v1",
             Self::VersionPolicyTrustStateV1 => "version-policy-trust-state-v1",
             Self::BrowserHostEd25519SecretKeyV1 => "browser-host-ed25519-secret-key-v1",
+            Self::BrowserHostLifecycleTokenV1 => "browser-host-lifecycle-token-v1",
             Self::OrganizationApiKey => "organization-api-key-v3",
             Self::X25519PrivateKey => "x25519-private-key-v3",
             Self::Ed25519SecretKey => "ed25519-secret-key-v3",
@@ -73,6 +76,7 @@ impl SecretSlot {
             Self::IntegrityTrustStateV1 => "Palladin profile integrity root",
             Self::VersionPolicyTrustStateV1 => "Palladin version policy trust state",
             Self::BrowserHostEd25519SecretKeyV1 => "Palladin browser host identity",
+            Self::BrowserHostLifecycleTokenV1 => "Palladin browser host lifecycle token",
             Self::OrganizationApiKey => "Palladin organization credential",
             Self::X25519PrivateKey => "Palladin Agent encryption identity",
             Self::Ed25519SecretKey => "Palladin Agent signing identity",
@@ -145,6 +149,7 @@ impl OperationScope {
             SecretSlot::IntegrityTrustStateV1
             | SecretSlot::VersionPolicyTrustStateV1
             | SecretSlot::BrowserHostEd25519SecretKeyV1
+            | SecretSlot::BrowserHostLifecycleTokenV1
             | SecretSlot::LegacyOrganizationApiKeyV2
             | SecretSlot::LegacyX25519PrivateKeyV2
             | SecretSlot::LegacyEd25519SecretKeyV2 => false,
@@ -811,6 +816,10 @@ mod tests {
         assert_eq!(
             SecretSlot::BrowserHostEd25519SecretKeyV1.account_suffix(),
             "browser-host-ed25519-secret-key-v1"
+        );
+        assert_eq!(
+            SecretSlot::BrowserHostLifecycleTokenV1.account_suffix(),
+            "browser-host-lifecycle-token-v1"
         );
         assert_eq!(
             SecretSlot::OrganizationApiKey.account_suffix(),

@@ -12,6 +12,7 @@ use palladin_browser_bridge::secure_transport::{
     BrowserHostIdentity, ExtensionSessionOpen, HostSessionReady, INJECT_PROVIDER_PROTOCOL,
     SecureFrame,
 };
+use palladin_credential::wait::MAX_WAIT_MS;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::net::{UnixListener, UnixStream};
@@ -23,6 +24,9 @@ use crate::browser::{CHROME_EXTENSION_ORIGIN, local_socket_path};
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
+const APPROVAL_TIMEOUT_MARGIN_MS: u64 = 30_000;
+const GRANT_APPROVAL_TIMEOUT: Duration =
+    Duration::from_millis(MAX_WAIT_MS + APPROVAL_TIMEOUT_MARGIN_MS);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -193,22 +197,28 @@ impl ExtensionClient {
     }
 }
 
-pub async fn serve_native_host(
+pub async fn serve_native_host<F, G>(
     root: &Path,
     identity: &BrowserHostIdentity,
-) -> Result<(), NativeBrowserError> {
+    lifecycle_guard: F,
+) -> Result<(), NativeBrowserError>
+where
+    F: Fn() -> Result<G, NativeBrowserError>,
+{
     let mut native_input = tokio::io::stdin();
     let mut native_output = tokio::io::stdout();
     let open: ExtensionSessionOpen = timeout(HANDSHAKE_TIMEOUT, read_message(&mut native_input))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
     let (ready, mut extension_session) = identity.accept(CHROME_EXTENSION_ORIGIN, &open)?;
+    let _lifecycle = lifecycle_guard()?;
     timeout(
         HANDSHAKE_TIMEOUT,
         write_message::<HostSessionReady>(&mut native_output, &ready),
     )
     .await
     .map_err(|_| NativeBrowserError::Unavailable)??;
+    drop(_lifecycle);
 
     let (listener, _guard) = bind_local_listener(root).await?;
     let (mut local, _) = timeout(CLIENT_WAIT_TIMEOUT, listener.accept())
@@ -220,15 +230,18 @@ pub async fn serve_native_host(
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
     let (local_ready, mut local_session) = accept_local_client(identity, &local_open)?;
+    let _lifecycle = lifecycle_guard()?;
     timeout(HANDSHAKE_TIMEOUT, write_message(&mut local, &local_ready))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
+    drop(_lifecycle);
 
     let local_frame: LocalSecureFrame = timeout(OPERATION_TIMEOUT, read_message(&mut local))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
     let prepare: OwnedPrepareRequest = local_session.open(&local_frame)?;
     validate_prepare(&prepare)?;
+    let _lifecycle = lifecycle_guard()?;
     let extension_frame = extension_session.seal(&prepare)?;
     timeout(
         OPERATION_TIMEOUT,
@@ -252,13 +265,15 @@ pub async fn serve_native_host(
     if prepared.outcome != "ready" {
         return Ok(());
     }
+    drop(_lifecycle);
 
-    let local_frame: LocalSecureFrame = timeout(OPERATION_TIMEOUT, read_message(&mut local))
+    let local_frame: LocalSecureFrame = timeout(GRANT_APPROVAL_TIMEOUT, read_message(&mut local))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
     let injection: OwnedInjectRequest = local_session.open(&local_frame)?;
     validate_inject_request(&injection)?;
     let transaction_id = injection.transaction_id.clone();
+    let _lifecycle = lifecycle_guard()?;
     let extension_frame = extension_session.seal(&injection)?;
     timeout(
         OPERATION_TIMEOUT,
@@ -459,6 +474,8 @@ pub enum NativeBrowserError {
     InvalidMessage,
     #[error("the local browser host socket is unsafe")]
     UnsafeSocket,
+    #[error("the authenticated browser host pairing was revoked")]
+    Revoked,
     #[error(transparent)]
     Framing(#[from] palladin_browser_bridge::framing::FramingError),
     #[error(transparent)]
@@ -468,6 +485,16 @@ pub enum NativeBrowserError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_operation_window_covers_maximum_grant_approval_wait_with_margin() {
+        assert!(GRANT_APPROVAL_TIMEOUT > Duration::from_millis(MAX_WAIT_MS));
+        assert_eq!(
+            GRANT_APPROVAL_TIMEOUT,
+            Duration::from_millis(MAX_WAIT_MS + APPROVAL_TIMEOUT_MARGIN_MS)
+        );
+        assert!(OPERATION_TIMEOUT < GRANT_APPROVAL_TIMEOUT);
+    }
 
     #[test]
     fn invalid_prepare_and_inject_results_fail_closed() {

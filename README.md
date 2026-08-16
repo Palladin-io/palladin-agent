@@ -200,8 +200,13 @@ On macOS, `palladin browser install` provisions the host identity in OS secure s
 `io.palladin.browser_bridge` for Google Chrome, and prints one JSON pairing bundle to stdout. Paste
 that bundle into the extension and compare the shortened fingerprint shown in both surfaces.
 `palladin browser status` verifies the exact manifest and pairing identity;
-`palladin browser unpair --confirm` removes both. The host allowlist contains only the compiled
-extension origin `chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/`.
+`palladin browser unpair --confirm` revokes the OS-secured lifecycle token before deleting the host
+key and manifest. Browser forwards hold a shared cross-process lease from the final token check
+through the value-free response, while unpair holds the exclusive lease through cleanup, so no
+loaded session can finish after unpair reports success. The post-prepare wait is derived from the
+canonical five-minute grant window plus a 30-second margin; secret-bearing browser round trips stay
+bounded to 60 seconds. The host allowlist contains only the compiled extension origin
+`chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/`.
 
 The local socket is only a rendezvous point. The CLI signs a fresh ephemeral handshake with the
 OS-secured host identity, the host signs its response, and both derive independent directional

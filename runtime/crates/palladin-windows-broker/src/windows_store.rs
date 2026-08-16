@@ -44,6 +44,7 @@ impl BrokerSecretStore {
             SecretSlot::IntegrityTrustStateV1 => "integrity-trust-state-v1",
             SecretSlot::VersionPolicyTrustStateV1 => "version-policy-trust-state-v1",
             SecretSlot::BrowserHostEd25519SecretKeyV1 => "browser-host-ed25519-secret-key-v1",
+            SecretSlot::BrowserHostLifecycleTokenV1 => "browser-host-lifecycle-token-v1",
             SecretSlot::OrganizationApiKey => "organization-api-key-v3",
             SecretSlot::X25519PrivateKey => "x25519-private-key-v3",
             SecretSlot::Ed25519SecretKey => "ed25519-secret-key-v3",

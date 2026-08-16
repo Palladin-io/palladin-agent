@@ -148,6 +148,18 @@ impl ProfileRepository {
     }
 
     pub fn acquire_transaction_lock(&self) -> Result<TransactionLock, ProfileError> {
+        self.acquire_lock(true)
+    }
+
+    /// Acquire the repository rendezvous lock in shared mode. Browser transport operations use
+    /// this only while revalidating their secure-store lifecycle token and forwarding a bounded
+    /// request. Destructive lifecycle changes take the exclusive transaction lock, which makes
+    /// successful revocation linearizable across processes.
+    pub fn acquire_shared_transaction_lock(&self) -> Result<TransactionLock, ProfileError> {
+        self.acquire_lock(false)
+    }
+
+    fn acquire_lock(&self, exclusive: bool) -> Result<TransactionLock, ProfileError> {
         let path = self.transaction_lock_path()?;
         let parent = path.parent().ok_or(ProfileError::InvalidRoot)?;
         let parent_metadata = fs::symlink_metadata(parent)?;
@@ -167,7 +179,11 @@ impl ProfileRepository {
         }
         let file = options.open(path)?;
         validate_private_file(&file.metadata()?, "transaction lock")?;
-        fs2::FileExt::lock_exclusive(&file)?;
+        if exclusive {
+            fs2::FileExt::lock_exclusive(&file)?;
+        } else {
+            fs2::FileExt::lock_shared(&file)?;
+        }
         Ok(TransactionLock { file })
     }
 
