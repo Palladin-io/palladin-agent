@@ -52,6 +52,11 @@ pub enum Commands {
     Exec(ExecArgs),
     /// Inject a granted credential into an authenticated browser provider session.
     Inject(InjectArgs),
+    /// Install and manage the authenticated Chrome Native Messaging host.
+    Browser {
+        #[command(subcommand)]
+        command: BrowserCommand,
+    },
     /// Report that a credential is stale without sending its value.
     ReportStale(ReportStaleArgs),
     /// Serve Palladin tools over the Model Context Protocol.
@@ -72,6 +77,20 @@ pub enum Commands {
     /// Explicitly remove every native profile and secret.
     Purge {
         /// Required acknowledgement; purge is never run by npm uninstall hooks.
+        #[arg(long)]
+        confirm: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BrowserCommand {
+    /// Install the exact Palladin Chrome host and print an out-of-band pairing bundle.
+    Install,
+    /// Check the exact manifest and OS-secured pairing identity.
+    Status,
+    /// Remove the manifest and rotate away the paired host identity.
+    Unpair {
+        /// Required acknowledgement because every extension pairing is invalidated.
         #[arg(long)]
         confirm: bool,
     },
@@ -175,6 +194,9 @@ pub struct InjectArgs {
     /// Trusted Inject provider. The default uses the existing Palladin extension.
     #[arg(long, default_value = "extension")]
     pub provider: String,
+    /// Bounded value-free form plan prepared by the Agent for the current page.
+    #[arg(long, value_name = "JSON")]
+    pub form_json: Option<String>,
     /// Private provider protocol used by Palladin-owned adapters; never emits to a terminal.
     #[arg(long, hide = true)]
     pub provider_transport_stdio: bool,

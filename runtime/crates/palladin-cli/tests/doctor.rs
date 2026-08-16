@@ -30,6 +30,29 @@ fn version_works_without_reading_project_files() {
 }
 
 #[test]
+fn deprecated_cdp_is_rejected_before_profile_or_grant_access() {
+    let project = tempfile::tempdir().expect("temp project");
+    let output = runtime()
+        .current_dir(project.path())
+        .args([
+            "inject",
+            "vault-fixture",
+            "entry-fixture",
+            "--cdp",
+            "http://127.0.0.1:9222",
+        ])
+        .output()
+        .expect("run deprecated Inject");
+
+    assert_eq!(output.status.code(), Some(78));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("stderr");
+    assert!(stderr.contains("unauthenticated CDP endpoint"));
+    assert!(stderr.contains("no profile was opened and no credential was requested"));
+    assert!(!project.path().join("profiles").exists());
+}
+
+#[test]
 fn doctor_is_secretless_in_a_clean_environment() {
     let project = tempfile::tempdir().expect("temp project");
     let output = runtime()

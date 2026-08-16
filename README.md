@@ -179,7 +179,7 @@ The Agent must be active before credential tools work.
 - Native secret storage has no file or environment fallback.
 - The organization API key and private keys are never child-process environment variables.
 - `exec` uses no implicit shell, rebuilds the child environment from an allowlist, and supplies null stdin.
-- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. A reviewed embedded adapter receives the Agent-owned Playwright `Page` in-process; the model may supply only a bounded, value-free form definition. The versioned `palladin.inject-provider.v1` private-pipe contract re-checks HTTPS plus the encrypted Entry domain before every sensitive step.
+- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. The model may supply only a bounded, value-free form definition. The macOS Chrome extension route authenticates both encrypted transport hops and prepares the live page before the runtime requests a grant or decrypts a credential; it then re-checks HTTPS and the encrypted Entry domain before delivery.
 - The npm launcher has no third-party JavaScript runtime dependencies. Its only production dependency is the exact-version platform package.
 - Removing the npm package never deletes identity. Purge is always an explicit native command.
 
@@ -191,15 +191,23 @@ outcome. Adding another agent browser does not change the grant, crypto, CLI, or
 
 | Provider | Receiver | Extension required | Secret transport |
 |---|---|---:|---|
-| `extension` | The existing Palladin Chromium extension | Yes — the same user-autofill extension | Native Messaging plus an owner-only local socket |
+| `extension` | The existing Palladin Chrome extension | Yes — the same user-autofill extension | Two authenticated encrypted hops: CLI↔Rust host and Native Messaging host↔extension |
 | `playwright` | `@palladin/playwright-mcp` embedded in an Agent that owns the live `Page` | No | Private child-process pipes, then the existing in-process Playwright `Page` |
 | `agent-browser` | `@palladin/agent-browser-mcp` public navigation proxy | No | None — `inject_credential` fails closed before grant/runtime/secret-bearing daemon commands |
 
 The extension provider uses the same Palladin extension rather than a provider-specific extension.
-Its installer writes the browser-specific Native Messaging manifest for `chrome`,
-`chrome-for-testing`, or `chromium`. A custom browser profile must be passed explicitly with
-`--user-data-dir`; the directory must already exist, be owned by the current user, and not be a
-symbolic link. The host allowlist contains exactly one extension ID and never uses a wildcard.
+On macOS, `palladin browser install` provisions the host identity in OS secure storage, installs
+`io.palladin.browser_bridge` for Google Chrome, and prints one JSON pairing bundle to stdout. Paste
+that bundle into the extension and compare the shortened fingerprint shown in both surfaces.
+`palladin browser status` verifies the exact manifest and pairing identity;
+`palladin browser unpair --confirm` removes both. The host allowlist contains only the compiled
+extension origin `chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/`.
+
+The local socket is only a rendezvous point. The CLI signs a fresh ephemeral handshake with the
+OS-secured host identity, the host signs its response, and both derive independent directional
+XChaCha20-Poly1305 keys. The host also dynamically validates that Google-signed Chrome launched it
+before loading the identity. Windows, Linux, other Chromium browsers, Firefox, and Safari fail
+closed until their platform-specific launch attestation and installation paths are implemented.
 
 Codex, Claude, and other MCP clients are callers, not browser providers. They use one of these MCP
 servers and never receive a dedicated extension or the credential value. A future provider registers
