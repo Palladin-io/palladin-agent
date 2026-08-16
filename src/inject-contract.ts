@@ -1,10 +1,7 @@
 /** Provider-neutral, value-free Inject form contract. */
 export const INJECT_FORM_VERSION = 1 as const;
 export const MAX_FORM_STEPS = 8;
-// A form may reuse one private value across selectors or steps. Bound public
-// selector work per step independently from the private values in one Inject.
-export const MAX_FORM_FIELDS_PER_STEP = 16;
-export const MAX_INJECT_VALUES = 16;
+export const MAX_FORM_FIELDS = 16;
 
 export type InjectControl = 'username' | 'password' | 'text' | 'email' | 'tel' | 'otp';
 
@@ -51,7 +48,7 @@ export const injectFormJsonSchema = {
         type: 'object', additionalProperties: false,
         properties: {
           fields: {
-            type: 'array', minItems: 1, maxItems: MAX_FORM_FIELDS_PER_STEP,
+            type: 'array', minItems: 1, maxItems: MAX_FORM_FIELDS,
             items: {
               type: 'object', additionalProperties: false,
               properties: {
@@ -93,12 +90,12 @@ export function parseInjectForm(value: unknown): InjectFormDefinition | null {
   if (!isRecord(value) || !onlyKeys(value, ['version', 'steps'])
     || value.version !== INJECT_FORM_VERSION || !Array.isArray(value.steps)
     || value.steps.length < 1 || value.steps.length > MAX_FORM_STEPS) return null;
+  let fieldCount = 0;
   const steps: InjectFormStep[] = [];
   for (let index = 0; index < value.steps.length; index += 1) {
     const rawStep = value.steps[index];
     if (!isRecord(rawStep) || !onlyKeys(rawStep, ['fields', 'submit', 'waitFor'])
-      || !Array.isArray(rawStep.fields) || rawStep.fields.length < 1
-      || rawStep.fields.length > MAX_FORM_FIELDS_PER_STEP) return null;
+      || !Array.isArray(rawStep.fields) || rawStep.fields.length < 1) return null;
     const fields: InjectFormField[] = [];
     const stepFieldIds = new Set<string>();
     for (const rawField of rawStep.fields) {
@@ -108,6 +105,8 @@ export function parseInjectForm(value: unknown): InjectFormDefinition | null {
         || !CONTROLS.has(rawField.control as InjectControl)
         || stepFieldIds.has(rawField.entryFieldId)) return null;
       stepFieldIds.add(rawField.entryFieldId);
+      fieldCount += 1;
+      if (fieldCount > MAX_FORM_FIELDS) return null;
       fields.push(rawField as unknown as InjectFormField);
     }
     const rawSubmit = rawStep.submit;
@@ -137,9 +136,8 @@ export function parseInjectValues(
   value: unknown,
   form: InjectFormDefinition,
 ): InjectFieldValue[] | null {
-  if (!Array.isArray(value) || value.length > MAX_INJECT_VALUES) return null;
+  if (!Array.isArray(value)) return null;
   const required = new Set(form.steps.flatMap((step) => step.fields.map((field) => field.entryFieldId)));
-  if (required.size > MAX_INJECT_VALUES) return null;
   const seen = new Set<string>();
   const values: InjectFieldValue[] = [];
   for (const item of value) {

@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use base64::{
@@ -127,7 +127,16 @@ pub struct PublicProfileConfig {
     pub signing_public_key: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vault_trust_anchors: Vec<PublicVaultTrustAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_cache: Option<PublicDiscoveryCacheCommitment>,
     pub binding_signature: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicDiscoveryCacheCommitment {
+    pub generation: u64,
+    pub ciphertext_sha256: String,
 }
 
 /// Public, integrity-bound trust state established through an independently confirmed pairing.
@@ -246,6 +255,9 @@ impl PublicProfileConfig {
             || !self.vault_trust_anchors.windows(2).all(|pair| {
                 pair[0].vault_id < pair[1].vault_id
                     && pair[0].agent_access_epoch == pair[1].agent_access_epoch
+            })
+            || self.discovery_cache.as_ref().is_some_and(|cache| {
+                cache.generation == 0 || !is_sha256_hex(&cache.ciphertext_sha256)
             })
         {
             return Err(PublicStoreError::InvalidPublicData);
@@ -409,6 +421,11 @@ pub fn profile_config_digest(config: &PublicProfileConfig) -> Result<String, Pub
         digest.u32(1);
     }
     append_trust_anchors_digest(&mut digest, &config.vault_trust_anchors);
+    if let Some(cache) = &config.discovery_cache {
+        digest.u32(4);
+        digest.u64(cache.generation);
+        digest.text(&cache.ciphertext_sha256);
+    }
     digest.text(&config.binding_signature);
     Ok(digest.finish())
 }
@@ -435,6 +452,11 @@ pub fn profile_binding_bytes(config: &PublicProfileConfig) -> Result<Vec<u8>, Pu
         bytes.u32(1);
     }
     append_trust_anchors_bytes(&mut bytes, &config.vault_trust_anchors);
+    if let Some(cache) = &config.discovery_cache {
+        bytes.u32(4);
+        bytes.u64(cache.generation);
+        bytes.text(&cache.ciphertext_sha256);
+    }
     Ok(bytes.finish())
 }
 
@@ -504,6 +526,54 @@ pub(crate) fn save_json_atomic<T: Serialize>(
         writer.write_all(b"\n")?;
         writer.flush()?;
     }
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(path)
+        .map_err(|_| PublicStoreError::Persist)?;
+    validate_private_file(path)?;
+    sync_parent(parent)?;
+    Ok(())
+}
+
+pub(crate) fn load_private_blob(
+    path: &Path,
+    max_bytes: usize,
+) -> Result<Vec<u8>, PublicStoreError> {
+    validate_private_parent(path)?;
+    let file = open_regular_file_no_follow(path)?;
+    if usize::try_from(file.metadata()?.len()).map_or(true, |length| length > max_bytes) {
+        return Err(PublicStoreError::InvalidPublicData);
+    }
+    let mut bytes = Vec::new();
+    BufReader::new(file)
+        .take(
+            u64::try_from(max_bytes)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        )
+        .read_to_end(&mut bytes)?;
+    if bytes.is_empty() || bytes.len() > max_bytes {
+        return Err(PublicStoreError::InvalidPublicData);
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn save_private_blob_atomic(path: &Path, bytes: &[u8]) -> Result<(), PublicStoreError> {
+    if bytes.is_empty() {
+        return Err(PublicStoreError::InvalidPublicData);
+    }
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "store path has no parent")
+    })?;
+    validate_private_parent(path)?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => validate_private_file_metadata(&metadata)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let mut temporary = NamedTempFile::new_in(parent)?;
+    set_private_permissions(temporary.as_file())?;
+    temporary.write_all(bytes)?;
     temporary.as_file().sync_all()?;
     temporary
         .persist(path)
@@ -815,9 +885,10 @@ mod tests {
     use sha2::Digest;
 
     use super::{
-        PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicProfileConfig, PublicRegistry,
-        PublicVaultTrustAnchor, load_profile_config, load_registry, profile_binding_bytes,
-        profile_config_digest, registry_digest, save_profile_config, save_registry,
+        PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicDiscoveryCacheCommitment,
+        PublicProfileConfig, PublicRegistry, PublicVaultTrustAnchor, load_profile_config,
+        load_registry, profile_binding_bytes, profile_config_digest, registry_digest,
+        save_profile_config, save_registry,
     };
 
     fn fixture_config(host: &str) -> PublicProfileConfig {
@@ -834,6 +905,7 @@ mod tests {
             ),
             signing_public_key: Some(base64::engine::general_purpose::STANDARD.encode([5_u8; 32])),
             vault_trust_anchors: Vec::new(),
+            discovery_cache: None,
             binding_signature: base64::engine::general_purpose::STANDARD.encode([7_u8; 64]),
         }
     }
@@ -856,6 +928,34 @@ mod tests {
             manifest_signing_key_version: 2,
             vdk_version: 3,
         }
+    }
+
+    #[test]
+    fn discovery_cache_commitment_is_bound_by_profile_signature_input_and_digest() {
+        let mut config = fixture_config("https://api.palladin.io");
+        let binding_before = profile_binding_bytes(&config).expect("binding");
+        let digest_before = profile_config_digest(&config).expect("digest");
+
+        config.discovery_cache = Some(PublicDiscoveryCacheCommitment {
+            generation: 3,
+            ciphertext_sha256: "a".repeat(64),
+        });
+
+        assert_ne!(
+            profile_binding_bytes(&config).expect("cache-bound binding"),
+            binding_before
+        );
+        assert_ne!(
+            profile_config_digest(&config).expect("cache-bound digest"),
+            digest_before
+        );
+
+        config
+            .discovery_cache
+            .as_mut()
+            .expect("commitment")
+            .generation = 0;
+        assert!(profile_binding_bytes(&config).is_err());
     }
 
     fn private_tempdir() -> tempfile::TempDir {

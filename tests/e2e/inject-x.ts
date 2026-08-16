@@ -1,9 +1,11 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { accessSync, constants as fsConstants } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { chromium } from 'playwright';
 
+import { AgentBrowserSession } from '../../packages/agent-browser-mcp/src/agent-browser.js';
+import { injectWithPalladin as injectAgentBrowser } from '../../packages/agent-browser-mcp/src/server.js';
 import { injectWithPalladin as injectPlaywright } from '../../packages/playwright-mcp/src/server.js';
 import { extensionCurrentUrl, runExtensionInject } from '../../src/browser-host/client.js';
 
@@ -31,10 +33,10 @@ const X_FORM = {
     {
       fields: [{
         entryFieldId: 'credential.password',
-        selector: 'input[name="password"][type="password"]',
+        selector: 'input[name="password"][type="password"] >> nth=0',
         control: 'password' as const,
       }],
-      submit: { action: 'press-enter' as const, selector: 'input[name="password"][type="password"]' },
+      submit: { action: 'press-enter' as const, selector: 'input[name="password"][type="password"] >> nth=0' },
     },
   ],
 };
@@ -43,7 +45,7 @@ const X_LOGIN_URL = 'https://x.com/i/flow/login';
 const LOGIN_TIMEOUT_MS = 45_000;
 
 interface Arguments {
-  provider: 'extension' | 'playwright';
+  provider: 'extension' | 'playwright' | 'agent-browser';
   vaultId: string;
   entryId: string;
 }
@@ -64,6 +66,9 @@ const spawnRuntime = (args: readonly string[]): ChildProcess => spawn(runtime, a
 switch (input.provider) {
   case 'playwright':
     await testPlaywright(input);
+    break;
+  case 'agent-browser':
+    await testAgentBrowser(input);
     break;
   case 'extension':
     await testExtension(input);
@@ -127,6 +132,34 @@ async function printValueFreeFormShape(page: import('playwright').Page): Promise
   process.stderr.write(`Value-free X form shape: ${JSON.stringify({ path: url.pathname, shape })}\n`);
 }
 
+async function testAgentBrowser(args: Arguments): Promise<void> {
+  if (process.platform === 'win32') throw new Error('AgentBrowser Inject is unsupported on Windows');
+  const launcher = resolveRequiredPath(
+    process.env.PALLADIN_E2E_AGENT_BROWSER,
+    'PALLADIN_E2E_AGENT_BROWSER',
+  );
+  const sessionName = `palladin-e2e-${process.pid}`;
+  const opened = spawnSync(launcher, ['--session', sessionName, 'open', X_LOGIN_URL], {
+    shell: false,
+    stdio: ['ignore', 'ignore', 'inherit'],
+    env: process.env,
+  });
+  if (opened.status !== 0) throw new Error('AgentBrowser could not open the X login page');
+  try {
+    const browser = new AgentBrowserSession(sessionName);
+    const result = await injectAgentBrowser(browser, request(args), spawnRuntime);
+    assertInjected(result, 'agent-browser');
+    await waitForAuthenticatedAgentBrowser(browser);
+    process.stdout.write('E2E Inject succeeded through AgentBrowser.\n');
+  } finally {
+    spawnSync(launcher, ['--session', sessionName, 'close'], {
+      shell: false,
+      stdio: ['ignore', 'ignore', 'ignore'],
+      env: process.env,
+    });
+  }
+}
+
 async function testExtension(args: Arguments): Promise<void> {
   const exitCode = await runExtensionInject([
     '--id', process.env.PALLADIN_AGENT_PROFILE ?? '',
@@ -163,6 +196,15 @@ function assertInjected(
   }
 }
 
+async function waitForAuthenticatedAgentBrowser(browser: AgentBrowserSession): Promise<void> {
+  const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (isXAuthenticatedUrl(new URL(await browser.currentUrl()))) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  }
+  throw new Error('AgentBrowser did not reach an authenticated X page');
+}
+
 async function waitForAuthenticatedExtension(): Promise<void> {
   const deadline = Date.now() + LOGIN_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -182,7 +224,7 @@ function parseArguments(values: string[]): Arguments {
   const provider = option(values, '--provider');
   const vaultId = option(values, '--vault');
   const entryId = option(values, '--entry');
-  if (!['extension', 'playwright'].includes(provider)) {
+  if (!['extension', 'playwright', 'agent-browser'].includes(provider)) {
     throw new Error('invalid --provider');
   }
   if (vaultId.length === 0 || entryId.length === 0) throw new Error('vault and entry are required');

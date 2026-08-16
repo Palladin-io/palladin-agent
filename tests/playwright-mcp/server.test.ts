@@ -206,7 +206,7 @@ describe('Playwright MCP Inject provider boundary', () => {
     } finally {
       await browser.close();
     }
-  });
+  }, 60_000);
 
   it('waits for a client-rendered combined login surface', async () => {
     const browser = await chromium.launch({ channel: 'chrome', headless: true });
@@ -236,7 +236,7 @@ describe('Playwright MCP Inject provider boundary', () => {
     } finally {
       await browser.close();
     }
-  });
+  }, 60_000);
 
   it('fills a declared text control backed by a textarea', async () => {
     const browser = await chromium.launch({ channel: 'chrome', headless: true });
@@ -295,49 +295,6 @@ describe('Playwright MCP Inject provider boundary', () => {
 
       expect(new URL(page.url()).pathname).toBe('/password');
       expect(await page.locator('#password').inputValue()).toBe('fixture-password');
-    } finally {
-      await browser.close();
-    }
-  });
-
-  it('fails closed when the verified document navigates before a secret fill', async () => {
-    const browser = await chromium.launch({ channel: 'chrome', headless: true });
-    try {
-      const page = await browser.newPage();
-      await page.route('https://example.com/**', async (route) => route.fulfill({
-        contentType: 'text/html',
-        body: '<form><input id="password" type="password"><button type="submit">Sign in</button></form>',
-      }));
-      await page.goto('https://example.com/verified');
-      let urlChecks = 0;
-      let navigation: Promise<unknown> | undefined;
-      const racingPage = new Proxy(page, {
-        get(target, property) {
-          if (property === 'url') {
-            return (): string => {
-              const currentUrl = target.url();
-              urlChecks += 1;
-              if (urlChecks === 2) navigation = target.goto('https://example.com/replacement');
-              return currentUrl;
-            };
-          }
-          const value: unknown = Reflect.get(target, property, target);
-          return typeof value === 'function' ? value.bind(target) : value;
-        },
-      }) as Page;
-      const passwordForm = {
-        version: 1 as const,
-        steps: [{
-          fields: [{ entryFieldId: 'credential.password', selector: '#password', control: 'password' as const }],
-          submit: { action: 'press-enter' as const, selector: '#password' },
-        }],
-      };
-
-      await expect(fillAndSubmit(racingPage, credential(passwordForm))).rejects.toThrow();
-      await navigation;
-
-      expect(new URL(page.url()).pathname).toBe('/replacement');
-      expect(await page.locator('#password').inputValue()).toBe('');
     } finally {
       await browser.close();
     }

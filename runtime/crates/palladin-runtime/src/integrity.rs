@@ -3,6 +3,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_core::public_store::{
     PUBLIC_SCHEMA_VERSION, PublicProfileConfig, PublicRegistry, registry_digest,
 };
@@ -20,6 +21,7 @@ const TRUST_SCHEMA_VERSION: u32 = 2;
 const MIN_READABLE_TRUST_SCHEMA_VERSION: u32 = TRUST_SCHEMA_VERSION - 1;
 const JOURNAL_SCHEMA_VERSION: u32 = 1;
 const JOURNAL_DOMAIN: &[u8] = b"palladin.integrity-journal.v1\0";
+pub(crate) const MAX_DISCOVERY_CACHE_CIPHERTEXT_BYTES: usize = 70 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "phase", rename_all = "camelCase", deny_unknown_fields)]
@@ -226,6 +228,13 @@ pub(crate) struct ConfigWrite {
     pub config: PublicProfileConfig,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DiscoveryCacheWrite {
+    pub identity_id: String,
+    pub ciphertext_base64: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) enum SecretDeletion {
@@ -252,6 +261,8 @@ pub(crate) struct IntegrityJournal {
     pub to_registry_digest: String,
     pub target_registry: PublicRegistry,
     pub config_writes: Vec<ConfigWrite>,
+    #[serde(default)]
+    pub discovery_cache_writes: Vec<DiscoveryCacheWrite>,
     pub remove_identity_directories: Vec<String>,
     #[serde(default)]
     pub secret_copies: Vec<SecretCopy>,
@@ -281,6 +292,7 @@ impl IntegrityJournal {
             to_registry_digest,
             target_registry,
             config_writes,
+            discovery_cache_writes: Vec::new(),
             remove_identity_directories,
             secret_copies: Vec::new(),
             secret_deletions,
@@ -295,6 +307,15 @@ impl IntegrityJournal {
         secret_copies: Vec<SecretCopy>,
     ) -> Result<Self, RuntimeError> {
         self.secret_copies = secret_copies;
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub(crate) fn with_discovery_cache_writes(
+        mut self,
+        discovery_cache_writes: Vec<DiscoveryCacheWrite>,
+    ) -> Result<Self, RuntimeError> {
+        self.discovery_cache_writes = discovery_cache_writes;
         self.validate()?;
         Ok(self)
     }
@@ -326,6 +347,32 @@ impl IntegrityJournal {
                 .collect::<BTreeSet<_>>()
                 .len()
                 != self.remove_identity_directories.len()
+            || self.discovery_cache_writes.iter().any(|write| {
+                if !is_opaque_id(&write.identity_id) {
+                    return true;
+                }
+                let Ok(ciphertext) = STANDARD.decode(&write.ciphertext_base64) else {
+                    return true;
+                };
+                let Some(commitment) = self
+                    .config_writes
+                    .iter()
+                    .find(|config| config.identity_id == write.identity_id)
+                    .and_then(|config| config.config.discovery_cache.as_ref())
+                else {
+                    return true;
+                };
+                ciphertext.is_empty()
+                    || ciphertext.len() > MAX_DISCOVERY_CACHE_CIPHERTEXT_BYTES
+                    || hex_digest(Sha256::digest(&ciphertext)) != commitment.ciphertext_sha256
+            })
+            || self
+                .discovery_cache_writes
+                .iter()
+                .map(|write| &write.identity_id)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != self.discovery_cache_writes.len()
             || self.secret_deletions.iter().any(|deletion| match deletion {
                 SecretDeletion::Identity { identity_id }
                 | SecretDeletion::LegacyIdentity { identity_id } => !is_opaque_id(identity_id),
@@ -545,7 +592,7 @@ fn is_opaque_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
+pub(crate) fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
     let bytes = bytes.as_ref();
     let mut encoded = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -581,6 +628,7 @@ mod tests {
             encryption_public_key: Some(STANDARD.encode([3_u8; 32])),
             signing_public_key: Some(STANDARD.encode([4_u8; 32])),
             vault_trust_anchors: Vec::new(),
+            discovery_cache: None,
             binding_signature: STANDARD.encode([5_u8; 64]),
         };
         let registry = PublicRegistry {

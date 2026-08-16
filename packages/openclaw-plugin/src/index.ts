@@ -1,6 +1,5 @@
 import { Type } from "typebox";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
-import { MAX_FORM_FIELDS_PER_STEP, MAX_FORM_STEPS } from "@palladin/agent/inject-contract";
 
 import { PalladinBrowserSessions } from "./sessions.js";
 
@@ -59,7 +58,7 @@ const formFieldSchema = Type.Object(
 
 const formStepSchema = Type.Object(
   {
-    fields: Type.Array(formFieldSchema, { minItems: 1, maxItems: MAX_FORM_FIELDS_PER_STEP }),
+    fields: Type.Array(formFieldSchema, { minItems: 1, maxItems: 16 }),
     submit: Type.Object(
       {
         action: Type.Union([Type.Literal("click"), Type.Literal("press-enter")]),
@@ -83,7 +82,7 @@ const formStepSchema = Type.Object(
 const formSchema = Type.Object(
   {
     version: Type.Literal(1),
-    steps: Type.Array(formStepSchema, { minItems: 1, maxItems: MAX_FORM_STEPS }),
+    steps: Type.Array(formStepSchema, { minItems: 1, maxItems: 8 }),
   },
   { additionalProperties: false },
 );

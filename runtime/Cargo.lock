@@ -1880,6 +1880,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
+ "url",
  "uuid",
  "zeroize",
 ]

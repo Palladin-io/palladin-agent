@@ -22,9 +22,7 @@ const MAX_DOMAIN_BYTES: usize = 253;
 const MAX_FIELD_BYTES: usize = 64 * 1024;
 const MAX_SELECTOR_BYTES: usize = 1_024;
 const MAX_FORM_STEPS: usize = 8;
-// Selector work is bounded per step; secret delivery has a separate global cap.
-const MAX_FORM_FIELDS_PER_STEP: usize = 16;
-const MAX_INJECT_VALUES: usize = 16;
+const MAX_FORM_FIELDS: usize = 16;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -88,9 +86,9 @@ impl InjectionFormDefinition {
         if self.version != 1 || self.steps.is_empty() || self.steps.len() > MAX_FORM_STEPS {
             return Err(InjectionError::InvalidFormDefinition);
         }
+        let mut field_count = 0_usize;
         for (step_index, step) in self.steps.iter().enumerate() {
             if step.fields.is_empty()
-                || step.fields.len() > MAX_FORM_FIELDS_PER_STEP
                 || (step_index + 1 < self.steps.len() && step.wait_for.is_none())
                 || !valid_selector(&step.submit.selector)
             {
@@ -98,7 +96,9 @@ impl InjectionFormDefinition {
             }
             let mut step_field_ids = BTreeSet::new();
             for field in &step.fields {
-                if !valid_identifier(&field.entry_field_id)
+                field_count = field_count.saturating_add(1);
+                if field_count > MAX_FORM_FIELDS
+                    || !valid_identifier(&field.entry_field_id)
                     || !valid_selector(&field.selector)
                     || !step_field_ids.insert(field.entry_field_id.as_str())
                 {
@@ -237,7 +237,7 @@ impl InjectionCredential {
 
     pub fn from_fields(fields: BTreeMap<String, String>) -> Result<Self, InjectionError> {
         if fields.is_empty()
-            || fields.len() > MAX_INJECT_VALUES
+            || fields.len() > MAX_FORM_FIELDS
             || fields
                 .iter()
                 .any(|(id, value)| !valid_identifier(id) || value.len() > MAX_FIELD_BYTES)
@@ -545,34 +545,6 @@ mod tests {
             ],
         };
         assert!(valid.validate().is_ok());
-        let mut uneven = valid.clone();
-        for index in 1..9 {
-            uneven.steps[0].fields.push(InjectionFormField {
-                entry_field_id: format!("credential.extra{index}"),
-                selector: format!("#extra-{index}"),
-                control: InjectionControl::Text,
-            });
-        }
-        for index in 1..7 {
-            uneven.steps[1].fields.push(InjectionFormField {
-                entry_field_id: format!("credential.second{index}"),
-                selector: format!("#second-{index}"),
-                control: InjectionControl::Text,
-            });
-        }
-        assert!(uneven.validate().is_ok());
-        let mut oversized_step = valid.clone();
-        for index in 1..17 {
-            oversized_step.steps[0].fields.push(InjectionFormField {
-                entry_field_id: format!("credential.extra{index}"),
-                selector: format!("#extra-{index}"),
-                control: InjectionControl::Text,
-            });
-        }
-        assert_eq!(
-            oversized_step.validate(),
-            Err(InjectionError::InvalidFormDefinition)
-        );
         let mut missing_transition = valid.clone();
         missing_transition.steps[0].wait_for = None;
         assert_eq!(
@@ -586,32 +558,6 @@ mod tests {
             duplicate.validate(),
             Err(InjectionError::InvalidFormDefinition)
         );
-    }
-
-    #[test]
-    fn private_value_delivery_remains_globally_bounded() {
-        let sixteen = (0..16)
-            .map(|index| {
-                (
-                    format!("credential.field{index}"),
-                    "fixture-value".to_owned(),
-                )
-            })
-            .collect();
-        assert!(InjectionCredential::from_fields(sixteen).is_ok());
-
-        let seventeen = (0..17)
-            .map(|index| {
-                (
-                    format!("credential.field{index}"),
-                    "fixture-value".to_owned(),
-                )
-            })
-            .collect();
-        assert!(matches!(
-            InjectionCredential::from_fields(seventeen),
-            Err(InjectionError::InvalidCredential)
-        ));
     }
 
     #[tokio::test]

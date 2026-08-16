@@ -224,10 +224,6 @@ build. A future provider requires a separately reviewed authenticated transport 
 lowercase identifier; unknown providers fail closed. The CLI/MCP input never accepts a CDP URL,
 remote-debugging port, Playwright WebSocket endpoint, unmanaged browser target, or plaintext pipe.
 
-AgentBrowser 0.33.2 cannot atomically bind secret insertion to the element selected for fill;
-page focus handlers can redirect its final text insertion. Its Palladin MCP package therefore
-keeps public navigation proxying but reports Inject as unavailable in every build.
-
 ### Agent-defined form execution
 
 The Agent first prepares the public login surface with ordinary browser tools: it dismisses cookie and
