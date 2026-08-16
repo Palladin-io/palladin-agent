@@ -46,7 +46,7 @@ describe('Inject form contract', () => {
     })).toBeNull();
   });
 
-  it('publishes the same aggregate field bound enforced by the parser', () => {
+  it('accepts uneven forms within the same per-step schema and parser bound', () => {
     const validateSchema = new AjvJsonSchemaValidator().getValidator(
       injectFormJsonSchema as unknown as JsonSchemaType,
     );
@@ -55,29 +55,50 @@ describe('Inject form contract', () => {
       selector: `#step-${step}-${index}`,
       control: 'text',
     }));
-    const bounded = {
+    const makeForm = (counts: number[]) => ({
+      version: 1,
+      steps: counts.map((count, index) => ({
+        fields: fields(index + 1, count),
+        submit: { action: 'click', selector: index + 1 === counts.length ? '#submit' : '#next' },
+        ...(index + 1 === counts.length ? {} : { waitFor: { selector: `#step-${index + 2}` } }),
+      })),
+    });
+
+    for (const counts of [[9, 7], [6, 5, 5]]) {
+      const uneven = makeForm(counts);
+      expect(validateSchema(uneven).valid).toBe(true);
+      expect(parseInjectForm(uneven)).not.toBeNull();
+    }
+
+    const oversizedStep = makeForm([17]);
+    expect(validateSchema(oversizedStep).valid).toBe(false);
+    expect(parseInjectForm(oversizedStep)).toBeNull();
+  });
+
+  it('keeps private value delivery globally bounded at 16 fields', () => {
+    const fields = (step: number, count: number) => Array.from({ length: count }, (_, index) => ({
+      entryFieldId: `credential.step${step}.${index}`,
+      selector: `#step-${step}-${index}`,
+      control: 'text',
+    }));
+    const seventeenFieldForm = parseInjectForm({
       version: 1,
       steps: [
         {
-          fields: fields(1, 8),
+          fields: fields(1, 9),
           submit: { action: 'click', selector: '#next' },
           waitFor: { selector: '#step-2' },
         },
         { fields: fields(2, 8), submit: { action: 'click', selector: '#submit' } },
       ],
-    };
-    const oversized = {
-      ...bounded,
-      steps: [
-        { ...bounded.steps[0], fields: fields(1, 9) },
-        { ...bounded.steps[1], fields: fields(2, 9) },
-      ],
-    };
+    });
 
-    expect(validateSchema(bounded).valid).toBe(true);
-    expect(parseInjectForm(bounded)).not.toBeNull();
-    expect(validateSchema(oversized).valid).toBe(false);
-    expect(parseInjectForm(oversized)).toBeNull();
+    expect(seventeenFieldForm).not.toBeNull();
+    const values = seventeenFieldForm!.steps.flatMap((step) => step.fields.map((field) => ({
+      entryFieldId: field.entryFieldId,
+      value: 'fixture-value',
+    })));
+    expect(parseInjectValues(values, seventeenFieldForm!)).toBeNull();
   });
 
   it('requires exactly one private value for each declared field', () => {

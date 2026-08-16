@@ -8,6 +8,14 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
+import {
+  AttributeAction,
+  IgnoreCaseMode,
+  parse as parseCssSelector,
+  SelectorType,
+  stringify as stringifyCssSelector,
+  type Selector,
+} from 'css-what';
 import type {
   InjectControl,
   InjectFieldValue,
@@ -44,10 +52,10 @@ export class AgentBrowserSession {
         for (const field of step.fields) {
           const value = values.get(field.entryFieldId);
           if (value === undefined) throw new Error('declared field value is missing');
-          await this.validateTarget(field.selector, field.control);
+          const fillSelector = await this.validateTarget(field.selector, field.control);
           verifyUrl(await this.currentUrl());
-          await this.command({ action: 'fill', selector: field.selector, value });
-          filled.push(field);
+          await this.command({ action: 'fill', selector: fillSelector, value });
+          filled.push({ ...field, selector: fillSelector });
           verifyUrl(await this.currentUrl());
         }
         verifyUrl(await this.currentUrl());
@@ -96,11 +104,11 @@ export class AgentBrowserSession {
     return data.count;
   }
 
-  private async validateTarget(selector: string, control: InjectControl): Promise<void> {
+  private async validateTarget(selector: string, control: InjectControl): Promise<string> {
     if (!/^@e[0-9]+$/.test(selector)) {
-      await this.ensureUnique(selector);
-      if (control === 'password') await this.attestCssPasswordInput(selector);
-      return;
+      const fillSelector = control === 'password' ? passwordFillSelector(selector) : selector;
+      await this.ensureUnique(fillSelector);
+      return fillSelector;
     }
     const data = await this.command({ action: 'snapshot', interactive: true });
     const refs = data.refs;
@@ -118,19 +126,7 @@ export class AgentBrowserSession {
       && (typeof name !== 'string' || !/(?:e-?mail|user(?:name)?|login)/i.test(name))) {
       throw new Error('AgentBrowser username field attestation failed');
     }
-  }
-
-  private async attestCssPasswordInput(selector: string): Promise<void> {
-    const selectorLiteral = JSON.stringify(selector);
-    // The script is provider-owned and the selector is encoded as a JSON
-    // literal. It inspects only public DOM metadata and never receives a value.
-    const data = await this.command({
-      action: 'evaluate',
-      script: `(() => { const matches = document.querySelectorAll(${selectorLiteral}); const element = matches[0]; return matches.length === 1 && element instanceof HTMLInputElement && element.type.toLowerCase() === 'password'; })()`,
-    });
-    if (data.result !== true) {
-      throw new Error('AgentBrowser password field attestation failed');
-    }
+    return selector;
   }
 
   private async ensureUnique(selector: string): Promise<void> {
@@ -227,6 +223,31 @@ export class AgentBrowserSession {
     chmodSync(socket, 0o600);
     return socket;
   }
+}
+
+function passwordFillSelector(selector: string): string {
+  if (selector.startsWith('xpath=')) {
+    throw new Error('AgentBrowser password field attestation failed');
+  }
+  let declared: Selector[][];
+  try {
+    declared = parseCssSelector(selector);
+  } catch {
+    throw new Error('AgentBrowser password field attestation failed');
+  }
+  const hardened: Selector[][] = [[
+    { type: SelectorType.Tag, name: 'input', namespace: null },
+    {
+      type: SelectorType.Attribute,
+      name: 'type',
+      action: AttributeAction.Equals,
+      value: 'password',
+      namespace: null,
+      ignoreCase: IgnoreCaseMode.IgnoreCase,
+    },
+    { type: SelectorType.Pseudo, name: 'is', data: declared },
+  ]];
+  return stringifyCssSelector(hardened);
 }
 
 function isDiscoveryVisibleUsername(entryFieldId: string, control: InjectControl): boolean {

@@ -24,7 +24,7 @@ const form = {
   ],
 };
 
-interface Command { action: string; selector?: string; value?: string; key?: string; script?: string }
+interface Command { action: string; selector?: string; value?: string; key?: string }
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => { while (cleanups.length > 0) await cleanups.pop()?.(); });
@@ -87,13 +87,45 @@ describeAgentBrowser('AgentBrowser owner-only Inject channel', () => {
     }, () => undefined)).rejects.toThrow('password field attestation failed');
   });
 
-  it('rejects a CSS selector union when its unique match is an OTP input', async () => {
+  it('binds password attestation to the same selector used by the secret-bearing fill', async () => {
     const commands: Command[] = [];
     const fixture = await daemonFixture(async (command) => {
       commands.push(command);
       if (command.action === 'url') return { url: 'https://x.com/i/flow/login' };
       if (command.action === 'count') return { count: 1 };
-      if (command.action === 'evaluate') return { result: false };
+      return {};
+    });
+    const session = new AgentBrowserSession(SESSION, undefined, fixture.directory);
+    const passwordOnly = { version: 1 as const, steps: [{
+      fields: [{
+        entryFieldId: 'credential.password',
+        selector: 'input[type="password"], input[name="otp"]',
+        control: 'password' as const,
+      }],
+      submit: { action: 'press-enter' as const, selector: 'input[name="otp"]' },
+    }] };
+
+    await session.inject({
+      form: passwordOnly,
+      values: [{ entryFieldId: 'credential.password', value: FIXTURE_SECRET }],
+    }, () => undefined);
+
+    const expected = 'input[type="password" i]:is(input[type="password"], input[name="otp"])';
+    expect(commands.find((command) => command.action === 'count')?.selector).toBe(expected);
+    expect(commands.find((command) => command.action === 'fill' && command.value === FIXTURE_SECRET)?.selector)
+      .toBe(expected);
+    expect(commands.some((command) => command.action === 'evaluate')).toBe(false);
+  });
+
+  it('fails closed if the hardened password selector no longer matches at fill time', async () => {
+    const commands: Command[] = [];
+    const fixture = await daemonFixture(async (command) => {
+      commands.push(command);
+      if (command.action === 'url') return { url: 'https://x.com/i/flow/login' };
+      if (command.action === 'count') return { count: 1 };
+      if (command.action === 'fill' && command.value === FIXTURE_SECRET) {
+        throw new Error('the page replaced the password input with an OTP input');
+      }
       return {};
     });
     const session = new AgentBrowserSession(SESSION, undefined, fixture.directory);
@@ -109,11 +141,15 @@ describeAgentBrowser('AgentBrowser owner-only Inject channel', () => {
     await expect(session.inject({
       form: passwordOnly,
       values: [{ entryFieldId: 'credential.password', value: FIXTURE_SECRET }],
-    }, () => undefined)).rejects.toThrow('password field attestation failed');
+    }, () => undefined)).rejects.toThrow('AgentBrowser rejected the browser operation');
 
-    expect(commands.some((command) => command.action === 'evaluate')).toBe(true);
-    expect(commands.some((command) => command.action === 'fill')).toBe(false);
-    expect(commands.map((command) => command.script ?? '').join('')).not.toContain(FIXTURE_SECRET);
+    const secretFill = commands.find(
+      (command) => command.action === 'fill' && command.value === FIXTURE_SECRET,
+    );
+    expect(secretFill?.selector).toBe(
+      'input[type="password" i]:is(input[type="password"], input[name="otp"])',
+    );
+    expect(commands.some((command) => command.action === 'evaluate')).toBe(false);
   });
 
   it('retains the Discovery-visible username but clears a filled password after rejection', async () => {

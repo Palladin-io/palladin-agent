@@ -33,10 +33,10 @@ const X_FORM = {
     {
       fields: [{
         entryFieldId: 'credential.password',
-        selector: 'input[name="password"][type="password"] >> nth=0',
+        selector: 'input[name="password"][type="password"]',
         control: 'password' as const,
       }],
-      submit: { action: 'press-enter' as const, selector: 'input[name="password"][type="password"] >> nth=0' },
+      submit: { action: 'press-enter' as const, selector: 'input[name="password"][type="password"]' },
     },
   ],
 };
