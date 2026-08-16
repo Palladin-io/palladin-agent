@@ -1613,6 +1613,7 @@ async fn inject_extension(
     ExitCode::SUCCESS
 }
 
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn map_lookup_allows_fallback(error: &RuntimeError) -> bool {
     match error {
         RuntimeError::Api(ApiError::Transport) => true,
