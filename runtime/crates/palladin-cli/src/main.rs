@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+#[cfg(any(target_os = "macos", all(test, unix)))]
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::process::ExitCode;
@@ -9,13 +10,19 @@ use clap::Parser;
 use palladin_api::{
     AgentPairingStatus, CredentialMethod, ReportCredentialStaleInput, StaleReasonCode,
 };
+#[cfg(any(target_os = "macos", all(test, unix)))]
 use palladin_browser_bridge::{
-    InjectionControl, InjectionCredential, InjectionFormDefinition, InjectionFormField,
-    InjectionTarget, ProviderId,
+    InjectionControl, InjectionCredential, InjectionFormField, InjectionTarget,
 };
+use palladin_browser_bridge::{InjectionFormDefinition, ProviderId};
 use palladin_cli::args::{
-    AgentsCommand, Cli, Commands, ConnectArgs, ExecArgs, GetArgs, InjectArgs, McpCommand,
-    ProgressArg, ReportStaleArgs, SearchArgs, SecurityCommand, StaleCodeArg,
+    AgentsCommand, BrowserCommand, Cli, Commands, ConnectArgs, ExecArgs, GetArgs, InjectArgs,
+    McpCommand, ProgressArg, ReportStaleArgs, SearchArgs, SecurityCommand, StaleCodeArg,
+};
+use palladin_cli::browser::{PairingBundle, install_manifest, manifest_status, remove_manifest};
+#[cfg(target_os = "macos")]
+use palladin_cli::native_browser::{
+    ExtensionClient, InjectFieldValue, InjectRequest, monotonic_not_after_ns, monotonic_now_ns,
 };
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
@@ -35,9 +42,9 @@ use palladin_core::profiles::ProfileRepository;
 use palladin_core::secret::OrganizationApiKey;
 use palladin_core::terminal::is_safe_terminal_text;
 use palladin_credential::access::{access_message, exit_code_for_access};
-use palladin_credential::fields::{
-    FieldSelector, ResolvedField, ResolvedFieldType, redact_totp_secrets, resolve_field,
-};
+use palladin_credential::fields::{FieldSelector, redact_totp_secrets, resolve_field};
+#[cfg(any(target_os = "macos", all(test, unix)))]
+use palladin_credential::fields::{ResolvedField, ResolvedFieldType};
 use palladin_credential::secret::parse_secret;
 use palladin_credential::wait::{
     ProgressMode, WaitOptions, heartbeat_line, parse_duration, parse_wait_duration,
@@ -58,7 +65,7 @@ use palladin_runtime::{
 #[cfg(windows)]
 use palladin_windows_broker::BrokerSecretStore;
 use secrecy::ExposeSecret;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -68,11 +75,13 @@ const EXIT_UNSAFE_ENVIRONMENT: u8 = 78;
 const WINDOWS_HARDENED_TIER: &str = "Hardened - restricted LocalService service-SID broker with authenticated AppContainer and Windows Hello consent";
 #[cfg(target_os = "linux")]
 const LINUX_HARDENED_TIER: &str = "Hardened - dedicated Agent UID, authenticated Unix broker, encrypted broker-owned store, and separate executor UID";
-const INJECT_PROTOCOL: &str = "palladin.inject-provider.v1";
 
 #[tokio::main]
 async fn main() -> ExitCode {
     install_redacted_panic_hook();
+    if is_chrome_native_host_invocation() {
+        return chrome_native_host_main().await;
+    }
     let hardened_worker_root = match hardened_worker_root() {
         Ok(root) => root,
         Err(error) => return fail(&error),
@@ -181,6 +190,7 @@ async fn main() -> ExitCode {
         Commands::Get(args) => get(&service, cli.id.as_deref(), args).await,
         Commands::Exec(args) => exec(&service, cli.id.as_deref(), args).await,
         Commands::Inject(args) => inject(&service, cli.id.as_deref(), args).await,
+        Commands::Browser { command } => browser(&service, command),
         Commands::ReportStale(args) => report_stale(&service, cli.id.as_deref(), args).await,
         Commands::Mcp { command } => mcp(Arc::clone(&service), cli.id.clone(), command).await,
         Commands::Agents { command } => agents(&service, command, runtime_storage_tier),
@@ -193,6 +203,164 @@ async fn main() -> ExitCode {
         ),
         Commands::Purge { confirm } => purge(&service, confirm, hardened_runtime),
     }
+}
+
+fn is_chrome_native_host_invocation() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let mut arguments = std::env::args_os();
+        let _executable = arguments.next();
+        arguments.next().is_some_and(|argument| {
+            argument == palladin_cli::browser::CHROME_EXTENSION_ORIGIN && arguments.next().is_none()
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+async fn chrome_native_host_main() -> ExitCode {
+    #[cfg(target_os = "macos")]
+    {
+        if palladin_platform::authenticate_chrome_native_messaging_parent().is_err() {
+            return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
+        }
+        let secret_store = match runtime_secret_store(None) {
+            Ok(store) => store,
+            Err(_) => return ExitCode::from(EXIT_FAILURE),
+        };
+        let root = match palladin_platform::palladin_root() {
+            Ok(root) => root,
+            Err(_) => return ExitCode::from(EXIT_FAILURE),
+        };
+        let repository = match ProfileRepository::new(root.clone()) {
+            Ok(repository) => repository,
+            Err(_) => return ExitCode::from(EXIT_FAILURE),
+        };
+        let service = RuntimeService::new(repository, secret_store);
+        if palladin_runtime::version_policy::system_version_policy_configured() {
+            if service.prepare_empty_state_for_version_policy().is_err()
+                || service
+                    .enforce_system_version_policy(env!("CARGO_PKG_VERSION"))
+                    .await
+                    .is_err()
+            {
+                return ExitCode::from(EXIT_FAILURE);
+            }
+        } else if !cfg!(debug_assertions) {
+            return ExitCode::from(EXIT_FAILURE);
+        }
+        let pairing = match service.browser_host_pairing() {
+            Ok(pairing) => pairing,
+            Err(_) => return ExitCode::from(EXIT_FAILURE),
+        };
+        return match palladin_cli::native_browser::serve_native_host(
+            &root,
+            pairing.identity(),
+            |max_wait| {
+                service
+                    .browser_host_lifecycle_guard_within(pairing.lifecycle_token(), max_wait)
+                    .map_err(|_| palladin_cli::native_browser::NativeBrowserError::Revoked)
+            },
+        )
+        .await
+        {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::from(EXIT_FAILURE),
+        };
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ExitCode::from(EXIT_UNSAFE_ENVIRONMENT)
+    }
+}
+
+fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand) -> ExitCode {
+    match command {
+        BrowserCommand::Install => {
+            let provisioning = match service.provision_browser_host_pairing_locked() {
+                Ok(pairing) => pairing,
+                Err(error) => return fail(&error.to_string()),
+            };
+            let path = match install_manifest(service.repository().root()) {
+                Ok(path) => path,
+                Err(error) => return fail(&error.to_string()),
+            };
+            let bundle = PairingBundle::from_identity(provisioning.identity());
+            let encoded = match serde_json::to_string(&bundle) {
+                Ok(encoded) => encoded,
+                Err(_) => return fail("could not encode the browser pairing bundle"),
+            };
+            println!("{encoded}");
+            eprintln!(
+                "Palladin Chrome host installed at {}.\nFingerprint: {}\nPaste the JSON pairing bundle into the Palladin extension and confirm this fingerprint in both surfaces.",
+                safe_terminal_text(&path.to_string_lossy()),
+                shorten_public_identifier(&provisioning.identity().fingerprint())
+            );
+            drop(provisioning);
+            ExitCode::SUCCESS
+        }
+        BrowserCommand::Status => {
+            let installed = match manifest_status(service.repository().root()) {
+                Ok(installed) => installed,
+                Err(error) => return fail(&error.to_string()),
+            };
+            let paired = match service.browser_host_identity() {
+                Ok(identity) => {
+                    println!(
+                        "Chrome host: {}\nPairing identity: paired ({})",
+                        if installed {
+                            "installed"
+                        } else {
+                            "not installed"
+                        },
+                        shorten_public_identifier(&identity.fingerprint())
+                    );
+                    true
+                }
+                Err(RuntimeError::BrowserHostNotPaired) => {
+                    println!(
+                        "Chrome host: {}\nPairing identity: not paired",
+                        if installed {
+                            "installed"
+                        } else {
+                            "not installed"
+                        }
+                    );
+                    false
+                }
+                Err(error) => return fail(&error.to_string()),
+            };
+            if installed && paired {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(EXIT_FAILURE)
+            }
+        }
+        BrowserCommand::Unpair { confirm } => {
+            if !confirm {
+                return fail("browser unpair requires --confirm");
+            }
+            let revocation = match service.unpair_browser_host_identity() {
+                Ok(revocation) => revocation,
+                Err(error) => return fail(&error.to_string()),
+            };
+            if let Err(error) = remove_manifest(service.repository().root()) {
+                return fail(&error.to_string());
+            }
+            drop(revocation);
+            println!("Palladin Chrome host unpaired and its manifest removed.");
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+fn shorten_public_identifier(value: &str) -> String {
+    if value.len() <= 15 {
+        return value.to_owned();
+    }
+    format!("{}…{}", &value[..8], &value[value.len() - 6..])
 }
 
 enum RuntimeSecretStore {
@@ -466,6 +634,7 @@ const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
         | Commands::Get(_)
         | Commands::Exec(_)
         | Commands::Inject(_)
+        | Commands::Browser { .. }
         | Commands::ReportStale(_)
         | Commands::Mcp { .. }
         | Commands::Agents { .. }
@@ -1120,87 +1289,86 @@ async fn exec(
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ProviderOpen {
-    protocol: String,
-    r#type: String,
-    provider: String,
-    nonce: String,
-    current_url: String,
-    form: InjectionFormDefinition,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderFieldValue<'a> {
-    entry_field_id: &'a str,
-    value: &'a str,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderCredential<'a> {
-    protocol: &'static str,
-    r#type: &'static str,
-    provider: &'a str,
-    nonce: &'a str,
-    transaction_id: &'a str,
-    grant_id: &'a str,
-    entry_id: &'a str,
-    expected_domain: &'a str,
-    form: &'a InjectionFormDefinition,
-    values: Vec<ProviderFieldValue<'a>>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ProviderResult {
-    protocol: String,
-    r#type: String,
-    nonce: String,
-    transaction_id: String,
-    outcome: String,
-}
-
 async fn inject(
     service: &RuntimeService<RuntimeSecretStore>,
     profile: Option<&str>,
     args: InjectArgs,
 ) -> ExitCode {
-    if !provider_transport_enabled() {
-        return fail(
-            "authenticated Inject providers are unavailable in this build; plaintext provider pipes are development-only",
-        );
-    }
     debug_assert!(!inject_uses_deprecated_browser_boundary(&args));
-    if !args.provider_transport_stdio {
-        return fail("the selected Inject provider is not connected");
-    }
-    if io::stdin().is_terminal() || io::stdout().is_terminal() {
-        return fail(
-            "trusted provider transport requires private pipes and never writes credentials to a terminal",
-        );
-    }
     let provider = match ProviderId::parse(args.provider.clone()) {
         Ok(provider) => provider,
         Err(error) => return fail(&error.to_string()),
     };
-    let mut provider_input = io::BufReader::new(io::stdin().lock());
-    let open: ProviderOpen = match read_provider_line(&mut provider_input) {
-        Ok(open) => open,
-        Err(error) => return fail(error),
-    };
-    if open.protocol != INJECT_PROTOCOL
-        || open.r#type != "open"
-        || open.provider != provider.as_str()
-        || open.nonce.len() < 32
-        || open.nonce.len() > 128
-        || !open.nonce.bytes().all(|byte| byte.is_ascii_alphanumeric())
-        || open.form.validate().is_err()
-    {
-        return fail("trusted provider handshake is invalid");
+    if provider.as_str() != "extension" || args.provider_transport_stdio {
+        return fail("only the authenticated Palladin extension provider is supported");
     }
+    let form_json = match args.form_json.as_deref() {
+        Some(value) if !value.is_empty() && value.len() <= 256 * 1024 => value,
+        _ => {
+            return fail(
+                "extension Inject requires --form-json with a bounded value-free form plan",
+            );
+        }
+    };
+    let form: InjectionFormDefinition = match serde_json::from_str(form_json) {
+        Ok(form) => form,
+        Err(_) => return fail("the Inject form definition is invalid"),
+    };
+    if form.validate().is_err() {
+        return fail("the Inject form definition is invalid");
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (service, profile, args, provider, form);
+        fail("the authenticated Chrome extension provider is unavailable on this platform")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        inject_extension(service, profile, args, provider, form).await
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn inject_extension(
+    service: &RuntimeService<RuntimeSecretStore>,
+    profile: Option<&str>,
+    args: InjectArgs,
+    provider: ProviderId,
+    form: InjectionFormDefinition,
+) -> ExitCode {
+    let pairing = match service.browser_host_pairing() {
+        Ok(pairing) => pairing,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let mut extension =
+        match ExtensionClient::connect(service.repository().root(), pairing.identity()).await {
+            Ok(extension) => extension,
+            Err(error) => return fail(&error.to_string()),
+        };
+    let mut operation_nonce = [0_u8; 32];
+    if getrandom::fill(&mut operation_nonce).is_err() {
+        return fail("could not create an Inject transaction");
+    }
+    let nonce = hex::encode(operation_nonce);
+    let lifecycle = match service.browser_host_lifecycle_guard_within(
+        pairing.lifecycle_token(),
+        palladin_cli::native_browser::OPERATION_TIMEOUT,
+    ) {
+        Ok(lifecycle) => lifecycle,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let prepared = match extension.prepare(&nonce).await {
+        Ok(prepared) => prepared,
+        Err(error) => return fail(&error.to_string()),
+    };
+    drop(lifecycle);
+    if prepared.outcome != "ready" {
+        return fail("the authenticated Palladin extension is not ready for Inject");
+    }
+    let current_url = match prepared.current_url.as_deref() {
+        Some(current_url) => current_url,
+        None => return fail("the authenticated Palladin extension returned an invalid page"),
+    };
 
     let wait_ms = if args.no_wait {
         Some(0)
@@ -1291,7 +1459,7 @@ async fn inject(
         Ok(target) => target,
         Err(error) => return fail(&error),
     };
-    if let Err(error) = target.verify_url(&open.current_url) {
+    if let Err(error) = target.verify_url(current_url) {
         return fail(&format!(
             "{} (expected domain {})",
             error,
@@ -1301,7 +1469,7 @@ async fn inject(
     let credential = match resolve_injection_credential(
         &parsed,
         delivered.authenticated_field("credential.username"),
-        &open.form,
+        &form,
     ) {
         Ok(credential) => credential,
         Err(error) => return fail(&error.to_string()),
@@ -1314,61 +1482,58 @@ async fn inject(
     let values = credential
         .fields()
         .iter()
-        .map(|(entry_field_id, value)| ProviderFieldValue {
+        .map(|(entry_field_id, value)| InjectFieldValue {
             entry_field_id,
             value,
         })
         .collect();
-    let wire = ProviderCredential {
-        protocol: INJECT_PROTOCOL,
-        r#type: "credential",
-        provider: provider.as_str(),
-        nonce: &open.nonce,
+    let forward = match session.browser_inject_forward_guard(
+        service,
+        pairing.lifecycle_token(),
+        &delivered,
+    ) {
+        Ok(forward) => forward,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let monotonic_sample = match monotonic_now_ns() {
+        Ok(sample) => sample,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let Some(authorization_remaining) = forward.remaining() else {
+        return fail("the authenticated browser authorization expired");
+    };
+    let not_after_monotonic_ns =
+        match monotonic_not_after_ns(monotonic_sample, authorization_remaining) {
+            Ok(deadline) => deadline,
+            Err(error) => return fail(&error.to_string()),
+        };
+    let wire = InjectRequest {
+        protocol: palladin_browser_bridge::secure_transport::INJECT_PROVIDER_PROTOCOL,
+        message_type: "inject",
         transaction_id: &transaction_id,
         grant_id: &delivered.grant_id,
         entry_id: &delivered.entry_id,
         expected_domain: target.expected_domain(),
-        form: &open.form,
+        form: &form,
         values,
     };
-    let encoded = match serde_json::to_vec(&wire) {
-        Ok(encoded) => Zeroizing::new(encoded),
-        Err(_) => return fail("could not encode the trusted provider request"),
+    let sealed = match extension.seal_inject(&wire, not_after_monotonic_ns) {
+        Ok(sealed) => sealed,
+        Err(error) => return fail(&error.to_string()),
     };
-    let mut provider_output = io::stdout().lock();
-    if provider_output.write_all(encoded.as_ref()).is_err()
-        || provider_output.write_all(b"\n").is_err()
-        || provider_output.flush().is_err()
-    {
-        return fail("trusted provider transport closed before credential delivery");
-    }
-    drop(encoded);
+    drop(wire);
     drop(credential);
     drop(parsed);
     drop(delivered);
-
-    let response: ProviderResult = match read_provider_line(&mut provider_input) {
-        Ok(response) => response,
-        Err(error) => return fail(error),
+    let Some(authorization_remaining) = forward.remaining() else {
+        return fail("the authenticated browser authorization expired");
     };
-    let valid_outcomes = [
-        "injected",
-        "rejected",
-        "no-password-field",
-        "no-submit-control",
-        "origin-mismatch",
-        "insecure-origin",
-        "ambiguous-form",
-        "provider-unavailable",
-    ];
-    if response.protocol != INJECT_PROTOCOL
-        || response.r#type != "result"
-        || response.nonce != open.nonce
-        || response.transaction_id != transaction_id
-        || !valid_outcomes.contains(&response.outcome.as_str())
-    {
-        return fail("trusted provider result is invalid");
-    }
+    let response = match extension.send_inject(sealed, authorization_remaining).await {
+        Ok(response) => response,
+        Err(error) => return fail(&error.to_string()),
+    };
+    drop(forward);
+
     if response.outcome != "injected" {
         return fail(match response.outcome.as_str() {
             "rejected" => "the trusted browser provider did not complete Inject (outcome=rejected)",
@@ -1400,10 +1565,7 @@ async fn inject(
     ExitCode::SUCCESS
 }
 
-const fn provider_transport_enabled() -> bool {
-    cfg!(feature = "local-development")
-}
-
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn resolve_injection_credential(
     parsed: &palladin_credential::secret::ParsedSecret,
     authenticated_username: Option<&str>,
@@ -1420,6 +1582,7 @@ fn resolve_injection_credential(
     InjectionCredential::from_fields(values)
 }
 
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn resolve_injection_field(
     parsed: &palladin_credential::secret::ParsedSecret,
     authenticated_username: Option<&str>,
@@ -1475,12 +1638,14 @@ fn resolve_injection_field(
 }
 
 #[derive(Clone, Copy)]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 enum ResolvedKind {
     Text,
     Concealed,
     Otp,
 }
 
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn resolve_selected_field(
     parsed: &palladin_credential::secret::ParsedSecret,
     label: &str,
@@ -1519,6 +1684,7 @@ fn inject_uses_deprecated_browser_boundary(args: &InjectArgs) -> bool {
         || args.verbose
 }
 
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn resolve_authenticated_injection_target(
     grant_domain: Option<&str>,
     discovery_domain: Option<&str>,
@@ -1539,19 +1705,6 @@ fn resolve_authenticated_injection_target(
         (None, Some(discovery)) => Ok(discovery),
         (None, None) => Err("the Inject credential has no authenticated domain".to_owned()),
     }
-}
-
-fn read_provider_line<T: for<'de> Deserialize<'de>>(
-    input: &mut impl BufRead,
-) -> Result<T, &'static str> {
-    let mut line = Zeroizing::new(String::new());
-    let read = input
-        .read_line(&mut line)
-        .map_err(|_| "trusted provider transport failed")?;
-    if read == 0 || read > 256 * 1024 {
-        return Err("trusted provider message is invalid");
-    }
-    serde_json::from_str(&line).map_err(|_| "trusted provider message is invalid")
 }
 
 async fn report_stale(
@@ -2031,6 +2184,8 @@ mod version_policy_gate_tests {
                 "cutover-id",
                 "--confirm",
             ][..],
+            &["palladin", "browser", "install"][..],
+            &["palladin", "browser", "unpair", "--confirm"][..],
         ] {
             assert!(requires_version_policy(&command(arguments).command));
         }
@@ -2067,7 +2222,7 @@ mod operation_descriptor_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod authenticated_injection_target_tests {
     use super::resolve_authenticated_injection_target;
 
@@ -2098,25 +2253,15 @@ mod authenticated_injection_target_tests {
     }
 }
 
-#[cfg(all(test, not(feature = "local-development")))]
-mod provider_release_gate_tests {
-    use super::provider_transport_enabled;
-
-    #[test]
-    fn plaintext_provider_transport_is_disabled_in_release_builds() {
-        assert!(!provider_transport_enabled());
-    }
-}
-
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod provider_credential_tests {
-    use super::{
-        INJECT_PROTOCOL, ProviderCredential, ProviderFieldValue, resolve_injection_credential,
-    };
+    use super::resolve_injection_credential;
+    use palladin_browser_bridge::secure_transport::INJECT_PROVIDER_PROTOCOL;
     use palladin_browser_bridge::{
         InjectionControl, InjectionFormDefinition, InjectionFormField, InjectionFormStep,
         InjectionSubmit, InjectionSubmitKind,
     };
+    use palladin_cli::native_browser::{InjectFieldValue, InjectRequest};
 
     #[test]
     fn private_provider_frame_contains_only_declared_field_values() {
@@ -2135,17 +2280,15 @@ mod provider_credential_tests {
                 wait_for: None,
             }],
         };
-        let wire = ProviderCredential {
-            protocol: INJECT_PROTOCOL,
-            r#type: "credential",
-            provider: "playwright",
-            nonce: "nonce",
+        let wire = InjectRequest {
+            protocol: INJECT_PROVIDER_PROTOCOL,
+            message_type: "inject",
             transaction_id: "transaction",
             grant_id: "grant",
             entry_id: "entry",
             expected_domain: "example.com",
             form: &form,
-            values: vec![ProviderFieldValue {
+            values: vec![InjectFieldValue {
                 entry_field_id: "credential.password",
                 value: "fixture-password-not-production",
             }],

@@ -1,6 +1,6 @@
 # ADR 0005: Authenticated Inject and Agent-defined form contract
 
-- Status: Accepted design; production transport pending
+- Status: Accepted; macOS Google Chrome transport implemented
 - Date: 2026-08-11
 - Supersedes: ADR 0003 only for authenticated browser providers
 
@@ -23,11 +23,33 @@ already controls public navigation and can inspect the form without seeing crede
 `Inject` is enabled only through an authenticated, registered browser provider. Caller-controlled
 CDP remains disabled.
 
-The current stdio, extension-socket, and AgentBrowser-daemon adapters are conformance/development
-fixtures, not authenticated production transports. A production Rust build rejects their secret
-delivery before opening a profile; only an explicit `local-development` build enables them. Private
-pipes, hidden flags, nonces, filesystem ownership, and version files provide correlation or access
-control but do not authenticate the receiving provider.
+The TypeScript stdio and extension-socket adapters are unshipped conformance/development fixtures,
+not authenticated production transports. A production Rust build never routes secret delivery
+through them. Private pipes, hidden flags, nonces, and filesystem ownership provide correlation or
+access control but do not authenticate the receiving provider.
+
+AgentBrowser Inject is disabled in every build. AgentBrowser 0.33.2 resolves and focuses a selected
+element, then performs the final text insertion against whichever element is focused at that later
+moment. A page focus/input handler can redirect the secret to an unattested control, so selector
+hardening and an owner-only daemon socket cannot form a safe delivery boundary. Its Palladin MCP
+package proxies public navigation but returns `provider-unavailable` before requesting a grant,
+spawning the Palladin runtime, or sending a secret-bearing daemon command. Re-enablement requires an
+upstream atomic element-bound fill primitive in addition to an authenticated session channel.
+
+The accepted extension transport uses a durable Ed25519 host identity in OS secure storage and an
+explicit user pairing that pins only its public key and fingerprint in the extension. Each Native
+Messaging connection performs a host-signed ephemeral X25519 handshake and derives independent
+directional XChaCha20-Poly1305 keys with HKDF-SHA256. Strict per-direction sequences authenticate
+and replay-protect the existing `prepare`, `inject`, and value-free result messages. The canonical
+wire definition and interoperability vector live in `contracts/inject-provider/v1`.
+
+The macOS Google Chrome implementation installs an exact Native Messaging allowlist for the stable
+Palladin extension ID and dynamically validates the Google-signed Chrome parent. The CLI and Rust
+host also perform a separate mutually signed ephemeral handshake using the OS-secured host identity
+before deriving directional AEAD keys for the local socket. This prevents a fake same-user socket
+from receiving a credential and prevents an arbitrary local client from driving the real host.
+Other operating systems and browsers fail closed until they have equivalent platform launch
+attestation and installation support.
 
 ### Agent-owned Playwright Page transport
 

@@ -58,7 +58,7 @@ internal static class SemanticVectors
         var expectedCommands = new[]
         {
             "init", "doctor", "connect", "connect", "status", "pair", "disconnect", "search", "get", "get", "get",
-            "get", "exec", "inject", "report-stale", "mcp", "agents", "security", "security",
+            "get", "exec", "inject", "browser", "browser", "browser", "report-stale", "mcp", "agents", "security", "security",
             "security", "security", "purge",
         };
         var commands = root.GetProperty("commands").EnumerateArray().ToArray();
