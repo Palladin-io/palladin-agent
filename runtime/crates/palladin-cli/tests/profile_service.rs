@@ -340,6 +340,13 @@ async fn explicit_profile_purge_preserves_shared_organization_key_until_last_age
             br#"{"schemaVersion":1,"highestSequence":1,"policyDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
         )
         .expect("version policy trust fixture");
+    store
+        .set(
+            palladin_platform::secure_store::BROWSER_HOST_IDENTITY_OWNER_ID,
+            SecretSlot::BrowserHostEd25519SecretKeyV1,
+            &[7_u8; 32],
+        )
+        .expect("browser host identity fixture");
 
     let removed = service
         .purge_profile(Some("first"), "fixture-host", &operation_connection())
@@ -351,6 +358,10 @@ async fn explicit_profile_purge_preserves_shared_organization_key_until_last_age
     assert!(store.contains(&second.identity_id, SecretSlot::Ed25519SecretKey));
     assert!(store.contains(&organization_id, SecretSlot::OrganizationApiKey));
     assert!(store.contains(TRUST_OWNER, SecretSlot::VersionPolicyTrustStateV1));
+    assert!(store.contains(
+        palladin_platform::secure_store::BROWSER_HOST_IDENTITY_OWNER_ID,
+        SecretSlot::BrowserHostEd25519SecretKeyV1,
+    ));
     let registry = service.registry().expect("remaining registry");
     assert_eq!(registry.default, "second");
 
@@ -360,6 +371,10 @@ async fn explicit_profile_purge_preserves_shared_organization_key_until_last_age
     assert_eq!(removed.identity_id, second.identity_id);
     assert!(!store.contains(&organization_id, SecretSlot::OrganizationApiKey));
     assert!(store.contains(TRUST_OWNER, SecretSlot::VersionPolicyTrustStateV1));
+    assert!(store.contains(
+        palladin_platform::secure_store::BROWSER_HOST_IDENTITY_OWNER_ID,
+        SecretSlot::BrowserHostEd25519SecretKeyV1,
+    ));
     assert!(
         service
             .registry()
@@ -1154,6 +1169,10 @@ async fn explicit_purge_removes_native_shared_and_identity_slots() {
     assert_eq!(store.count_slot(SecretSlot::X25519PrivateKey), 0);
     assert_eq!(store.count_slot(SecretSlot::Ed25519SecretKey), 0);
     assert!(!store.contains(TRUST_OWNER, SecretSlot::VersionPolicyTrustStateV1));
+    assert!(!store.contains(
+        palladin_platform::secure_store::BROWSER_HOST_IDENTITY_OWNER_ID,
+        SecretSlot::BrowserHostEd25519SecretKeyV1,
+    ));
     assert!(!root_path.exists());
 }
 
