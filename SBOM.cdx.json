@@ -4295,6 +4295,24 @@
       ]
     },
     {
+      "bom-ref": "pkg:cargo/palladin-inject@0.1.0",
+      "type": "library",
+      "name": "palladin-inject",
+      "version": "0.1.0",
+      "purl": "pkg:cargo/palladin-inject@0.1.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/Palladin-io/palladin-agent"
+        }
+      ]
+    },
+    {
       "bom-ref": "pkg:cargo/palladin-linux-broker@0.1.0",
       "type": "library",
       "name": "palladin-linux-broker",
