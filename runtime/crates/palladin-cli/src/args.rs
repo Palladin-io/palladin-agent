@@ -84,7 +84,7 @@ pub enum Commands {
 
 #[derive(Debug, Subcommand)]
 pub enum BrowserCommand {
-    /// Install the exact Palladin Chrome host and print an out-of-band pairing bundle.
+    /// Install the exact Palladin Chrome host for automatic extension discovery.
     Install,
     /// Check the exact manifest and OS-secured pairing identity.
     Status,

@@ -258,8 +258,10 @@ outcome. Adding another agent browser does not change the grant, crypto, CLI, or
 
 The extension provider uses the same Palladin extension rather than a provider-specific extension.
 On macOS, `palladin browser install` provisions the host identity in OS secure storage, installs
-`io.palladin.browser_bridge` for Google Chrome, and prints one JSON pairing bundle to stdout. Paste
-that bundle into the extension and compare the shortened fingerprint shown in both surfaces.
+`io.palladin.browser_bridge` for Google Chrome, and prints the shortened fingerprint. The extension
+automatically discovers the host's public identity through a challenge-bound, value-free Native
+Messaging exchange; compare the shortened fingerprint shown in both surfaces and choose
+**Trust and pair**. Discovery never writes or replaces the extension-owned pin.
 `palladin browser status` reports the host manifest and provisioned host identity without claiming
 that the separately extension-owned pin is present. The authenticated channel is verified when
 Inject begins.

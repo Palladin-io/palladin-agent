@@ -5,11 +5,14 @@ use std::path::{Path, PathBuf};
 use palladin_browser_bridge::secure_transport::BrowserHostIdentity;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use uuid::{Uuid, Version};
 
 pub const NATIVE_HOST_NAME: &str = "io.palladin.browser_bridge";
 pub const CHROME_EXTENSION_ID: &str = "hmljnknogdeonphikmeofcbkikmpokba";
 pub const CHROME_EXTENSION_ORIGIN: &str = "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/";
 pub const PAIRING_PROTOCOL: &str = "palladin.inject-pairing.v1";
+pub const PAIRING_DISCOVER_TYPE: &str = "pairing.discover";
+pub const PAIRING_OFFER_TYPE: &str = "pairing.offer";
 const NATIVE_HOST_DESCRIPTION: &str = "Palladin authenticated Chrome Inject bridge";
 
 #[derive(Debug, Serialize)]
@@ -28,6 +31,67 @@ impl PairingBundle {
             host_signing_public_key: identity.public_key(),
             fingerprint: identity.fingerprint(),
         }
+    }
+}
+
+/// Public, value-free request used only to discover the installed native host.
+///
+/// Discovery never creates trust. The extension keeps the returned key in memory, shows the
+/// fingerprint for out-of-band comparison with the CLI, and persists the pin only after an
+/// explicit user confirmation.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PairingDiscoveryRequest {
+    pub protocol: String,
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub extension_origin: String,
+    pub challenge: String,
+}
+
+impl PairingDiscoveryRequest {
+    pub fn validate(&self) -> Result<(), BrowserInstallError> {
+        let challenge =
+            Uuid::parse_str(&self.challenge).map_err(|_| BrowserInstallError::PairingDiscovery)?;
+        if self.protocol != PAIRING_PROTOCOL
+            || self.message_type != PAIRING_DISCOVER_TYPE
+            || self.extension_origin != CHROME_EXTENSION_ORIGIN
+            || challenge.get_version() != Some(Version::Random)
+            || challenge.to_string() != self.challenge
+        {
+            return Err(BrowserInstallError::PairingDiscovery);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingOffer {
+    pub protocol: &'static str,
+    #[serde(rename = "type")]
+    pub message_type: &'static str,
+    pub extension_origin: String,
+    pub challenge: String,
+    pub host_signing_public_key: String,
+    pub fingerprint: String,
+}
+
+impl PairingOffer {
+    pub fn from_request(
+        request: PairingDiscoveryRequest,
+        identity: &BrowserHostIdentity,
+    ) -> Result<Self, BrowserInstallError> {
+        request.validate()?;
+        let bundle = PairingBundle::from_identity(identity);
+        Ok(Self {
+            protocol: PAIRING_PROTOCOL,
+            message_type: PAIRING_OFFER_TYPE,
+            extension_origin: request.extension_origin,
+            challenge: request.challenge,
+            host_signing_public_key: bundle.host_signing_public_key,
+            fingerprint: bundle.fingerprint,
+        })
     }
 }
 
@@ -190,6 +254,8 @@ pub enum BrowserInstallError {
     Directory,
     #[error("the Chrome Native Messaging manifest is invalid")]
     Manifest,
+    #[error("the native-host pairing discovery request is invalid")]
+    PairingDiscovery,
 }
 
 #[cfg(test)]
@@ -204,6 +270,50 @@ mod tests {
         assert_eq!(json["protocol"], PAIRING_PROTOCOL);
         assert_eq!(json["hostSigningPublicKey"], identity.public_key());
         assert_eq!(json["fingerprint"], identity.fingerprint());
+    }
+
+    #[test]
+    fn pairing_offer_is_challenge_bound_and_exact() {
+        let identity = BrowserHostIdentity::from_secret_bytes([23_u8; 32]);
+        let request = PairingDiscoveryRequest {
+            protocol: PAIRING_PROTOCOL.to_owned(),
+            message_type: PAIRING_DISCOVER_TYPE.to_owned(),
+            extension_origin: CHROME_EXTENSION_ORIGIN.to_owned(),
+            challenge: "00000000-0000-4000-8000-000000000001".to_owned(),
+        };
+        let offer = PairingOffer::from_request(request, &identity).expect("offer");
+        let json = serde_json::to_value(offer).expect("offer json");
+        assert_eq!(json.as_object().expect("object").len(), 6);
+        assert_eq!(json["protocol"], PAIRING_PROTOCOL);
+        assert_eq!(json["type"], PAIRING_OFFER_TYPE);
+        assert_eq!(json["extensionOrigin"], CHROME_EXTENSION_ORIGIN);
+        assert_eq!(json["challenge"], "00000000-0000-4000-8000-000000000001");
+        assert_eq!(json["hostSigningPublicKey"], identity.public_key());
+        assert_eq!(json["fingerprint"], identity.fingerprint());
+    }
+
+    #[test]
+    fn pairing_discovery_rejects_wrong_origin_and_noncanonical_challenge() {
+        let identity = BrowserHostIdentity::from_secret_bytes([29_u8; 32]);
+        for request in [
+            PairingDiscoveryRequest {
+                protocol: PAIRING_PROTOCOL.to_owned(),
+                message_type: PAIRING_DISCOVER_TYPE.to_owned(),
+                extension_origin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/".to_owned(),
+                challenge: "00000000-0000-4000-8000-000000000001".to_owned(),
+            },
+            PairingDiscoveryRequest {
+                protocol: PAIRING_PROTOCOL.to_owned(),
+                message_type: PAIRING_DISCOVER_TYPE.to_owned(),
+                extension_origin: CHROME_EXTENSION_ORIGIN.to_owned(),
+                challenge: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_uppercase(),
+            },
+        ] {
+            assert!(matches!(
+                PairingOffer::from_request(request, &identity),
+                Err(BrowserInstallError::PairingDiscovery)
+            ));
+        }
     }
 
     #[test]

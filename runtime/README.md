@@ -123,8 +123,9 @@ These controls are defense in depth inside the selected platform tier. The preci
 ## Browser injection
 
 The provider-neutral form and origin-validation contract is implemented. The macOS Rust runtime now
-has a code-enabled, one-shot Chrome Native Messaging route with explicit out-of-band key pinning, a
-signed ephemeral extension session, mutually authenticated local CLI-to-host IPC, lifecycle
+has a code-enabled, one-shot Chrome Native Messaging route with challenge-bound public-host
+discovery, explicit out-of-band fingerprint confirmation, a signed ephemeral extension session,
+mutually authenticated local CLI-to-host IPC, lifecycle
 revocation, and directional XChaCha20-Poly1305 frames. It accepts only the compiled Chromium origin
 and the exact schemas in [`contracts/inject-provider/v1`](contracts/inject-provider/v1/README.md).
 The legacy Node extension socket remains unshipped and is never a fallback.

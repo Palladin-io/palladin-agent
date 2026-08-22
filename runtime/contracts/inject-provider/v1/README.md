@@ -18,16 +18,37 @@ fingerprint after the user confirms the same value in both surfaces:
 fingerprint = base64url-no-pad(SHA-256(raw-host-ed25519-public-key))
 ```
 
-`palladin browser install` emits this exact out-of-band bundle as one stdout JSON value. The
-extension rejects unknown fields and recomputes the fingerprint before persisting the key:
+`palladin browser install` prints the shortened fingerprint in the trusted terminal. When the
+pairing screen opens, the extension sends one public, value-free discovery request to the exact
+allowlisted native host:
 
 ```json
 {
   "protocol": "palladin.inject-pairing.v1",
+  "type": "pairing.discover",
+  "extensionOrigin": "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/",
+  "challenge": "00000000-0000-4000-8000-000000000001"
+}
+```
+
+The host validates the exact compiled extension origin and canonical UUIDv4 challenge, then echoes
+both values with its public identity:
+
+```json
+{
+  "protocol": "palladin.inject-pairing.v1",
+  "type": "pairing.offer",
+  "extensionOrigin": "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/",
+  "challenge": "00000000-0000-4000-8000-000000000001",
   "hostSigningPublicKey": "...",
   "fingerprint": "..."
 }
 ```
+
+The extension rejects unknown fields, stale challenges and mismatched fingerprints. The offer is
+kept in memory and is not trust on first use: the user must compare the shortened fingerprint with
+the independent CLI display and choose **Trust and pair** before the extension persists the full
+public key and derived fingerprint. Native Messaging discovery cannot create or replace the pin.
 
 Chrome Native Messaging's exact `allowed_origins` entry authenticates the extension to the host.
 The compiled origin is

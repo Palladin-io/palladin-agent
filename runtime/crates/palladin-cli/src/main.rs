@@ -13,7 +13,7 @@ use palladin_cli::args::{
     AgentsCommand, BrowserCommand, Cli, Commands, ConnectArgs, ExecArgs, GetArgs, InjectArgs,
     McpCommand, ProgressArg, ReportStaleArgs, SearchArgs, SecurityCommand, StaleCodeArg,
 };
-use palladin_cli::browser::{PairingBundle, install_manifest, manifest_status, remove_manifest};
+use palladin_cli::browser::{install_manifest, manifest_status, remove_manifest};
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
     render_agent_list, render_connect, render_init, render_legacy_cleanup, render_legacy_cutover,
@@ -276,14 +276,8 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
                 Ok(path) => path,
                 Err(error) => return fail(&error.to_string()),
             };
-            let bundle = PairingBundle::from_identity(provisioning.identity());
-            let encoded = match serde_json::to_string(&bundle) {
-                Ok(encoded) => encoded,
-                Err(_) => return fail("could not encode the browser pairing bundle"),
-            };
-            println!("{encoded}");
-            eprintln!(
-                "Palladin Chrome host installed at {}.\nFingerprint: {}\nPaste the JSON pairing bundle into the Palladin extension and confirm this fingerprint in both surfaces.",
+            println!(
+                "Palladin Chrome host installed at {}.\nFingerprint: {}\nOpen Agent runtime in the Palladin extension, compare this fingerprint, and choose Trust and pair.",
                 safe_terminal_text(&path.to_string_lossy()),
                 shorten_public_identifier(&provisioning.identity().fingerprint())
             );
