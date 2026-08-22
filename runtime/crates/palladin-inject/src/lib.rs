@@ -256,13 +256,16 @@ where
     let authorization_remaining = forward
         .remaining()
         .ok_or(InjectServiceError::AuthorizationExpired)?;
-    let response = tokio::select! {
-        biased;
-        () = cancellation.cancelled() => return Err(InjectServiceError::Cancelled),
-        result = extension.send_inject(sealed, authorization_remaining) => {
-            result.map_err(InjectServiceError::Transport)?
-        }
-    };
+    if cancellation.is_cancelled() {
+        return Err(InjectServiceError::Cancelled);
+    }
+    // Cancellation is deliberately no longer observed after the sealed request is handed to the
+    // host. Once the socket write starts, the extension may complete the fill even if the caller
+    // disconnects, so we must wait for the bounded value-free result and must not invite a retry.
+    let response = extension
+        .send_inject(sealed, authorization_remaining)
+        .await
+        .map_err(InjectServiceError::Transport)?;
     drop(forward);
     if response.outcome != "injected" {
         let rejection = parse_provider_rejection(&response.outcome)?;
@@ -359,7 +362,7 @@ fn resolve_injection_credential(
     for step in &form.steps {
         for field in &step.fields {
             let value = resolve_injection_field(parsed, authenticated_username, field)?;
-            values.0.insert(field.entry_field_id.clone(), value);
+            values.insert(field.entry_field_id.clone(), value);
         }
     }
     InjectionCredential::from_fields(std::mem::take(&mut values.0))
@@ -369,6 +372,15 @@ fn resolve_injection_credential(
 #[cfg(any(target_os = "macos", test))]
 #[derive(Default)]
 struct SensitiveFieldMap(BTreeMap<String, String>);
+
+#[cfg(any(target_os = "macos", test))]
+impl SensitiveFieldMap {
+    fn insert(&mut self, entry_field_id: String, value: String) {
+        if let Some(mut replaced) = self.0.insert(entry_field_id, value) {
+            replaced.zeroize();
+        }
+    }
+}
 
 #[cfg(any(target_os = "macos", test))]
 impl Drop for SensitiveFieldMap {
@@ -517,7 +529,9 @@ pub enum InjectServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use palladin_browser_bridge::{InjectionFormStep, InjectionSubmit, InjectionSubmitKind};
+    use palladin_browser_bridge::{
+        InjectionFormStep, InjectionSubmit, InjectionSubmitKind, InjectionWaitFor,
+    };
 
     #[test]
     fn authenticated_domains_must_match_or_one_must_exist() {
@@ -626,5 +640,44 @@ mod tests {
             resolve_injection_credential(&parsed, Some("fixture-user"), &form).expect("credential");
         assert_eq!(credential.username(), Some("fixture-user"));
         assert_eq!(credential.password(), "fixture-password");
+    }
+
+    #[test]
+    fn repeated_field_across_steps_has_one_final_plaintext_owner() {
+        let secret = br#"{"username":"fixture-user","password":"fixture-password"}"#;
+        let parsed = parse_secret(secret).expect("secret");
+        let repeated_username = InjectionFormField {
+            entry_field_id: "credential.username".to_owned(),
+            selector: "#username".to_owned(),
+            control: InjectionControl::Username,
+        };
+        let form = InjectionFormDefinition {
+            version: 1,
+            steps: vec![
+                InjectionFormStep {
+                    fields: vec![repeated_username.clone()],
+                    submit: InjectionSubmit {
+                        action: InjectionSubmitKind::Click,
+                        selector: "button[type=submit]".to_owned(),
+                    },
+                    wait_for: Some(InjectionWaitFor {
+                        selector: "#username-confirmation".to_owned(),
+                        timeout_ms: Some(20_000),
+                    }),
+                },
+                InjectionFormStep {
+                    fields: vec![repeated_username],
+                    submit: InjectionSubmit {
+                        action: InjectionSubmitKind::PressEnter,
+                        selector: "#username".to_owned(),
+                    },
+                    wait_for: None,
+                },
+            ],
+        };
+
+        let credential = resolve_injection_credential(&parsed, None, &form).expect("credential");
+        assert_eq!(credential.fields().len(), 1);
+        assert_eq!(credential.username(), Some("fixture-user"));
     }
 }
