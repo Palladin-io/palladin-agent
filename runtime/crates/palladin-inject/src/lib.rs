@@ -3,22 +3,34 @@
 #[cfg(target_os = "macos")]
 mod transport;
 
-use palladin_api::{ApiError, CredentialAccess};
-use palladin_browser_bridge::{
-    InjectionControl, InjectionCredential, InjectionError, InjectionFormDefinition,
-    InjectionFormField, InjectionTarget, ProviderId,
-};
-use palladin_credential::fields::{FieldSelector, ResolvedField, ResolvedFieldType, resolve_field};
-use palladin_credential::secret::parse_secret;
+use palladin_api::CredentialAccess;
+use palladin_browser_bridge::{InjectionError, InjectionFormDefinition, ProviderId};
 use palladin_credential::wait::{HeartbeatInfo, WaitOptions};
 use palladin_runtime::{
-    CredentialDelivery, CredentialDeliveryRequest, CredentialOutputPolicy, InvocationSurface,
-    OperationConnection, OperationDescriptor, RuntimeError, RuntimeService, SecretStore,
+    InvocationSurface, OperationConnection, RuntimeError, RuntimeService, SecretStore,
 };
-use secrecy::ExposeSecret;
-use std::collections::BTreeMap;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
+
+#[cfg(any(target_os = "macos", test))]
+use palladin_api::ApiError;
+#[cfg(any(target_os = "macos", test))]
+use palladin_browser_bridge::{
+    InjectionControl, InjectionCredential, InjectionFormField, InjectionTarget,
+};
+#[cfg(any(target_os = "macos", test))]
+use palladin_credential::fields::{FieldSelector, ResolvedField, ResolvedFieldType, resolve_field};
+#[cfg(any(target_os = "macos", test))]
+use palladin_credential::secret::parse_secret;
+#[cfg(target_os = "macos")]
+use palladin_runtime::{
+    CredentialDelivery, CredentialDeliveryRequest, CredentialOutputPolicy, OperationDescriptor,
+};
+#[cfg(any(target_os = "macos", test))]
+use secrecy::ExposeSecret;
+#[cfg(any(target_os = "macos", test))]
+use std::collections::BTreeMap;
+#[cfg(any(target_os = "macos", test))]
 use zeroize::Zeroize;
 
 #[cfg(target_os = "macos")]
@@ -289,6 +301,7 @@ where
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_provider_rejection(value: &str) -> Result<ProviderRejection, InjectServiceError> {
     match value {
         "rejected" => Ok(ProviderRejection::Rejected),
@@ -303,6 +316,7 @@ fn parse_provider_rejection(value: &str) -> Result<ProviderRejection, InjectServ
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn map_lookup_allows_fallback(error: &RuntimeError) -> bool {
     match error {
         RuntimeError::Api(ApiError::Transport) => true,
@@ -311,6 +325,7 @@ fn map_lookup_allows_fallback(error: &RuntimeError) -> bool {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn resolve_authenticated_injection_target(
     grant_domain: Option<&str>,
     discovery_domain: Option<&str>,
@@ -333,6 +348,7 @@ fn resolve_authenticated_injection_target(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn resolve_injection_credential(
     parsed: &palladin_credential::secret::ParsedSecret,
     authenticated_username: Option<&str>,
@@ -350,9 +366,11 @@ fn resolve_injection_credential(
         .map_err(InjectServiceError::Injection)
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Default)]
 struct SensitiveFieldMap(BTreeMap<String, String>);
 
+#[cfg(any(target_os = "macos", test))]
 impl Drop for SensitiveFieldMap {
     fn drop(&mut self) {
         for value in self.0.values_mut() {
@@ -362,6 +380,7 @@ impl Drop for SensitiveFieldMap {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn resolve_injection_field(
     parsed: &palladin_credential::secret::ParsedSecret,
     authenticated_username: Option<&str>,
@@ -417,6 +436,7 @@ fn resolve_injection_field(
     Ok(resolved)
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy)]
 enum ResolvedKind {
     Text,
@@ -424,6 +444,7 @@ enum ResolvedKind {
     Otp,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn resolve_selected_field(
     parsed: &palladin_credential::secret::ParsedSecret,
     label: &str,
