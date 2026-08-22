@@ -12,6 +12,7 @@ use std::time::Duration;
 use palladin_api::{
     ApiError, CredentialAccess, CredentialMethod, ReportCredentialStaleInput, StaleReasonCode,
 };
+use palladin_browser_bridge::ProviderId;
 use palladin_credential::access::access_message;
 use palladin_credential::fields::{
     FieldSelector, ResolvedField, redact_totp_secrets, resolve_field,
@@ -21,6 +22,7 @@ use palladin_credential::wait::{
     DurationParseError, ProgressMode, WaitOptions, heartbeat_line, parse_duration,
     parse_wait_duration,
 };
+use palladin_inject::{InjectExecution, InjectOperation, InjectServiceError};
 use palladin_runtime::{
     CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
     CredentialOutputPolicy, InvocationSurface, OperationConnection, OperationDescriptor,
@@ -357,6 +359,75 @@ where
                     })
                 }
                 Err(error) => exec_failure(&error),
+            }
+        })
+    }
+
+    fn inject<'a>(
+        &'a self,
+        input: InjectInput,
+        cancellation: CancellationToken,
+    ) -> ApplicationFuture<'a> {
+        Box::pin(async move {
+            let wait = match input.wait_options() {
+                Ok(wait) => wait,
+                Err(message) => return ToolOutcome::error(message),
+            };
+            let provider = match ProviderId::parse(
+                input
+                    .provider
+                    .clone()
+                    .unwrap_or_else(|| "extension".to_owned()),
+            ) {
+                Ok(provider) => provider,
+                Err(_) => return ToolOutcome::error("The Inject provider is invalid."),
+            };
+            let progress = wait.progress.unwrap_or(ProgressMode::Plain);
+            let execution = palladin_inject::inject(
+                &self.service,
+                InjectOperation {
+                    surface: InvocationSurface::Mcp,
+                    profile: self.profile.as_deref(),
+                    hostname: &self.hostname,
+                    connection: &self.connection,
+                    vault_id: input.vault_id.trim(),
+                    entry_id: input.entry_id.trim(),
+                    reason: input.reason.as_deref(),
+                    wait,
+                    provider: &provider,
+                    fallback_form: None,
+                },
+                &cancellation,
+                move |heartbeat| {
+                    if let Some(line) = heartbeat_line(progress, &heartbeat) {
+                        eprint!("{line}");
+                    }
+                },
+            )
+            .await;
+            match execution {
+                Ok(InjectExecution::Injected {
+                    provider,
+                    candidate_recording_failed,
+                }) => pretty_result(&InjectToolResult {
+                    outcome: "injected",
+                    provider: &provider,
+                    credential: "withheld",
+                    note: if candidate_recording_failed {
+                        "Credential injection completed. The value-free form candidate could not be recorded. No credential value was returned or persisted."
+                    } else {
+                        "Credential injection completed. No credential value was returned to the MCP client."
+                    },
+                }),
+                Ok(InjectExecution::NotGranted(access)) => {
+                    let message = access_message(&access, CredentialMethod::Inject)
+                        .unwrap_or_else(|| "Credential access is unavailable.".to_owned());
+                    pretty_result(&AccessResult {
+                        access: access_name(&access),
+                        message: &message,
+                    })
+                }
+                Err(error) => inject_failure(&error),
             }
         })
     }
@@ -1592,6 +1663,48 @@ fn exec_failure(error: &RuntimeError) -> ToolOutcome {
     ToolOutcome::error(message)
 }
 
+fn inject_failure(error: &InjectServiceError) -> ToolOutcome {
+    let message = match error {
+        InjectServiceError::UnsupportedProvider => {
+            "Only the authenticated Palladin extension provider is supported."
+        }
+        InjectServiceError::UnsupportedPlatform => {
+            "The authenticated Palladin extension provider is unavailable on this platform."
+        }
+        InjectServiceError::Cancelled => "Credential injection was cancelled.",
+        InjectServiceError::ProviderNotReady => {
+            "The authenticated Palladin extension is not ready for Inject."
+        }
+        InjectServiceError::NoForm => {
+            "No verified Form Discovery Map or bounded fallback form is available."
+        }
+        InjectServiceError::InvalidCredentialPayload => "The credential payload is invalid.",
+        InjectServiceError::DomainMismatch
+        | InjectServiceError::MissingDomain
+        | InjectServiceError::InvalidPage
+        | InjectServiceError::Injection(_) => {
+            "The browser page does not satisfy the authenticated Inject boundary."
+        }
+        InjectServiceError::AuthorizationExpired => {
+            "The authenticated browser authorization expired."
+        }
+        InjectServiceError::ProviderRejected(_) => {
+            "The trusted browser provider did not complete Inject."
+        }
+        InjectServiceError::Runtime(runtime) | InjectServiceError::StaleMapRefresh(runtime) => {
+            return runtime_failure(runtime);
+        }
+        #[cfg(target_os = "macos")]
+        InjectServiceError::Transport(_) => {
+            "The authenticated Palladin browser extension is unavailable."
+        }
+        InjectServiceError::Randomness | InjectServiceError::InvalidProviderOutcome => {
+            "Palladin could not complete Inject safely."
+        }
+    };
+    ToolOutcome::error(message)
+}
+
 fn access_name(access: &CredentialAccess) -> &'static str {
     match access {
         CredentialAccess::Granted { .. } => "granted",
@@ -1651,6 +1764,15 @@ struct ExecToolResult<'a> {
     exit_code: i32,
     output: &'static str,
     note: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InjectToolResult<'a> {
+    outcome: &'static str,
+    provider: &'a str,
+    credential: &'static str,
+    note: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]

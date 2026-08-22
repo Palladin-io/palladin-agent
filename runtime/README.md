@@ -129,6 +129,11 @@ revocation, and directional XChaCha20-Poly1305 frames. It accepts only the compi
 and the exact schemas in [`contracts/inject-provider/v1`](contracts/inject-provider/v1/README.md).
 The legacy Node extension socket remains unshipped and is never a fallback.
 
+CLI `inject` and MCP `inject_credential` call one shared native Inject service. That service owns
+the OS Secret Store access, Agent private keys, grant delivery, credential decryption, authenticated
+domain checks and encrypted extension transport. MCP receives only a value-free outcome; no key or
+credential field crosses the MCP boundary. The frozen MCP 1.0 arguments remain unchanged.
+
 This code-enabled branch is not by itself a production acceptance claim. Release readiness remains
 blocked until the exact signed/notarized packaged binary passes a real Chrome Native Messaging E2E
 with the paired extension, including wrong-pin, revocation, expiry, and disconnect negatives. Source

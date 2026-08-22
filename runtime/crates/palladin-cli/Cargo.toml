@@ -30,6 +30,7 @@ palladin-browser-bridge = { path = "../palladin-browser-bridge" }
 palladin-core = { path = "../palladin-core" }
 palladin-crypto = { path = "../palladin-crypto" }
 palladin-credential = { path = "../palladin-credential" }
+palladin-inject = { path = "../palladin-inject" }
 palladin-platform = { path = "../palladin-platform" }
 palladin-runtime = { path = "../palladin-runtime" }
 palladin-mcp = { path = "../palladin-mcp" }

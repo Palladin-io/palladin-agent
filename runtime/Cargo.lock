@@ -1655,6 +1655,7 @@ dependencies = [
  "palladin-core",
  "palladin-credential",
  "palladin-crypto",
+ "palladin-inject",
  "palladin-linux-broker",
  "palladin-mcp",
  "palladin-platform",
@@ -1759,6 +1760,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "palladin-inject"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "hex",
+ "nix 0.31.3",
+ "palladin-api",
+ "palladin-browser-bridge",
+ "palladin-credential",
+ "palladin-runtime",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "zeroize",
+]
+
+[[package]]
 name = "palladin-linux-broker"
 version = "0.1.0"
 dependencies = [
@@ -1807,8 +1828,10 @@ name = "palladin-mcp"
 version = "0.1.0"
 dependencies = [
  "palladin-api",
+ "palladin-browser-bridge",
  "palladin-core",
  "palladin-credential",
+ "palladin-inject",
  "palladin-runtime",
  "rmcp",
  "secrecy",

@@ -190,8 +190,49 @@ The Agent must be active before credential tools work.
 | `search_entries` | Search metadata without returning secret values. |
 | `get_credential` | Intentionally return a granted value; TOTP fields return only the current code. |
 | `exec_with_credential` | Execute without returning child stdout/stderr to the model. |
-| `inject_credential` | Inject through a trusted provider without returning the credential to the model. Provider-specific MCP packages select their own adapter. |
+| `inject_credential` | Invoke the same native Inject service as the CLI, through the authenticated extension provider, without returning the credential to the model. |
 | `report_credential_stale` | Report a stale credential without sending its value. |
+
+## Credential delivery methods
+
+`get`, `exec`, and `inject` are three grant-controlled ways to deliver one approved Entry. They use
+the same request, approval, expiry, usage-limit, and audit lifecycle, but have different output
+contracts. The approving user chooses which methods a grant allows; the runtime cannot silently
+substitute a method that was not granted.
+
+### `get`: return an approved value
+
+Use `get` when the caller genuinely needs the selected value rather than only the result of an
+operation performed with it:
+
+```bash
+palladin get <vaultId> <entryId>
+palladin get <vaultId> <entryId> --field password
+palladin get <vaultId> <entryId> --field-id <publicFieldId>
+```
+
+The CLI writes a secret-bearing JSON result to stdout. Without a selector it returns the granted
+credential payload; `--field` selects a field by label and `--field-id` selects a custom field by
+its public identifier. A selected TOTP field returns only the current short-lived code and expiry,
+never the TOTP seed. The equivalent MCP tool is `get_credential`.
+
+This is an intentional plaintext output boundary. CLI prints a warning to stderr unless `--quiet`
+is set; `--quiet` suppresses only the warning and does not change the secret-bearing stdout result.
+An MCP result becomes available to the calling Agent and may enter its model context, provider
+retention, session transcript, or observability tooling. Do not send `get` output to logs, shell
+history, command-line arguments, temporary files, analytics, or an untrusted caller. Prefer `exec`
+or `inject` when the workflow needs to use a credential but does not need to receive its value.
+
+`get` still requires an active grant that includes the `Get` method, observes the grant's expiry and
+remaining-use limit, and records successful delivery in the audit trail. Script Entries remain
+`exec`-only and payment-card Entries remain `inject`-only regardless of the requested grant flags.
+
+### `exec` and `inject`: use without returning the value
+
+- `exec` maps approved fields into a sanitized child process. Over MCP, child stdout and stderr are
+  withheld and the tool returns only the exit status.
+- `inject` sends approved fields to an authenticated provider and returns a value-free outcome.
+  Unsupported or unauthenticated provider paths fail before credential delivery.
 
 ## Security notes
 
@@ -219,7 +260,10 @@ The extension provider uses the same Palladin extension rather than a provider-s
 On macOS, `palladin browser install` provisions the host identity in OS secure storage, installs
 `io.palladin.browser_bridge` for Google Chrome, and prints one JSON pairing bundle to stdout. Paste
 that bundle into the extension and compare the shortened fingerprint shown in both surfaces.
-`palladin browser status` verifies the exact manifest and pairing identity;
+`palladin browser status` reports the host manifest and provisioned host identity without claiming
+that the separately extension-owned pin is present. The authenticated channel is verified when
+Inject begins.
+
 `palladin browser unpair --confirm` revokes the OS-secured lifecycle token before deleting the host
 key and manifest. Browser forwards hold a shared cross-process lease from the final token check
 through the value-free response, while unpair holds the exclusive lease through cleanup, so no
@@ -269,8 +313,9 @@ The version 1 shape is `{"version":1,"steps":[...]}`. A verified map may use any
 field identifier needed by the login flow. The runtime resolves only fields from the already
 authorized credential and checks their value kind against the declared control before delivery.
 Every step declares one `click` or `press-enter` submit action; every intermediate
-step also declares `waitFor`. `--form-json` is value-free and exists only for the ordinary-extension
-CLI adapter—credential values are never accepted there or in MCP arguments.
+step also declares `waitFor`. `--form-json` is a value-free CLI fallback; the frozen MCP 1.0
+contract remains unchanged and uses the backend-provided verified form map. Credential values are
+retrieved, decrypted and forwarded only inside the native runtime.
 
 The native runtime retrieves and decrypts only the approved values after the grant is active. The
 selected provider validates each declared control, re-checks HTTPS and the authenticated Entry domain

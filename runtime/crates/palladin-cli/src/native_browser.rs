@@ -641,7 +641,7 @@ fn valid_identifier(value: &str) -> bool {
         && value.len() <= 256
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 async fn bind_local_listener(
@@ -882,6 +882,12 @@ mod tests {
             outcome: "stale-form-map".to_owned(),
         };
         assert!(validate_inject_result(&stale_map, "tx").is_ok());
+
+        let mut identifiers = owned_inject_request();
+        identifiers.transaction_id = "transaction.v1".to_owned();
+        identifiers.grant_id = "grant:1".to_owned();
+        identifiers.entry_id = "entry_1".to_owned();
+        assert!(validate_inject_request(&identifiers).is_ok());
     }
 
     #[test]
