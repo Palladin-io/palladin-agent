@@ -240,7 +240,7 @@ remaining-use limit, and records successful delivery in the audit trail. Script 
 - Native secret storage has no file or environment fallback.
 - The organization API key and private keys are never child-process environment variables.
 - `exec` uses no implicit shell, rebuilds the child environment from an allowlist, and supplies null stdin.
-- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. The Rust runtime may resolve a verified global Form Discovery Map, while the model may supply only a bounded, value-free fallback definition. The macOS Chrome extension route authenticates both encrypted transport hops and prepares the live page before the runtime requests a grant or decrypts a credential; it then re-checks HTTPS and the encrypted Entry domain before delivery.
+- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. The Rust runtime resolves a verified global Form Discovery Map for MCP; only an explicit CLI `--form-json` caller may supply a bounded, value-free fallback definition. The macOS Chrome extension route authenticates both encrypted transport hops and prepares the live page before the runtime requests a grant or decrypts a credential; it then re-checks HTTPS and the encrypted Entry domain before delivery.
 - The npm launcher has no third-party JavaScript runtime dependencies. Its only production dependency is the exact-version platform package.
 - Removing the npm package never deletes identity. Purge is always an explicit native command.
 
@@ -296,8 +296,10 @@ A returned map is accepted only when its fingerprint, bounded action contract, p
 domain, and exact HTTPS origin validate locally. Login paths are data and may represent any locale or
 site route; the contract contains no list of known URLs. Persisted login URLs omit query and fragment
 data so one-time flow state or tokens cannot enter the catalog. When no verified map
-applies, the Agent may prepare the public login surface with ordinary browser tools, inspect it,
-and pass a complete, versioned, value-free form definition to `inject_credential` as a fallback.
+applies, a CLI caller may prepare the public login surface with ordinary browser tools, inspect it,
+and pass a complete, versioned, value-free form definition to `palladin inject --form-json` as a
+fallback. The frozen MCP 1.0 `inject_credential` contract has no form argument and never accepts this
+fallback.
 The definition is an ordered list of one or more steps mapping schema-valid Entry field IDs to public
 control locators, with a bounded click or press-Enter action and an optional next-step transition
 expectation.
@@ -328,7 +330,7 @@ If the API still returns the rejected version and fingerprint, a public rejectio
 that exact revision unavailable while later requests continue checking for a replacement; a
 concurrently stored higher version is neither removed nor overwritten by a delayed
 response. Cache invalidation/refresh persistence failures are reported to the operator. A separately
-validated caller fallback form remains
+validated CLI fallback form remains
 available during transient map lookup transport/5xx failures, while invalid payloads, authentication,
 and unsafe local cache/configuration errors still fail closed.
 Origin mismatch and provider transport/browser failures keep their specific outcome and do not evict
