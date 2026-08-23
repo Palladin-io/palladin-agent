@@ -107,6 +107,7 @@ mkdir -p "$(dirname -- "$launcher")"
 TMPDIR="$test_tmp" PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
   "$tree_one/packaging/macos/scripts/development-runtime.sh" install-launcher "$launcher" >/dev/null
 [[ -x "$launcher" && ! -L "$launcher" ]]
+grep -F -q 'development-runtime.sh run --local-development -- "$@"' "$launcher"
 grep -F -q 'development-runtime.sh run -- "$@"' "$launcher"
 
 release_error="$test_root/release-error.txt"

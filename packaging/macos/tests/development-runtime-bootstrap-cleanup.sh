@@ -18,6 +18,7 @@ tree="$test_root/worktree"
 test_tmp="$test_root/tmp"
 fake_bin="$test_root/bin"
 keychain="$test_root/palladin-development.keychain-db"
+cargo_argument_log="$test_root/cargo-arguments.log"
 
 cleanup() {
   rm -rf -- "$test_root"
@@ -35,7 +36,7 @@ chmod 700 "$tree/runtime/target/debug/palladin"
 # flow without weakening or bypassing that operating-system boundary.
 cat >"$fake_bin/cargo" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+printf '%s\n' "$*" >>"${PALLADIN_CARGO_ARGUMENT_LOG:?}"
 EOF
 
 cat >"$fake_bin/file" <<'EOF'
@@ -100,13 +101,23 @@ EOF
 
 chmod 700 "$fake_bin/cargo" "$fake_bin/file" "$fake_bin/security" "$fake_bin/codesign"
 
-TMPDIR="$test_tmp" PATH="$fake_bin:$PATH" PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+TMPDIR="$test_tmp" PATH="$fake_bin:$PATH" PALLADIN_CARGO_ARGUMENT_LOG="$cargo_argument_log" \
+  PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
   "$tree/packaging/macos/scripts/development-runtime.sh" run -- --version >/dev/null
 
 [[ -f "$keychain" && ! -L "$keychain" ]]
+grep -F -x -q 'build --locked -p palladin-cli' "$cargo_argument_log"
 if compgen -G "$test_tmp/palladin-development-signing.*" >/dev/null; then
   printf 'first development run left bootstrap key material behind\n' >&2
   exit 1
 fi
+
+launcher="$test_root/palladin"
+"$tree/packaging/macos/scripts/development-runtime.sh" install-launcher "$launcher" >/dev/null
+: >"$cargo_argument_log"
+TMPDIR="$test_tmp" PATH="$fake_bin:$PATH" PALLADIN_CARGO_ARGUMENT_LOG="$cargo_argument_log" \
+  PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+  "$launcher" --local-development --version >/dev/null
+grep -F -x -q 'build --locked -p palladin-cli --features local-development' "$cargo_argument_log"
 
 printf 'Verified first-run development signing bootstrap cleanup.\n'

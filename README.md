@@ -105,6 +105,11 @@ palladin connect --host https://api.palladin.io
 Literal HTTP loopback origins are available only in an explicitly compiled source-development build:
 
 ```bash
+./packaging/macos/scripts/development-runtime.sh run --local-development -- connect --host http://127.0.0.1:5000
+# Or, after install-launcher on macOS:
+palladin --local-development connect --host http://127.0.0.1:5000
+
+# On other development platforms:
 cd runtime
 cargo run -p palladin-cli --features local-development -- connect --host http://127.0.0.1:5000
 ```

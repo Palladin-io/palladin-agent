@@ -16,6 +16,18 @@ directly:
 ./packaging/macos/scripts/development-runtime.sh install-launcher ~/.local/bin/palladin
 ```
 
+For an HTTP loopback API, enable only the reviewed source-development feature
+through the same signed route:
+
+```bash
+./packaging/macos/scripts/development-runtime.sh run --local-development -- connect --host http://127.0.0.1:5000
+# Or after install-launcher:
+palladin --local-development connect --host http://127.0.0.1:5000
+```
+
+The flag must appear before the `--` separator (or first in the installed
+launcher). Arbitrary Cargo features and arguments are not accepted.
+
 The bootstrap is offline and idempotent. It creates a self-signed,
 code-signing-only certificate named `Palladin Local Development` in a dedicated
 per-user Keychain. macOS may ask for one approval when that certificate is first

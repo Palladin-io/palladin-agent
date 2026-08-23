@@ -29,9 +29,9 @@ usage() {
   cat >&2 <<'USAGE'
 Usage:
   development-runtime.sh bootstrap
-  development-runtime.sh build
+  development-runtime.sh build [--local-development]
   development-runtime.sh sign
-  development-runtime.sh run -- [PALLADIN_ARGUMENTS...]
+  development-runtime.sh run [--local-development] -- [PALLADIN_ARGUMENTS...]
   development-runtime.sh verify
   development-runtime.sh install-launcher [--force] ABSOLUTE_PATH
   development-runtime.sh reset --confirm
@@ -288,10 +288,17 @@ sign_runtime() {
 }
 
 build_runtime() {
+  local enable_local_development="${1:-0}"
+  local -a cargo_arguments=(build --locked -p palladin-cli)
+  [[ $# -eq 1 && ( "$enable_local_development" == 0 || "$enable_local_development" == 1 ) ]] ||
+    die "invalid internal local-development build mode"
   [[ -z "${CARGO_TARGET_DIR:-}" ]] ||
     die "CARGO_TARGET_DIR is unsupported because the signed runtime path must remain deterministic"
   require_command cargo
-  (cd "$RUNTIME_DIR" && cargo build --locked -p palladin-cli)
+  if [[ "$enable_local_development" == 1 ]]; then
+    cargo_arguments+=(--features local-development)
+  fi
+  (cd "$RUNTIME_DIR" && cargo "${cargo_arguments[@]}")
   sign_runtime
 }
 
@@ -314,7 +321,12 @@ install_launcher() {
   fi
   temporary_launcher="$(mktemp "$launcher_dir/.palladin-development-launcher.XXXXXX")"
   {
-    printf '#!/usr/bin/env bash\n\nset -euo pipefail\n\nexec '
+    printf '#!/usr/bin/env bash\n\nset -euo pipefail\n\n'
+    # Launcher arguments must expand when the generated launcher runs.
+    # shellcheck disable=SC2016
+    printf 'if [[ "${1:-}" == "--local-development" ]]; then\n  shift\n  exec '
+    printf '%q' "$SCRIPT_DIR/development-runtime.sh"
+    printf ' run --local-development -- "$@"\nfi\n\nexec '
     printf '%q' "$SCRIPT_DIR/development-runtime.sh"
     printf ' run -- "$@"\n'
   } >"$temporary_launcher"
@@ -351,8 +363,13 @@ case "$command_name" in
     printf 'Local macOS development signing is ready.\n'
     ;;
   build)
+    build_local_development=0
+    if [[ "${1:-}" == "--local-development" ]]; then
+      build_local_development=1
+      shift
+    fi
     [[ $# -eq 0 ]] || usage
-    build_runtime
+    build_runtime "$build_local_development"
     printf 'Built and signed local Palladin runtime: %s\n' "$RUNTIME_BINARY"
     ;;
   sign)
@@ -361,9 +378,14 @@ case "$command_name" in
     printf 'Signed local Palladin runtime: %s\n' "$RUNTIME_BINARY"
     ;;
   run)
+    run_local_development=0
+    if [[ "${1:-}" == "--local-development" ]]; then
+      run_local_development=1
+      shift
+    fi
     [[ "${1:-}" == "--" ]] || usage
     shift
-    build_runtime
+    build_runtime "$run_local_development"
     exec "$RUNTIME_BINARY" "$@"
     ;;
   verify)
