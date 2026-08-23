@@ -19,10 +19,11 @@ test_root="$(mktemp -d "${TMPDIR:-/tmp}/palladin-development-signing-test.XXXXXX
 keychain="$test_root/palladin-development.keychain-db"
 tree_one="$test_root/worktree-one"
 tree_two="$test_root/worktree-two"
+test_tmp="$test_root/tmp"
 
 cleanup() {
   if [[ -f "$keychain" && ! -L "$keychain" ]]; then
-    PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+    TMPDIR="$test_tmp" PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
       "$tree_one/packaging/macos/scripts/development-runtime.sh" reset --confirm >/dev/null 2>&1 || true
   fi
   rm -rf -- "$test_root"
@@ -49,8 +50,11 @@ cdhash() {
     sed -n 's/^CDHash=//p'
 }
 
-prepare_tree "$tree_one" 11
+prepare_tree "$tree_one" 0
 prepare_tree "$tree_two" 12
+mkdir -p "$test_root/bin" "$test_tmp"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$test_root/bin/cargo"
+chmod 700 "$test_root/bin/cargo"
 
 unsigned_requirement_one="$(requirement "$tree_one")"
 unsigned_requirement_two="$(requirement "$tree_two")"
@@ -58,15 +62,22 @@ unsigned_requirement_two="$(requirement "$tree_two")"
 [[ "$unsigned_requirement_two" == designated\ =\>\ cdhash\ * ]]
 [[ "$unsigned_requirement_one" != "$unsigned_requirement_two" ]]
 
-PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+TMPDIR="$test_tmp" PATH="$test_root/bin:$PATH" PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+  "$tree_one/packaging/macos/scripts/development-runtime.sh" run -- --version >/dev/null
+if compgen -G "$test_tmp/palladin-development-signing.*" >/dev/null; then
+  printf 'first development run left bootstrap key material behind\n' >&2
+  exit 1
+fi
+
+TMPDIR="$test_tmp" PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
   "$tree_one/packaging/macos/scripts/development-runtime.sh" bootstrap >/dev/null
-PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+TMPDIR="$test_tmp" PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
   "$tree_one/packaging/macos/scripts/development-runtime.sh" bootstrap >/dev/null
 
 for tree in "$tree_one" "$tree_two"; do
-  PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+  TMPDIR="$test_tmp" PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
     "$tree/packaging/macos/scripts/development-runtime.sh" sign >/dev/null
-  PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+  TMPDIR="$test_tmp" PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
     "$tree/packaging/macos/scripts/development-runtime.sh" verify >/dev/null
 done
 
@@ -91,7 +102,7 @@ done
 
 launcher="$test_root/bin/palladin"
 mkdir -p "$(dirname -- "$launcher")"
-PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+TMPDIR="$test_tmp" PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
   "$tree_one/packaging/macos/scripts/development-runtime.sh" install-launcher "$launcher" >/dev/null
 [[ -x "$launcher" && ! -L "$launcher" ]]
 grep -F -q 'development-runtime.sh run -- "$@"' "$launcher"

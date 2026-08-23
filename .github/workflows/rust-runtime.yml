@@ -64,6 +64,10 @@ jobs:
             if (JSON.stringify(manifest.os) !== JSON.stringify(["darwin"])) process.exit(1);
             if (JSON.stringify(manifest.cpu) !== JSON.stringify([process.argv[2]])) process.exit(1);
           ' "$fake_root/staged/package.json" "$npm_arch"
+      - name: Verify local macOS development signing contract
+        working-directory: .
+        shell: bash
+        run: node packaging/npm/run-bounded.mjs 120 bash packaging/macos/tests/development-runtime-signing.sh
       - name: Verify native runner architecture
         shell: bash
         run: |

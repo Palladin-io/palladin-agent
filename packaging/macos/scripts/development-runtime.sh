@@ -42,6 +42,15 @@ USAGE
   exit 64
 }
 
+remove_bootstrap_temp_dir() {
+  if [[ -n "$BOOTSTRAP_TEMP_DIR" && -d "$BOOTSTRAP_TEMP_DIR" &&
+        "$BOOTSTRAP_TEMP_DIR" == "${TMPDIR:-/tmp}/palladin-development-signing."* ]]; then
+    rm -rf -- "$BOOTSTRAP_TEMP_DIR"
+    BOOTSTRAP_TEMP_DIR=""
+    BOOTSTRAP_CERTIFICATE=""
+  fi
+}
+
 cleanup() {
   local status=$?
   if (( status != 0 && BOOTSTRAP_CREATED == 1 && BOOTSTRAP_COMMITTED == 0 )); then
@@ -50,10 +59,7 @@ cleanup() {
     fi
     security delete-keychain "$BOOTSTRAP_KEYCHAIN" >/dev/null 2>&1 || true
   fi
-  if [[ -n "$BOOTSTRAP_TEMP_DIR" && -d "$BOOTSTRAP_TEMP_DIR" &&
-        "$BOOTSTRAP_TEMP_DIR" == "${TMPDIR:-/tmp}/palladin-development-signing."* ]]; then
-    rm -rf -- "$BOOTSTRAP_TEMP_DIR"
-  fi
+  remove_bootstrap_temp_dir || true
   exit "$status"
 }
 trap cleanup EXIT
@@ -202,6 +208,7 @@ create_identity() {
   BOOTSTRAP_TRUSTED=1
   add_to_user_keychain_search_list "$keychain"
   verify_identity "$keychain" || die "the local development signing identity could not be verified"
+  remove_bootstrap_temp_dir || die "the temporary development signing material could not be removed"
   BOOTSTRAP_COMMITTED=1
   printf 'Created local macOS development signing identity: %s\n' "$DEVELOPMENT_IDENTITY" >&2
 }
