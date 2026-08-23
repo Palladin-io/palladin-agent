@@ -67,6 +67,21 @@ cd runtime
 cargo run -p palladin-cli -- doctor
 ```
 
+On macOS, use the repository development launcher for commands that open local
+Agent state. Its one-time offline bootstrap creates a local-only code-signing
+identity; macOS may request approval for that trust setting once. Every later
+run re-signs the debug runtime with the same Designated Requirement, verifies
+that it has no release entitlements or Team ID, and then starts it:
+
+```bash
+./packaging/macos/scripts/development-runtime.sh run -- doctor
+./packaging/macos/scripts/development-runtime.sh install-launcher ~/.local/bin/palladin
+```
+
+Pass `--force` to `install-launcher` only after reviewing an existing launcher.
+The identity remains Convenience-tier and is deliberately rejected by the
+Developer ID release/notarization path. See [the macOS packaging runbook](packaging/macos/README.md).
+
 The npm dispatcher is not a fallback development runtime. It intentionally fails if its signed platform package is absent.
 
 ### macOS Keychain prompt
@@ -90,6 +105,11 @@ palladin connect --host https://api.palladin.io
 Literal HTTP loopback origins are available only in an explicitly compiled source-development build:
 
 ```bash
+./packaging/macos/scripts/development-runtime.sh run --local-development -- connect --host http://127.0.0.1:5000
+# Or, after install-launcher on macOS:
+palladin --local-development connect --host http://127.0.0.1:5000
+
+# On other development platforms:
 cd runtime
 cargo run -p palladin-cli --features local-development -- connect --host http://127.0.0.1:5000
 ```
