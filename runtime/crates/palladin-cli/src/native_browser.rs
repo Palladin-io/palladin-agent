@@ -5,7 +5,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use palladin_browser_bridge::InjectionFormDefinition;
 use palladin_browser_bridge::framing::{read_message, write_message};
 use palladin_browser_bridge::local_transport::{
     LOCAL_TRANSPORT_PROTOCOL, LocalClientHandshake, LocalSecureFrame, LocalSessionOpen,
@@ -15,6 +14,7 @@ use palladin_browser_bridge::secure_transport::{
     BrowserHostIdentity, ExtensionSessionOpen, HostSessionReady, INJECT_PROVIDER_PROTOCOL,
     SecureFrame,
 };
+use palladin_browser_bridge::{InjectionFormDefinition, validate_https_page_url};
 use palladin_credential::wait::MAX_WAIT_MS;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -42,6 +42,10 @@ pub struct PrepareRequest<'a> {
     #[serde(rename = "type")]
     pub message_type: &'static str,
     pub nonce: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_tab_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_url: Option<&'a str>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -103,6 +107,10 @@ struct OwnedPrepareRequest {
     #[serde(rename = "type")]
     message_type: String,
     nonce: String,
+    #[serde(default)]
+    target_tab_id: Option<u64>,
+    #[serde(default)]
+    target_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -220,11 +228,18 @@ impl ExtensionClient {
         Ok(Self { stream, session })
     }
 
-    pub async fn prepare(&mut self, nonce: &str) -> Result<PrepareResult, NativeBrowserError> {
+    pub async fn prepare(
+        &mut self,
+        nonce: &str,
+        target_tab_id: Option<u64>,
+        target_url: Option<&str>,
+    ) -> Result<PrepareResult, NativeBrowserError> {
         let request = PrepareRequest {
             protocol: INJECT_PROVIDER_PROTOCOL,
             message_type: "prepare",
             nonce,
+            target_tab_id,
+            target_url,
         };
         let frame = self.session.seal(&request)?;
         timeout(OPERATION_TIMEOUT, write_message(&mut self.stream, &frame))
@@ -418,9 +433,17 @@ fn parse_initial_native_message(
 }
 
 fn validate_prepare(request: &OwnedPrepareRequest) -> Result<(), NativeBrowserError> {
+    let valid_target = match (request.target_tab_id, request.target_url.as_deref()) {
+        (None, None) => true,
+        (Some(tab_id), Some(url)) => {
+            (1..=9_007_199_254_740_991).contains(&tab_id) && validate_https_page_url(url).is_ok()
+        }
+        _ => false,
+    };
     if request.protocol != INJECT_PROVIDER_PROTOCOL
         || request.message_type != "prepare"
         || !valid_nonce(&request.nonce)
+        || !valid_target
     {
         return Err(NativeBrowserError::InvalidMessage);
     }
@@ -430,7 +453,11 @@ fn validate_prepare(request: &OwnedPrepareRequest) -> Result<(), NativeBrowserEr
 fn validate_prepare_result(result: &PrepareResult, nonce: &str) -> Result<(), NativeBrowserError> {
     let valid_outcome = matches!(
         result.outcome.as_str(),
-        "ready" | "provider-unavailable" | "invalid-request"
+        "ready"
+            | "provider-unavailable"
+            | "target-tab-unavailable"
+            | "target-url-mismatch"
+            | "invalid-request"
     );
     if result.protocol != INJECT_PROVIDER_PROTOCOL
         || result.message_type != "prepare.result"
@@ -1193,6 +1220,11 @@ mod tests {
             let frame: LocalSecureFrame = read_message(&mut socket).await.expect("frame");
             let prepare: OwnedPrepareRequest = session.open(&frame).expect("prepare");
             validate_prepare(&prepare).expect("valid prepare");
+            assert_eq!(prepare.target_tab_id, Some(7));
+            assert_eq!(
+                prepare.target_url.as_deref(),
+                Some("https://example.test/login")
+            );
             let result = PrepareResult {
                 protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
                 message_type: "prepare.result".to_owned(),
@@ -1207,7 +1239,10 @@ mod tests {
             .await
             .expect("client");
         let nonce = "A".repeat(32);
-        let result = client.prepare(&nonce).await.expect("prepare result");
+        let result = client
+            .prepare(&nonce, Some(7), Some("https://example.test/login"))
+            .await
+            .expect("prepare result");
         assert_eq!(result.outcome, "ready");
         assert_eq!(
             result.current_url.as_deref(),

@@ -4,7 +4,9 @@
 mod transport;
 
 use palladin_api::CredentialAccess;
-use palladin_browser_bridge::{InjectionError, InjectionFormDefinition, ProviderId};
+use palladin_browser_bridge::{
+    InjectionError, InjectionFormDefinition, ProviderId, validate_https_page_url,
+};
 use palladin_credential::wait::{HeartbeatInfo, WaitOptions};
 use palladin_runtime::{
     InvocationSurface, OperationConnection, RuntimeError, RuntimeService, SecretStore,
@@ -53,7 +55,14 @@ pub struct InjectOperation<'a> {
     pub reason: Option<&'a str>,
     pub wait: WaitOptions,
     pub provider: &'a ProviderId,
+    pub target: Option<BrowserTarget<'a>>,
     pub fallback_form: Option<&'a InjectionFormDefinition>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BrowserTarget<'a> {
+    pub tab_id: u64,
+    pub page_url: &'a str,
 }
 
 #[derive(Debug)]
@@ -113,6 +122,12 @@ where
     }
     #[cfg(target_os = "macos")]
     {
+        if let Some(target) = operation.target {
+            if target.tab_id == 0 || target.tab_id > 9_007_199_254_740_991 {
+                return Err(InjectServiceError::InvalidPage);
+            }
+            validate_https_page_url(target.page_url).map_err(InjectServiceError::Injection)?;
+        }
         inject_extension(service, operation, cancellation, heartbeat).await
     }
 }
@@ -140,11 +155,16 @@ where
     let prepared = tokio::select! {
         biased;
         () = cancellation.cancelled() => return Err(InjectServiceError::Cancelled),
-        result = extension.prepare(&nonce) => result.map_err(InjectServiceError::Transport)?,
+        result = extension.prepare(&nonce, operation.target) => {
+            result.map_err(InjectServiceError::Transport)?
+        },
     };
     drop(lifecycle);
-    if prepared.outcome != "ready" {
-        return Err(InjectServiceError::ProviderNotReady);
+    match prepared.outcome.as_str() {
+        "ready" => {}
+        "target-tab-unavailable" => return Err(InjectServiceError::TargetTabUnavailable),
+        "target-url-mismatch" => return Err(InjectServiceError::TargetUrlMismatch),
+        _ => return Err(InjectServiceError::ProviderNotReady),
     }
     let current_url = prepared
         .current_url
@@ -212,11 +232,27 @@ where
         .map(|map| &map.map.form)
         .or(operation.fallback_form)
         .ok_or(InjectServiceError::NoForm)?;
-    let credential = resolve_injection_credential(
-        &parsed,
-        delivered.authenticated_field("credential.username"),
-        form,
-    )?;
+    let discovery_username = if delivered
+        .authenticated_field("credential.username")
+        .is_none()
+        && form
+            .field_ids()
+            .any(|field_id| field_id == "credential.username")
+    {
+        session
+            .authenticated_inject_username(
+                operation.vault_id,
+                operation.entry_id,
+                delivered.entry_revision(),
+            )
+            .await?
+    } else {
+        None
+    };
+    let authenticated_username = delivered
+        .authenticated_field("credential.username")
+        .or_else(|| discovery_username.as_ref().map(|value| value.as_str()));
+    let credential = resolve_injection_credential(&parsed, authenticated_username, form)?;
     let mut transaction_bytes = [0_u8; 16];
     getrandom::fill(&mut transaction_bytes).map_err(|_| InjectServiceError::Randomness)?;
     let transaction_id = hex::encode(transaction_bytes);
@@ -494,6 +530,10 @@ pub enum InjectServiceError {
     Randomness,
     #[error("the authenticated Palladin extension is not ready for Inject")]
     ProviderNotReady,
+    #[error("the browser framework target tab is unavailable to the Palladin extension")]
+    TargetTabUnavailable,
+    #[error("the browser framework target URL no longer matches the live tab")]
+    TargetUrlMismatch,
     #[error("the authenticated Palladin extension returned an invalid page")]
     InvalidPage,
     #[error("the Inject credential payload is invalid")]

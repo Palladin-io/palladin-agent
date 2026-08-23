@@ -397,6 +397,20 @@ impl InjectionTarget {
     }
 }
 
+pub fn validate_https_page_url(value: &str) -> Result<(), InjectionError> {
+    if value.is_empty() || value.len() > 4_096 || value != value.trim() {
+        return Err(InjectionError::InvalidOrigin);
+    }
+    let parsed = Url::parse(value).map_err(|_| InjectionError::InvalidOrigin)?;
+    if parsed.scheme() != "https" {
+        return Err(InjectionError::InsecureOrigin);
+    }
+    if parsed.host_str().is_none() || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(InjectionError::InvalidOrigin);
+    }
+    Ok(())
+}
+
 /// Secret material transferred once to one trusted provider implementation.
 ///
 /// It is deliberately non-serializable and its Debug output is always redacted. Transport-specific
@@ -723,6 +737,19 @@ mod tests {
         assert_eq!(
             request.target.verify_url("http://example.com"),
             Err(InjectionError::InsecureOrigin)
+        );
+    }
+
+    #[test]
+    fn target_page_hint_requires_a_bounded_credential_free_https_url() {
+        assert!(validate_https_page_url("https://example.com/login?flow=agent").is_ok());
+        assert_eq!(
+            validate_https_page_url("http://example.com/login"),
+            Err(InjectionError::InsecureOrigin)
+        );
+        assert_eq!(
+            validate_https_page_url("https://user:password@example.com/login"),
+            Err(InjectionError::InvalidOrigin)
         );
     }
 

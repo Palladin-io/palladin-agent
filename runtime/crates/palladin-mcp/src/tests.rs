@@ -13,7 +13,7 @@ use super::{
     InjectToolResult, MAX_BATCH_ITEMS, MAX_FRAME_BYTES, McpApplication, PalladinMcpServer,
     ProtocolBridgeState, ReportStaleInput, SearchInput, ToolOutcome, collect_batch_response,
     load_tools, parse_input, prepare_incoming_message, pretty_result, serve_io, validate_get,
-    validate_search, wait_options,
+    validate_inject, validate_search, wait_options,
 };
 
 #[derive(Clone, Default)]
@@ -117,6 +117,35 @@ fn frozen_inject_contract_requires_the_trusted_inject_method() {
         Some(&json!(["vaultId", "entryId"]))
     );
     assert!(inject.input_schema["properties"].get("form").is_none());
+    assert_eq!(
+        inject.input_schema["properties"]["targetTabId"]["type"],
+        "integer"
+    );
+    assert_eq!(
+        inject.input_schema["properties"]["targetUrl"]["type"],
+        "string"
+    );
+}
+
+#[test]
+fn inject_browser_target_requires_a_tab_id_and_url_pair() {
+    let targeted = parse_input::<InjectInput>(json!({
+        "vaultId": "vault-1",
+        "entryId": "entry-1",
+        "targetTabId": 1_240_594_015_u64,
+        "targetUrl": "https://login.example.com/start"
+    }))
+    .expect("targeted inject input");
+    validate_inject(&targeted).expect("paired browser target");
+
+    for invalid in [
+        json!({"vaultId":"vault-1","entryId":"entry-1","targetTabId":7}),
+        json!({"vaultId":"vault-1","entryId":"entry-1","targetUrl":"https://example.com"}),
+        json!({"vaultId":"vault-1","entryId":"entry-1","targetTabId":0,"targetUrl":"https://example.com"}),
+    ] {
+        let input = parse_input::<InjectInput>(invalid).expect("structurally valid fixture");
+        assert!(validate_inject(&input).is_err());
+    }
 }
 
 #[test]

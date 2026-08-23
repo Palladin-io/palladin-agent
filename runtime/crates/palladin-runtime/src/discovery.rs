@@ -606,6 +606,34 @@ impl LocalDiscoveryIndex {
         Ok(EntrySearchResult { items, next_cursor })
     }
 
+    pub(crate) fn field_at_revision(
+        &self,
+        vault_id: &str,
+        entry_id: &str,
+        revision: u64,
+        field_id: &str,
+    ) -> Result<Option<String>, RuntimeError> {
+        let key = (vault_id.to_owned(), entry_id.to_owned());
+        let Some(checkpoint) = self.entry_checkpoints.get(&key) else {
+            return Ok(None);
+        };
+        if !checkpoint.live {
+            return Ok(None);
+        }
+        if checkpoint.revision != revision {
+            return Err(RuntimeError::DiscoveryRevisionMismatch);
+        }
+        let entry = self
+            .entries
+            .get(&key)
+            .ok_or(RuntimeError::InvalidDiscoveryPayload)?;
+        Ok(entry
+            .approved_fields
+            .iter()
+            .find(|field| field.label == field_id)
+            .map(|field| field.value.clone()))
+    }
+
     fn encode_cursor(
         &self,
         key: &(String, String),
@@ -758,6 +786,34 @@ mod tests {
             "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         );
         assert_eq!(alice.items[0].agent_fields[1].value, "alice");
+    }
+
+    #[test]
+    fn inject_metadata_requires_the_exact_discovery_revision() {
+        let mut index = LocalDiscoveryIndex::new();
+        let vault_id = "11111111-1111-4111-8111-111111111111";
+        let entry_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        index
+            .upsert(
+                vault_id,
+                entry_id,
+                7,
+                envelope_digest(7),
+                account("Production", "alice"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            index
+                .field_at_revision(vault_id, entry_id, 7, "credential.username")
+                .unwrap()
+                .as_deref(),
+            Some("alice")
+        );
+        assert!(matches!(
+            index.field_at_revision(vault_id, entry_id, 6, "credential.username"),
+            Err(crate::RuntimeError::DiscoveryRevisionMismatch)
+        ));
     }
 
     #[test]

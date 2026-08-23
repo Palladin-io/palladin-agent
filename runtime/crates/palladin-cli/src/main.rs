@@ -38,7 +38,7 @@ use palladin_credential::wait::{
     ProgressMode, WaitOptions, heartbeat_line, parse_duration, parse_wait_duration,
     signal_cancellation_token,
 };
-use palladin_inject::{InjectExecution, InjectOperation};
+use palladin_inject::{BrowserTarget, InjectExecution, InjectOperation};
 #[cfg(target_os = "linux")]
 use palladin_linux_broker::store::LinuxBrokerSecretStore;
 use palladin_platform::legacy_typescript_store::{
@@ -1347,6 +1347,10 @@ async fn inject(
             reason: args.reason.as_deref(),
             wait,
             provider: &provider,
+            target: args
+                .target_tab_id
+                .zip(args.page_url.as_deref())
+                .map(|(tab_id, page_url)| BrowserTarget { tab_id, page_url }),
             fallback_form: fallback_form.as_ref(),
         },
         &cancellation,
@@ -1382,7 +1386,6 @@ async fn inject(
 
 fn inject_uses_deprecated_browser_boundary(args: &InjectArgs) -> bool {
     args.cdp.is_some()
-        || args.page_url.is_some()
         || args.username_selector.is_some()
         || args.password_selector.is_some()
         || args.submit_selector.is_some()

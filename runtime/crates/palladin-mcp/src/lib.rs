@@ -22,7 +22,7 @@ use palladin_credential::wait::{
     DurationParseError, ProgressMode, WaitOptions, heartbeat_line, parse_duration,
     parse_wait_duration,
 };
-use palladin_inject::{InjectExecution, InjectOperation, InjectServiceError};
+use palladin_inject::{BrowserTarget, InjectExecution, InjectOperation, InjectServiceError};
 use palladin_runtime::{
     CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
     CredentialOutputPolicy, InvocationSurface, OperationConnection, OperationDescriptor,
@@ -54,7 +54,7 @@ const UNSUPPORTED_VERSION_SENTINEL: &str = "palladin-unsupported-version";
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
     ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 const GET_EXPOSURE_WARNING: &str = "Note: this secret is now in the Agent's context. On a hosted LLM it may leave your machine. Prefer exec_with_credential or inject_credential when the credential only needs to authenticate another operation.";
-const CONTRACT_JSON: &str = include_str!("../../../contracts/v1/mcp-tools.json");
+const CONTRACT_JSON: &str = include_str!("../../../contracts/mcp/v1.1/mcp-tools.json");
 
 type ApplicationFuture<'a> = Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
 
@@ -395,6 +395,10 @@ where
                     reason: input.reason.as_deref(),
                     wait,
                     provider: &provider,
+                    target: input
+                        .target_tab_id
+                        .zip(input.target_url.as_deref())
+                        .map(|(tab_id, page_url)| BrowserTarget { tab_id, page_url }),
                     fallback_form: None,
                 },
                 &cancellation,
@@ -1245,7 +1249,7 @@ fn load_tools() -> Result<Vec<Tool>, ContractError> {
     let contract: ContractFile =
         serde_json::from_str(CONTRACT_JSON).map_err(|_| ContractError::Invalid)?;
     if contract.contract != "palladin-agent-mcp-tools"
-        || contract.version != "1.0.0"
+        || contract.version != "1.1.0"
         || contract.status != "frozen"
         || contract.server.name != "Palladin Agents"
         || contract.server.title != "Palladin Agent Runtime"
@@ -1388,6 +1392,14 @@ fn validate_inject(input: &InjectInput) -> Result<(), McpError> {
             .reason
             .as_ref()
             .is_some_and(|value| exceeds_chars(value, 4096))
+        || input
+            .target_url
+            .as_ref()
+            .is_some_and(|value| exceeds_chars(value, 4096))
+        || input.target_tab_id.is_some() != input.target_url.is_some()
+        || input
+            .target_tab_id
+            .is_some_and(|value| value == 0 || value > 9_007_199_254_740_991)
     {
         return Err(McpError::invalid_params(
             "Inject arguments are invalid",
@@ -1474,6 +1486,8 @@ pub struct InjectInput {
     pub entry_id: String,
     pub provider: Option<String>,
     pub reason: Option<String>,
+    pub target_tab_id: Option<u64>,
+    pub target_url: Option<String>,
     pub wait: Option<String>,
     pub no_wait: Option<bool>,
     pub poll_interval: Option<String>,
@@ -1674,6 +1688,12 @@ fn inject_failure(error: &InjectServiceError) -> ToolOutcome {
         InjectServiceError::Cancelled => "Credential injection was cancelled.",
         InjectServiceError::ProviderNotReady => {
             "The authenticated Palladin extension is not ready for Inject."
+        }
+        InjectServiceError::TargetTabUnavailable => {
+            "The browser framework target tab is unavailable to the Palladin extension."
+        }
+        InjectServiceError::TargetUrlMismatch => {
+            "The browser framework target URL no longer matches the live tab."
         }
         InjectServiceError::NoForm => {
             "No verified Form Discovery Map or bounded fallback form is available."

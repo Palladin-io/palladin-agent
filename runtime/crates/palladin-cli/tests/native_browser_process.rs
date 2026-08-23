@@ -50,7 +50,10 @@ async fn cli_authenticates_a_separate_host_process_before_prepare() {
         .await
         .expect("mutually authenticated process connection");
     let nonce = "P".repeat(32);
-    let result = client.prepare(&nonce).await.expect("prepare result");
+    let result = client
+        .prepare(&nonce, None, None)
+        .await
+        .expect("prepare result");
     assert_eq!(result.outcome, "ready");
     assert_eq!(
         result.current_url.as_deref(),

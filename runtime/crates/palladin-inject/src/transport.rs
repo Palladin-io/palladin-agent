@@ -14,6 +14,8 @@ use thiserror::Error;
 use tokio::net::UnixStream;
 use tokio::time::{Instant, timeout, timeout_at};
 
+use crate::BrowserTarget;
+
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_LOCAL_INJECT_VALIDITY: Duration = Duration::from_secs(5 * 60);
@@ -25,6 +27,10 @@ struct PrepareRequest<'a> {
     #[serde(rename = "type")]
     message_type: &'static str,
     nonce: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_tab_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_url: Option<&'a str>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -112,11 +118,17 @@ impl ExtensionClient {
         Ok(Self { stream, session })
     }
 
-    pub async fn prepare(&mut self, nonce: &str) -> Result<PrepareResult, NativeBrowserError> {
+    pub async fn prepare(
+        &mut self,
+        nonce: &str,
+        target: Option<BrowserTarget<'_>>,
+    ) -> Result<PrepareResult, NativeBrowserError> {
         let request = PrepareRequest {
             protocol: INJECT_PROVIDER_PROTOCOL,
             message_type: "prepare",
             nonce,
+            target_tab_id: target.map(|value| value.tab_id),
+            target_url: target.map(|value| value.page_url),
         };
         let frame = self.session.seal(&request)?;
         timeout(OPERATION_TIMEOUT, write_message(&mut self.stream, &frame))
@@ -196,7 +208,11 @@ pub fn monotonic_not_after_ns(
 fn validate_prepare_result(result: &PrepareResult, nonce: &str) -> Result<(), NativeBrowserError> {
     let valid_outcome = matches!(
         result.outcome.as_str(),
-        "ready" | "provider-unavailable" | "invalid-request"
+        "ready"
+            | "provider-unavailable"
+            | "target-tab-unavailable"
+            | "target-url-mismatch"
+            | "invalid-request"
     );
     if result.protocol != INJECT_PROVIDER_PROTOCOL
         || result.message_type != "prepare.result"

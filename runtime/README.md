@@ -133,7 +133,10 @@ The legacy Node extension socket remains unshipped and is never a fallback.
 CLI `inject` and MCP `inject_credential` call one shared native Inject service. That service owns
 the OS Secret Store access, Agent private keys, grant delivery, credential decryption, authenticated
 domain checks and encrypted extension transport. MCP receives only a value-free outcome; no key or
-credential field crosses the MCP boundary. The frozen MCP 1.0 arguments remain unchanged.
+credential field crosses the MCP boundary. The byte-pinned MCP 1.0 contract remains immutable;
+MCP 1.1 adds only the paired `targetTabId` and exact `targetUrl` hints needed to route an
+Agent-prepared operation to one browser tab. The extension treats both as untrusted, independently
+resolves the tab and pins its top-frame document before any grant or credential delivery.
 
 This code-enabled branch is not by itself a production acceptance claim. Release readiness remains
 blocked until the exact signed/notarized packaged binary passes a real Chrome Native Messaging E2E
