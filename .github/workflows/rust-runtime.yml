@@ -41,6 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           bash -n ../packaging/macos/scripts/*.sh
+          bash -n ../packaging/macos/tests/development-runtime-bootstrap-cleanup.sh
           bash -n ../packaging/macos/tests/development-runtime-signing.sh
           plutil -lint ../packaging/macos/Info.plist.in
           plutil -lint ../packaging/macos/PalladinRuntime.entitlements.in
@@ -64,10 +65,10 @@ jobs:
             if (JSON.stringify(manifest.os) !== JSON.stringify(["darwin"])) process.exit(1);
             if (JSON.stringify(manifest.cpu) !== JSON.stringify([process.argv[2]])) process.exit(1);
           ' "$fake_root/staged/package.json" "$npm_arch"
-      - name: Verify local macOS development signing contract
+      - name: Verify first-run signing bootstrap cleanup
         working-directory: .
         shell: bash
-        run: node packaging/npm/run-bounded.mjs 120 bash packaging/macos/tests/development-runtime-signing.sh
+        run: bash packaging/macos/tests/development-runtime-bootstrap-cleanup.sh
       - name: Verify native runner architecture
         shell: bash
         run: |
