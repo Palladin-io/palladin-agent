@@ -44,6 +44,13 @@ cargo test --workspace --locked
 
 Run lint, build, and relevant tests before finishing code changes.
 
+On macOS, run source CLI commands that can open local Agent state through
+`packaging/macos/scripts/development-runtime.sh run -- ...`. Do not execute a
+fresh `target/debug/palladin` directly: its linker-generated ad hoc Designated
+Requirement changes after rebuilds and causes repeated Login Keychain prompts.
+The development signer remains Convenience-only and must never enter release
+packaging.
+
 ## Pull Requests
 
 - All changes go through pull requests.

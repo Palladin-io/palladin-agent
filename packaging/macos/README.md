@@ -1,4 +1,43 @@
-# macOS release boundary
+# macOS development and release boundary
+
+## Local source development
+
+Source builds use the Login Keychain Convenience tier. A normal Rust debug build
+is linker-signed ad hoc, so its Designated Requirement is a changing `CDHash`.
+macOS consequently asks again before a rebuilt binary may read an existing
+Palladin Keychain item.
+
+Use the development runtime script instead of executing `target/debug/palladin`
+directly:
+
+```bash
+./packaging/macos/scripts/development-runtime.sh bootstrap
+./packaging/macos/scripts/development-runtime.sh run -- doctor
+./packaging/macos/scripts/development-runtime.sh install-launcher ~/.local/bin/palladin
+```
+
+The bootstrap is offline and idempotent. It creates a self-signed,
+code-signing-only certificate named `Palladin Local Development` in a dedicated
+per-user Keychain. macOS may ask for one approval when that certificate is first
+trusted for code signing. The private key is non-extractable, and its ACL admits
+`/usr/bin/codesign`; it is not shared with release workflows. The Keychain has
+an empty password so a local build can unlock it after login or restart without
+operator presence. This does not expand Palladin's security claim: source builds
+still trust the complete same-user domain and report
+`Convenience - macOS Login Keychain`.
+
+The signed debug executable has the fixed identifier
+`io.palladin.runtime.development`, no Team ID, no entitlements and no Hardened
+Runtime flag. Existing Login Keychain items may ask once when moving from an old
+ad hoc build to this identity; subsequent rebuilds and worktrees retain the same
+Designated Requirement.
+
+`install-launcher` refuses to overwrite an existing file unless `--force` is
+provided. `reset --confirm` removes only the dedicated development certificate,
+trust setting and Keychain. Never replace this mechanism with an identifier-only
+ad hoc requirement or a wildcard Keychain ACL.
+
+## Release boundary
 
 The release workflow builds native arm64 and x86_64 slices, combines them into one universal executable, embeds it in `PalladinRuntime.app`, signs it with Developer ID, submits it to Apple notarization, staples the ticket, and packs the verified app into the platform npm package.
 
