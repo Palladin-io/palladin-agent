@@ -4,9 +4,7 @@
 mod transport;
 
 use palladin_api::CredentialAccess;
-use palladin_browser_bridge::{
-    InjectionError, InjectionFormDefinition, ProviderId, validate_https_page_url,
-};
+use palladin_browser_bridge::{InjectionError, InjectionFormDefinition, ProviderId};
 use palladin_credential::wait::{HeartbeatInfo, WaitOptions};
 use palladin_runtime::{
     InvocationSurface, OperationConnection, RuntimeError, RuntimeService, SecretStore,
@@ -37,6 +35,8 @@ use zeroize::Zeroize;
 
 #[cfg(target_os = "macos")]
 use palladin_browser_bridge::secure_transport::INJECT_PROVIDER_PROTOCOL;
+#[cfg(target_os = "macos")]
+use palladin_browser_bridge::validate_https_page_url;
 #[cfg(target_os = "macos")]
 use transport::NativeBrowserError;
 #[cfg(target_os = "macos")]
