@@ -103,13 +103,14 @@ fn execute(request: ExecutorRequest) -> Result<i32, ExecutorError> {
             Some(PrivateScript::new(&profile_root, script.as_bytes())?)
         }
     };
-    let (mut command, environment) = match &request {
+    let (mut command, environment, script_input) = match &request {
         ExecutorRequest::Command {
             command,
             environment,
-        } => (command.clone(), environment.as_slice()),
+        } => (command.clone(), environment.as_slice(), None),
         ExecutorRequest::Script {
             interpreter,
+            stdin,
             environment,
             ..
         } => (
@@ -123,6 +124,7 @@ fn execute(request: ExecutorRequest) -> Result<i32, ExecutorError> {
                     .into_owned(),
             ],
             environment.as_slice(),
+            Some(stdin.as_bytes()),
         ),
     };
     let executable = PinnedExecutable::resolve(
@@ -139,6 +141,7 @@ fn execute(request: ExecutorRequest) -> Result<i32, ExecutorError> {
         &profile_root,
         profile.sid(),
         &capability_attributes,
+        script_input,
     );
     drop(request);
     drop(environment);
@@ -155,13 +158,24 @@ fn launch_appcontainer(
     current_directory: &Path,
     appcontainer_sid: PSID,
     capabilities: &[SID_AND_ATTRIBUTES],
+    script_input: Option<&[u8]>,
 ) -> Result<i32, ExecutorError> {
     let mut standard_output = ChildPipe::new()?;
     let mut standard_error = ChildPipe::new()?;
-    let standard_input = open_null_input()?;
-    set_inheritable(&standard_input, true)?;
+    let mut input_pipe = script_input.map(|_| ChildInputPipe::new()).transpose()?;
+    let null_input = if input_pipe.is_none() {
+        let input = open_null_input()?;
+        set_inheritable(&input, true)?;
+        Some(input)
+    } else {
+        None
+    };
+    let input_handle = input_pipe.as_ref().map_or_else(
+        || raw_handle(null_input.as_ref().expect("null input")),
+        ChildInputPipe::child_handle,
+    );
     let inherited_handles = [
-        raw_handle(&standard_input),
+        input_handle,
         standard_output.child_handle(),
         standard_error.child_handle(),
     ];
@@ -222,7 +236,10 @@ fn launch_appcontainer(
     // Close our copies of the child's pipe endpoints before readers wait for EOF.
     standard_output.close_child();
     standard_error.close_child();
-    drop(standard_input);
+    if let Some(input_pipe) = &mut input_pipe {
+        input_pipe.close_child();
+    }
+    drop(null_input);
 
     // SAFETY: process and job handles are valid and the process is still suspended,
     // so no uncontained user code can run before assignment succeeds.
@@ -237,6 +254,17 @@ fn launch_appcontainer(
         }
     }
     drop(thread);
+
+    let input_writer = input_pipe.map(|mut pipe| {
+        let input = Zeroizing::new(script_input.unwrap_or_default().to_vec());
+        std::thread::spawn(move || -> Result<(), ExecutorError> {
+            let mut writer = pipe.take_parent()?;
+            writer
+                .write_all(input.as_slice())
+                .map_err(|_| ExecutorError::Output)?;
+            writer.flush().map_err(|_| ExecutorError::Output)
+        })
+    });
 
     let output_reader = standard_output.take_parent()?;
     let error_reader = standard_error.take_parent()?;
@@ -260,6 +288,9 @@ fn launch_appcontainer(
     drop(job);
     output.join().map_err(|_| ExecutorError::Output)??;
     errors.join().map_err(|_| ExecutorError::Output)??;
+    if let Some(input_writer) = input_writer {
+        input_writer.join().map_err(|_| ExecutorError::Output)??;
+    }
     Ok(i32::from_ne_bytes(exit_code.to_ne_bytes()))
 }
 
@@ -295,6 +326,48 @@ fn create_kill_job() -> Result<OwnedHandle, ExecutorError> {
 struct ChildPipe {
     parent: Option<OwnedHandle>,
     child: Option<OwnedHandle>,
+}
+
+struct ChildInputPipe {
+    parent: Option<OwnedHandle>,
+    child: Option<OwnedHandle>,
+}
+
+impl ChildInputPipe {
+    fn new() -> Result<Self, ExecutorError> {
+        let mut attributes = SECURITY_ATTRIBUTES {
+            nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>())
+                .map_err(|_| ExecutorError::Containment)?,
+            lpSecurityDescriptor: null_mut(),
+            bInheritHandle: true.into(),
+        };
+        let mut child = HANDLE::default();
+        let mut parent = HANDLE::default();
+        unsafe {
+            CreatePipe(&mut child, &mut parent, Some(&raw mut attributes), 0)
+                .map_err(|_| ExecutorError::Containment)?;
+        }
+        let child = unsafe { owned_handle(child)? };
+        let parent = unsafe { owned_handle(parent)? };
+        set_inheritable(&parent, false)?;
+        Ok(Self {
+            parent: Some(parent),
+            child: Some(child),
+        })
+    }
+
+    fn child_handle(&self) -> HANDLE {
+        raw_handle(self.child.as_ref().expect("child input pipe handle"))
+    }
+
+    fn close_child(&mut self) {
+        self.child.take();
+    }
+
+    fn take_parent(&mut self) -> Result<File, ExecutorError> {
+        let parent = self.parent.take().ok_or(ExecutorError::Containment)?;
+        Ok(File::from(parent))
+    }
 }
 
 impl ChildPipe {
@@ -972,6 +1045,7 @@ mod tests {
             &profile_root,
             profile.sid(),
             &capabilities,
+            None,
         )
         .expect("contained probe");
         drop(executable);
@@ -1016,6 +1090,7 @@ mod tests {
             &profile_root,
             profile.sid(),
             &capabilities,
+            None,
         )
         .expect("contained script probe");
         drop(executable);
@@ -1062,6 +1137,7 @@ mod tests {
             &profile_root,
             profile.sid(),
             &capabilities,
+            None,
         )
         .expect("contained tree probe");
         assert_eq!(exit, 0);

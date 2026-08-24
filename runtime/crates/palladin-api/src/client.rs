@@ -21,6 +21,7 @@ use crate::types::{
 
 const MAX_BOUNDED_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_FORM_MAP_RESPONSE_BYTES: usize = 128 * 1024;
+const MAX_SCRIPT_EXECUTION_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -428,6 +429,59 @@ impl ApiClient {
         }
     }
 
+    pub async fn get_script_execution_package(
+        &self,
+        vault_id: &str,
+        script_entry_id: &str,
+        script_revision: &str,
+    ) -> Result<crate::ScriptExecutionPackageResponse, ApiError> {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RequestBody<'a> {
+            vault_id: &'a str,
+            script_entry_id: &'a str,
+            script_revision: &'a str,
+        }
+
+        let body = serde_json::to_vec(&RequestBody {
+            vault_id,
+            script_entry_id,
+            script_revision,
+        })
+        .map_err(|_| ApiError::InvalidInput)?;
+        let path = format!(
+            "/api/agent/vaults/{}/scripts/{}/execution-package",
+            encode_component(vault_id),
+            encode_component(script_entry_id)
+        );
+        let response = self
+            .send(
+                Method::POST,
+                &path,
+                Some(body),
+                &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
+            )
+            .await?;
+        let (status, body) =
+            read_bounded_response_with_limit(response, MAX_SCRIPT_EXECUTION_RESPONSE_BYTES).await?;
+        if !status.is_success() {
+            if status == StatusCode::CONFLICT {
+                return match script_execution_denial_reason(&body).as_deref() {
+                    Some("stale-discovery") => Err(ApiError::ScriptStaleDiscovery),
+                    Some("invalid-package" | "overlapping-grants") => {
+                        Err(ApiError::ScriptInvalidPackage)
+                    }
+                    _ => Err(ApiError::InvalidResponse),
+                };
+            }
+            return Err(ApiError::Http(status.as_u16()));
+        }
+        serde_json::from_slice::<crate::ScriptExecutionPackageResponse>(&body)
+            .map_err(|_| ApiError::InvalidResponse)?
+            .validate()
+            .map_err(|_| ApiError::InvalidResponse)
+    }
+
     pub async fn get_grant_status(
         &self,
         vault_id: &str,
@@ -652,6 +706,15 @@ fn header(value: &str) -> Result<HeaderValue, ApiError> {
     HeaderValue::from_str(value).map_err(|_| ApiError::InvalidInput)
 }
 
+fn script_execution_denial_reason(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    value
+        .pointer("/errors/generalErrors/0")
+        .or_else(|| value.pointer("/errors/GeneralErrors/0"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
 fn encode_component(value: &str) -> String {
     utf8_percent_encode(value, ENCODE_URI_COMPONENT).to_string()
 }
@@ -691,6 +754,10 @@ pub enum ApiError {
     InvalidCursor,
     #[error("API response exceeds the size limit")]
     SizeLimitExceeded,
+    #[error("Script Discovery is stale")]
+    ScriptStaleDiscovery,
+    #[error("Script execution package is unavailable or invalid")]
+    ScriptInvalidPackage,
 }
 
 #[cfg(test)]
@@ -1044,6 +1111,93 @@ mod tests {
         assert!(requests[0].ends_with(r#"{"vaultId":"vault/id","cursor":"cursor","pageSize":50}"#));
         assert!(
             requests[1].ends_with(r#"{"vaultId":"vault/id","afterSequence":"12","pageSize":25}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn script_execution_uses_one_value_free_package_request() {
+        const VAULT_ID: &str = "11111111-1111-4111-8111-111111111111";
+        const SCRIPT_ID: &str = "22222222-2222-4222-8222-222222222222";
+        let response = r#"{
+          "status":"granted","authorizationSource":"scriptExecution",
+          "organizationId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "vaultId":"11111111-1111-4111-8111-111111111111",
+          "agentId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","agentAccessEpoch":3,
+          "scriptEntryId":"22222222-2222-4222-8222-222222222222","scriptRevision":"7",
+          "grantId":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","queryCount":1,"queryLimit":10,
+          "expiresAt":null,
+          "scriptPackage":{
+            "contractVersion":1,"organizationId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "vaultId":"11111111-1111-4111-8111-111111111111",
+            "grantId":"cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "agentId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","agentAccessEpoch":3,
+            "scriptEntryId":"22222222-2222-4222-8222-222222222222","scriptRevision":"7",
+            "packageRevision":"4","recipientAgentKeyVersion":2,
+            "recipientAgentKeyFingerprint":"fingerprint","manifestDigest":"digest",
+            "scopes":[{"entryId":"22222222-2222-4222-8222-222222222222","entryRevision":"7","isScript":true}],
+            "encodedPackageCiphertext":"ciphertext"
+          },
+          "agentWrappedVaultKey":null,"vaultEntries":null
+        }"#;
+        let (host, requests) = response_server(vec![(200, response)]).await;
+        let api = client(&host, vec![23; 32], Duration::from_secs(1));
+
+        let package = api
+            .get_script_execution_package(VAULT_ID, SCRIPT_ID, "7")
+            .await
+            .expect("package");
+        assert_eq!(package.authorization_source, "scriptExecution");
+        assert!(package.script_package.is_some());
+
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with(&format!(
+            "POST /api/agent/vaults/{VAULT_ID}/scripts/{SCRIPT_ID}/execution-package HTTP/1.1"
+        )));
+        let (_, body) = requests[0].split_once("\r\n\r\n").expect("body");
+        assert_eq!(
+            body,
+            format!(
+                r#"{{"vaultId":"{VAULT_ID}","scriptEntryId":"{SCRIPT_ID}","scriptRevision":"7"}}"#
+            )
+        );
+        for forbidden in [
+            "parameters",
+            "description",
+            "scriptSource",
+            "result",
+            "stdout",
+            "stderr",
+        ] {
+            assert!(!body.contains(forbidden), "request contains {forbidden}");
+        }
+    }
+
+    #[tokio::test]
+    async fn script_execution_maps_only_exact_conflict_reasons() {
+        let stale = r#"{"statusCode":409,"errors":{"generalErrors":["stale-discovery"]}}"#;
+        let invalid = r#"{"statusCode":409,"errors":{"generalErrors":["invalid-package"]}}"#;
+        let unknown = r#"{"statusCode":409,"errors":{"generalErrors":["future-reason"]}}"#;
+        let (host, _) = response_server(vec![(409, stale), (409, invalid), (409, unknown)]).await;
+        let api = client(&host, vec![24; 32], Duration::from_secs(1));
+
+        assert_eq!(
+            api.get_script_execution_package("vault", "script", "7")
+                .await
+                .expect_err("stale"),
+            ApiError::ScriptStaleDiscovery
+        );
+        assert_eq!(
+            api.get_script_execution_package("vault", "script", "7")
+                .await
+                .expect_err("invalid"),
+            ApiError::ScriptInvalidPackage
+        );
+        assert_eq!(
+            api.get_script_execution_package("vault", "script", "7")
+                .await
+                .expect_err("unknown"),
+            ApiError::InvalidResponse
         );
     }
 

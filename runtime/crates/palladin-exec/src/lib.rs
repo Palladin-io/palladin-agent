@@ -18,8 +18,7 @@ use secrecy::SecretString;
 #[cfg(not(windows))]
 use tempfile::TempDir;
 use thiserror::Error;
-#[cfg(any(windows, target_os = "linux"))]
-use tokio::io::AsyncWriteExt as _;
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -83,6 +82,25 @@ pub enum OperatorOutput {
 pub struct ExecResult {
     pub exit_code: i32,
     pub cancelled: bool,
+}
+
+pub struct CapturedScriptResult {
+    pub exit_code: i32,
+    pub cancelled: bool,
+    pub stdout: zeroize::Zeroizing<Vec<u8>>,
+    pub stdout_too_large: bool,
+}
+
+impl std::fmt::Debug for CapturedScriptResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CapturedScriptResult")
+            .field("exit_code", &self.exit_code)
+            .field("cancelled", &self.cancelled)
+            .field("stdout", &"[REDACTED]")
+            .field("stdout_too_large", &self.stdout_too_large)
+            .finish()
+    }
 }
 
 pub struct SecretEnvironment {
@@ -438,6 +456,99 @@ async fn run_linux_request(
 }
 
 #[cfg(target_os = "linux")]
+async fn run_linux_request_captured(
+    request: ExecutorRequest,
+    cancellation: &CancellationToken,
+) -> Result<CapturedScriptResult, ExecError> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+
+    if cancellation.is_cancelled() {
+        return Ok(cancelled_capture());
+    }
+    let payload = palladin_linux_executor::encode_request(&request)
+        .map_err(|_| ExecError::HardenedExecutorProtocol)?;
+    drop(request);
+    let marker = std::fs::read_to_string(palladin_linux_executor::INSTALL_MARKER)
+        .map_err(|_| ExecError::HardenedExecutorUnavailable)?;
+    let metadata = std::fs::symlink_metadata(palladin_linux_executor::INSTALL_MARKER)
+        .map_err(|_| ExecError::HardenedExecutorUnavailable)?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != 0
+        || metadata.permissions().mode() & 0o777 != 0o644
+        || metadata.nlink() != 1
+    {
+        return Err(ExecError::HardenedExecutorUnavailable);
+    }
+    let (_, _, executor_gid) = palladin_linux_executor::parse_install_identity(&marker)
+        .ok_or(ExecError::HardenedExecutorUnavailable)?;
+    let stream = tokio::net::UnixStream::connect(palladin_linux_executor::SOCKET_PATH)
+        .await
+        .map_err(|_| ExecError::HardenedExecutorUnavailable)?;
+    let socket_metadata = std::fs::symlink_metadata(palladin_linux_executor::SOCKET_PATH)
+        .map_err(|_| ExecError::HardenedExecutorUnavailable)?;
+    if !socket_metadata.file_type().is_socket()
+        || socket_metadata.file_type().is_symlink()
+        || socket_metadata.uid() != 0
+        || socket_metadata.gid() != executor_gid
+        || socket_metadata.permissions().mode() & 0o777 != 0o660
+    {
+        return Err(ExecError::HardenedExecutorUnavailable);
+    }
+    let (mut reader, mut writer) = stream.into_split();
+    writer
+        .write_u32(u32::try_from(payload.len()).map_err(|_| ExecError::HardenedExecutorProtocol)?)
+        .await
+        .map_err(|_| ExecError::HardenedExecutorProtocol)?;
+    writer
+        .write_all(&payload)
+        .await
+        .map_err(|_| ExecError::HardenedExecutorProtocol)?;
+    writer
+        .flush()
+        .await
+        .map_err(|_| ExecError::HardenedExecutorProtocol)?;
+    drop(payload);
+    let mut stdout = zeroize::Zeroizing::new(Vec::new());
+    let mut stdout_too_large = false;
+    loop {
+        let frame = tokio::select! {
+            result = read_linux_executor_frame(&mut reader) => result?,
+            () = cancellation.cancelled() => {
+                drop(writer);
+                return Ok(cancelled_capture());
+            }
+        };
+        match &frame {
+            palladin_linux_executor::ExecutorFrame::Output {
+                stream: palladin_linux_executor::ExecutorOutput::Stdout,
+                bytes,
+                ..
+            } => {
+                let remaining = (MAX_CAPTURED_STDOUT_BYTES + 1).saturating_sub(stdout.len());
+                let copied = bytes.len().min(remaining);
+                stdout.extend_from_slice(&bytes[..copied]);
+                stdout_too_large |=
+                    bytes.len() > copied || stdout.len() > MAX_CAPTURED_STDOUT_BYTES;
+            }
+            palladin_linux_executor::ExecutorFrame::Output { .. } => {}
+            palladin_linux_executor::ExecutorFrame::Exited { code } => {
+                drop(writer);
+                return Ok(CapturedScriptResult {
+                    exit_code: *code,
+                    cancelled: false,
+                    stdout,
+                    stdout_too_large,
+                });
+            }
+            palladin_linux_executor::ExecutorFrame::Rejected => {
+                return Err(ExecError::HardenedExecutorProtocol);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 async fn read_linux_executor_frame<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut R,
 ) -> Result<palladin_linux_executor::ExecutorFrame, ExecError> {
@@ -536,6 +647,83 @@ async fn run_windows_request(
     })
 }
 
+#[cfg(windows)]
+async fn run_windows_request_captured(
+    request: ExecutorRequest,
+    cancellation: &CancellationToken,
+) -> Result<CapturedScriptResult, ExecError> {
+    if cancellation.is_cancelled() {
+        return Ok(cancelled_capture());
+    }
+    let payload = request
+        .encode()
+        .map_err(|_| ExecError::HardenedExecutorProtocol)?;
+    drop(request);
+    let length = u32::try_from(payload.len())
+        .map_err(|_| ExecError::HardenedExecutorProtocol)?
+        .to_be_bytes();
+    let executable = palladin_windows_executor::trusted_executor_path()
+        .map_err(|_| ExecError::HardenedExecutorUnavailable)?;
+    let mut process = Command::new(executable);
+    process
+        .env_clear()
+        .envs(sanitized_environment())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    sanitize_child(process.as_std_mut());
+    let mut child = process
+        .group()
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| ExecError::HardenedExecutorUnavailable)?;
+    drop(process);
+    let mut standard_input = child
+        .inner()
+        .stdin
+        .take()
+        .ok_or(ExecError::HardenedExecutorProtocol)?;
+    let stdout = child
+        .inner()
+        .stdout
+        .take()
+        .ok_or(ExecError::HardenedExecutorProtocol)?;
+    let stderr = child
+        .inner()
+        .stderr
+        .take()
+        .ok_or(ExecError::HardenedExecutorProtocol)?;
+    tokio::select! {
+        result = async {
+            standard_input.write_all(&length).await?;
+            standard_input.write_all(&payload).await?;
+            standard_input.shutdown().await
+        } => result.map_err(|_| ExecError::HardenedExecutorProtocol)?,
+        () = cancellation.cancelled() => {
+            let _ = child.kill().await;
+            return Ok(cancelled_capture());
+        }
+    }
+    drop(standard_input);
+    drop(payload);
+    let captured = tokio::spawn(capture_stream(stdout));
+    let discarded = tokio::spawn(discard_stream(stderr));
+    let (status, cancelled) = wait_for_group(&mut child, cancellation).await?;
+    let (stdout, stdout_too_large) = captured.await.map_err(|_| ExecError::Wait)??;
+    discarded.await.map_err(|_| ExecError::Wait)??;
+    Ok(CapturedScriptResult {
+        exit_code: if cancelled {
+            130
+        } else {
+            status.code().unwrap_or(1)
+        },
+        cancelled,
+        stdout,
+        stdout_too_large,
+    })
+}
+
 pub fn validate_command(command: &[String]) -> Result<(), ExecError> {
     let Some((program, _arguments)) = command.split_first() else {
         return Err(ExecError::MissingCommand);
@@ -601,12 +789,15 @@ pub async fn run_script(
     output: OperatorOutput,
     cancellation: &CancellationToken,
 ) -> Result<ExecResult, ExecError> {
+    #[cfg(any(windows, target_os = "linux"))]
+    let empty_input = SecretString::from(String::new());
     #[cfg(windows)]
     {
         return run_windows_request(
             ExecutorRequest::script(
                 interpreter.executable.clone(),
                 script,
+                &empty_input,
                 environment.into_executor_variables(),
             ),
             output,
@@ -622,6 +813,7 @@ pub async fn run_script(
                 ExecutorRequest::script(
                     interpreter.executable.clone(),
                     script,
+                    &empty_input,
                     environment.into_executor_variables(),
                 ),
                 output,
@@ -637,6 +829,151 @@ pub async fn run_script(
         let result = run_command(&command, environment, output, cancellation).await;
         temporary.close()?;
         result
+    }
+}
+
+pub async fn run_script_captured(
+    script: &SecretString,
+    interpreter: &ResolvedInterpreter,
+    environment: SecretEnvironment,
+    stdin: &SecretString,
+    cancellation: &CancellationToken,
+) -> Result<CapturedScriptResult, ExecError> {
+    #[cfg(windows)]
+    {
+        return run_windows_request_captured(
+            ExecutorRequest::script(
+                interpreter.executable.clone(),
+                script,
+                stdin,
+                environment.into_executor_variables(),
+            ),
+            cancellation,
+        )
+        .await;
+    }
+    #[cfg(not(windows))]
+    {
+        #[cfg(target_os = "linux")]
+        if linux_hardened_worker() {
+            return run_linux_request_captured(
+                ExecutorRequest::script(
+                    interpreter.executable.clone(),
+                    script,
+                    stdin,
+                    environment.into_executor_variables(),
+                ),
+                cancellation,
+            )
+            .await;
+        }
+        if cancellation.is_cancelled() {
+            return Ok(cancelled_capture());
+        }
+        let temporary = TempScript::new(script)?;
+        let mut process = Command::new(&interpreter.executable);
+        process
+            .arg(temporary.path())
+            .env_clear()
+            .envs(sanitized_environment())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        for (name, value) in &environment.values {
+            process.env(name, value.expose_secret());
+        }
+        sanitize_child(process.as_std_mut());
+        let mut child = process
+            .group()
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    ExecError::InterpreterUnavailable
+                } else {
+                    ExecError::Spawn
+                }
+            })?;
+        drop(process);
+        drop(environment);
+        let mut standard_input = child.inner().stdin.take().ok_or(ExecError::Spawn)?;
+        let stdout = child.inner().stdout.take().ok_or(ExecError::Spawn)?;
+        let stderr = child.inner().stderr.take().ok_or(ExecError::Spawn)?;
+        let input = stdin.expose_secret().as_bytes();
+        tokio::select! {
+            result = async {
+                standard_input.write_all(input).await?;
+                standard_input.shutdown().await
+            } => result.map_err(|_| ExecError::Wait)?,
+            () = cancellation.cancelled() => {
+                let _ = child.kill().await;
+                temporary.close()?;
+                return Ok(cancelled_capture());
+            }
+        }
+        drop(standard_input);
+        let captured = tokio::spawn(capture_stream(stdout));
+        let discarded = tokio::spawn(discard_stream(stderr));
+        let (status, cancelled) = wait_for_group(&mut child, cancellation).await?;
+        let (stdout, stdout_too_large) = captured.await.map_err(|_| ExecError::Wait)??;
+        discarded.await.map_err(|_| ExecError::Wait)??;
+        temporary.close()?;
+        Ok(CapturedScriptResult {
+            exit_code: if cancelled {
+                130
+            } else {
+                status.code().unwrap_or(1)
+            },
+            cancelled,
+            stdout,
+            stdout_too_large,
+        })
+    }
+}
+
+const MAX_CAPTURED_STDOUT_BYTES: usize = 65_536;
+
+async fn capture_stream<R: AsyncRead + Unpin>(
+    mut reader: R,
+) -> Result<(zeroize::Zeroizing<Vec<u8>>, bool), ExecError> {
+    let mut captured = zeroize::Zeroizing::new(Vec::new());
+    let mut too_large = false;
+    let mut buffer = zeroize::Zeroizing::new(vec![0_u8; 16 * 1024]);
+    loop {
+        let count = reader
+            .read(buffer.as_mut_slice())
+            .await
+            .map_err(|_| ExecError::Wait)?;
+        if count == 0 {
+            return Ok((captured, too_large));
+        }
+        let remaining = (MAX_CAPTURED_STDOUT_BYTES + 1).saturating_sub(captured.len());
+        let copied = count.min(remaining);
+        captured.extend_from_slice(&buffer[..copied]);
+        too_large |= count > copied || captured.len() > MAX_CAPTURED_STDOUT_BYTES;
+    }
+}
+
+async fn discard_stream<R: AsyncRead + Unpin>(mut reader: R) -> Result<(), ExecError> {
+    let mut buffer = zeroize::Zeroizing::new(vec![0_u8; 16 * 1024]);
+    loop {
+        let count = reader
+            .read(buffer.as_mut_slice())
+            .await
+            .map_err(|_| ExecError::Wait)?;
+        if count == 0 {
+            return Ok(());
+        }
+    }
+}
+
+fn cancelled_capture() -> CapturedScriptResult {
+    CapturedScriptResult {
+        exit_code: 130,
+        cancelled: true,
+        stdout: zeroize::Zeroizing::new(Vec::new()),
+        stdout_too_large: false,
     }
 }
 
@@ -852,6 +1189,55 @@ mod tests {
                 Err(EnvironmentError::ReservedName)
             ));
         }
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn captured_script_receives_only_the_dedicated_stdin_frame_and_discards_stderr() {
+        let interpreter = resolve_interpreter("sh").expect("sh");
+        let script = SecretString::from(
+            "payload=$(cat); printf '%s' \"$payload\"; i=0; while [ $i -lt 1000 ]; do printf error >&2; i=$((i+1)); done"
+                .to_owned(),
+        );
+        let parameters = SecretString::from(r#"{"limit":5,"team":"ops"}"#.to_owned());
+        let result = run_script_captured(
+            &script,
+            &interpreter,
+            SecretEnvironment::new(),
+            &parameters,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("captured execution");
+        assert_eq!(result.exit_code, 0);
+        assert!(!result.cancelled);
+        assert!(!result.stdout_too_large);
+        let stdout_matches_parameters =
+            result.stdout.as_slice() == parameters.expose_secret().as_bytes();
+        assert!(
+            stdout_matches_parameters,
+            "captured stdout diverged from the dedicated input frame"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn captured_script_marks_stdout_larger_than_the_result_contract() {
+        let interpreter = resolve_interpreter("sh").expect("sh");
+        let script = SecretString::from(
+            "i=0; while [ $i -lt 65537 ]; do printf x; i=$((i+1)); done".to_owned(),
+        );
+        let result = run_script_captured(
+            &script,
+            &interpreter,
+            SecretEnvironment::new(),
+            &SecretString::from("{}".to_owned()),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("captured execution");
+        assert!(result.stdout_too_large);
+        assert_eq!(result.stdout.len(), 65_537);
     }
 
     #[test]

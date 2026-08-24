@@ -11,9 +11,9 @@ use tokio_util::sync::CancellationToken;
 use super::{
     ApplicationFuture, BoundedLineReader, ExecInput, ExecToolResult, GetInput, InjectInput,
     InjectToolResult, MAX_BATCH_ITEMS, MAX_FRAME_BYTES, McpApplication, PalladinMcpServer,
-    ProtocolBridgeState, ReportStaleInput, SearchInput, ToolOutcome, collect_batch_response,
-    load_tools, parse_input, prepare_incoming_message, pretty_result, serve_io, validate_get,
-    validate_inject, validate_search, wait_options,
+    ProtocolBridgeState, ReportStaleInput, ScriptExecToolResult, SearchInput, ToolOutcome,
+    collect_batch_response, load_tools, parse_input, prepare_incoming_message, pretty_result,
+    serve_io, validate_exec, validate_get, validate_inject, validate_search, wait_options,
 };
 
 #[derive(Clone, Default)]
@@ -93,10 +93,22 @@ fn frozen_contract_exposes_exactly_five_legacy_tools() {
             "report_credential_stale",
         ]
     );
-    for tool in tools {
+    for tool in &tools {
         assert!(tool.description.is_some());
         assert_eq!(tool.input_schema.get("type"), Some(&json!("object")));
     }
+    let exec = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "exec_with_credential")
+        .expect("exec tool");
+    assert_eq!(
+        exec.input_schema["properties"]["parameters"]["type"],
+        "object"
+    );
+    assert_eq!(
+        exec.input_schema["properties"]["parameters"]["maxProperties"],
+        32
+    );
 }
 
 #[test]
@@ -193,6 +205,22 @@ fn tool_arguments_fail_closed_on_unknown_fields_and_invalid_wait_options() {
     .expect("shape is valid");
     assert!(validate_get(&invalid_wait).is_err());
 
+    let script = parse_input::<ExecInput>(json!({
+        "vaultId": "vault-fixture",
+        "entryId": "script-fixture",
+        "parameters": {"activeOnly": true, "limit": 25}
+    }))
+    .expect("Script exec input");
+    validate_exec(&script).expect("typed parameter object");
+    assert!(
+        parse_input::<ExecInput>(json!({
+            "vaultId": "vault-fixture",
+            "entryId": "script-fixture",
+            "parameters": "must-not-be-accepted"
+        }))
+        .is_err()
+    );
+
     let unicode_query = SearchInput {
         query: "ż".repeat(512),
         cursor: None,
@@ -277,6 +305,29 @@ fn exec_result_contains_only_status_and_a_fixed_withheld_marker() {
     );
     assert!(result.get("stdout").is_none());
     assert!(result.get("stderr").is_none());
+}
+
+#[test]
+fn script_exec_result_returns_safe_stdout_or_one_explicit_withheld_code() {
+    let safe = pretty_result(&ScriptExecToolResult {
+        exit_code: 0,
+        result: Some("42 users"),
+        result_withheld: None,
+    });
+    assert_eq!(
+        serde_json::from_str::<Value>(&safe.text).expect("safe Script result"),
+        json!({"exitCode": 0, "result": "42 users"})
+    );
+
+    let withheld = pretty_result(&ScriptExecToolResult {
+        exit_code: 0,
+        result: None,
+        result_withheld: Some("protected-literal-detected"),
+    });
+    let withheld: Value = serde_json::from_str(&withheld.text).expect("withheld Script result");
+    assert_eq!(withheld["resultWithheld"], "protected-literal-detected");
+    assert!(withheld.get("result").is_none());
+    assert!(withheld.get("stderr").is_none());
 }
 
 #[test]

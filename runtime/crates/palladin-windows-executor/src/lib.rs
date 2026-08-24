@@ -103,6 +103,7 @@ pub enum ExecutorRequest {
     Script {
         interpreter: PathBuf,
         script: String,
+        stdin: String,
         environment: Vec<SecretVariable>,
     },
 }
@@ -120,11 +121,13 @@ impl ExecutorRequest {
     pub fn script(
         interpreter: PathBuf,
         script: &SecretString,
+        stdin: &SecretString,
         environment: Vec<SecretVariable>,
     ) -> Self {
         Self::Script {
             interpreter,
             script: script.expose_secret().to_owned(),
+            stdin: stdin.expose_secret().to_owned(),
             environment,
         }
     }
@@ -147,8 +150,9 @@ impl ExecutorRequest {
 
 impl Drop for ExecutorRequest {
     fn drop(&mut self) {
-        if let Self::Script { script, .. } = self {
+        if let Self::Script { script, stdin, .. } = self {
             script.zeroize();
+            stdin.zeroize();
         }
     }
 }

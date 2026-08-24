@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use palladin_api::{AgentVisibleField, EntrySearchItem, EntrySearchResult};
+use palladin_api::{
+    AgentVisibleField, EntrySearchItem, EntrySearchResult, ScriptExecutionDiscovery,
+};
+use palladin_crypto::ScriptExecutionMetadata;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -14,7 +17,7 @@ const MAX_LOGICAL_INDEX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PAGE_SIZE: usize = 200;
 const DEFAULT_PAGE_SIZE: usize = 50;
 const CURSOR_BYTES: usize = 49;
-const DURABLE_CACHE_SCHEMA_VERSION: u32 = 1;
+const DURABLE_CACHE_SCHEMA_VERSION: u32 = 2;
 const MAX_DURABLE_CACHE_BYTES: usize = MAX_LOGICAL_INDEX_BYTES + 4 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -35,6 +38,8 @@ struct DurableIndexedEntry {
     entry_id: String,
     label: String,
     approved_fields: Vec<AgentVisibleField>,
+    entry_type: String,
+    script_execution: Option<ScriptExecutionMetadata>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -63,6 +68,7 @@ pub(crate) struct DiscoveryPlaintext {
     pub capabilities: Vec<String>,
     pub fields: Vec<DiscoveryField>,
     pub entry_type: String,
+    pub execution: Option<ScriptExecutionMetadata>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,6 +83,13 @@ impl Drop for DiscoveryPlaintext {
         self.schema.zeroize();
         self.agent_label.zeroize();
         self.entry_type.zeroize();
+        if let Some(execution) = &mut self.execution {
+            execution.description.zeroize();
+            for parameter in &mut execution.parameters {
+                parameter.name.zeroize();
+                parameter.description.zeroize();
+            }
+        }
         for capability in &mut self.capabilities {
             capability.zeroize();
         }
@@ -108,6 +121,13 @@ impl DiscoveryPlaintext {
                     || !field_ids.insert(field.id.as_str())
                     || field.value.len() > 2_048
             })
+            || (self.entry_type == "script"
+                && (self.capabilities.as_slice() != ["exec"]
+                    || self
+                        .execution
+                        .as_ref()
+                        .is_some_and(|execution| execution.validate().is_err())))
+            || (self.entry_type != "script" && self.execution.is_some())
         {
             return Err(RuntimeError::InvalidDiscoveryPayload);
         }
@@ -122,6 +142,8 @@ struct IndexedEntry {
     label: String,
     url_domain: Option<String>,
     approved_fields: Vec<AgentVisibleField>,
+    entry_type: String,
+    script_execution: Option<ScriptExecutionMetadata>,
     searchable: String,
 }
 
@@ -142,6 +164,14 @@ impl Drop for IndexedEntry {
             field.label.zeroize();
             field.value.zeroize();
         }
+        self.entry_type.zeroize();
+        if let Some(execution) = &mut self.script_execution {
+            execution.description.zeroize();
+            for parameter in &mut execution.parameters {
+                parameter.name.zeroize();
+                parameter.description.zeroize();
+            }
+        }
         self.searchable.zeroize();
     }
 }
@@ -154,6 +184,15 @@ impl IndexedEntry {
             .saturating_add(self.label.len())
             .saturating_add(self.url_domain.as_ref().map_or(0, String::len))
             .saturating_add(self.searchable.len())
+            .saturating_add(self.entry_type.len())
+            .saturating_add(self.script_execution.as_ref().map_or(0, |execution| {
+                execution.description.len()
+                    + execution
+                        .parameters
+                        .iter()
+                        .map(|parameter| parameter.name.len() + parameter.description.len())
+                        .sum::<usize>()
+            }))
             .saturating_add(
                 self.approved_fields
                     .iter()
@@ -202,6 +241,8 @@ impl LocalDiscoveryIndex {
                     entry_id: entry.entry_id.clone(),
                     label: entry.label.clone(),
                     approved_fields: entry.approved_fields.clone(),
+                    entry_type: entry.entry_type.clone(),
+                    script_execution: entry.script_execution.clone(),
                 })
                 .collect(),
             checkpoints: self
@@ -322,6 +363,8 @@ impl LocalDiscoveryIndex {
                 label: entry.label,
                 url_domain,
                 approved_fields: entry.approved_fields,
+                entry_type: entry.entry_type,
+                script_execution: entry.script_execution,
                 searchable,
             };
             index.logical_bytes = index
@@ -510,6 +553,8 @@ impl LocalDiscoveryIndex {
             label: std::mem::take(&mut plaintext.agent_label),
             url_domain,
             approved_fields,
+            entry_type: std::mem::take(&mut plaintext.entry_type),
+            script_execution: plaintext.execution.take(),
             searchable,
         };
         let replaced_bytes = self
@@ -590,8 +635,23 @@ impl LocalDiscoveryIndex {
                 vault_id: entry.vault_id.clone(),
                 label: entry.label.clone(),
                 url_domain: entry.url_domain.clone(),
-                description: None,
+                description: entry
+                    .script_execution
+                    .as_ref()
+                    .map(|execution| execution.description.clone()),
                 agent_fields: entry.approved_fields.clone(),
+                script_execution: entry.script_execution.as_ref().and_then(|execution| {
+                    let checkpoint = self
+                        .entry_checkpoints
+                        .get(&(entry.vault_id.clone(), entry.entry_id.clone()))?;
+                    Some(ScriptExecutionDiscovery {
+                        contract_version: execution.contract_version,
+                        script_revision: checkpoint.revision.to_string(),
+                        description: execution.description.clone(),
+                        parameters: execution.parameters.clone(),
+                        return_result_to_agent: execution.effective_return_result_to_agent(),
+                    })
+                }),
             })
             .collect::<Vec<_>>();
         let next_offset = offset.saturating_add(items.len());
@@ -632,6 +692,45 @@ impl LocalDiscoveryIndex {
             .iter()
             .find(|field| field.label == field_id)
             .map(|field| field.value.clone()))
+    }
+
+    pub(crate) fn script_execution(
+        &self,
+        vault_id: &str,
+        entry_id: &str,
+    ) -> Result<ScriptExecutionDiscovery, RuntimeError> {
+        let key = (vault_id.to_owned(), entry_id.to_owned());
+        let checkpoint = self
+            .entry_checkpoints
+            .get(&key)
+            .filter(|checkpoint| checkpoint.live)
+            .ok_or(RuntimeError::ScriptExecutionMetadataUnavailable)?;
+        let entry = self
+            .entries
+            .get(&key)
+            .filter(|entry| entry.entry_type == "script")
+            .ok_or(RuntimeError::ScriptExecutionMetadataUnavailable)?;
+        let execution = entry
+            .script_execution
+            .as_ref()
+            .ok_or(RuntimeError::ScriptExecutionMetadataUnavailable)?;
+        Ok(ScriptExecutionDiscovery {
+            contract_version: execution.contract_version,
+            script_revision: checkpoint.revision.to_string(),
+            description: execution.description.clone(),
+            parameters: execution.parameters.clone(),
+            return_result_to_agent: execution.effective_return_result_to_agent(),
+        })
+    }
+
+    pub(crate) fn entry_type(&self, vault_id: &str, entry_id: &str) -> Option<&str> {
+        let key = (vault_id.to_owned(), entry_id.to_owned());
+        self.entry_checkpoints
+            .get(&key)
+            .filter(|checkpoint| checkpoint.live)?;
+        self.entries
+            .get(&key)
+            .map(|entry| entry.entry_type.as_str())
     }
 
     fn encode_cursor(
@@ -696,6 +795,12 @@ fn valid_cache_entry(entry: &DurableIndexedEntry) -> bool {
     valid_cache_text(&entry.vault_id, 256)
         && valid_cache_text(&entry.entry_id, 256)
         && valid_cache_text(&entry.label, 512)
+        && matches!(entry.entry_type.as_str(), "key" | "credential" | "script")
+        && (entry.entry_type == "script" || entry.script_execution.is_none())
+        && entry
+            .script_execution
+            .as_ref()
+            .is_none_or(|execution| execution.validate().is_ok())
         && entry.approved_fields.len() <= 64
         && entry.approved_fields.iter().all(|field| {
             valid_cache_text(&field.label, 128)
@@ -730,6 +835,8 @@ fn is_canonical_sequence(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::{
         DiscoveryField, DiscoveryPlaintext, LocalDiscoveryIndex, MAX_INDEX_ENTRIES,
         MAX_LOGICAL_INDEX_BYTES, MAX_PAGE_SIZE,
@@ -751,6 +858,33 @@ mod tests {
                 },
             ],
             entry_type: "credential".to_owned(),
+            execution: None,
+        }
+    }
+
+    fn script(with_execution: bool) -> DiscoveryPlaintext {
+        DiscoveryPlaintext {
+            schema: "palladin.agent-discovery.v1".to_owned(),
+            agent_label: "List users".to_owned(),
+            capabilities: vec!["exec".to_owned()],
+            fields: Vec::new(),
+            entry_type: "script".to_owned(),
+            execution: with_execution.then(|| {
+                serde_json::from_value(json!({
+                    "contractVersion": 1,
+                    "description": "Returns active users for a region.",
+                    "parameters": [{
+                        "name": "limit",
+                        "description": "Maximum number of rows.",
+                        "type": "integer",
+                        "required": true,
+                        "minimum": 1,
+                        "maximum": 100
+                    }],
+                    "returnResultToAgent": true
+                }))
+                .expect("Script execution metadata")
+            }),
         }
     }
 
@@ -786,6 +920,62 @@ mod tests {
             "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         );
         assert_eq!(alice.items[0].agent_fields[1].value, "alice");
+    }
+
+    #[test]
+    fn script_discovery_exposes_only_description_schema_revision_and_policy() {
+        let mut index = LocalDiscoveryIndex::new();
+        let vault_id = "11111111-1111-4111-8111-111111111111";
+        let entry_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        index
+            .upsert(vault_id, entry_id, 7, envelope_digest(7), script(true))
+            .expect("Script discovery");
+
+        let result = index.search("users", None, None).expect("search");
+        let item = result.items.first().expect("Script result");
+        let execution = item.script_execution.as_ref().expect("execution metadata");
+        assert_eq!(
+            item.description.as_deref(),
+            Some("Returns active users for a region.")
+        );
+        assert_eq!(execution.script_revision, "7");
+        assert_eq!(execution.parameters[0].name, "limit");
+        assert!(execution.return_result_to_agent);
+        let serialized = serde_json::to_string(item).expect("search JSON");
+        assert!(!serialized.contains("scriptSource"));
+        assert!(!serialized.contains("references"));
+        assert!(!serialized.contains("resolved"));
+    }
+
+    #[test]
+    fn script_metadata_survives_the_encrypted_cache_model_and_legacy_scripts_fail_closed() {
+        let vault_id = "11111111-1111-4111-8111-111111111111";
+        let current_entry = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let legacy_entry = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let mut index = LocalDiscoveryIndex::new();
+        index.scope_to_identity("profile-a", "agent-a");
+        index.prepare_vault(vault_id, 1);
+        index
+            .upsert(vault_id, current_entry, 7, envelope_digest(7), script(true))
+            .expect("current Script");
+        index
+            .upsert(vault_id, legacy_entry, 2, envelope_digest(2), script(false))
+            .expect("legacy Script remains discoverable");
+
+        let cache = index.encode_durable_cache().expect("cache");
+        let restored = LocalDiscoveryIndex::decode_durable_cache(&cache, "profile-a", "agent-a")
+            .expect("restore");
+        assert_eq!(
+            restored
+                .script_execution(vault_id, current_entry)
+                .expect("metadata")
+                .description,
+            "Returns active users for a region."
+        );
+        assert!(matches!(
+            restored.script_execution(vault_id, legacy_entry),
+            Err(crate::RuntimeError::ScriptExecutionMetadataUnavailable)
+        ));
     }
 
     #[test]

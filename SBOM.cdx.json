@@ -5583,6 +5583,30 @@
       ]
     },
     {
+      "bom-ref": "pkg:cargo/ryu-js@0.2.2",
+      "type": "library",
+      "name": "ryu-js",
+      "version": "0.2.2",
+      "purl": "pkg:cargo/ryu-js@0.2.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR BSL-1.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/boa-dev/ryu-js"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
       "bom-ref": "pkg:cargo/ryu@1.0.23",
       "type": "library",
       "name": "ryu",
@@ -5897,6 +5921,34 @@
         {
           "type": "website",
           "url": "https://serde.rs"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/serde_jcs@0.2.0",
+      "type": "library",
+      "name": "serde_jcs",
+      "version": "0.2.0",
+      "purl": "pkg:cargo/serde_jcs@0.2.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/l1h3r/serde_jcs"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/l1h3r/serde_jcs"
         }
       ],
       "properties": [
@@ -7125,6 +7177,34 @@
         {
           "type": "vcs",
           "url": "https://github.com/dtolnay/unicode-ident"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/unicode-normalization@0.1.25",
+      "type": "library",
+      "name": "unicode-normalization",
+      "version": "0.1.25",
+      "purl": "pkg:cargo/unicode-normalization@0.1.25",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/unicode-rs/unicode-normalization"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/unicode-rs/unicode-normalization"
         }
       ],
       "properties": [
