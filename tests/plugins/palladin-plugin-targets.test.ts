@@ -124,6 +124,11 @@ describe('Palladin plugin targets', () => {
       browserProviders: Array<{ id: string; cliValue: string; mcpValue: string }>;
       credentialSurfaces: {
         mcp: { inject: string; search: string; reportStale: string };
+        cli: {
+          inject: string[];
+          search: string[];
+          routing: { provider: string; targetTabId: string; targetUrl: string };
+        };
       };
     };
     const mcpContract = JSON.parse(
@@ -150,16 +155,26 @@ describe('Palladin plugin targets', () => {
     const injectTool = mcpContract.tools.find(
       ({ name }) => name === providerContract.credentialSurfaces.mcp.inject,
     );
-    const provider = providerContract.browserProviders[0];
-    expect(provider).toBeDefined();
-    expect(provider?.cliValue).toBe(provider?.id);
-    expect(provider?.mcpValue).toBe(provider?.id);
-    expect(injectTool?.inputSchema.properties?.provider?.default).toBe(provider?.id);
-
     const cliArgs = await readFile(
       resolve(repositoryRoot, 'runtime/crates/palladin-cli/src/args.rs'),
       'utf8',
     );
-    expect(cliArgs).toContain(`default_value = "${provider?.id}"`);
+    expect(providerContract.credentialSurfaces.cli.search).toEqual([
+      'palladin',
+      'search',
+    ]);
+    expect(providerContract.credentialSurfaces.cli.inject).toEqual([
+      'palladin',
+      'inject',
+    ]);
+    expect(cliArgs).toContain('Search(SearchArgs)');
+    expect(cliArgs).toContain('Inject(InjectArgs)');
+
+    for (const provider of providerContract.browserProviders) {
+      expect(provider.cliValue).toBe(provider.id);
+      expect(provider.mcpValue).toBe(provider.id);
+      expect(injectTool?.inputSchema.properties?.provider?.default).toBe(provider.id);
+      expect(cliArgs).toContain(`default_value = "${provider.id}"`);
+    }
   });
 });
