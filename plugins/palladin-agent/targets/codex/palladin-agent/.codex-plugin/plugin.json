@@ -1,6 +1,6 @@
 {
   "name": "palladin-agent",
-  "version": "0.1.0-preview.1",
+  "version": "0.1.0-preview.2",
   "description": "Preview of secure Palladin credential injection into an exact browser tab.",
   "author": {
     "name": "Palladin.io",
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Palladin Agent",
     "shortDescription": "Sign in without exposing credentials",
-    "longDescription": "Palladin lets Codex prepare an exact Chrome tab and request credential injection through the paired Palladin extension. Secrets remain inside the native runtime and authenticated extension transport.",
+    "longDescription": "Palladin lets an agent prepare an exact browser tab and request credential injection through the paired Palladin extension. Secrets remain inside the native runtime and authenticated extension transport.",
     "developerName": "Palladin.io",
     "category": "Productivity",
     "capabilities": [
@@ -31,7 +31,7 @@
     "defaultPrompt": [
       "Sign me in to this website with Palladin.",
       "Open the login page and use my Palladin account.",
-      "Use Palladin to sign in on this Chrome tab."
+      "Use Palladin to sign in on this browser tab."
     ],
     "brandColor": "#D95A4E"
   }

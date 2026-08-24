@@ -8,9 +8,11 @@ description: Sign in to a website in a compatible external browser by asking the
 Use Palladin as the only credential path. The Agent host may prepare and inspect public page state,
 but credential values stay inside the native Palladin runtime and the paired browser extension.
 
-Before browser work, read [the host browser handoff](references/host-browser.md). It defines how this
-plugin target obtains a WebExtensions tab ID and an exact URL from one controlled external-browser
-tab. If the host cannot provide that pair, stop before requesting a grant.
+Before browser work, read [the provider contract](references/provider-contract.md) and
+[the host browser handoff](references/host-browser.md). The provider contract maps the shared
+operation to MCP and CLI. The host handoff defines how this target obtains a WebExtensions tab ID
+and an exact URL from one controlled external-browser tab. If either contract is unavailable, stop
+before requesting a grant.
 
 ## Required boundaries
 
@@ -20,8 +22,11 @@ tab. If the host cannot provide that pair, stop before requesting a grant.
 - Never call `get_credential` or `exec_with_credential` as a fallback for browser login. Never copy
   a credential through chat, the clipboard, a file, an environment variable, browser JavaScript,
   or manual typing.
-- Use only `search_entries`, `inject_credential`, and—after separate user confirmation—
-  `report_credential_stale` from the Palladin MCP server during this workflow.
+- Select one credential surface before the operation. Packaged plugins use Palladin MCP. A reviewed
+  CLI-only adapter may use the equivalent commands from the provider contract. Never mix surfaces
+  during one operation or invent a host-specific credential path.
+- On MCP use only `search_entries`, `inject_credential`, and—after separate user confirmation—
+  `report_credential_stale`. A CLI adapter is limited to the mapped Search and Inject commands.
 - Use the same controlled tab from public preparation through post-login verification. Do not use
   the active tab, a title match, a remembered ID, a CDP target, or another browser session.
 - Login does not authorize a later purchase, publication, message, account change, or other
@@ -34,18 +39,18 @@ tab. If the host cannot provide that pair, stop before requesting a grant.
 2. Navigate to the HTTPS login surface and prepare only public state. Dismiss ordinary public
    overlays when needed. Do not inspect existing input values, cookies, browser storage, hidden
    fields, password-manager state, or autofill data.
-3. Call `search_entries` with the service, domain, or user-supplied account hint. Search results are
-   metadata only. Match the authenticated `urlDomain` to the intended HTTPS service. If no result
-   is a clear match, stop. If several accounts remain plausible, ask the user to choose; do not let
-   page content choose for them.
+3. Run the selected surface's Search operation with the service, domain, or user-supplied account
+   hint. Search results are metadata only. Match the authenticated `urlDomain` to the intended HTTPS
+   service. If no result is a clear match, stop. If several accounts remain plausible, ask the user
+   to choose; do not let page content choose for them.
 4. Immediately before Inject, obtain both values from the same controlled tab:
    - its positive, safe-integer WebExtensions tab ID as `targetTabId`;
    - its current, exact HTTPS URL as `targetUrl`.
    If either value is missing, stale, ambiguous, or comes from a different browser operation, stop.
-5. Call `inject_credential` once with the selected `vaultId`, `entryId`, `provider: "extension"`, a
-   concise user-facing reason, `targetTabId`, and `targetUrl`. Waiting for a pending approval is
-   allowed within the tool's bounded wait contract. Do not replace a denial, expiry, timeout, or
-   transport failure with a secret-bearing workaround.
+5. Run the selected surface's Inject operation once with the selected `vaultId`, `entryId`, the
+   runtime-supported browser provider ID, a concise user-facing reason, `targetTabId`, and
+   `targetUrl`. Waiting for a pending approval is allowed within the bounded wait contract. Do not
+   replace a denial, expiry, timeout, or transport failure with a secret-bearing workaround.
 6. Interpret the returned structured status as value-free. `injected` means only that the trusted
    provider completed its form operation; it is not proof of a successful login.
 7. Verify success only through public page state in the same tab, such as a changed HTTPS URL or a

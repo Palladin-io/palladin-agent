@@ -1,4 +1,4 @@
 interface:
   display_name: "Palladin Browser Login"
   short_description: "Sign in without exposing credential values"
-  default_prompt: "Use $palladin-browser-login to sign in on the exact Chrome tab through Palladin."
+  default_prompt: "Use $palladin-browser-login to sign in on the exact browser tab through Palladin."

@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "credentialSurfaces": {
+    "mcp": {
+      "launch": {
+        "command": "palladin",
+        "args": ["mcp", "serve"]
+      },
+      "search": "search_entries",
+      "inject": "inject_credential",
+      "reportStale": "report_credential_stale",
+      "routing": {
+        "provider": "provider",
+        "targetTabId": "targetTabId",
+        "targetUrl": "targetUrl"
+      }
+    },
+    "cli": {
+      "search": ["palladin", "search"],
+      "inject": ["palladin", "inject"],
+      "routing": {
+        "provider": "--provider",
+        "targetTabId": "--target-tab-id",
+        "targetUrl": "--page-url"
+      }
+    }
+  },
+  "agentHostProviders": [
+    {
+      "id": "codex",
+      "packageFormat": "codex",
+      "credentialSurface": "mcp",
+      "exactTabStatus": "verified-preview"
+    },
+    {
+      "id": "claude",
+      "packageFormat": "claude",
+      "credentialSurface": "mcp",
+      "exactTabStatus": "blocked-pending-adapter"
+    },
+    {
+      "id": "openclaw",
+      "packageFormat": "agent-plugins-v1",
+      "credentialSurface": "mcp",
+      "exactTabStatus": "blocked-pending-adapter"
+    },
+    {
+      "id": "hermes",
+      "packageFormat": "agent-plugins-v1",
+      "credentialSurface": "mcp",
+      "exactTabStatus": "blocked-pending-adapter"
+    }
+  ],
+  "browserProviders": [
+    {
+      "id": "extension",
+      "mcpValue": "extension",
+      "cliValue": "extension",
+      "codeEnabled": {
+        "platform": "macos",
+        "browserFamily": "chrome"
+      }
+    }
+  ]
+}

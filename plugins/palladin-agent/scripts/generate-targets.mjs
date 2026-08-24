@@ -1,0 +1,163 @@
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const pluginSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const checkOnly = process.argv.includes('--check');
+const version = '0.1.0-preview.2';
+
+const canonicalSkill = await readFile(
+  resolve(pluginSourceRoot, 'core/skills/palladin-browser-login/SKILL.md'),
+  'utf8',
+);
+const providerReference = await readFile(
+  resolve(pluginSourceRoot, 'core/skills/palladin-browser-login/references/provider-contract.md'),
+  'utf8',
+);
+const providerContract = await readFile(
+  resolve(pluginSourceRoot, 'core/provider-contract.json'),
+  'utf8',
+);
+
+const metadata = {
+  version,
+  description: 'Preview of secure Palladin credential injection into an exact browser tab.',
+  author: {
+    name: 'Palladin.io',
+    url: 'https://palladin.io',
+  },
+  homepage: 'https://palladin.io',
+  repository: 'https://github.com/Palladin-io/palladin-agent',
+  license: 'Apache-2.0',
+  keywords: ['palladin', 'password-manager', 'browser-login', 'agent'],
+};
+
+const mcpCommand = {
+  command: 'palladin',
+  args: ['mcp', 'serve'],
+};
+
+const codexManifest = {
+  name: 'palladin-agent',
+  ...metadata,
+  skills: './skills/',
+  mcpServers: './.mcp.json',
+  interface: {
+    displayName: 'Palladin Agent',
+    shortDescription: 'Sign in without exposing credentials',
+    longDescription:
+      'Palladin lets an agent prepare an exact browser tab and request credential injection through the paired Palladin extension. Secrets remain inside the native runtime and authenticated extension transport.',
+    developerName: 'Palladin.io',
+    category: 'Productivity',
+    capabilities: ['Credential discovery', 'Browser credential injection'],
+    websiteURL: 'https://palladin.io',
+    defaultPrompt: [
+      'Sign me in to this website with Palladin.',
+      'Open the login page and use my Palladin account.',
+      'Use Palladin to sign in on this browser tab.',
+    ],
+    brandColor: '#D95A4E',
+  },
+};
+
+const claudeManifest = {
+  name: 'palladin-agent',
+  ...metadata,
+};
+
+const portableManifest = {
+  $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+  name: 'palladin-agent',
+  ...metadata,
+};
+
+const portableMcp = {
+  $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+  mcpServers: {
+    palladin: {
+      type: 'stdio',
+      ...mcpCommand,
+    },
+  },
+};
+
+const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
+const targets = [
+  {
+    id: 'codex',
+    manifestPath: '.codex-plugin/plugin.json',
+    manifest: codexManifest,
+    mcpPath: '.mcp.json',
+    mcp: { mcpServers: { palladin: mcpCommand } },
+    extraFiles: {
+      'skills/palladin-browser-login/agents/openai.yaml': [
+        'interface:',
+        '  display_name: "Palladin Browser Login"',
+        '  short_description: "Sign in without exposing credential values"',
+        '  default_prompt: "Use $palladin-browser-login to sign in on the exact browser tab through Palladin."',
+        '',
+      ].join('\n'),
+    },
+  },
+  {
+    id: 'claude',
+    manifestPath: '.claude-plugin/plugin.json',
+    manifest: claudeManifest,
+    mcpPath: '.mcp.json',
+    mcp: { mcpServers: { palladin: mcpCommand } },
+    extraFiles: {},
+  },
+  {
+    id: 'openclaw',
+    manifestPath: 'plugin.json',
+    manifest: portableManifest,
+    mcpPath: 'mcp.json',
+    mcp: portableMcp,
+    extraFiles: {},
+  },
+  {
+    id: 'hermes',
+    manifestPath: 'plugin.json',
+    manifest: portableManifest,
+    mcpPath: 'mcp.json',
+    mcp: portableMcp,
+    extraFiles: {},
+  },
+];
+
+const mismatches = [];
+
+async function materialize(path, content) {
+  if (checkOnly) {
+    const current = await readFile(path, 'utf8').catch(() => undefined);
+    if (current !== content) mismatches.push(path);
+    return;
+  }
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, content, 'utf8');
+}
+
+for (const target of targets) {
+  const root = resolve(pluginSourceRoot, `targets/${target.id}/palladin-agent`);
+  const hostAdapter = await readFile(
+    resolve(pluginSourceRoot, `core/adapters/${target.id}.md`),
+    'utf8',
+  );
+  const files = {
+    [target.manifestPath]: json(target.manifest),
+    [target.mcpPath]: json(target.mcp),
+    'palladin-provider-contract.json': providerContract,
+    'skills/palladin-browser-login/SKILL.md': canonicalSkill,
+    'skills/palladin-browser-login/references/provider-contract.md': providerReference,
+    'skills/palladin-browser-login/references/host-browser.md': hostAdapter,
+    ...target.extraFiles,
+  };
+
+  for (const [relativePath, content] of Object.entries(files)) {
+    await materialize(resolve(root, relativePath), content);
+  }
+}
+
+if (mismatches.length > 0) {
+  throw new Error(`Generated plugin targets are stale:\n${mismatches.join('\n')}`);
+}
