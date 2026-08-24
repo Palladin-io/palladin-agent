@@ -174,13 +174,21 @@ impl ExtensionClient {
         let deadline = Instant::now() + operation_timeout;
         timeout_at(deadline, write_message(&mut self.stream, &sealed.frame))
             .await
-            .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
+            .map_err(|_| inject_timeout_error(authorization_remaining))??;
         let response: LocalSecureFrame = timeout_at(deadline, read_message(&mut self.stream))
             .await
-            .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
+            .map_err(|_| inject_timeout_error(authorization_remaining))??;
         let result: InjectResult = self.session.open(&response)?;
         validate_inject_result(&result, &sealed.transaction_id)?;
         Ok(result)
+    }
+}
+
+fn inject_timeout_error(authorization_remaining: Duration) -> NativeBrowserError {
+    if authorization_remaining <= OPERATION_TIMEOUT {
+        NativeBrowserError::AuthorizationExpired
+    } else {
+        NativeBrowserError::OperationTimeout
     }
 }
 
@@ -286,6 +294,8 @@ pub enum NativeBrowserError {
     UnsafeSocket,
     #[error("the authenticated browser authorization expired")]
     AuthorizationExpired,
+    #[error("the authenticated browser provider operation timed out")]
+    OperationTimeout,
     #[error("the authenticated browser authorization clock is unavailable")]
     AuthorizationClockUnavailable,
     #[error(transparent)]
@@ -310,6 +320,18 @@ mod tests {
         );
         assert!(monotonic_not_after_ns(1_000, Duration::ZERO).is_err());
         assert!(monotonic_not_after_ns(1_000, Duration::from_secs(301)).is_err());
+    }
+
+    #[test]
+    fn inject_timeout_preserves_the_budget_that_expired() {
+        assert!(matches!(
+            inject_timeout_error(OPERATION_TIMEOUT),
+            NativeBrowserError::AuthorizationExpired
+        ));
+        assert!(matches!(
+            inject_timeout_error(OPERATION_TIMEOUT + Duration::from_nanos(1)),
+            NativeBrowserError::OperationTimeout
+        ));
     }
 
     #[test]

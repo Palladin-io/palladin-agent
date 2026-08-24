@@ -287,6 +287,7 @@ where
         .map_err(InjectServiceError::Transport)?;
     drop(wire);
     drop(credential);
+    drop(discovery_username);
     drop(parsed);
     drop(delivered);
     let authorization_remaining = forward
@@ -566,6 +567,18 @@ pub enum InjectServiceError {
     Transport(NativeBrowserError),
 }
 
+impl InjectServiceError {
+    #[must_use]
+    pub fn is_authorization_expired(&self) -> bool {
+        match self {
+            Self::AuthorizationExpired => true,
+            #[cfg(target_os = "macos")]
+            Self::Transport(NativeBrowserError::AuthorizationExpired) => true,
+            _ => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,6 +602,22 @@ mod tests {
             resolve_authenticated_injection_target(None, None),
             Err(InjectServiceError::MissingDomain)
         ));
+    }
+
+    #[test]
+    fn authorization_expiry_classification_includes_the_transport_boundary() {
+        assert!(InjectServiceError::AuthorizationExpired.is_authorization_expired());
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                InjectServiceError::Transport(NativeBrowserError::AuthorizationExpired)
+                    .is_authorization_expired()
+            );
+            assert!(
+                !InjectServiceError::Transport(NativeBrowserError::Unavailable)
+                    .is_authorization_expired()
+            );
+        }
     }
 
     #[test]

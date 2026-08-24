@@ -1678,6 +1678,9 @@ fn exec_failure(error: &RuntimeError) -> ToolOutcome {
 }
 
 fn inject_failure(error: &InjectServiceError) -> ToolOutcome {
+    if error.is_authorization_expired() {
+        return ToolOutcome::error("The authenticated browser authorization expired.");
+    }
     let message = match error {
         InjectServiceError::UnsupportedProvider => {
             "Only the authenticated Palladin extension provider is supported."
@@ -1706,7 +1709,7 @@ fn inject_failure(error: &InjectServiceError) -> ToolOutcome {
             "The browser page does not satisfy the authenticated Inject boundary."
         }
         InjectServiceError::AuthorizationExpired => {
-            "The authenticated browser authorization expired."
+            unreachable!("authorization expiry is handled before the exhaustive error mapping")
         }
         InjectServiceError::ProviderRejected(_) => {
             "The trusted browser provider did not complete Inject."
