@@ -22,6 +22,7 @@ use palladin_credential::wait::{
     DurationParseError, ProgressMode, WaitOptions, heartbeat_line, parse_duration,
     parse_wait_duration,
 };
+use palladin_crypto::ScriptExecutionParameters;
 use palladin_inject::{BrowserTarget, InjectExecution, InjectOperation, InjectServiceError};
 use palladin_runtime::{
     CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
@@ -37,6 +38,7 @@ use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tokio::sync::{Semaphore, mpsc};
@@ -54,7 +56,7 @@ const UNSUPPORTED_VERSION_SENTINEL: &str = "palladin-unsupported-version";
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
     ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 const GET_EXPOSURE_WARNING: &str = "Note: this secret is now in the Agent's context. On a hosted LLM it may leave your machine. Prefer exec_with_credential or inject_credential when the credential only needs to authenticate another operation.";
-const CONTRACT_JSON: &str = include_str!("../../../contracts/mcp/v1.1/mcp-tools.json");
+const CONTRACT_JSON: &str = include_str!("../../../contracts/mcp/v1.2/mcp-tools.json");
 
 type ApplicationFuture<'a> = Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
 
@@ -291,7 +293,7 @@ where
 
     fn exec<'a>(
         &'a self,
-        input: ExecInput,
+        mut input: ExecInput,
         cancellation: CancellationToken,
     ) -> ApplicationFuture<'a> {
         Box::pin(async move {
@@ -299,6 +301,13 @@ where
                 Ok(wait) => wait,
                 Err(message) => return ToolOutcome::error(message),
             };
+            let parameters = input.parameters.take().unwrap_or_default();
+            let parameter_bytes = match parameters.canonical_bytes() {
+                Ok(bytes) => bytes,
+                Err(_) => return ToolOutcome::error("Script parameters are invalid."),
+            };
+            let parameters_digest: [u8; 32] =
+                Sha256::digest(parameter_bytes.expose_for_crypto_operation()).into();
             let descriptor = OperationDescriptor::ExecWithCredential {
                 surface: InvocationSurface::Mcp,
                 vault_id: input.vault_id.trim().to_owned(),
@@ -307,6 +316,7 @@ where
                 wait,
                 command: input.command.clone().unwrap_or_default(),
                 env_mappings: Vec::new(),
+                parameters_digest,
                 output: CredentialOutputPolicy::McpChildProcessWithheld,
             };
             let session = match self.service.open_session(
@@ -330,6 +340,7 @@ where
                         },
                         command: input.command.as_deref(),
                         env_mappings: &[],
+                        parameters: parameters.as_value(),
                         output: OperatorOutput::Discard,
                     },
                     &cancellation,
@@ -350,6 +361,13 @@ where
                         "Command stdout and stderr were discarded and withheld from the model. Output was not persisted because transformed secrets cannot be safely masked. Judge success from the exit code."
                     },
                 }),
+                Ok(CredentialExecOutcome::ScriptCompleted(result)) => {
+                    pretty_result(&ScriptExecToolResult {
+                        exit_code: result.exit_code,
+                        result: result.result.as_ref().map(|value| value.as_str()),
+                        result_withheld: result.withheld.map(|value| value.code()),
+                    })
+                }
                 Ok(CredentialExecOutcome::NotGranted(access)) => {
                     let message = access_message(&access, CredentialMethod::Exec)
                         .unwrap_or_else(|| "Credential access is unavailable.".to_owned());
@@ -1249,7 +1267,7 @@ fn load_tools() -> Result<Vec<Tool>, ContractError> {
     let contract: ContractFile =
         serde_json::from_str(CONTRACT_JSON).map_err(|_| ContractError::Invalid)?;
     if contract.contract != "palladin-agent-mcp-tools"
-        || contract.version != "1.1.0"
+        || contract.version != "1.2.0"
         || contract.status != "frozen"
         || contract.server.name != "Palladin Agents"
         || contract.server.title != "Palladin Agent Runtime"
@@ -1422,7 +1440,7 @@ fn validate_report(input: &ReportStaleInput) -> Result<(), McpError> {
     Ok(())
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SearchInput {
     pub query: String,
@@ -1455,12 +1473,13 @@ impl GetInput {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ExecInput {
     pub vault_id: String,
     pub entry_id: String,
     pub command: Option<Vec<String>>,
+    pub parameters: Option<ScriptExecutionParameters>,
     pub reason: Option<String>,
     pub wait: Option<String>,
     pub no_wait: Option<bool>,
@@ -1655,8 +1674,17 @@ fn exec_failure(error: &RuntimeError) -> ToolOutcome {
         RuntimeError::InvalidEnvironmentMapping
         | RuntimeError::InvalidEnvironmentField
         | RuntimeError::Environment(_) => "The credential execution environment is invalid.",
-        RuntimeError::ScriptReferenceNotGranted => {
-            "A Script entry reference was not granted. Nothing was executed."
+        RuntimeError::InvalidScriptParameters => {
+            "Script parameters do not match the current Discovery schema. Nothing was executed."
+        }
+        RuntimeError::ScriptExecutionMetadataUnavailable => {
+            "Script execution metadata is unavailable. Refresh Discovery after updating the Script."
+        }
+        RuntimeError::StaleScriptDiscovery => {
+            "Script Discovery is stale. Refresh Discovery before retrying. Nothing was executed."
+        }
+        RuntimeError::InvalidScriptExecutionPackage => {
+            "The atomic Script package is stale or invalid. Nothing was executed."
         }
         RuntimeError::Exec(palladin_runtime::ExecError::UnsupportedInterpreter) => {
             "The Script entry uses an unsupported interpreter."
@@ -1787,6 +1815,16 @@ struct ExecToolResult<'a> {
     exit_code: i32,
     output: &'static str,
     note: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScriptExecToolResult<'a> {
+    exit_code: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_withheld: Option<&'static str>,
 }
 
 #[derive(Serialize)]

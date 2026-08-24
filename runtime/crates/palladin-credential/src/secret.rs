@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use palladin_crypto::ScriptExecutionMetadata;
 use percent_encoding::percent_decode_str;
 use secrecy::SecretString;
 use serde_json::Value;
@@ -58,6 +59,40 @@ pub struct ScriptPayload {
     pub script: SecretString,
     pub interpreter: String,
     pub refs: Vec<ScriptRef>,
+}
+
+pub struct MemberScriptPayload {
+    pub script: SecretString,
+    pub interpreter: String,
+    pub refs: Vec<ScriptRef>,
+    pub execution: Option<ScriptExecutionMetadata>,
+}
+
+impl std::fmt::Debug for MemberScriptPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MemberScriptPayload")
+            .field("script", &"[REDACTED]")
+            .field("interpreter", &self.interpreter)
+            .field("refs_count", &self.refs.len())
+            .field("execution", &self.execution.as_ref().map(|_| "present"))
+            .finish()
+    }
+}
+
+pub struct ResolvedMemberSecretField {
+    pub value: SecretString,
+    pub is_totp: bool,
+}
+
+impl std::fmt::Debug for ResolvedMemberSecretField {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResolvedMemberSecretField")
+            .field("value", &"[REDACTED]")
+            .field("is_totp", &self.is_totp)
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for ScriptPayload {
@@ -159,6 +194,148 @@ pub fn parse_secret(plaintext: &[u8]) -> Result<ParsedSecret, SecretParseError> 
         custom_fields,
         script,
     })
+}
+
+pub fn parse_member_script(plaintext: &[u8]) -> Result<MemberScriptPayload, SecretParseError> {
+    let secret = parse_member_secret(plaintext)?;
+    let object = secret.0.as_object().ok_or(SecretParseError::InvalidJson)?;
+    if object.get("entryType").and_then(Value::as_str) != Some("script") {
+        return Err(SecretParseError::InvalidMemberSecret);
+    }
+    let content = object
+        .get("content")
+        .and_then(Value::as_object)
+        .ok_or(SecretParseError::InvalidMemberSecret)?;
+    let script = content
+        .get("source")
+        .and_then(Value::as_str)
+        .ok_or(SecretParseError::InvalidMemberSecret)?
+        .to_owned();
+    let interpreter = content
+        .get("interpreter")
+        .and_then(Value::as_str)
+        .ok_or(SecretParseError::InvalidMemberSecret)?
+        .to_owned();
+    let refs = parse_member_script_refs(content.get("refs"))?;
+    let execution = content
+        .get("execution")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| SecretParseError::InvalidMemberSecret)?;
+    Ok(MemberScriptPayload {
+        script: script.into(),
+        interpreter,
+        refs,
+        execution,
+    })
+}
+
+pub fn resolve_member_secret_field(
+    plaintext: &[u8],
+    field_id: &str,
+) -> Result<ResolvedMemberSecretField, SecretParseError> {
+    let secret = parse_member_secret(plaintext)?;
+    let object = secret.0.as_object().ok_or(SecretParseError::InvalidJson)?;
+    let entry_type = object
+        .get("entryType")
+        .and_then(Value::as_str)
+        .ok_or(SecretParseError::InvalidMemberSecret)?;
+    let content = object
+        .get("content")
+        .and_then(Value::as_object)
+        .ok_or(SecretParseError::InvalidMemberSecret)?;
+    let value = match (entry_type, field_id) {
+        ("key", "key.value") => content.get("value"),
+        ("credential", "credential.username") => content.get("username"),
+        ("credential", "credential.password") => content.get("password"),
+        ("credential", "credential.url") => content.get("url"),
+        ("credential", "credential.totp") => content.get("totp"),
+        ("script", "script.source") => content.get("source"),
+        ("script", "script.interpreter") => content.get("interpreter"),
+        ("creditCard", "creditCard.cardholderName") => content.get("cardholderName"),
+        ("creditCard", "creditCard.cardNumber") => content.get("cardNumber"),
+        ("creditCard", "creditCard.expiryMonth") => content.get("expiryMonth"),
+        ("creditCard", "creditCard.expiryYear") => content.get("expiryYear"),
+        ("creditCard", "creditCard.billingAddress") => content.get("billingAddress"),
+        (_, "notes") => content.get("notes"),
+        (_, custom) if custom.starts_with("custom:") => content
+            .get("customFields")
+            .and_then(Value::as_array)
+            .and_then(|fields| {
+                fields
+                    .iter()
+                    .find(|field| field.get("id").and_then(Value::as_str) == Some(custom))
+            })
+            .and_then(|field| field.get("value")),
+        _ => None,
+    }
+    .filter(|value| !value.is_null())
+    .ok_or(SecretParseError::UnknownMemberSecretField)?;
+
+    let is_totp = field_id == "credential.totp"
+        || field_id.starts_with("custom:")
+            && content
+                .get("customFields")
+                .and_then(Value::as_array)
+                .and_then(|fields| {
+                    fields
+                        .iter()
+                        .find(|field| field.get("id").and_then(Value::as_str) == Some(field_id))
+                })
+                .and_then(|field| field.get("type"))
+                .and_then(Value::as_str)
+                == Some("totp");
+    let value = if is_totp {
+        let params = parse_totp_json(value).ok_or(SecretParseError::InvalidTotp)?;
+        crate::totp::generate_totp(&params)
+            .map_err(|_| SecretParseError::InvalidTotp)?
+            .code
+    } else {
+        value
+            .as_str()
+            .ok_or(SecretParseError::InvalidMemberSecret)?
+            .to_owned()
+            .into()
+    };
+    Ok(ResolvedMemberSecretField { value, is_totp })
+}
+
+fn parse_member_secret(plaintext: &[u8]) -> Result<SensitiveJson, SecretParseError> {
+    let text = std::str::from_utf8(plaintext).map_err(|_| SecretParseError::InvalidUtf8)?;
+    let value = serde_json::from_str::<Value>(text).map_err(|_| SecretParseError::InvalidJson)?;
+    if value.get("schema").and_then(Value::as_str) != Some("palladin.member-secret.v1") {
+        return Err(SecretParseError::InvalidMemberSecret);
+    }
+    Ok(SensitiveJson(value))
+}
+
+fn parse_member_script_refs(value: Option<&Value>) -> Result<Vec<ScriptRef>, SecretParseError> {
+    value
+        .and_then(Value::as_array)
+        .ok_or(SecretParseError::InvalidScriptReference)?
+        .iter()
+        .map(|entry| {
+            let object = entry
+                .as_object()
+                .ok_or(SecretParseError::InvalidScriptReference)?;
+            let required = |name: &str| {
+                object
+                    .get(name)
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .ok_or(SecretParseError::InvalidScriptReference)
+            };
+            Ok(ScriptRef {
+                env: required("env")?,
+                vault_id: Some(required("vaultId")?),
+                entry_id: required("entryId")?,
+                field: None,
+                field_id: Some(required("fieldId")?),
+            })
+        })
+        .collect()
 }
 
 fn raw_secret(plaintext: &str) -> ParsedSecret {
@@ -476,6 +653,12 @@ pub enum SecretParseError {
     InvalidJson,
     #[error("Script entry contains a malformed credential reference")]
     InvalidScriptReference,
+    #[error("decrypted MemberSecret is invalid")]
+    InvalidMemberSecret,
+    #[error("the referenced MemberSecret field is unavailable")]
+    UnknownMemberSecretField,
+    #[error("the referenced TOTP descriptor is invalid")]
+    InvalidTotp,
 }
 
 #[cfg(test)]
@@ -485,8 +668,8 @@ mod tests {
     use crate::totp::TotpAlgorithm;
 
     use super::{
-        CustomFieldType, SecretParseError, env_field_key, parse_secret, parse_totp_params,
-        parse_totp_value,
+        CustomFieldType, SecretParseError, env_field_key, parse_member_script, parse_secret,
+        parse_totp_params, parse_totp_value, resolve_member_secret_field,
     };
 
     #[test]
@@ -644,6 +827,47 @@ mod tests {
         assert_eq!(script.interpreter, "sh");
         assert_eq!(script.refs[0].env, "TOKEN");
         assert_eq!(script.refs[0].vault_id, None);
+    }
+
+    #[test]
+    fn atomic_script_member_secret_keeps_source_refs_and_execution_metadata_together() {
+        let parsed = parse_member_script(
+            br#"{"schema":"palladin.member-secret.v1","entryType":"script","content":{"source":"printf safe","interpreter":"sh","refs":[{"env":"DB_PASSWORD","vaultId":"11111111-1111-4111-8111-111111111111","entryId":"22222222-2222-4222-8222-222222222222","fieldId":"credential.password"}],"execution":{"contractVersion":1,"description":"Returns a safe aggregate.","parameters":[{"name":"limit","description":"Maximum rows.","type":"integer","required":true,"minimum":1,"maximum":100}],"returnResultToAgent":true}}}"#,
+        )
+        .expect("Script MemberSecret");
+        assert_eq!(parsed.interpreter, "sh");
+        assert_eq!(parsed.refs.len(), 1);
+        assert_eq!(parsed.refs[0].env, "DB_PASSWORD");
+        let execution = parsed.execution.as_ref().expect("execution metadata");
+        assert_eq!(execution.description, "Returns a safe aggregate.");
+        assert!(execution.effective_return_result_to_agent());
+        assert!(!format!("{parsed:?}").contains("printf safe"));
+    }
+
+    #[test]
+    fn referenced_member_fields_resolve_locally_and_totp_returns_only_the_current_code() {
+        const PASSWORD: &str = "fixture-password-never-log";
+        let member = format!(
+            r#"{{"schema":"palladin.member-secret.v1","entryType":"credential","content":{{"password":"{PASSWORD}","totp":{{"secret":"JBSWY3DPEHPK3PXP","digits":6,"period":30}},"customFields":[]}}}}"#
+        );
+        let password = resolve_member_secret_field(member.as_bytes(), "credential.password")
+            .expect("password");
+        let password_matches = password.value.expose_secret() == PASSWORD;
+        assert!(password_matches, "resolved password diverged");
+        assert!(!password.is_totp);
+        assert!(!format!("{password:?}").contains(PASSWORD));
+
+        let totp = resolve_member_secret_field(member.as_bytes(), "credential.totp").expect("TOTP");
+        assert!(totp.is_totp);
+        let totp_has_expected_length = totp.value.expose_secret().len() == 6;
+        assert!(totp_has_expected_length, "resolved TOTP length diverged");
+        assert!(
+            totp.value
+                .expose_secret()
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+        );
+        assert!(!totp.value.expose_secret().contains("JBSWY3DPEHPK3PXP"));
     }
 
     #[test]

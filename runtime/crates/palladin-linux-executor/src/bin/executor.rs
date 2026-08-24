@@ -15,6 +15,7 @@ use palladin_linux_executor::{
     SYSTEM_EXECUTOR, decode_request, parse_install_identity,
 };
 use palladin_windows_executor::{ExecutorRequest, SecretVariable};
+use secrecy::{ExposeSecret, SecretString};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::Command;
@@ -25,6 +26,7 @@ type PreparedRequest = (
     PathBuf,
     Vec<String>,
     Vec<SecretVariable>,
+    Option<SecretString>,
     Option<tempfile::TempDir>,
 );
 
@@ -75,13 +77,17 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let (program, arguments, environment, temporary) = prepare_request(request)?;
+    let (program, arguments, environment, script_input, temporary) = prepare_request(request)?;
     let mut process = Command::new(program);
     process
         .args(arguments)
         .env_clear()
         .envs(base_environment())
-        .stdin(Stdio::null())
+        .stdin(if script_input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -105,6 +111,21 @@ where
         .stderr
         .take()
         .ok_or(ExecutorServiceError::Spawn)?;
+    if let Some(script_input) = script_input {
+        let mut stdin = child
+            .inner()
+            .stdin
+            .take()
+            .ok_or(ExecutorServiceError::Spawn)?;
+        stdin
+            .write_all(script_input.expose_secret().as_bytes())
+            .await
+            .map_err(|_| ExecutorServiceError::Output)?;
+        stdin
+            .shutdown()
+            .await
+            .map_err(|_| ExecutorServiceError::Output)?;
+    }
     let writer = Arc::new(Mutex::new(connection_output));
     let out = tokio::spawn(copy_output(
         stdout,
@@ -152,11 +173,12 @@ fn prepare_request(mut request: ExecutorRequest) -> Result<PreparedRequest, Exec
             let arguments = arguments.to_vec();
             let environment = std::mem::take(environment);
             command.clear();
-            Ok((program, arguments, environment, None))
+            Ok((program, arguments, environment, None, None))
         }
         ExecutorRequest::Script {
             interpreter,
             script,
+            stdin,
             environment,
         } => {
             validate_program_path(interpreter)?;
@@ -178,11 +200,13 @@ fn prepare_request(mut request: ExecutorRequest) -> Result<PreparedRequest, Exec
                 .map_err(|_| ExecutorServiceError::Temporary)?;
             script.zeroize();
             let interpreter = std::mem::take(interpreter);
+            let stdin = Some(SecretString::from(std::mem::take(stdin)));
             let environment = std::mem::take(environment);
             Ok((
                 interpreter,
                 vec![path.to_string_lossy().into_owned()],
                 environment,
+                stdin,
                 Some(directory),
             ))
         }

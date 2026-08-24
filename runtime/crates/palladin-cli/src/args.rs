@@ -167,6 +167,9 @@ pub struct ExecArgs {
     /// Map NAME to a credential field selected by label.
     #[arg(long = "env", value_name = "NAME=FIELD")]
     pub env_mappings: Vec<String>,
+    /// Read the typed Script parameter object from redirected stdin. Values never enter argv.
+    #[arg(long)]
+    pub parameters_stdin: bool,
     /// Maximum approval wait up to five minutes, for example 30s or 2m.
     #[arg(long, overrides_with = "no_wait")]
     pub wait: Option<String>,

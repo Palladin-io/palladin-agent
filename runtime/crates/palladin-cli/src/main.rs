@@ -38,6 +38,7 @@ use palladin_credential::wait::{
     ProgressMode, WaitOptions, heartbeat_line, parse_duration, parse_wait_duration,
     signal_cancellation_token,
 };
+use palladin_crypto::ScriptExecutionParameters;
 use palladin_inject::{BrowserTarget, InjectExecution, InjectOperation};
 #[cfg(target_os = "linux")]
 use palladin_linux_broker::store::LinuxBrokerSecretStore;
@@ -55,6 +56,7 @@ use palladin_runtime::{
 use palladin_windows_broker::BrokerSecretStore;
 use secrecy::ExposeSecret;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -1183,6 +1185,16 @@ async fn exec(
     profile: Option<&str>,
     args: ExecArgs,
 ) -> ExitCode {
+    let parameters = match read_script_parameters(args.parameters_stdin) {
+        Ok(parameters) => parameters,
+        Err(error) => return fail(&error),
+    };
+    let parameter_bytes = match parameters.canonical_bytes() {
+        Ok(bytes) => bytes,
+        Err(_) => return fail("Script parameters are invalid"),
+    };
+    let parameters_digest: [u8; 32] =
+        Sha256::digest(parameter_bytes.expose_for_crypto_operation()).into();
     let wait_ms = if args.no_wait {
         Some(0)
     } else {
@@ -1226,6 +1238,7 @@ async fn exec(
         wait,
         command: args.command.clone(),
         env_mappings: args.env_mappings.clone(),
+        parameters_digest,
         output: CredentialOutputPolicy::CliChildProcess,
     };
     let session = match service.open_session(profile, &hostname, &connection, descriptor) {
@@ -1244,6 +1257,7 @@ async fn exec(
                 },
                 command: Some(&args.command),
                 env_mappings: &args.env_mappings,
+                parameters: parameters.as_value(),
                 output: OperatorOutput::Terminal,
             },
             &cancellation,
@@ -1256,6 +1270,18 @@ async fn exec(
         .await;
     match outcome {
         Ok(CredentialExecOutcome::Completed(result)) => {
+            if result.cancelled {
+                ExitCode::from(130)
+            } else {
+                ExitCode::from(u8::try_from(result.exit_code).unwrap_or(EXIT_FAILURE))
+            }
+        }
+        Ok(CredentialExecOutcome::ScriptCompleted(result)) => {
+            if let Some(output) = result.result {
+                print!("{}", output.as_str());
+            } else if let Some(withheld) = result.withheld {
+                eprintln!("Script result withheld: {}", withheld.code());
+            }
             if result.cancelled {
                 ExitCode::from(130)
             } else {
@@ -1724,6 +1750,26 @@ fn read_api_key(from_stdin: bool) -> Result<OrganizationApiKey, String> {
         return Err("invalid API key - it must start with pl_".to_owned());
     }
     Ok(OrganizationApiKey::new(std::mem::take(&mut *value)))
+}
+
+fn read_script_parameters(from_stdin: bool) -> Result<ScriptExecutionParameters, String> {
+    if !from_stdin {
+        return Ok(ScriptExecutionParameters::default());
+    }
+    if io::stdin().is_terminal() {
+        return Err("--parameters-stdin requires redirected standard input".to_owned());
+    }
+    let mut input = Zeroizing::new(Vec::new());
+    io::stdin()
+        .lock()
+        .take(32_769)
+        .read_to_end(&mut input)
+        .map_err(|_| "could not read Script parameters from standard input".to_owned())?;
+    if input.len() > 32_768 {
+        return Err("Script parameters exceed the 32 KiB local limit".to_owned());
+    }
+    ScriptExecutionParameters::from_json_slice(&input)
+        .map_err(|_| "Script parameters must be one JSON object".to_owned())
 }
 
 fn argv_contains_api_key() -> bool {

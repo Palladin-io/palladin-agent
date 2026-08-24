@@ -38,6 +38,7 @@ rpassword.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 subtle.workspace = true
 time.workspace = true
 thiserror.workspace = true
@@ -49,7 +50,6 @@ zeroize.workspace = true
 [dev-dependencies]
 ed25519-dalek.workspace = true
 palladin-core = { path = "../palladin-core", features = ["local-development"] }
-sha2.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]

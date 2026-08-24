@@ -104,6 +104,7 @@ pub enum WrapperPurpose {
     ReasonDek = 3,
     GrantDek = 4,
     AgentVaultKey = 5,
+    ScriptExecutionDek = 6,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -409,6 +410,12 @@ fn validate_wrapper_context(context: &WrapperContext) -> Result<(), CryptoError>
                 && context.recipient_key_kind == RecipientKeyKind::AgentX25519
                 && context.member_key_generation.is_none()
                 && context.parent_descriptor_hash.is_none()
+        }
+        WrapperPurpose::ScriptExecutionDek => {
+            actual_scope == entry_agent_scope
+                && context.recipient_key_kind == RecipientKeyKind::AgentX25519
+                && context.member_key_generation.is_none()
+                && context.parent_descriptor_hash.is_some()
         }
     };
     if !valid {
