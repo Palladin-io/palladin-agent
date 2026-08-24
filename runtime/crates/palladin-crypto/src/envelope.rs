@@ -757,7 +757,7 @@ struct NormalizedGrant {
 fn normalize_full_member_secret(
     plaintext: &[u8],
     requested_method: u16,
-    delivery_policy: u16,
+    _delivery_policy: u16,
 ) -> Result<NormalizedGrant, CryptoError> {
     let text = std::str::from_utf8(plaintext).map_err(|_| CryptoError::InvalidEncoding)?;
     let secret =
@@ -801,16 +801,7 @@ fn normalize_full_member_secret(
         .get("entryType")
         .and_then(Value::as_str)
         .ok_or(CryptoError::InvalidEncoding)?;
-    let expected_policy = match entry_type {
-        "key" | "credential" => 0,
-        "script" => 1,
-        "creditCard" => 2,
-        _ => return Err(CryptoError::InvalidDescriptor),
-    };
-    if delivery_policy != expected_policy
-        || (entry_type == "script" && requested_method != 2)
-        || (entry_type == "creditCard" && requested_method != 4)
-    {
+    if !matches!(entry_type, "key" | "credential" | "script" | "creditCard") {
         return Err(CryptoError::InvalidDescriptor);
     }
     let content = object
@@ -1062,9 +1053,9 @@ fn validate_agent_field_access(
     Ok(())
 }
 
-fn allowed_access_modes<'a>(
+fn allowed_access_modes(
     entry_type: &str,
-    custom_fields: &'a [Value],
+    custom_fields: &[Value],
     field_id: &str,
 ) -> Result<&'static [&'static str], CryptoError> {
     let allowed = match field_id {
@@ -1734,6 +1725,7 @@ fn zeroize_json(value: &mut Value) {
 mod tests {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use secrecy::{ExposeSecret, SecretBox};
+    use sha2::{Digest, Sha256};
     use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
     use super::{
@@ -1955,7 +1947,11 @@ mod tests {
         )
         .expect("full credential");
         let credential_digest = Sha256::digest(credential.expose_for_authorized_operation());
-        let expected_digest = Sha256::digest(&member_plaintext);
+        let expected_plaintext = serde_json::to_vec(&serde_json::json!({
+            "value": "fixture-sensitive-value"
+        }))
+        .expect("projected credential");
+        let expected_digest = Sha256::digest(expected_plaintext);
         assert_eq!(credential_digest, expected_digest);
 
         let context = FullCredentialEnvelopeContext {
