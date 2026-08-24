@@ -200,6 +200,13 @@ the same request, approval, expiry, usage-limit, and audit lifecycle, but have d
 contracts. The approving user chooses which methods a grant allows; the runtime cannot silently
 substitute a method that was not granted.
 
+GRANULAR delivery opens one exact per-Entry grant envelope. FULL delivery instead receives one
+`AgentWrappedVaultKey` for the grant together with the requested Entry's current encrypted key and
+MemberSecret. The complete 32-byte Vault key is sealed to this Agent's X25519 identity and bound to
+the Organization, Vault, Grant, Agent access epoch, recipient key version/fingerprint and Vault-key
+version. It is opened only inside the native Rust crypto boundary, zeroized after deriving the Entry
+key, and never crosses into the Node launcher, MCP result, child process or browser extension.
+
 ### `get`: return an approved value
 
 Use `get` when the caller genuinely needs the selected value rather than only the result of an

@@ -11,9 +11,13 @@ mod suite;
 mod vault_v2;
 
 pub use envelope::{
-    CredentialEnvelopeContext, DecryptedCredential, EncryptedCredential, GrantEnvelopeBinding,
-    GrantEnvelopeDescriptor, GrantEnvelopeScope, WrappedGrantDek, WrappedGrantDekDescriptor,
-    decrypt_credential, decrypt_credential_at,
+    AgentVaultKeyWrapper, AgentVaultKeyWrapperDescriptor, AgentWrappedVaultKey,
+    CredentialEnvelopeContext, DecryptedCredential, EncryptedCredential,
+    FullCredentialEnvelopeContext, GrantEnvelopeBinding, GrantEnvelopeDescriptor,
+    GrantEnvelopeScope, MemberSecretBinding, MemberSecretDescriptor, MemberSecretEnvelope,
+    VaultEntryKeyDescriptor, VaultEntryKeyEnvelope, VaultKeyBinding, WrappedGrantDek,
+    WrappedGrantDekDescriptor, decrypt_credential, decrypt_credential_at, decrypt_full_credential,
+    decrypt_full_credential_at,
 };
 pub use grant::{
     DecryptedGrantPayload, ExpectedGrantContext, GrantEnvelopeV2, decrypt_grant_payload,

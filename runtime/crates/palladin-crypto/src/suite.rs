@@ -103,6 +103,7 @@ pub enum WrapperPurpose {
     AgentVdk = 2,
     ReasonDek = 3,
     GrantDek = 4,
+    AgentVaultKey = 5,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -382,22 +383,32 @@ fn validate_wrapper_context(context: &WrapperContext) -> Result<(), CryptoError>
         WrapperPurpose::MemberVaultKey => {
             actual_scope == vault_scope | SCOPE_MEMBER
                 && context.recipient_key_kind == RecipientKeyKind::MemberX25519
+                && context.member_key_generation.is_some()
                 && context.parent_descriptor_hash.is_none()
         }
         WrapperPurpose::AgentVdk => {
             actual_scope == vault_scope | SCOPE_AGENT
                 && context.recipient_key_kind == RecipientKeyKind::AgentX25519
+                && context.member_key_generation.is_none()
                 && context.parent_descriptor_hash.is_none()
         }
         WrapperPurpose::ReasonDek => {
             actual_scope == entry_agent_scope
                 && context.recipient_key_kind == RecipientKeyKind::VaultMessageX25519
+                && context.member_key_generation.is_some()
                 && context.parent_descriptor_hash.is_some()
         }
         WrapperPurpose::GrantDek => {
             actual_scope == entry_agent_scope
                 && context.recipient_key_kind == RecipientKeyKind::AgentX25519
+                && context.member_key_generation.is_some()
                 && context.parent_descriptor_hash.is_some()
+        }
+        WrapperPurpose::AgentVaultKey => {
+            actual_scope == vault_scope | SCOPE_GRANT_OR_REQUEST | SCOPE_AGENT
+                && context.recipient_key_kind == RecipientKeyKind::AgentX25519
+                && context.member_key_generation.is_none()
+                && context.parent_descriptor_hash.is_none()
         }
     };
     if !valid {
@@ -639,7 +650,7 @@ fn validate_descriptor(descriptor: &EnvelopeDescriptor) -> Result<(), CryptoErro
         } if wrapper_suite_id != X25519_WRAPPER_V1
             || *recipient_agent_key_version == 0
             || *recipient_agent_key_fingerprint == [0; 32]
-            || *delivery_policy > 1 =>
+            || *delivery_policy > 2 =>
         {
             return Err(CryptoError::InvalidDescriptor);
         }

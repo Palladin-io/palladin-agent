@@ -15,8 +15,9 @@ use palladin_api::{
     AgentDiscoveryEnvelope, AgentDiscoveryEnvelopeDescriptor, AgentDiscoverySyncItem,
     AgentPairingActivationResponse, AgentPairingStatus, AgentPairingStatusResponse,
     AgentRegistrationResult, AgentVaultManifestsResponse, AgentVisibleField, ApiClient, ApiError,
-    CredentialAccess, CredentialMethod, EntrySearchResult, FormDiscoveryMap, GetCredentialOptions,
-    GrantStatus, ReportCredentialStaleInput, VaultManifest,
+    CredentialAccess, CredentialCiphertext, CredentialGrantType, CredentialMethod,
+    EntrySearchResult, FormDiscoveryMap, GetCredentialOptions, GrantStatus,
+    ReportCredentialStaleInput, VaultManifest,
 };
 use palladin_browser_bridge::secure_transport::{BrowserHostIdentity, SecureTransportError};
 use palladin_browser_bridge::{
@@ -43,12 +44,12 @@ use palladin_credential::wait::{
 use palladin_crypto::{
     AgentIdentityBinding, CredentialEnvelopeContext, DecryptedCredential, Ed25519Identity,
     EncodedSuitePayload, EncryptedReasonContext, EnvelopeBinding, EnvelopeDescriptor,
-    EnvelopePurpose, EnvelopeScope, PairingCandidate, PairingRelayStatus, PinnedVaultTrust,
-    RecipientKeyKind, SealedWrappedKey, SecretBytes, VaultManifestV2, WrapperContext,
-    WrapperPurpose, X25519Identity, X25519SealedBoxSuite, XChaChaVaultSuite,
-    confirm_pairing_from_relay, decode_base64url, decrypt_credential, key_fingerprint,
-    open_local_discovery_cache, prepare_pairing, seal_local_discovery_cache,
-    verify_current_manifest, verify_profile_binding,
+    EnvelopePurpose, EnvelopeScope, FullCredentialEnvelopeContext, PairingCandidate,
+    PairingRelayStatus, PinnedVaultTrust, RecipientKeyKind, SealedWrappedKey, SecretBytes,
+    VaultManifestV2, WrapperContext, WrapperPurpose, X25519Identity, X25519SealedBoxSuite,
+    XChaChaVaultSuite, confirm_pairing_from_relay, decode_base64url, decrypt_credential,
+    decrypt_full_credential, key_fingerprint, open_local_discovery_cache, prepare_pairing,
+    seal_local_discovery_cache, verify_current_manifest, verify_profile_binding,
 };
 use palladin_exec::{
     EnvironmentError, SecretEnvironment, resolve_interpreter, run_command, run_script,
@@ -4611,9 +4612,13 @@ impl RuntimeSession<'_> {
             vault_id: _,
             grant_id,
             agent_id: _,
+            agent_access_epoch,
             approved_methods,
             entry_id: _,
-            envelope,
+            grant_type,
+            delivery_policy,
+            expires_at,
+            material,
         } = access
         else {
             return Ok(CredentialDelivery::NotGranted(access));
@@ -4639,31 +4644,69 @@ impl RuntimeSession<'_> {
             .agent_id
             .as_deref()
             .ok_or(RuntimeError::MissingAgentId)?;
-        let entry_revision = envelope
-            .descriptor
-            .binding
-            .entry_revision
-            .parse::<u64>()
-            .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
-        let credential = decrypt_credential(
-            &envelope,
-            &self.encryption,
-            &CredentialEnvelopeContext {
-                organization_id: &organization_id,
-                vault_id: request.vault_id,
-                grant_id: &grant_id,
-                agent_id: expected_agent_id,
-                entry_id: request.entry_id,
-                approved_methods,
-                requested_vault_id: request.vault_id,
-                requested_entry_id: request.entry_id,
-                requested_method: match method {
-                    CredentialMethod::Get => 1,
-                    CredentialMethod::Exec => 2,
-                    CredentialMethod::Inject => 4,
+        let requested_method = credential_method_mask(method);
+        let (credential, entry_revision) = match (grant_type, material) {
+            (CredentialGrantType::Granular, CredentialCiphertext::Granular(envelope)) => {
+                let entry_revision = envelope
+                    .descriptor
+                    .binding
+                    .entry_revision
+                    .parse::<u64>()
+                    .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
+                let credential = decrypt_credential(
+                    &envelope,
+                    &self.encryption,
+                    &CredentialEnvelopeContext {
+                        organization_id: &organization_id,
+                        vault_id: request.vault_id,
+                        grant_id: &grant_id,
+                        agent_id: expected_agent_id,
+                        entry_id: request.entry_id,
+                        approved_methods,
+                        requested_vault_id: request.vault_id,
+                        requested_entry_id: request.entry_id,
+                        requested_method,
+                    },
+                )?;
+                (credential, entry_revision)
+            }
+            (
+                CredentialGrantType::Full,
+                CredentialCiphertext::Full {
+                    agent_wrapped_vault_key,
+                    entry_key,
+                    member_secret,
                 },
-            },
-        )?;
+            ) => {
+                let entry_revision = member_secret
+                    .descriptor
+                    .resource_revision
+                    .parse::<u64>()
+                    .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
+                let credential = decrypt_full_credential(
+                    &agent_wrapped_vault_key,
+                    &entry_key,
+                    &member_secret,
+                    &self.encryption,
+                    &FullCredentialEnvelopeContext {
+                        organization_id: &organization_id,
+                        vault_id: request.vault_id,
+                        grant_id: &grant_id,
+                        agent_id: expected_agent_id,
+                        agent_access_epoch,
+                        entry_id: request.entry_id,
+                        approved_methods,
+                        delivery_policy,
+                        expires_at: expires_at.as_deref(),
+                        requested_vault_id: request.vault_id,
+                        requested_entry_id: request.entry_id,
+                        requested_method,
+                    },
+                )?;
+                (credential, entry_revision)
+            }
+            _ => return Err(RuntimeError::InvalidCredentialPayload),
+        };
         let (authenticated_domain, authenticated_fields) = if method == CredentialMethod::Inject {
             authenticated_inject_metadata(credential.expose_for_authorized_operation())?
         } else {
@@ -5729,7 +5772,7 @@ mod tests {
         let CredentialAccess::Granted {
             grant_id,
             approved_methods,
-            envelope,
+            material: CredentialCiphertext::Granular(envelope),
             ..
         } = serde_json::from_str(&body).expect("granted response")
         else {
@@ -7526,8 +7569,12 @@ mod tests {
             "vaultId": TEST_VAULT_ID,
             "grantId": TEST_GRANT_ID,
             "agentId": TEST_AGENT_ID,
+            "agentAccessEpoch": 1,
             "approvedMethods": approved_methods,
             "entryId": entry_id,
+            "grantType": "granular",
+            "deliveryPolicy": "standard",
+            "expiresAt": expires_at.map(|value| value.format(&Rfc3339).expect("RFC3339 expiry")),
             "grantEnvelope": envelope,
         })
         .to_string()

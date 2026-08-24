@@ -459,8 +459,12 @@ fn access(name: &str) -> CredentialAccess {
             "vaultId": "11112222-3333-4444-8555-666677778888",
             "grantId": "12345678-1234-4234-8234-1234567890ab",
             "agentId": "fedcba98-7654-4321-8765-abcdefabcdef",
+            "agentAccessEpoch": 1,
             "approvedMethods": 1,
             "entryId": "entry-fixture",
+            "grantType": "granular",
+            "deliveryPolicy": "standard",
+            "expiresAt": null,
             "grantEnvelope": {
                 "descriptor": {
                     "protocolVersion": 2,
