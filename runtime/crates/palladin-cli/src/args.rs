@@ -84,7 +84,7 @@ pub enum Commands {
 
 #[derive(Debug, Subcommand)]
 pub enum BrowserCommand {
-    /// Install the exact Palladin Chrome host and print an out-of-band pairing bundle.
+    /// Install the exact Palladin Chrome host for automatic extension discovery.
     Install,
     /// Check the exact manifest and OS-secured pairing identity.
     Status,
@@ -203,8 +203,11 @@ pub struct InjectArgs {
     /// Explain why this Agent needs access.
     #[arg(long)]
     pub reason: Option<String>,
-    /// Deprecated and rejected caller-controlled page URL.
-    #[arg(long)]
+    /// Exact WebExtensions tab ID returned by the browser framework.
+    #[arg(long, requires = "page_url")]
+    pub target_tab_id: Option<u64>,
+    /// Exact HTTPS page URL used only to select one live browser tab.
+    #[arg(long, requires = "target_tab_id")]
     pub page_url: Option<String>,
     /// Deprecated and rejected caller-controlled selector.
     #[arg(long)]

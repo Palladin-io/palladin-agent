@@ -10,9 +10,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     ApplicationFuture, BoundedLineReader, ExecInput, ExecToolResult, GetInput, InjectInput,
-    MAX_BATCH_ITEMS, MAX_FRAME_BYTES, McpApplication, PalladinMcpServer, ProtocolBridgeState,
-    ReportStaleInput, SearchInput, ToolOutcome, collect_batch_response, load_tools, parse_input,
-    prepare_incoming_message, pretty_result, serve_io, validate_get, validate_search, wait_options,
+    InjectToolResult, MAX_BATCH_ITEMS, MAX_FRAME_BYTES, McpApplication, PalladinMcpServer,
+    ProtocolBridgeState, ReportStaleInput, SearchInput, ToolOutcome, collect_batch_response,
+    load_tools, parse_input, prepare_incoming_message, pretty_result, serve_io, validate_get,
+    validate_inject, validate_search, wait_options,
 };
 
 #[derive(Clone, Default)]
@@ -115,6 +116,36 @@ fn frozen_inject_contract_requires_the_trusted_inject_method() {
         inject.input_schema.get("required"),
         Some(&json!(["vaultId", "entryId"]))
     );
+    assert!(inject.input_schema["properties"].get("form").is_none());
+    assert_eq!(
+        inject.input_schema["properties"]["targetTabId"]["type"],
+        "integer"
+    );
+    assert_eq!(
+        inject.input_schema["properties"]["targetUrl"]["type"],
+        "string"
+    );
+}
+
+#[test]
+fn inject_browser_target_requires_a_tab_id_and_url_pair() {
+    let targeted = parse_input::<InjectInput>(json!({
+        "vaultId": "vault-1",
+        "entryId": "entry-1",
+        "targetTabId": 1_240_594_015_u64,
+        "targetUrl": "https://login.example.com/start"
+    }))
+    .expect("targeted inject input");
+    validate_inject(&targeted).expect("paired browser target");
+
+    for invalid in [
+        json!({"vaultId":"vault-1","entryId":"entry-1","targetTabId":7}),
+        json!({"vaultId":"vault-1","entryId":"entry-1","targetUrl":"https://example.com"}),
+        json!({"vaultId":"vault-1","entryId":"entry-1","targetTabId":0,"targetUrl":"https://example.com"}),
+    ] {
+        let input = parse_input::<InjectInput>(invalid).expect("structurally valid fixture");
+        assert!(validate_inject(&input).is_err());
+    }
 }
 
 #[test]
@@ -168,6 +199,25 @@ fn tool_arguments_fail_closed_on_unknown_fields_and_invalid_wait_options() {
         page_size: None,
     };
     assert!(validate_search(&unicode_query).is_ok());
+
+    assert!(
+        parse_input::<InjectInput>(json!({
+            "vaultId": "vault-fixture",
+            "entryId": "entry-fixture",
+            "form": {
+                "version": 1,
+                "steps": [{
+                    "fields": [{
+                        "entryFieldId": "credential.password",
+                        "selector": "#password",
+                        "control": "password"
+                    }],
+                    "submit": {"action": "press-enter", "selector": "#password"}
+                }]
+            }
+        }))
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -227,6 +277,25 @@ fn exec_result_contains_only_status_and_a_fixed_withheld_marker() {
     );
     assert!(result.get("stdout").is_none());
     assert!(result.get("stderr").is_none());
+}
+
+#[test]
+fn inject_result_is_value_free_and_marks_the_credential_withheld() {
+    const CANARY: &str = "fixture-password-must-never-enter-mcp-result";
+    let outcome = pretty_result(&InjectToolResult {
+        outcome: "injected",
+        provider: "extension",
+        credential: "withheld",
+        note: "Credential injection completed. No credential value was returned to the MCP client.",
+    });
+    assert!(!outcome.is_error);
+    assert!(!outcome.text.contains(CANARY));
+    let result: Value = serde_json::from_str(&outcome.text).expect("inject result JSON");
+    assert_eq!(result["outcome"], "injected");
+    assert_eq!(result["provider"], "extension");
+    assert_eq!(result["credential"], "withheld");
+    assert!(result.get("secret").is_none());
+    assert!(result.get("fields").is_none());
 }
 
 #[tokio::test]

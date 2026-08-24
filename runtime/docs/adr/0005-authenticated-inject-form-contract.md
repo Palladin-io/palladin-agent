@@ -65,6 +65,17 @@ receiving browser and could impersonate Chrome to obtain plaintext. Attaching to
 unmanaged Chrome therefore remains unsupported. Existing-profile injection uses the separately
 authenticated extension/Native Messaging provider.
 
+That authenticated extension provider may receive a WebExtensions `targetTabId` together with the
+exact HTTPS URL observed by the browser framework. This pair is not a browser endpoint or a
+capability: it cannot create a transport or authorize a credential. The already-paired extension
+independently resolves only that tab ID, requires its live top-frame URL to equal the snapshot, pins
+the isolated-world page-load document ID, and re-resolves the same tab/document before every
+declared step. Each fill message carries that expected document ID and the isolated world rejects a
+mismatch before its first DOM write.
+A missing tab, stale snapshot, navigation or document replacement fails closed. The compatibility
+path without a target selects the active page only during secretless preparation and pins it under
+the same rules.
+
 An ordinary `BrowserServer.wsEndpoint()` is not a substitute for the embedded adapter. Playwright
 connections do not expose one client's non-persistent contexts and pages to another client, so an
 endpoint plus a page index cannot identify the Agent's current `Page`. CDP can enumerate a Chromium
@@ -105,6 +116,9 @@ Credential values are never MCP arguments or results.
   live top-level document. Password values may be written only to password controls.
 - Each mapped field must exist in the approved delivery or in authenticated Discovery metadata
   explicitly allowed for Inject. An unknown, unapproved, or absent field fails closed.
+- A field sourced from authenticated Discovery is accepted only from the live head for the same
+  Vault, Entry, Agent/profile binding, and exact Entry revision carried by the granted delivery.
+  A stale revision, tombstone, identity change, or missing head fails before any provider transport.
 - The provider verifies HTTPS and the runtime-authenticated Entry domain before every fill and
   submit, and again after every navigation or document replacement.
 - A transition invalidates old control handles. The provider re-resolves only the next declared

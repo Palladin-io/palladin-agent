@@ -5,7 +5,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use palladin_browser_bridge::InjectionFormDefinition;
 use palladin_browser_bridge::framing::{read_message, write_message};
 use palladin_browser_bridge::local_transport::{
     LOCAL_TRANSPORT_PROTOCOL, LocalClientHandshake, LocalSecureFrame, LocalSessionOpen,
@@ -15,6 +14,7 @@ use palladin_browser_bridge::secure_transport::{
     BrowserHostIdentity, ExtensionSessionOpen, HostSessionReady, INJECT_PROVIDER_PROTOCOL,
     SecureFrame,
 };
+use palladin_browser_bridge::{InjectionFormDefinition, validate_https_page_url};
 use palladin_credential::wait::MAX_WAIT_MS;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -22,7 +22,10 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::time::{Instant, timeout, timeout_at};
 use zeroize::Zeroize;
 
-use crate::browser::{CHROME_EXTENSION_ORIGIN, local_socket_path};
+use crate::browser::{
+    CHROME_EXTENSION_ORIGIN, PAIRING_DISCOVER_TYPE, PairingDiscoveryRequest, PairingOffer,
+    local_socket_path,
+};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -39,6 +42,10 @@ pub struct PrepareRequest<'a> {
     #[serde(rename = "type")]
     pub message_type: &'static str,
     pub nonce: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_tab_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_url: Option<&'a str>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -100,6 +107,10 @@ struct OwnedPrepareRequest {
     #[serde(rename = "type")]
     message_type: String,
     nonce: String,
+    #[serde(default)]
+    target_tab_id: Option<u64>,
+    #[serde(default)]
+    target_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -217,11 +228,18 @@ impl ExtensionClient {
         Ok(Self { stream, session })
     }
 
-    pub async fn prepare(&mut self, nonce: &str) -> Result<PrepareResult, NativeBrowserError> {
+    pub async fn prepare(
+        &mut self,
+        nonce: &str,
+        target_tab_id: Option<u64>,
+        target_url: Option<&str>,
+    ) -> Result<PrepareResult, NativeBrowserError> {
         let request = PrepareRequest {
             protocol: INJECT_PROVIDER_PROTOCOL,
             message_type: "prepare",
             nonce,
+            target_tab_id,
+            target_url,
         };
         let frame = self.session.seal(&request)?;
         timeout(OPERATION_TIMEOUT, write_message(&mut self.stream, &frame))
@@ -287,9 +305,21 @@ where
 {
     let mut native_input = tokio::io::stdin();
     let mut native_output = tokio::io::stdout();
-    let open: ExtensionSessionOpen = timeout(HANDSHAKE_TIMEOUT, read_message(&mut native_input))
+    let initial: serde_json::Value = timeout(HANDSHAKE_TIMEOUT, read_message(&mut native_input))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
+    let open = match parse_initial_native_message(initial)? {
+        InitialNativeMessage::PairingDiscovery(request) => {
+            let offer = PairingOffer::from_request(request, identity)
+                .map_err(|_| NativeBrowserError::InvalidMessage)?;
+            let _lifecycle = lifecycle_guard(HANDSHAKE_TIMEOUT)?;
+            timeout(HANDSHAKE_TIMEOUT, write_message(&mut native_output, &offer))
+                .await
+                .map_err(|_| NativeBrowserError::Unavailable)??;
+            return Ok(());
+        }
+        InitialNativeMessage::SecureSession(open) => open,
+    };
     let (ready, mut extension_session) = identity.accept(CHROME_EXTENSION_ORIGIN, &open)?;
     let _lifecycle = lifecycle_guard(HANDSHAKE_TIMEOUT)?;
     timeout(
@@ -380,10 +410,40 @@ where
     Ok(())
 }
 
+enum InitialNativeMessage {
+    PairingDiscovery(PairingDiscoveryRequest),
+    SecureSession(ExtensionSessionOpen),
+}
+
+fn parse_initial_native_message(
+    value: serde_json::Value,
+) -> Result<InitialNativeMessage, NativeBrowserError> {
+    let message_type = value
+        .as_object()
+        .and_then(|object| object.get("type"))
+        .and_then(serde_json::Value::as_str);
+    if message_type == Some(PAIRING_DISCOVER_TYPE) {
+        return serde_json::from_value(value)
+            .map(InitialNativeMessage::PairingDiscovery)
+            .map_err(|_| NativeBrowserError::InvalidMessage);
+    }
+    serde_json::from_value(value)
+        .map(InitialNativeMessage::SecureSession)
+        .map_err(|_| NativeBrowserError::InvalidMessage)
+}
+
 fn validate_prepare(request: &OwnedPrepareRequest) -> Result<(), NativeBrowserError> {
+    let valid_target = match (request.target_tab_id, request.target_url.as_deref()) {
+        (None, None) => true,
+        (Some(tab_id), Some(url)) => {
+            (1..=9_007_199_254_740_991).contains(&tab_id) && validate_https_page_url(url).is_ok()
+        }
+        _ => false,
+    };
     if request.protocol != INJECT_PROVIDER_PROTOCOL
         || request.message_type != "prepare"
         || !valid_nonce(&request.nonce)
+        || !valid_target
     {
         return Err(NativeBrowserError::InvalidMessage);
     }
@@ -393,7 +453,11 @@ fn validate_prepare(request: &OwnedPrepareRequest) -> Result<(), NativeBrowserEr
 fn validate_prepare_result(result: &PrepareResult, nonce: &str) -> Result<(), NativeBrowserError> {
     let valid_outcome = matches!(
         result.outcome.as_str(),
-        "ready" | "provider-unavailable" | "invalid-request"
+        "ready"
+            | "provider-unavailable"
+            | "target-tab-unavailable"
+            | "target-url-mismatch"
+            | "invalid-request"
     );
     if result.protocol != INJECT_PROVIDER_PROTOCOL
         || result.message_type != "prepare.result"
@@ -641,7 +705,7 @@ fn valid_identifier(value: &str) -> bool {
         && value.len() <= 256
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 async fn bind_local_listener(
@@ -748,6 +812,43 @@ mod tests {
     use std::task::Waker;
 
     use super::*;
+
+    #[test]
+    fn initial_native_message_accepts_only_exact_discovery_or_secure_session() {
+        let discovery = serde_json::json!({
+            "protocol": crate::browser::PAIRING_PROTOCOL,
+            "type": crate::browser::PAIRING_DISCOVER_TYPE,
+            "extensionOrigin": CHROME_EXTENSION_ORIGIN,
+            "challenge": "00000000-0000-4000-8000-000000000001"
+        });
+        assert!(matches!(
+            parse_initial_native_message(discovery),
+            Ok(InitialNativeMessage::PairingDiscovery(_))
+        ));
+
+        let secure = serde_json::json!({
+            "protocol": INJECT_PROVIDER_PROTOCOL,
+            "type": "session.open",
+            "extensionNonce": "A".repeat(43),
+            "extensionEphemeralPublicKey": "A".repeat(43)
+        });
+        assert!(matches!(
+            parse_initial_native_message(secure),
+            Ok(InitialNativeMessage::SecureSession(_))
+        ));
+
+        let discovery_with_extra = serde_json::json!({
+            "protocol": crate::browser::PAIRING_PROTOCOL,
+            "type": crate::browser::PAIRING_DISCOVER_TYPE,
+            "extensionOrigin": CHROME_EXTENSION_ORIGIN,
+            "challenge": "00000000-0000-4000-8000-000000000001",
+            "extra": true
+        });
+        assert!(matches!(
+            parse_initial_native_message(discovery_with_extra),
+            Err(NativeBrowserError::InvalidMessage)
+        ));
+    }
 
     #[derive(Default)]
     struct CountingWriter {
@@ -882,6 +983,12 @@ mod tests {
             outcome: "stale-form-map".to_owned(),
         };
         assert!(validate_inject_result(&stale_map, "tx").is_ok());
+
+        let mut identifiers = owned_inject_request();
+        identifiers.transaction_id = "transaction.v1".to_owned();
+        identifiers.grant_id = "grant:1".to_owned();
+        identifiers.entry_id = "entry_1".to_owned();
+        assert!(validate_inject_request(&identifiers).is_ok());
     }
 
     #[test]
@@ -1113,6 +1220,11 @@ mod tests {
             let frame: LocalSecureFrame = read_message(&mut socket).await.expect("frame");
             let prepare: OwnedPrepareRequest = session.open(&frame).expect("prepare");
             validate_prepare(&prepare).expect("valid prepare");
+            assert_eq!(prepare.target_tab_id, Some(7));
+            assert_eq!(
+                prepare.target_url.as_deref(),
+                Some("https://example.test/login")
+            );
             let result = PrepareResult {
                 protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
                 message_type: "prepare.result".to_owned(),
@@ -1127,7 +1239,10 @@ mod tests {
             .await
             .expect("client");
         let nonce = "A".repeat(32);
-        let result = client.prepare(&nonce).await.expect("prepare result");
+        let result = client
+            .prepare(&nonce, Some(7), Some("https://example.test/login"))
+            .await
+            .expect("prepare result");
         assert_eq!(result.outcome, "ready");
         assert_eq!(
             result.current_url.as_deref(),

@@ -123,11 +123,20 @@ These controls are defense in depth inside the selected platform tier. The preci
 ## Browser injection
 
 The provider-neutral form and origin-validation contract is implemented. The macOS Rust runtime now
-has a code-enabled, one-shot Chrome Native Messaging route with explicit out-of-band key pinning, a
-signed ephemeral extension session, mutually authenticated local CLI-to-host IPC, lifecycle
+has a code-enabled, one-shot Chrome Native Messaging route with challenge-bound public-host
+discovery, explicit out-of-band fingerprint confirmation, a signed ephemeral extension session,
+mutually authenticated local CLI-to-host IPC, lifecycle
 revocation, and directional XChaCha20-Poly1305 frames. It accepts only the compiled Chromium origin
 and the exact schemas in [`contracts/inject-provider/v1`](contracts/inject-provider/v1/README.md).
 The legacy Node extension socket remains unshipped and is never a fallback.
+
+CLI `inject` and MCP `inject_credential` call one shared native Inject service. That service owns
+the OS Secret Store access, Agent private keys, grant delivery, credential decryption, authenticated
+domain checks and encrypted extension transport. MCP receives only a value-free outcome; no key or
+credential field crosses the MCP boundary. The byte-pinned MCP 1.0 contract remains immutable;
+MCP 1.1 adds only the paired `targetTabId` and exact `targetUrl` hints needed to route an
+Agent-prepared operation to one browser tab. The extension treats both as untrusted, independently
+resolves the tab and pins its top-frame document before any grant or credential delivery.
 
 This code-enabled branch is not by itself a production acceptance claim. Release readiness remains
 blocked until the exact signed/notarized packaged binary passes a real Chrome Native Messaging E2E

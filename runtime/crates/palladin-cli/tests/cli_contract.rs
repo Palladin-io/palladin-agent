@@ -218,6 +218,49 @@ fn global_profile_selector_parses_after_the_command() {
 }
 
 #[test]
+fn inject_browser_target_requires_the_framework_tab_and_url_together() {
+    assert!(
+        Cli::try_parse_from([
+            "palladin",
+            "inject",
+            "vault",
+            "entry",
+            "--target-tab-id",
+            "7"
+        ])
+        .is_err()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "palladin",
+            "inject",
+            "vault",
+            "entry",
+            "--page-url",
+            "https://example.com"
+        ])
+        .is_err()
+    );
+
+    let parsed = Cli::try_parse_from([
+        "palladin",
+        "inject",
+        "vault",
+        "entry",
+        "--target-tab-id",
+        "1240594015",
+        "--page-url",
+        "https://example.com/login",
+    ])
+    .expect("paired framework browser target");
+    let Commands::Inject(args) = parsed.command else {
+        panic!("inject command");
+    };
+    assert_eq!(args.target_tab_id, Some(1_240_594_015));
+    assert_eq!(args.page_url.as_deref(), Some("https://example.com/login"));
+}
+
+#[test]
 fn disconnect_purge_requires_an_explicit_two_flag_acknowledgement() {
     let parsed = Cli::try_parse_from([
         "palladin",

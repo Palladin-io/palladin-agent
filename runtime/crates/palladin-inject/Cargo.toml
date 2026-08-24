@@ -1,5 +1,5 @@
 [package]
-name = "palladin-mcp"
+name = "palladin-inject"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,22 +7,21 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+getrandom.workspace = true
+hex.workspace = true
 palladin-api = { path = "../palladin-api" }
 palladin-browser-bridge = { path = "../palladin-browser-bridge" }
-palladin-core = { path = "../palladin-core" }
 palladin-credential = { path = "../palladin-credential" }
-palladin-inject = { path = "../palladin-inject" }
 palladin-runtime = { path = "../palladin-runtime" }
-rmcp.workspace = true
 secrecy.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
-time.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-tracing.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+nix.workspace = true
+
 [dev-dependencies]
-tempfile.workspace = true
+serde_json.workspace = true

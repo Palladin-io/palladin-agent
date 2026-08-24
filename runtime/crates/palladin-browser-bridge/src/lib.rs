@@ -397,6 +397,20 @@ impl InjectionTarget {
     }
 }
 
+pub fn validate_https_page_url(value: &str) -> Result<(), InjectionError> {
+    if value.is_empty() || value.len() > 4_096 || value != value.trim() {
+        return Err(InjectionError::InvalidOrigin);
+    }
+    let parsed = Url::parse(value).map_err(|_| InjectionError::InvalidOrigin)?;
+    if parsed.scheme() != "https" {
+        return Err(InjectionError::InsecureOrigin);
+    }
+    if parsed.host_str().is_none() || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(InjectionError::InvalidOrigin);
+    }
+    Ok(())
+}
+
 /// Secret material transferred once to one trusted provider implementation.
 ///
 /// It is deliberately non-serializable and its Debug output is always redacted. Transport-specific
@@ -416,13 +430,17 @@ impl Drop for InjectionCredential {
 }
 
 impl InjectionCredential {
-    pub fn new(username: Option<String>, password: String) -> Result<Self, InjectionError> {
+    pub fn new(mut username: Option<String>, mut password: String) -> Result<Self, InjectionError> {
         if password.is_empty()
             || password.len() > MAX_FIELD_BYTES
             || username
                 .as_deref()
                 .is_some_and(|value| value.len() > MAX_FIELD_BYTES)
         {
+            if let Some(username) = username.as_mut() {
+                username.zeroize();
+            }
+            password.zeroize();
             return Err(InjectionError::InvalidCredential);
         }
         let mut fields = BTreeMap::new();
@@ -433,13 +451,17 @@ impl InjectionCredential {
         Ok(Self { fields })
     }
 
-    pub fn from_fields(fields: BTreeMap<String, String>) -> Result<Self, InjectionError> {
+    pub fn from_fields(mut fields: BTreeMap<String, String>) -> Result<Self, InjectionError> {
         if fields.is_empty()
             || fields.len() > MAX_FORM_FIELDS
-            || fields
-                .iter()
-                .any(|(id, value)| !valid_entry_field_id(id) || value.len() > MAX_FIELD_BYTES)
+            || fields.iter().any(|(id, value)| {
+                !valid_entry_field_id(id) || value.is_empty() || value.len() > MAX_FIELD_BYTES
+            })
         {
+            for value in fields.values_mut() {
+                value.zeroize();
+            }
+            fields.clear();
             return Err(InjectionError::InvalidCredential);
         }
         Ok(Self { fields })
@@ -716,6 +738,29 @@ mod tests {
             request.target.verify_url("http://example.com"),
             Err(InjectionError::InsecureOrigin)
         );
+    }
+
+    #[test]
+    fn target_page_hint_requires_a_bounded_credential_free_https_url() {
+        assert!(validate_https_page_url("https://example.com/login?flow=agent").is_ok());
+        assert_eq!(
+            validate_https_page_url("http://example.com/login"),
+            Err(InjectionError::InsecureOrigin)
+        );
+        assert_eq!(
+            validate_https_page_url("https://user:password@example.com/login"),
+            Err(InjectionError::InvalidOrigin)
+        );
+    }
+
+    #[test]
+    fn arbitrary_field_credentials_reject_empty_values() {
+        let mut fields = BTreeMap::new();
+        fields.insert("custom:account.code".to_owned(), String::new());
+        assert!(matches!(
+            InjectionCredential::from_fields(fields),
+            Err(InjectionError::InvalidCredential)
+        ));
     }
 
     #[test]

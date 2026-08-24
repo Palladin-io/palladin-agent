@@ -4382,6 +4382,25 @@ impl RuntimeSession<'_> {
             .await
     }
 
+    pub async fn authenticated_inject_username(
+        &self,
+        vault_id: &str,
+        entry_id: &str,
+        entry_revision: u64,
+    ) -> Result<Option<Zeroizing<String>>, RuntimeError> {
+        self.ensure_operation(RuntimeOperation::InjectCredential)?;
+        self.sync_local_discovery().await?;
+        self.ensure_operation(RuntimeOperation::InjectCredential)?;
+        let value = self.discovery.lock().await.field_at_revision(
+            vault_id,
+            entry_id,
+            entry_revision,
+            "credential.username",
+        )?;
+        self.ensure_operation(RuntimeOperation::InjectCredential)?;
+        Ok(value.map(Zeroizing::new))
+    }
+
     pub async fn execute_with_credential<H>(
         &self,
         request: CredentialExecRequest<'_>,
@@ -4620,6 +4639,12 @@ impl RuntimeSession<'_> {
             .agent_id
             .as_deref()
             .ok_or(RuntimeError::MissingAgentId)?;
+        let entry_revision = envelope
+            .descriptor
+            .binding
+            .entry_revision
+            .parse::<u64>()
+            .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
         let credential = decrypt_credential(
             &envelope,
             &self.encryption,
@@ -4651,6 +4676,7 @@ impl RuntimeSession<'_> {
             grant_id,
             entry_id,
             label,
+            entry_revision,
             authenticated_domain,
             authenticated_fields,
             credential,
@@ -4685,6 +4711,7 @@ pub struct DeliveredCredential {
     pub grant_id: String,
     pub entry_id: String,
     pub label: String,
+    entry_revision: u64,
     authenticated_domain: Option<String>,
     authenticated_fields: Vec<AgentVisibleField>,
     credential: DecryptedCredential,
@@ -4699,6 +4726,11 @@ impl DeliveredCredential {
     #[must_use]
     pub fn authenticated_domain(&self) -> Option<&str> {
         self.authenticated_domain.as_deref()
+    }
+
+    #[must_use]
+    pub fn entry_revision(&self) -> u64 {
+        self.entry_revision
     }
 
     #[must_use]
@@ -4717,6 +4749,7 @@ impl std::fmt::Debug for DeliveredCredential {
             .field("grant_id", &shorten_identifier(&self.grant_id))
             .field("entry_id", &self.entry_id)
             .field("label", &"[REDACTED]")
+            .field("entry_revision", &self.entry_revision)
             .field(
                 "authenticated_domain",
                 &self.authenticated_domain.as_ref().map(|_| "[REDACTED]"),
@@ -5221,6 +5254,8 @@ pub enum RuntimeError {
     InvalidDiscoveryQuery,
     #[error("local Discovery cursor is invalid or stale")]
     InvalidDiscoveryCursor,
+    #[error("Agent Discovery does not match the granted Entry revision")]
+    DiscoveryRevisionMismatch,
     #[error("local Discovery index exceeds its hard entry limit")]
     DiscoveryIndexLimitExceeded,
     #[error(
@@ -5727,6 +5762,7 @@ mod tests {
             grant_id,
             entry_id: TEST_ENTRY_ID.to_owned(),
             label: "[REDACTED]".to_owned(),
+            entry_revision: 1,
             authenticated_domain: Some("example.test".to_owned()),
             authenticated_fields: Vec::new(),
             credential,

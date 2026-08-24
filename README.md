@@ -138,7 +138,7 @@ API keys in argv or environment variables are rejected. Connecting a second prof
 | `palladin search <query>` | Search metadata visible to the Agent. |
 | `palladin get <vaultId> <entryId>` | Intentionally return a granted credential to the operator. |
 | `palladin exec <vaultId> <entryId> -- <program>` | Run an allowlisted program with delivered values in a sanitized child environment. |
-| `palladin inject <vaultId> <entryId> --provider extension --form-json <JSON>` | Use the code-enabled authenticated Chrome extension route on macOS. Other providers and platforms fail closed before profile, grant, or credential access. Release acceptance remains gated on the signed/notarized package and real Chrome E2E. |
+| `palladin inject <vaultId> <entryId> --provider extension --target-tab-id <id> --page-url <URL> --form-json <JSON>` | Use the code-enabled authenticated Chrome extension route on macOS and bind a framework-prepared operation to one exact WebExtensions tab. Other providers and platforms fail closed before profile, grant, or credential access. Release acceptance remains gated on the signed/notarized package and real Chrome E2E. |
 | `palladin mcp serve` | Serve Palladin tools over MCP stdio. |
 | `palladin security upgrade` | Explicitly migrate pre-production schema v2 state and secret slots to integrity-bound schema v3. |
 | `palladin security legacy-status` | Inspect legacy TypeScript state without opening config or private-key contents. |
@@ -190,8 +190,49 @@ The Agent must be active before credential tools work.
 | `search_entries` | Search metadata without returning secret values. |
 | `get_credential` | Intentionally return a granted value; TOTP fields return only the current code. |
 | `exec_with_credential` | Execute without returning child stdout/stderr to the model. |
-| `inject_credential` | Inject through a trusted provider without returning the credential to the model. Provider-specific MCP packages select their own adapter. |
+| `inject_credential` | Invoke the same native Inject service as the CLI, through the authenticated extension provider, without returning the credential to the model. MCP contract v1.1 adds the paired `targetTabId`/`targetUrl` routing hints. |
 | `report_credential_stale` | Report a stale credential without sending its value. |
+
+## Credential delivery methods
+
+`get`, `exec`, and `inject` are three grant-controlled ways to deliver one approved Entry. They use
+the same request, approval, expiry, usage-limit, and audit lifecycle, but have different output
+contracts. The approving user chooses which methods a grant allows; the runtime cannot silently
+substitute a method that was not granted.
+
+### `get`: return an approved value
+
+Use `get` when the caller genuinely needs the selected value rather than only the result of an
+operation performed with it:
+
+```bash
+palladin get <vaultId> <entryId>
+palladin get <vaultId> <entryId> --field password
+palladin get <vaultId> <entryId> --field-id <publicFieldId>
+```
+
+The CLI writes a secret-bearing JSON result to stdout. Without a selector it returns the granted
+credential payload; `--field` selects a field by label and `--field-id` selects a custom field by
+its public identifier. A selected TOTP field returns only the current short-lived code and expiry,
+never the TOTP seed. The equivalent MCP tool is `get_credential`.
+
+This is an intentional plaintext output boundary. CLI prints a warning to stderr unless `--quiet`
+is set; `--quiet` suppresses only the warning and does not change the secret-bearing stdout result.
+An MCP result becomes available to the calling Agent and may enter its model context, provider
+retention, session transcript, or observability tooling. Do not send `get` output to logs, shell
+history, command-line arguments, temporary files, analytics, or an untrusted caller. Prefer `exec`
+or `inject` when the workflow needs to use a credential but does not need to receive its value.
+
+`get` still requires an active grant that includes the `Get` method, observes the grant's expiry and
+remaining-use limit, and records successful delivery in the audit trail. Script Entries remain
+`exec`-only and payment-card Entries remain `inject`-only regardless of the requested grant flags.
+
+### `exec` and `inject`: use without returning the value
+
+- `exec` maps approved fields into a sanitized child process. Over MCP, child stdout and stderr are
+  withheld and the tool returns only the exit status.
+- `inject` sends approved fields to an authenticated provider and returns a value-free outcome.
+  Unsupported or unauthenticated provider paths fail before credential delivery.
 
 ## Security notes
 
@@ -199,7 +240,7 @@ The Agent must be active before credential tools work.
 - Native secret storage has no file or environment fallback.
 - The organization API key and private keys are never child-process environment variables.
 - `exec` uses no implicit shell, rebuilds the child environment from an allowlist, and supplies null stdin.
-- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. The Rust runtime may resolve a verified global Form Discovery Map, while the model may supply only a bounded, value-free fallback definition. The macOS Chrome extension route authenticates both encrypted transport hops and prepares the live page before the runtime requests a grant or decrypts a credential; it then re-checks HTTPS and the encrypted Entry domain before delivery.
+- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. The Rust runtime resolves a verified global Form Discovery Map for MCP; only an explicit CLI `--form-json` caller may supply a bounded, value-free fallback definition. A browser framework passes a WebExtensions `targetTabId` together with its exact HTTPS URL snapshot; these are untrusted routing hints, not authorization. The macOS Chrome extension route authenticates both encrypted transport hops, resolves and pins that exact tab/document before the runtime requests a grant or decrypts a credential, then re-checks the same tab/document, HTTPS and the encrypted Entry domain before delivery.
 - The npm launcher has no third-party JavaScript runtime dependencies. Its only production dependency is the exact-version platform package.
 - Removing the npm package never deletes identity. Purge is always an explicit native command.
 
@@ -217,9 +258,14 @@ outcome. Adding another agent browser does not change the grant, crypto, CLI, or
 
 The extension provider uses the same Palladin extension rather than a provider-specific extension.
 On macOS, `palladin browser install` provisions the host identity in OS secure storage, installs
-`io.palladin.browser_bridge` for Google Chrome, and prints one JSON pairing bundle to stdout. Paste
-that bundle into the extension and compare the shortened fingerprint shown in both surfaces.
-`palladin browser status` verifies the exact manifest and pairing identity;
+`io.palladin.browser_bridge` for Google Chrome, and prints the shortened fingerprint. The extension
+automatically discovers the host's public identity through a challenge-bound, value-free Native
+Messaging exchange; compare the shortened fingerprint shown in both surfaces and choose
+**Trust and pair**. Discovery never writes or replaces the extension-owned pin.
+`palladin browser status` reports the host manifest and provisioned host identity without claiming
+that the separately extension-owned pin is present. The authenticated channel is verified when
+Inject begins.
+
 `palladin browser unpair --confirm` revokes the OS-secured lifecycle token before deleting the host
 key and manifest. Browser forwards hold a shared cross-process lease from the final token check
 through the value-free response, while unpair holds the exclusive lease through cleanup, so no
@@ -252,8 +298,10 @@ A returned map is accepted only when its fingerprint, bounded action contract, p
 domain, and exact HTTPS origin validate locally. Login paths are data and may represent any locale or
 site route; the contract contains no list of known URLs. Persisted login URLs omit query and fragment
 data so one-time flow state or tokens cannot enter the catalog. When no verified map
-applies, the Agent may prepare the public login surface with ordinary browser tools, inspect it,
-and pass a complete, versioned, value-free form definition to `inject_credential` as a fallback.
+applies, a CLI caller may prepare the public login surface with ordinary browser tools, inspect it,
+and pass a complete, versioned, value-free form definition to `palladin inject --form-json` as a
+fallback. MCP 1.1 `inject_credential` adds only exact-tab routing hints; it has no form argument and never accepts this
+fallback.
 The definition is an ordered list of one or more steps mapping schema-valid Entry field IDs to public
 control locators, with a bounded click or press-Enter action and an optional next-step transition
 expectation.
@@ -269,8 +317,10 @@ The version 1 shape is `{"version":1,"steps":[...]}`. A verified map may use any
 field identifier needed by the login flow. The runtime resolves only fields from the already
 authorized credential and checks their value kind against the declared control before delivery.
 Every step declares one `click` or `press-enter` submit action; every intermediate
-step also declares `waitFor`. `--form-json` is value-free and exists only for the ordinary-extension
-CLI adapter—credential values are never accepted there or in MCP arguments.
+step also declares `waitFor`. `--form-json` is a value-free CLI fallback; MCP 1.1 preserves the
+backend-provided verified form map boundary and adds only the optional paired `targetTabId` and
+`targetUrl` routing hints. Credential values are
+retrieved, decrypted and forwarded only inside the native runtime.
 
 The native runtime retrieves and decrypts only the approved values after the grant is active. The
 selected provider validates each declared control, re-checks HTTPS and the authenticated Entry domain
@@ -283,7 +333,7 @@ If the API still returns the rejected version and fingerprint, a public rejectio
 that exact revision unavailable while later requests continue checking for a replacement; a
 concurrently stored higher version is neither removed nor overwritten by a delayed
 response. Cache invalidation/refresh persistence failures are reported to the operator. A separately
-validated caller fallback form remains
+validated CLI fallback form remains
 available during transient map lookup transport/5xx failures, while invalid payloads, authentication,
 and unsafe local cache/configuration errors still fail closed.
 Origin mismatch and provider transport/browser failures keep their specific outcome and do not evict
