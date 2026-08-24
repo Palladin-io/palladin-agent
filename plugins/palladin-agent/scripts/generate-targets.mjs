@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const pluginSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -127,6 +127,33 @@ const targets = [
 
 const mismatches = [];
 
+async function listTargetArtifacts(root) {
+  const artifacts = [];
+
+  async function walk(directory) {
+    const entries = await readdir(directory, { withFileTypes: true }).catch((error) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+
+    for (const entry of entries) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(path);
+        continue;
+      }
+      artifacts.push({
+        path,
+        relativePath: relative(root, path).split(sep).join('/'),
+        regularFile: entry.isFile(),
+      });
+    }
+  }
+
+  await walk(root);
+  return artifacts;
+}
+
 async function materialize(path, content) {
   if (checkOnly) {
     const current = await readFile(path, 'utf8').catch(() => undefined);
@@ -152,6 +179,17 @@ for (const target of targets) {
     'skills/palladin-browser-login/references/host-browser.md': hostAdapter,
     ...target.extraFiles,
   };
+
+  if (checkOnly) {
+    const expectedPaths = new Set(Object.keys(files));
+    for (const artifact of await listTargetArtifacts(root)) {
+      if (!artifact.regularFile || !expectedPaths.has(artifact.relativePath)) {
+        mismatches.push(`${artifact.path} (unexpected generated artifact)`);
+      }
+    }
+  } else {
+    await rm(root, { recursive: true, force: true });
+  }
 
   for (const [relativePath, content] of Object.entries(files)) {
     await materialize(resolve(root, relativePath), content);

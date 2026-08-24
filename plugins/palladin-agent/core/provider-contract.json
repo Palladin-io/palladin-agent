@@ -16,7 +16,7 @@
       }
     },
     "cli": {
-      "search": ["palladin", "search"],
+      "search": ["palladin", "search", "--json"],
       "inject": ["palladin", "inject"],
       "routing": {
         "provider": "--provider",

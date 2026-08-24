@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -67,6 +67,32 @@ describe('Palladin plugin targets', () => {
         '--check',
       ]),
     ).resolves.toBeTruthy();
+  });
+
+  it('rejects artifacts outside the generated target file set', async () => {
+    const unexpected = resolve(
+      pluginSourceRoot,
+      'targets/codex/palladin-agent/unexpected.preview',
+    );
+    await writeFile(unexpected, 'must not survive generation\n', 'utf8');
+    try {
+      await expect(
+        execFileAsync(process.execPath, [
+          resolve(pluginSourceRoot, 'scripts/generate-targets.mjs'),
+          '--check',
+        ]),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining('unexpected generated artifact'),
+      });
+      await expect(
+        execFileAsync(process.execPath, [
+          resolve(pluginSourceRoot, 'scripts/generate-targets.mjs'),
+        ]),
+      ).resolves.toBeTruthy();
+      await expect(stat(unexpected)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(unexpected, { force: true });
+    }
   });
 
   it.each(targets)('packages the canonical workflow for $id', async (target) => {
@@ -162,12 +188,14 @@ describe('Palladin plugin targets', () => {
     expect(providerContract.credentialSurfaces.cli.search).toEqual([
       'palladin',
       'search',
+      '--json',
     ]);
     expect(providerContract.credentialSurfaces.cli.inject).toEqual([
       'palladin',
       'inject',
     ]);
     expect(cliArgs).toContain('Search(SearchArgs)');
+    expect(cliArgs).toContain('pub json: bool');
     expect(cliArgs).toContain('Inject(InjectArgs)');
 
     for (const provider of providerContract.browserProviders) {

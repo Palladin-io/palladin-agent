@@ -13,7 +13,7 @@ Keep three boundaries separate:
 
 | Operation | MCP | CLI |
 |---|---|---|
-| Discovery | `search_entries` | `palladin search <query>` |
+| Discovery | `search_entries` | `palladin search --json <query>` |
 | Inject | `inject_credential` | `palladin inject <vaultId> <entryId>` |
 | Browser provider | `provider` | `--provider` |
 | Exact tab | `targetTabId` | `--target-tab-id` |
@@ -21,7 +21,8 @@ Keep three boundaries separate:
 
 Packaged plugins launch `palladin mcp serve` directly, without a shell or secret environment. They
 must not silently fall back to CLI when MCP fails. A CLI-only host adapter must invoke `palladin` as
-one executable with a separate argument list and preserve the same provider and exact-tab values.
+one executable with a separate argument list, preserve the same provider and exact-tab values, and
+parse only JSON Search output so complete `vaultId` and `entryId` values reach Inject.
 
 ## Current browser providers
 
