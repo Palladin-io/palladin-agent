@@ -1,0 +1,38 @@
+{
+  "name": "palladin-agent",
+  "version": "0.1.0-preview.2",
+  "description": "Preview of secure Palladin credential injection into an exact browser tab.",
+  "author": {
+    "name": "Palladin.io",
+    "url": "https://palladin.io"
+  },
+  "homepage": "https://palladin.io",
+  "repository": "https://github.com/Palladin-io/palladin-agent",
+  "license": "Apache-2.0",
+  "keywords": [
+    "palladin",
+    "password-manager",
+    "browser-login",
+    "agent"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Palladin Agent",
+    "shortDescription": "Sign in without exposing credentials",
+    "longDescription": "Palladin lets an agent prepare an exact browser tab and request credential injection through the paired Palladin extension. Secrets remain inside the native runtime and authenticated extension transport.",
+    "developerName": "Palladin.io",
+    "category": "Productivity",
+    "capabilities": [
+      "Credential discovery",
+      "Browser credential injection"
+    ],
+    "websiteURL": "https://palladin.io",
+    "defaultPrompt": [
+      "Sign me in to this website with Palladin.",
+      "Open the login page and use my Palladin account.",
+      "Use Palladin to sign in on this browser tab."
+    ],
+    "brandColor": "#D95A4E"
+  }
+}
