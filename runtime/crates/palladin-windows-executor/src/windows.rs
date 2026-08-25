@@ -664,8 +664,11 @@ impl PrivateScript {
             .prefix("palladin-script-")
             .tempdir_in(temp_root)
             .map_err(|_| ExecutorError::TemporaryScript)?;
-        let path = directory.path().join("script");
+        let path = directory.path().join("script.js");
         let mut options = std::fs::OpenOptions::new();
+        // Node/libuv reopens scripts with read, write and delete sharing. Keep
+        // the writer open without write sharing to pin the bytes, and retain
+        // DELETE_ON_CLOSE so forced executor termination still removes source.
         options
             .write(true)
             .create_new(true)
@@ -1071,6 +1074,14 @@ mod tests {
         let script =
             PrivateScript::new(&profile_root, b"fixture-script-secret").expect("private script");
         let script_path = script.path().to_path_buf();
+        assert_eq!(script_path.extension(), Some(OsStr::new("js")));
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&script_path)
+                .is_err(),
+            "private script was writable while pinned"
+        );
         let secrets = [SecretVariable {
             name: PROBE_SCRIPT_PATH.to_owned(),
             value: script_path.to_string_lossy().into_owned(),
