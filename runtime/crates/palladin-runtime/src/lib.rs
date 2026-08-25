@@ -3364,6 +3364,7 @@ struct PreparedDiscoveryCache {
 struct PreparedCredentialOptions {
     options: GetCredentialOptions,
     organization_id: Option<String>,
+    trusted_agent_access_epoch: Option<u32>,
 }
 
 struct OperationCancellation {
@@ -3662,18 +3663,22 @@ impl RuntimeSession<'_> {
             .map(str::trim)
             .filter(|value| !value.is_empty());
         if reason.is_none() {
+            let anchor = self
+                .config
+                .vault_trust_anchors
+                .iter()
+                .find(|anchor| anchor.vault_id == request.vault_id);
             return Ok(PreparedCredentialOptions {
                 options: GetCredentialOptions {
                     encrypted_reason: None,
                     method: Some(method),
                     requested_methods,
                 },
-                organization_id: self
-                    .config
-                    .vault_trust_anchors
-                    .iter()
-                    .find(|anchor| anchor.vault_id == request.vault_id)
-                    .map(|anchor| anchor.organization_id.clone()),
+                organization_id: anchor.map(|anchor| anchor.organization_id.clone()),
+                trusted_agent_access_epoch: anchor
+                    .map(|anchor| u32::try_from(anchor.agent_access_epoch))
+                    .transpose()
+                    .map_err(|_| RuntimeError::InvalidPublicConfig)?,
             });
         }
         let response = self.api.list_vault_manifests().await?;
@@ -3686,6 +3691,17 @@ impl RuntimeSession<'_> {
             .manifest
             .clone();
         let identity = self.agent_identity_binding_for_organization(&manifest.organization_id)?;
+        let trusted_agent_access_epoch = batch
+            .next_anchors
+            .iter()
+            .find(|anchor| {
+                anchor.vault_id == request.vault_id
+                    && anchor.organization_id == manifest.organization_id
+            })
+            .ok_or(RuntimeError::UntrustedVaultManifest)?
+            .agent_access_epoch;
+        let trusted_agent_access_epoch = u32::try_from(trusted_agent_access_epoch)
+            .map_err(|_| RuntimeError::InvalidPublicConfig)?;
         self.persist_prepared_manifest_batch(&batch)?;
 
         let reason = reason.ok_or(RuntimeError::UntrustedVaultManifest)?;
@@ -3722,6 +3738,7 @@ impl RuntimeSession<'_> {
                 requested_methods,
             },
             organization_id: Some(identity.organization_id.to_string()),
+            trusted_agent_access_epoch: Some(trusted_agent_access_epoch),
         })
     }
 
@@ -4624,20 +4641,33 @@ impl RuntimeSession<'_> {
             return Ok(CredentialDelivery::NotGranted(access));
         };
         self.ensure_authorized()?;
-        let organization_id = if let Some(organization_id) = prepared.organization_id {
-            organization_id
+        let (organization_id, trusted_agent_access_epoch) = if let Some(organization_id) =
+            prepared.organization_id
+        {
+            let trusted_agent_access_epoch = prepared
+                .trusted_agent_access_epoch
+                .ok_or(RuntimeError::UntrustedVaultManifest)?;
+            (organization_id, trusted_agent_access_epoch)
         } else {
             let batch = self.prepare_manifest_batch(self.api.list_vault_manifests().await?)?;
-            let organization_id = batch
+            let item = batch
                 .items
                 .iter()
                 .find(|item| item.manifest.vault_id == request.vault_id)
+                .ok_or(RuntimeError::UntrustedVaultManifest)?;
+            let organization_id = item.manifest.organization_id.clone();
+            let trusted_agent_access_epoch = batch
+                .next_anchors
+                .iter()
+                .find(|anchor| {
+                    anchor.vault_id == request.vault_id && anchor.organization_id == organization_id
+                })
                 .ok_or(RuntimeError::UntrustedVaultManifest)?
-                .manifest
-                .organization_id
-                .clone();
+                .agent_access_epoch;
+            let trusted_agent_access_epoch = u32::try_from(trusted_agent_access_epoch)
+                .map_err(|_| RuntimeError::InvalidPublicConfig)?;
             self.persist_prepared_manifest_batch(&batch)?;
-            organization_id
+            (organization_id, trusted_agent_access_epoch)
         };
         let expected_agent_id = self
             .config
@@ -4694,6 +4724,7 @@ impl RuntimeSession<'_> {
                         grant_id: &grant_id,
                         agent_id: expected_agent_id,
                         agent_access_epoch,
+                        trusted_agent_access_epoch,
                         entry_id: request.entry_id,
                         approved_methods,
                         delivery_policy,

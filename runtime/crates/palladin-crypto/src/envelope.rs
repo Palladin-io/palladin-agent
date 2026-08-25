@@ -329,6 +329,7 @@ pub struct FullCredentialEnvelopeContext<'a> {
     pub grant_id: &'a str,
     pub agent_id: &'a str,
     pub agent_access_epoch: u32,
+    pub trusted_agent_access_epoch: u32,
     pub entry_id: &'a str,
     pub approved_methods: u16,
     pub delivery_policy: u16,
@@ -425,6 +426,7 @@ pub fn decrypt_full_credential_at(
     if vault_id != parse_uuid(outer.requested_vault_id)?
         || entry_id != parse_uuid(outer.requested_entry_id)?
         || outer.agent_access_epoch == 0
+        || outer.agent_access_epoch != outer.trusted_agent_access_epoch
     {
         return Err(CryptoError::InvalidDescriptor);
     }
@@ -757,7 +759,7 @@ struct NormalizedGrant {
 fn normalize_full_member_secret(
     plaintext: &[u8],
     requested_method: u16,
-    _delivery_policy: u16,
+    delivery_policy: u16,
 ) -> Result<NormalizedGrant, CryptoError> {
     let text = std::str::from_utf8(plaintext).map_err(|_| CryptoError::InvalidEncoding)?;
     let secret =
@@ -769,7 +771,334 @@ fn normalize_full_member_secret(
     if !is_canonical {
         return Err(CryptoError::InvalidEncoding);
     }
-    let object = secret.0.as_object().ok_or(CryptoError::InvalidEncoding)?;
+    let projected = canonical_member_secret_projection(&secret.0)?;
+    normalize_projected_member_secret(&projected, requested_method, delivery_policy)
+}
+
+fn canonical_member_secret_projection(value: &Value) -> Result<SensitiveJson, CryptoError> {
+    let object = value.as_object().ok_or(CryptoError::InvalidEncoding)?;
+    require_allowed_keys(
+        object,
+        &[
+            "agentVisibilityPolicy",
+            "content",
+            "entryType",
+            "memberLabel",
+        ],
+        &[
+            "agentLabel",
+            "agentVisibilityPolicy",
+            "content",
+            "description",
+            "entryType",
+            "memberLabel",
+        ],
+    )?;
+    let entry_type_code = object
+        .get("entryType")
+        .and_then(Value::as_u64)
+        .ok_or(CryptoError::InvalidEncoding)?;
+    let entry_type = match entry_type_code {
+        0 => "key",
+        1 => "credential",
+        2 => "script",
+        _ => return Err(CryptoError::InvalidDescriptor),
+    };
+    if object.get("memberLabel").and_then(Value::as_str).is_none()
+        || !is_optional_string_or_absent(object.get("agentLabel"))
+        || !is_optional_string_or_absent(object.get("description"))
+    {
+        return Err(CryptoError::InvalidEncoding);
+    }
+
+    let content = object
+        .get("content")
+        .and_then(Value::as_object)
+        .ok_or(CryptoError::InvalidEncoding)?;
+    let (required_content, allowed_content): (&[&str], &[&str]) = match entry_type {
+        "key" => (
+            &["fields", "v", "value"],
+            &["fields", "notes", "url", "v", "value"],
+        ),
+        "credential" => (
+            &["fields", "password", "username", "v"],
+            &[
+                "fields", "notes", "password", "totp", "url", "username", "v",
+            ],
+        ),
+        "script" => (
+            &["fields", "interpreter", "refs", "script", "v"],
+            &["fields", "interpreter", "notes", "refs", "script", "v"],
+        ),
+        _ => return Err(CryptoError::InvalidDescriptor),
+    };
+    require_allowed_keys(content, required_content, allowed_content)?;
+    if content.get("v").and_then(Value::as_u64) != Some(2) {
+        return Err(CryptoError::InvalidDescriptor);
+    }
+
+    let custom_fields = content
+        .get("fields")
+        .and_then(Value::as_array)
+        .ok_or(CryptoError::InvalidEncoding)?;
+    let mut legacy_custom_fields = Vec::with_capacity(custom_fields.len());
+    let mut custom_policy_ids = Vec::with_capacity(custom_fields.len());
+    for field in custom_fields {
+        let field = field.as_object().ok_or(CryptoError::InvalidEncoding)?;
+        require_exact_keys(field, &["id", "label", "type", "value"])?;
+        let id = field
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(CryptoError::InvalidEncoding)?;
+        let parsed_id = uuid::Uuid::parse_str(id).map_err(|_| CryptoError::InvalidDescriptor)?;
+        if parsed_id.to_string() != id || custom_policy_ids.iter().any(|existing| existing == id) {
+            return Err(CryptoError::InvalidDescriptor);
+        }
+        let field_type = field
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or(CryptoError::InvalidEncoding)?;
+        if !matches!(
+            field_type,
+            "text" | "multiline" | "concealed" | "totp" | "unknown"
+        ) || field.get("label").and_then(Value::as_str).is_none()
+        {
+            return Err(CryptoError::InvalidDescriptor);
+        }
+        let policy_id = format!("custom:{id}");
+        custom_policy_ids.push(policy_id.clone());
+        legacy_custom_fields.push(serde_json::json!({
+            "id": policy_id,
+            "label": field["label"].clone(),
+            "type": field_type,
+            "value": field["value"].clone(),
+        }));
+    }
+
+    let policy = object
+        .get("agentVisibilityPolicy")
+        .and_then(Value::as_object)
+        .ok_or(CryptoError::InvalidEncoding)?;
+    require_exact_keys(policy, &["discoveryEnabled", "fields", "schemaVersion"])?;
+    if policy.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
+        return Err(CryptoError::InvalidDescriptor);
+    }
+    let discovery_enabled = policy
+        .get("discoveryEnabled")
+        .and_then(Value::as_bool)
+        .ok_or(CryptoError::InvalidEncoding)?;
+    if discovery_enabled
+        && object
+            .get("agentLabel")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+    {
+        return Err(CryptoError::InvalidDescriptor);
+    }
+    let fields = policy
+        .get("fields")
+        .and_then(Value::as_array)
+        .ok_or(CryptoError::InvalidEncoding)?;
+    let expected_builtins: &[&str] = match entry_type {
+        "key" => &[
+            "common.agent-label",
+            "common.capabilities",
+            "common.description",
+            "common.entry-type",
+            "common.icon-reference",
+            "common.member-label",
+            "common.search-fields",
+            "key.notes",
+            "key.url",
+            "key.value",
+        ],
+        "credential" => &[
+            "common.agent-label",
+            "common.capabilities",
+            "common.description",
+            "common.entry-type",
+            "common.icon-reference",
+            "common.member-label",
+            "common.search-fields",
+            "credential.notes",
+            "credential.password",
+            "credential.totp",
+            "credential.url",
+            "credential.url-domain",
+            "credential.username",
+        ],
+        "script" => &[
+            "common.agent-label",
+            "common.capabilities",
+            "common.description",
+            "common.entry-type",
+            "common.icon-reference",
+            "common.member-label",
+            "common.search-fields",
+            "script.interpreter",
+            "script.notes",
+            "script.refs",
+            "script.source",
+        ],
+        _ => return Err(CryptoError::InvalidDescriptor),
+    };
+    let mut canonical_access = Map::new();
+    let mut previous_id: Option<String> = None;
+    for field in fields {
+        let field = field.as_object().ok_or(CryptoError::InvalidEncoding)?;
+        require_exact_keys(field, &["access", "fieldId"])?;
+        let field_id = field
+            .get("fieldId")
+            .and_then(Value::as_str)
+            .ok_or(CryptoError::InvalidEncoding)?;
+        if previous_id
+            .as_deref()
+            .is_some_and(|previous| previous >= field_id)
+            || canonical_access.contains_key(field_id)
+        {
+            return Err(CryptoError::InvalidDescriptor);
+        }
+        let access = field
+            .get("access")
+            .and_then(Value::as_u64)
+            .filter(|access| *access <= 4)
+            .ok_or(CryptoError::InvalidDescriptor)?;
+        let is_builtin = expected_builtins.contains(&field_id);
+        let is_known_custom = custom_policy_ids.iter().any(|id| id == field_id);
+        if !is_builtin && !is_known_custom {
+            return Err(CryptoError::InvalidDescriptor);
+        }
+        canonical_access.insert(field_id.to_owned(), Value::from(access));
+        previous_id = Some(field_id.to_owned());
+    }
+    if expected_builtins
+        .iter()
+        .any(|field_id| !canonical_access.contains_key(*field_id))
+    {
+        return Err(CryptoError::InvalidDescriptor);
+    }
+    for custom_id in &custom_policy_ids {
+        canonical_access
+            .entry(custom_id.clone())
+            .or_insert_with(|| Value::from(0));
+    }
+    for (field_id, expected) in [
+        ("common.member-label", 0),
+        ("common.agent-label", 1),
+        ("common.entry-type", 1),
+        ("common.capabilities", 1),
+        ("common.icon-reference", 0),
+        ("common.search-fields", 0),
+    ] {
+        if canonical_access.get(field_id).and_then(Value::as_u64) != Some(expected) {
+            return Err(CryptoError::InvalidDescriptor);
+        }
+    }
+    if !matches!(
+        canonical_access
+            .get("common.description")
+            .and_then(Value::as_u64),
+        Some(0 | 1)
+    ) {
+        return Err(CryptoError::InvalidDescriptor);
+    }
+
+    let mut legacy_access = Map::new();
+    for (field_id, access) in &canonical_access {
+        let mut access = access.as_u64().ok_or(CryptoError::InvalidDescriptor)?;
+        let legacy_id = match field_id.as_str() {
+            "common.member-label" => Some("memberLabel"),
+            "common.agent-label" => Some("agentLabel"),
+            "common.description" => Some("description"),
+            "common.entry-type" => Some("entryType"),
+            "common.icon-reference" => Some("icon"),
+            "common.capabilities" | "common.search-fields" => None,
+            "credential.url-domain" => Some("credential.urlDomain"),
+            "key.notes" | "credential.notes" | "script.notes" => Some("notes"),
+            "key.url" => Some("key.url"),
+            other => Some(other),
+        };
+        let Some(legacy_id) = legacy_id else { continue };
+        if !discovery_enabled && matches!(legacy_id, "agentLabel" | "entryType") {
+            access = 0;
+        }
+        let mode = match access {
+            0 => "never",
+            1 => "discovery",
+            2 => "onGrantValue",
+            3 => "onGrantDerived",
+            4 => "onGrantRuntime",
+            _ => return Err(CryptoError::InvalidDescriptor),
+        };
+        legacy_access.insert(legacy_id.to_owned(), Value::String(mode.to_owned()));
+    }
+    legacy_access.insert("color".to_owned(), Value::String("never".to_owned()));
+
+    let optional = |name: &str| content.get(name).cloned().unwrap_or(Value::Null);
+    let mut legacy_content = Map::new();
+    legacy_content.insert(
+        "customFields".to_owned(),
+        Value::Array(legacy_custom_fields),
+    );
+    match entry_type {
+        "key" => {
+            legacy_content.insert("value".to_owned(), content["value"].clone());
+            legacy_content.insert("url".to_owned(), optional("url"));
+            legacy_content.insert("notes".to_owned(), optional("notes"));
+        }
+        "credential" => {
+            legacy_content.insert("username".to_owned(), content["username"].clone());
+            legacy_content.insert("password".to_owned(), content["password"].clone());
+            legacy_content.insert("url".to_owned(), optional("url"));
+            legacy_content.insert("urlDomain".to_owned(), Value::Null);
+            legacy_content.insert("totp".to_owned(), optional("totp"));
+            legacy_content.insert("notes".to_owned(), optional("notes"));
+        }
+        "script" => {
+            legacy_content.insert("source".to_owned(), content["script"].clone());
+            legacy_content.insert("interpreter".to_owned(), content["interpreter"].clone());
+            legacy_content.insert("refs".to_owned(), content["refs"].clone());
+            legacy_content.insert("notes".to_owned(), optional("notes"));
+        }
+        _ => return Err(CryptoError::InvalidDescriptor),
+    }
+
+    let mut projected = Map::new();
+    projected.insert(
+        "schema".to_owned(),
+        Value::String("palladin.member-secret.v1".to_owned()),
+    );
+    projected.insert("memberLabel".to_owned(), object["memberLabel"].clone());
+    projected.insert(
+        "agentLabel".to_owned(),
+        if discovery_enabled {
+            object.get("agentLabel").cloned().unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        },
+    );
+    projected.insert("discoverable".to_owned(), Value::Bool(discovery_enabled));
+    projected.insert(
+        "description".to_owned(),
+        object.get("description").cloned().unwrap_or(Value::Null),
+    );
+    projected.insert("icon".to_owned(), Value::Null);
+    projected.insert("color".to_owned(), Value::Null);
+    projected.insert("agentFieldAccess".to_owned(), Value::Object(legacy_access));
+    projected.insert("entryType".to_owned(), Value::String(entry_type.to_owned()));
+    projected.insert("content".to_owned(), Value::Object(legacy_content));
+    Ok(SensitiveJson(Value::Object(projected)))
+}
+
+fn normalize_projected_member_secret(
+    projected: &SensitiveJson,
+    requested_method: u16,
+    _delivery_policy: u16,
+) -> Result<NormalizedGrant, CryptoError> {
+    let object = projected
+        .0
+        .as_object()
+        .ok_or(CryptoError::InvalidEncoding)?;
     require_exact_keys(
         object,
         &[
@@ -869,6 +1198,23 @@ fn normalize_full_member_secret(
         &projected_field_ids(&projected.0)?,
         requested_method,
     )
+}
+
+fn require_allowed_keys(
+    object: &Map<String, Value>,
+    required: &[&str],
+    allowed: &[&str],
+) -> Result<(), CryptoError> {
+    if required.iter().any(|key| !object.contains_key(*key))
+        || object.keys().any(|key| !allowed.contains(&key.as_str()))
+    {
+        return Err(CryptoError::InvalidEncoding);
+    }
+    Ok(())
+}
+
+fn is_optional_string_or_absent(value: Option<&Value>) -> bool {
+    matches!(value, None | Some(Value::Null | Value::String(_)))
 }
 
 fn require_exact_keys(object: &Map<String, Value>, expected: &[&str]) -> Result<(), CryptoError> {
@@ -978,6 +1324,7 @@ fn validate_agent_field_access(
             "color",
             "entryType",
             "key.value",
+            "key.url",
             "notes",
         ],
         "credential" => &[
@@ -1061,7 +1408,9 @@ fn allowed_access_modes(
     let allowed = match field_id {
         "memberLabel" | "icon" | "color" => &["never"][..],
         "agentLabel" | "entryType" | "description" => &["never", "discovery"][..],
-        "key.value" | "credential.password" | "credential.url" => &["never", "onGrantValue"][..],
+        "key.value" | "key.url" | "credential.password" | "credential.url" => {
+            &["never", "onGrantValue"][..]
+        }
         "credential.username" | "credential.urlDomain" => {
             &["never", "discovery", "onGrantValue"][..]
         }
@@ -1113,6 +1462,7 @@ fn member_secret_field(
     let value = match field_id {
         "notes" => content.get("notes"),
         "key.value" => content.get("value"),
+        "key.url" => content.get("url"),
         "credential.username" => content.get("username"),
         "credential.password" => content.get("password"),
         "credential.url" => content.get("url"),
@@ -1151,7 +1501,7 @@ fn member_secret_field(
         (_, Some("concealed")) => "concealed",
         (_, Some("totp")) => "totp",
         ("key.value" | "credential.password" | "creditCard.cardNumber", None) => "concealed",
-        ("credential.url", None) => "url",
+        ("key.url" | "credential.url", None) => "url",
         ("credential.totp", None) => "totp",
         ("notes", None) => "multiline",
         ("script.source", None) => "script",
@@ -1364,6 +1714,7 @@ fn normalize_grant_payload(
 fn expected_field(entry_type: &str, id: &str, kind: &str) -> Result<&'static str, CryptoError> {
     let mapping = match (entry_type, id) {
         ("key", "key.value") => ("concealed", "value"),
+        ("key", "key.url") => ("url", "value"),
         ("credential", "credential.username") => ("text", "value"),
         ("credential", "credential.password") => ("concealed", "value"),
         ("credential", "credential.url") => ("url", "value"),
@@ -1407,6 +1758,7 @@ fn insert_scalar_field(
 ) -> Result<(), CryptoError> {
     let target = match field.id.as_str() {
         "key.value" => "value",
+        "key.url" => "url",
         "credential.username" => "username",
         "credential.password" => "password",
         "credential.url" => "url",
@@ -1502,6 +1854,7 @@ fn is_field_id(value: &str) -> bool {
     matches!(
         value,
         "key.value"
+            | "key.url"
             | "credential.username"
             | "credential.password"
             | "credential.url"
@@ -1725,6 +2078,7 @@ fn zeroize_json(value: &mut Value) {
 mod tests {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use secrecy::{ExposeSecret, SecretBox};
+    use serde_json::Value;
     use sha2::{Digest, Sha256};
     use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -1734,8 +2088,8 @@ mod tests {
         FullCredentialEnvelopeContext, GrantEnvelopeBinding, GrantEnvelopeDescriptor,
         GrantEnvelopeScope, MemberSecretBinding, MemberSecretDescriptor, MemberSecretEnvelope,
         VaultEntryKeyDescriptor, VaultEntryKeyEnvelope, VaultKeyBinding, WrappedGrantDek,
-        WrappedGrantDekDescriptor, decrypt_full_credential_at, normalize_grant_payload,
-        parse_nonzero_u64, parse_uuid, to_descriptor,
+        WrappedGrantDekDescriptor, decrypt_full_credential_at, normalize_full_member_secret,
+        normalize_grant_payload, parse_nonzero_u64, parse_uuid, to_descriptor,
     };
     use crate::{
         EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose, EnvelopeScope, RecipientKeyKind,
@@ -1876,30 +2230,31 @@ mod tests {
             binding: EnvelopeBinding::MemberSecret { operation: 2 },
         };
         let member_plaintext = serde_json::to_vec(&serde_json::json!({
-            "schema": "palladin.member-secret.v1",
-            "memberLabel": "Member-only label",
             "agentLabel": null,
-            "discoverable": false,
-            "description": null,
-            "icon": null,
-            "color": null,
-            "agentFieldAccess": {
-                "memberLabel": "never",
-                "agentLabel": "never",
-                "description": "never",
-                "icon": "never",
-                "color": "never",
-                "entryType": "never",
-                "key.value": "onGrantValue",
-                "notes": "never"
+            "agentVisibilityPolicy": {
+                "discoveryEnabled": false,
+                "fields": [
+                    { "access": 1, "fieldId": "common.agent-label" },
+                    { "access": 1, "fieldId": "common.capabilities" },
+                    { "access": 0, "fieldId": "common.description" },
+                    { "access": 1, "fieldId": "common.entry-type" },
+                    { "access": 0, "fieldId": "common.icon-reference" },
+                    { "access": 0, "fieldId": "common.member-label" },
+                    { "access": 0, "fieldId": "common.search-fields" },
+                    { "access": 0, "fieldId": "key.notes" },
+                    { "access": 0, "fieldId": "key.url" },
+                    { "access": 2, "fieldId": "key.value" }
+                ],
+                "schemaVersion": 1
             },
-            "entryType": "key",
             "content": {
-                "value": "fixture-sensitive-value",
-                "url": null,
-                "notes": null,
-                "customFields": []
-            }
+                "fields": [],
+                "v": 2,
+                "value": "fixture-sensitive-value"
+            },
+            "description": null,
+            "entryType": 0,
+            "memberLabel": "Member-only label"
         }))
         .expect("canonical member secret");
         let secret_key = XChaChaVaultSuite::derive_key(&entry_dek, &secret_descriptor)
@@ -1935,6 +2290,7 @@ mod tests {
                 grant_id: GRANT_ID,
                 agent_id: AGENT_ID,
                 agent_access_epoch: 7,
+                trusted_agent_access_epoch: 7,
                 entry_id: ENTRY_ID,
                 approved_methods: 1,
                 delivery_policy: 0,
@@ -1960,6 +2316,7 @@ mod tests {
             grant_id: GRANT_ID,
             agent_id: AGENT_ID,
             agent_access_epoch: 7,
+            trusted_agent_access_epoch: 7,
             entry_id: ENTRY_ID,
             approved_methods: 1,
             delivery_policy: 0,
@@ -1982,6 +2339,33 @@ mod tests {
             Err(CryptoError::InvalidDescriptor)
         ));
 
+        let stale_anchor_context = FullCredentialEnvelopeContext {
+            organization_id: ORGANIZATION_ID,
+            vault_id: VAULT_ID,
+            grant_id: GRANT_ID,
+            agent_id: AGENT_ID,
+            agent_access_epoch: 7,
+            trusted_agent_access_epoch: 8,
+            entry_id: ENTRY_ID,
+            approved_methods: 1,
+            delivery_policy: 0,
+            expires_at: None,
+            requested_vault_id: VAULT_ID,
+            requested_entry_id: ENTRY_ID,
+            requested_method: 1,
+        };
+        assert!(matches!(
+            decrypt_full_credential_at(
+                &wrapped_vault_key,
+                &entry_envelope,
+                &secret_envelope,
+                &identity,
+                &stale_anchor_context,
+                OffsetDateTime::now_utc(),
+            ),
+            Err(CryptoError::InvalidDescriptor)
+        ));
+
         let mut wrong_grant = wrapped_vault_key.clone();
         wrong_grant
             .wrapped_vault_key
@@ -1999,6 +2383,29 @@ mod tests {
             ),
             Err(CryptoError::InvalidDescriptor)
         ));
+    }
+
+    #[test]
+    fn full_projection_accepts_the_pinned_member_secret_payload() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../contracts/vault-v2/fixtures/v2/vectors/envelopes.json"
+        ))
+        .expect("pinned envelope fixture");
+        let plaintext = fixture["aeadVectors"]
+            .as_array()
+            .expect("fixture vectors")
+            .iter()
+            .find(|vector| vector["id"] == "member-secret")
+            .and_then(|vector| vector["plaintextCanonical"].as_str())
+            .expect("pinned MemberSecret plaintext");
+
+        let normalized = normalize_full_member_secret(plaintext.as_bytes(), 1, 0)
+            .expect("canonical MemberSecret projection");
+
+        assert_eq!(
+            normalized.plaintext,
+            br#"{"password":"not-a-real-password","url":"postgresql://fixture.invalid"}"#
+        );
     }
 
     #[test]
