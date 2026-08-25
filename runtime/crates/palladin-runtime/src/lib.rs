@@ -5971,6 +5971,160 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn public_script_fixture_executes_atomically_and_withholds_protected_result() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/script-execution/v1/wire-fixture.json"
+        ))
+        .expect("public Script execution fixture");
+        let manifest = &fixture["expected"]["decryptedPayload"]["manifest"];
+        let organization_id = manifest["organizationId"]
+            .as_str()
+            .expect("organization ID");
+        let vault_id = manifest["vaultId"].as_str().expect("Vault ID");
+        let script_entry_id = manifest["scriptEntryId"].as_str().expect("Script ID");
+        let script_revision = manifest["scriptRevision"]
+            .as_str()
+            .expect("Script revision");
+        let agent_id = manifest["agentId"].as_str().expect("Agent ID");
+        let agent_access_epoch = manifest["agentAccessEpoch"]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .expect("Agent access epoch");
+        let encrypted_package = fixture["expected"]["encryptedPackage"].clone();
+        let grant_id = encrypted_package["grantId"].as_str().expect("grant ID");
+        let response = serde_json::to_string(&json!({
+            "status": "granted",
+            "authorizationSource": "scriptExecution",
+            "organizationId": organization_id,
+            "vaultId": vault_id,
+            "agentId": agent_id,
+            "agentAccessEpoch": agent_access_epoch,
+            "scriptEntryId": script_entry_id,
+            "scriptRevision": script_revision,
+            "grantId": grant_id,
+            "queryCount": 1,
+            "queryLimit": 10,
+            "expiresAt": null,
+            "scriptPackage": encrypted_package,
+            "agentWrappedVaultKey": null,
+            "vaultEntries": null
+        }))
+        .expect("package response");
+        let (host, requests) = single_response_server(200, response).await;
+
+        let private_key = hex::decode(
+            fixture["deterministicInputs"]["recipientX25519PrivateKey"]
+                .as_str()
+                .expect("recipient private key"),
+        )
+        .expect("recipient private key encoding");
+        let encryption =
+            X25519Identity::from_private_bytes(private_key).expect("recipient identity");
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let mut session = runtime_session(host, api, encryption);
+        session.config.agent_id = Some(agent_id.to_owned());
+        session.config.vault_trust_anchors = vec![PublicVaultTrustAnchor {
+            organization_id: organization_id.to_owned(),
+            vault_id: vault_id.to_owned(),
+            agent_access_epoch: u64::from(agent_access_epoch),
+            vault_signing_public_key: fixture["publicKeys"]["vaultSigningEd25519"]
+                .as_str()
+                .expect("Vault signing public key")
+                .to_owned(),
+            vault_signing_key_fingerprint:
+                fixture["expected"]["encryptedPackage"]["vaultSigningKeyFingerprint"]
+                    .as_str()
+                    .expect("Vault signing key fingerprint")
+                    .to_owned(),
+            manifest_revision: "1".to_owned(),
+            manifest_signing_key_version:
+                fixture["expected"]["encryptedPackage"]["vaultSigningKeyVersion"]
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .expect("Vault signing key version"),
+            vdk_version: 1,
+        }];
+        let execution = serde_json::from_value(json!({
+            "contractVersion": manifest["contractVersion"].clone(),
+            "description": manifest["description"].clone(),
+            "parameters": manifest["parameters"].clone(),
+            "returnResultToAgent": manifest["returnResultToAgent"].clone()
+        }))
+        .expect("Script execution metadata");
+        let mut discovery = LocalDiscoveryIndex::new();
+        discovery
+            .upsert(
+                vault_id,
+                script_entry_id,
+                script_revision.parse().expect("numeric Script revision"),
+                [7; 32],
+                DiscoveryPlaintext {
+                    schema: "palladin.agent-discovery.v1".to_owned(),
+                    agent_label: "Public four-reference Script fixture".to_owned(),
+                    capabilities: vec!["exec".to_owned()],
+                    fields: Vec::new(),
+                    entry_type: "script".to_owned(),
+                    execution: Some(execution),
+                },
+            )
+            .expect("Script discovery");
+        session.discovery = Arc::new(tokio::sync::Mutex::new(discovery));
+
+        let parameters = json!({"activeOnly": true, "limit": 2, "role": "member"});
+        let outcome = session
+            .execute_atomic_script(
+                &CredentialExecRequest {
+                    delivery: CredentialDeliveryRequest {
+                        vault_id,
+                        entry_id: script_entry_id,
+                        reason: None,
+                        wait: WaitOptions {
+                            wait_ms: Some(0),
+                            poll_ms: None,
+                            progress: None,
+                        },
+                    },
+                    command: None,
+                    env_mappings: &[],
+                    parameters: &parameters,
+                    output: OperatorOutput::Discard,
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("atomic Script execution");
+        assert_eq!(
+            outcome,
+            CredentialExecOutcome::ScriptCompleted(ScriptExecutionResult {
+                exit_code: 0,
+                cancelled: false,
+                result: None,
+                withheld: Some(ScriptResultWithheld::ProtectedLiteralDetected),
+            })
+        );
+
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with(&format!(
+            "POST /api/agent/vaults/{vault_id}/scripts/{script_entry_id}/execution-package HTTP/1.1"
+        )));
+        let (_, body) = requests[0].split_once("\r\n\r\n").expect("request body");
+        assert_eq!(
+            body,
+            format!(
+                r#"{{"vaultId":"{vault_id}","scriptEntryId":"{script_entry_id}","scriptRevision":"{script_revision}"}}"#
+            )
+        );
+    }
+
     impl SecretStore for MemorySecretStore {
         fn get(
             &self,
