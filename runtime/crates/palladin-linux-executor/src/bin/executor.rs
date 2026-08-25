@@ -111,6 +111,17 @@ where
         .stderr
         .take()
         .ok_or(ExecutorServiceError::Spawn)?;
+    let writer = Arc::new(Mutex::new(connection_output));
+    let out = tokio::spawn(copy_output(
+        stdout,
+        Arc::clone(&writer),
+        ExecutorOutput::Stdout,
+    ));
+    let err = tokio::spawn(copy_output(
+        stderr,
+        Arc::clone(&writer),
+        ExecutorOutput::Stderr,
+    ));
     if let Some(script_input) = script_input {
         let mut stdin = child
             .inner()
@@ -126,17 +137,6 @@ where
             .await
             .map_err(|_| ExecutorServiceError::Output)?;
     }
-    let writer = Arc::new(Mutex::new(connection_output));
-    let out = tokio::spawn(copy_output(
-        stdout,
-        Arc::clone(&writer),
-        ExecutorOutput::Stdout,
-    ));
-    let err = tokio::spawn(copy_output(
-        stderr,
-        Arc::clone(&writer),
-        ExecutorOutput::Stderr,
-    ));
     let status = tokio::select! {
         status = wait_for_group(&mut child) => status?,
         disconnected = connection_input.read_u8() => {
@@ -395,7 +395,12 @@ enum ExecutorServiceError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutorServiceError, authorize_broker_uid};
+    use std::{path::PathBuf, time::Duration};
+
+    use palladin_windows_executor::ExecutorRequest;
+    use secrecy::SecretString;
+
+    use super::{ExecutorServiceError, authorize_broker_uid, execute};
 
     #[test]
     fn only_the_installed_non_root_broker_uid_is_authorized() {
@@ -408,5 +413,25 @@ mod tests {
             authorize_broker_uid(982, 981),
             Err(ExecutorServiceError::PeerIdentity)
         ));
+    }
+
+    #[tokio::test]
+    async fn drains_child_output_while_writing_large_script_input() {
+        let script =
+            SecretString::from("head -c 262144 /dev/zero; cat >/dev/null; printf done".to_owned());
+        let input = SecretString::from("x".repeat(262_144));
+        let request =
+            ExecutorRequest::script(PathBuf::from("/bin/sh"), &script, &input, Vec::new());
+        let (connection, peer) = tokio::io::duplex(64);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            execute(connection, tokio::io::sink(), request),
+        )
+        .await;
+
+        drop(peer);
+        assert!(result.is_ok(), "executor deadlocked on full child pipes");
+        assert!(result.expect("timeout checked").is_ok());
     }
 }
