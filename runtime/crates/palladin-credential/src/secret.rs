@@ -319,7 +319,10 @@ pub fn resolve_script_reference_member_field(
         .and_then(|policy| policy.get(field_id))
         .and_then(Value::as_str)
         .ok_or(SecretParseError::UnknownMemberSecretField)?;
-    if !matches!(access, "discovery" | "onGrantValue" | "onGrantDerived") {
+    if !matches!(
+        access,
+        "discovery" | "onGrantValue" | "onGrantDerived" | "onGrantRuntime"
+    ) {
         return Err(SecretParseError::UnknownMemberSecretField);
     }
     drop(secret);
@@ -1032,6 +1035,13 @@ mod tests {
                 .expect_err("missing policy"),
             SecretParseError::UnknownMemberSecretField,
         );
+
+        let runtime_member = br#"{"schema":"palladin.member-secret.v1","entryType":"creditCard","content":{"cardNumber":"4111111111111111","customFields":[]},"agentFieldAccess":{"creditCard.cardNumber":"onGrantRuntime"}}"#;
+        let card_number =
+            resolve_script_reference_member_field(runtime_member, "creditCard.cardNumber")
+                .expect("FULL Script reference may resolve runtime-only fields");
+        let card_number_matches = card_number.value.expose_secret() == "4111111111111111";
+        assert!(card_number_matches, "runtime-only reference diverged");
     }
 
     #[test]

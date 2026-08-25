@@ -70,8 +70,20 @@ pub enum ScriptExecutionParameterType {
 pub struct ScriptExecutionParameters(Value);
 
 impl ScriptExecutionParameters {
-    pub fn from_value(value: Value) -> Result<Self, CryptoError> {
-        if !value.is_object() || canonical_json(&value)?.len() > MAX_PARAMETERS_BYTES {
+    pub fn from_value(mut value: Value) -> Result<Self, CryptoError> {
+        if !value.is_object() {
+            zeroize_json(&mut value);
+            return Err(CryptoError::InvalidProfile);
+        }
+        let canonical = match canonical_json(&value) {
+            Ok(canonical) => Zeroizing::new(canonical),
+            Err(error) => {
+                zeroize_json(&mut value);
+                return Err(error);
+            }
+        };
+        if canonical.len() > MAX_PARAMETERS_BYTES {
+            zeroize_json(&mut value);
             return Err(CryptoError::InvalidProfile);
         }
         Ok(Self(value))
@@ -405,7 +417,7 @@ struct ScriptExecutionUnsignedPackage<'a> {
 pub fn validate_script_execution_parameters(
     definitions: &[ScriptExecutionParameter],
     values: &Value,
-) -> Result<BTreeMap<String, Value>, CryptoError> {
+) -> Result<ScriptExecutionParameters, CryptoError> {
     validate_parameter_definitions(definitions)?;
     let object = values.as_object().ok_or(CryptoError::InvalidProfile)?;
     let known = definitions
@@ -415,7 +427,7 @@ pub fn validate_script_execution_parameters(
     if object.keys().any(|name| !known.contains(name.as_str())) {
         return Err(CryptoError::InvalidProfile);
     }
-    let mut validated = BTreeMap::new();
+    let mut validated = ScriptExecutionParameters::default();
     for definition in definitions {
         let Some(value) = object.get(&definition.name) else {
             if definition.required {
@@ -424,9 +436,14 @@ pub fn validate_script_execution_parameters(
             continue;
         };
         validate_parameter_value(definition, value)?;
-        validated.insert(definition.name.clone(), value.clone());
+        validated
+            .0
+            .as_object_mut()
+            .expect("Script parameters are initialized as an object")
+            .insert(definition.name.clone(), value.clone());
     }
-    if canonical_json(&validated)?.len() > MAX_PARAMETERS_BYTES {
+    let canonical = Zeroizing::new(canonical_json(validated.as_value())?);
+    if canonical.len() > MAX_PARAMETERS_BYTES {
         return Err(CryptoError::InvalidLength);
     }
     Ok(validated)
@@ -436,8 +453,7 @@ pub fn encode_script_execution_parameters(
     definitions: &[ScriptExecutionParameter],
     values: &Value,
 ) -> Result<SecretBytes, CryptoError> {
-    let values = validate_script_execution_parameters(definitions, values)?;
-    Ok(SecretBytes::new(canonical_json(&values)?))
+    validate_script_execution_parameters(definitions, values)?.canonical_bytes()
 }
 
 pub fn open_script_execution_package(
