@@ -51,7 +51,8 @@ use palladin_crypto::{
     XChaChaVaultSuite, confirm_pairing_from_relay, decode_base64url, decrypt_credential,
     decrypt_full_credential, decrypt_full_script_member_secret, encode_script_execution_parameters,
     key_fingerprint, open_local_discovery_cache, open_script_execution_package, prepare_pairing,
-    seal_local_discovery_cache, verify_current_manifest, verify_profile_binding,
+    seal_local_discovery_cache, verify_agent_wrapped_vault_key_producer, verify_current_manifest,
+    verify_profile_binding,
 };
 use palladin_exec::{
     CapturedScriptResult, EnvironmentError, SecretEnvironment, resolve_interpreter, run_command,
@@ -87,7 +88,8 @@ use integrity::{
 
 use palladin_credential::fields::{FieldSelector, resolve_field};
 use palladin_credential::secret::{
-    parse_member_script, parse_secret, resolve_grant_payload_field, resolve_member_secret_field,
+    parse_member_script, parse_secret, resolve_grant_payload_field,
+    resolve_script_reference_member_field,
 };
 
 const DISCOVERY_SYNC_PAGE_SIZE: usize = 200;
@@ -4624,6 +4626,13 @@ impl RuntimeSession<'_> {
             let wrapped_vault_key = response
                 .agent_wrapped_vault_key
                 .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+            verify_agent_wrapped_vault_key_producer(
+                &wrapped_vault_key,
+                anchor.manifest_signing_key_version,
+                &anchor.vault_signing_key_fingerprint,
+                &decode_32_url(&anchor.vault_signing_public_key)?,
+            )
+            .map_err(|_| RuntimeError::InvalidScriptExecutionPackage)?;
             let entries = response
                 .vault_entries
                 .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
@@ -4678,6 +4687,9 @@ impl RuntimeSession<'_> {
                 let entry = entries
                     .get(&reference.entry_id)
                     .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+                if entry.delivery_policy == 2 {
+                    return Err(RuntimeError::InvalidScriptExecutionPackage);
+                }
                 let member_secret = decrypt_full_script_member_secret(
                     &wrapped_vault_key,
                     &entry.entry_key,
@@ -4698,7 +4710,7 @@ impl RuntimeSession<'_> {
                     .field_id
                     .as_deref()
                     .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
-                let resolved = resolve_member_secret_field(
+                let resolved = resolve_script_reference_member_field(
                     member_secret.expose_for_crypto_operation(),
                     field_id,
                 )

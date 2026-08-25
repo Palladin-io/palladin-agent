@@ -944,7 +944,10 @@ mod tests {
                         "parentDescriptorHash": null
                     },
                     "encodedSealedKeyPackage": "wrapped-vault-key"
-                }
+                },
+                "vaultSigningKeyVersion": 5,
+                "vaultSigningKeyFingerprint": "signing-fingerprint",
+                "producerSignature": "producer-signature"
             },
             "entryKey": {
                 "descriptor": {

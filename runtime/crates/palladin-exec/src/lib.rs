@@ -694,6 +694,8 @@ async fn run_windows_request_captured(
         .stderr
         .take()
         .ok_or(ExecError::HardenedExecutorProtocol)?;
+    let captured = tokio::spawn(capture_stream(stdout));
+    let discarded = tokio::spawn(discard_stream(stderr));
     tokio::select! {
         result = async {
             standard_input.write_all(&length).await?;
@@ -702,13 +704,13 @@ async fn run_windows_request_captured(
         } => result.map_err(|_| ExecError::HardenedExecutorProtocol)?,
         () = cancellation.cancelled() => {
             let _ = child.kill().await;
+            captured.abort();
+            discarded.abort();
             return Ok(cancelled_capture());
         }
     }
     drop(standard_input);
     drop(payload);
-    let captured = tokio::spawn(capture_stream(stdout));
-    let discarded = tokio::spawn(discard_stream(stderr));
     let (status, cancelled) = wait_for_group(&mut child, cancellation).await?;
     let (stdout, stdout_too_large) = captured.await.map_err(|_| ExecError::Wait)??;
     discarded.await.map_err(|_| ExecError::Wait)??;
@@ -900,6 +902,8 @@ pub async fn run_script_captured(
         let mut standard_input = child.inner().stdin.take().ok_or(ExecError::Spawn)?;
         let stdout = child.inner().stdout.take().ok_or(ExecError::Spawn)?;
         let stderr = child.inner().stderr.take().ok_or(ExecError::Spawn)?;
+        let captured = tokio::spawn(capture_stream(stdout));
+        let discarded = tokio::spawn(discard_stream(stderr));
         let input = stdin.expose_secret().as_bytes();
         tokio::select! {
             result = async {
@@ -908,13 +912,13 @@ pub async fn run_script_captured(
             } => result.map_err(|_| ExecError::Wait)?,
             () = cancellation.cancelled() => {
                 let _ = child.kill().await;
+                captured.abort();
+                discarded.abort();
                 temporary.close()?;
                 return Ok(cancelled_capture());
             }
         }
         drop(standard_input);
-        let captured = tokio::spawn(capture_stream(stdout));
-        let discarded = tokio::spawn(discard_stream(stderr));
         let (status, cancelled) = wait_for_group(&mut child, cancellation).await?;
         let (stdout, stdout_too_large) = captured.await.map_err(|_| ExecError::Wait)??;
         discarded.await.map_err(|_| ExecError::Wait)??;
@@ -1238,6 +1242,32 @@ mod tests {
         .expect("captured execution");
         assert!(result.stdout_too_large);
         assert_eq!(result.stdout.len(), 65_537);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn captured_script_drains_output_while_writing_large_stdin() {
+        let interpreter = resolve_interpreter("sh").expect("sh");
+        let script = SecretString::from(
+            r#"dd if=/dev/zero bs=65536 count=16 2>/dev/null | tr '\000' x; cat >/dev/null"#
+                .to_owned(),
+        );
+        let parameters = SecretString::from("p".repeat(1024 * 1024));
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            run_script_captured(
+                &script,
+                &interpreter,
+                SecretEnvironment::new(),
+                &parameters,
+                &CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("captured execution must not deadlock")
+        .expect("captured execution");
+        assert_eq!(result.exit_code, 0);
+        assert!(result.stdout_too_large);
     }
 
     #[test]
