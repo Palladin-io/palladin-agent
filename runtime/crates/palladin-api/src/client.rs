@@ -1133,9 +1133,10 @@ mod tests {
             "agentId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","agentAccessEpoch":3,
             "scriptEntryId":"22222222-2222-4222-8222-222222222222","scriptRevision":"7",
             "packageRevision":"4","recipientAgentKeyVersion":2,
-            "recipientAgentKeyFingerprint":"fingerprint","manifestDigest":"digest",
+            "recipientAgentKeyFingerprint":"fingerprint","vaultSigningKeyVersion":5,
+            "vaultSigningKeyFingerprint":"signer-fingerprint","manifestDigest":"digest",
             "scopes":[{"entryId":"22222222-2222-4222-8222-222222222222","entryRevision":"7","isScript":true}],
-            "encodedPackageCiphertext":"ciphertext"
+            "encodedPackageCiphertext":"ciphertext","producerSignature":"signature"
           },
           "agentWrappedVaultKey":null,"vaultEntries":null
         }"#;

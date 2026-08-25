@@ -11,8 +11,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     CryptoError, EncodedSuitePayload, EnvelopeScope, RecipientKeyKind, SealedWrappedKey,
-    SecretBytes, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1, X25519Identity,
-    X25519SealedBoxSuite, XChaChaVaultSuite, compute_key_fingerprint, decode_base64url,
+    SecretBytes, SignatureProfile, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1,
+    X25519Identity, X25519SealedBoxSuite, XChaChaVaultSuite, compute_key_fingerprint,
+    decode_base64url, verify_domain_signature,
 };
 
 const CONTRACT_VERSION: u16 = 1;
@@ -214,8 +215,14 @@ impl Drop for ScriptExecutionManifest {
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "source", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ScriptExecutionAuthorization {
-    ScriptExecution { grant_id: String },
-    Full { grant_id: String },
+    ScriptExecution {
+        #[serde(rename = "grantId")]
+        grant_id: String,
+    },
+    Full {
+        #[serde(rename = "grantId")]
+        grant_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -251,7 +258,7 @@ pub struct ScriptExecutionBinding {
     pub scopes: Vec<ScriptExecutionScope>,
 }
 
-#[derive(Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScriptExecutionEncryptedPackage {
     pub contract_version: u16,
@@ -265,9 +272,12 @@ pub struct ScriptExecutionEncryptedPackage {
     pub package_revision: String,
     pub recipient_agent_key_version: u32,
     pub recipient_agent_key_fingerprint: String,
+    pub vault_signing_key_version: u32,
+    pub vault_signing_key_fingerprint: String,
     pub manifest_digest: String,
     pub scopes: Vec<ScriptExecutionTransportScope>,
     pub encoded_package_ciphertext: String,
+    pub producer_signature: String,
 }
 
 impl std::fmt::Debug for ScriptExecutionEncryptedPackage {
@@ -286,17 +296,22 @@ impl std::fmt::Debug for ScriptExecutionEncryptedPackage {
 pub struct ExpectedScriptExecutionPackageContext {
     pub organization_id: String,
     pub vault_id: String,
+    pub grant_id: String,
     pub agent_id: String,
     pub agent_access_epoch: u32,
     pub script_entry_id: String,
     pub script_revision: String,
+    pub package_revision: String,
     pub recipient_agent_key_version: u32,
+    pub vault_signing_key_version: u32,
+    pub vault_signing_key_fingerprint: String,
+    pub vault_signing_public_key: [u8; 32],
 }
 
 pub struct OpenedScriptExecutionReference {
     pub entry_id: String,
     pub entry_revision: String,
-    pub encoded_member_secret: SecretBytes,
+    pub encoded_grant_payload: SecretBytes,
 }
 
 pub struct OpenedScriptExecutionPackage {
@@ -329,7 +344,21 @@ struct ScriptExecutionPayload {
 struct ScriptExecutionEntry {
     entry_id: String,
     entry_revision: String,
-    encoded_member_secret: String,
+    encoded_grant_payload: String,
+}
+
+impl Drop for ScriptExecutionEntry {
+    fn drop(&mut self) {
+        self.encoded_grant_payload.zeroize();
+    }
+}
+
+struct ScriptExecutionSensitiveJson(Value);
+
+impl Drop for ScriptExecutionSensitiveJson {
+    fn drop(&mut self) {
+        zeroize_json(&mut self.0);
+    }
 }
 
 #[derive(Serialize)]
@@ -346,8 +375,31 @@ struct ScriptExecutionTransportBinding<'a> {
     package_revision: &'a str,
     recipient_agent_key_version: u32,
     recipient_agent_key_fingerprint: &'a str,
+    vault_signing_key_version: u32,
+    vault_signing_key_fingerprint: &'a str,
     manifest_digest: &'a str,
     scopes: &'a [ScriptExecutionTransportScope],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScriptExecutionUnsignedPackage<'a> {
+    contract_version: u16,
+    organization_id: &'a str,
+    vault_id: &'a str,
+    grant_id: &'a str,
+    agent_id: &'a str,
+    agent_access_epoch: u32,
+    script_entry_id: &'a str,
+    script_revision: &'a str,
+    package_revision: &'a str,
+    recipient_agent_key_version: u32,
+    recipient_agent_key_fingerprint: &'a str,
+    vault_signing_key_version: u32,
+    vault_signing_key_fingerprint: &'a str,
+    manifest_digest: &'a str,
+    scopes: &'a [ScriptExecutionTransportScope],
+    encoded_package_ciphertext: &'a str,
 }
 
 pub fn validate_script_execution_parameters(
@@ -394,6 +446,7 @@ pub fn open_script_execution_package(
     expected: &ExpectedScriptExecutionPackageContext,
 ) -> Result<OpenedScriptExecutionPackage, CryptoError> {
     validate_transport(&package, expected)?;
+    verify_package_producer(&package, expected)?;
     let public_key = recipient.public_key();
     let recipient_fingerprint = compute_key_fingerprint(public_key, RecipientKeyKind::AgentX25519);
     let encoded_fingerprint = URL_SAFE_NO_PAD.encode(recipient_fingerprint);
@@ -452,12 +505,12 @@ pub fn open_script_execution_package(
         .entries
         .iter()
         .map(|entry| {
-            let encoded = decode_base64url(&entry.encoded_member_secret)?;
-            crate::envelope::validate_raw_member_secret(&encoded)?;
+            let encoded = decode_base64url(&entry.encoded_grant_payload)?;
+            grant_payload_field_ids(&encoded)?;
             Ok(OpenedScriptExecutionReference {
                 entry_id: entry.entry_id.clone(),
                 entry_revision: entry.entry_revision.clone(),
-                encoded_member_secret: SecretBytes::new(encoded),
+                encoded_grant_payload: SecretBytes::new(encoded),
             })
         })
         .collect::<Result<Vec<_>, CryptoError>>()?;
@@ -475,13 +528,18 @@ fn validate_transport(
     if package.contract_version != CONTRACT_VERSION
         || package.organization_id != expected.organization_id
         || package.vault_id != expected.vault_id
+        || package.grant_id != expected.grant_id
         || package.agent_id != expected.agent_id
         || package.agent_access_epoch != expected.agent_access_epoch
         || package.script_entry_id != expected.script_entry_id
         || package.script_revision != expected.script_revision
+        || package.package_revision != expected.package_revision
         || package.recipient_agent_key_version != expected.recipient_agent_key_version
+        || package.vault_signing_key_version != expected.vault_signing_key_version
+        || package.vault_signing_key_fingerprint != expected.vault_signing_key_fingerprint
         || package.agent_access_epoch == 0
         || package.recipient_agent_key_version == 0
+        || package.vault_signing_key_version == 0
         || revision(&package.script_revision).is_err()
         || revision(&package.package_revision).is_err()
         || uuid_bytes(&package.organization_id).is_err()
@@ -490,7 +548,12 @@ fn validate_transport(
         || uuid_bytes(&package.agent_id).is_err()
         || uuid_bytes(&package.script_entry_id).is_err()
         || decode_digest(&package.recipient_agent_key_fingerprint).is_err()
+        || decode_digest(&package.vault_signing_key_fingerprint).is_err()
         || decode_digest(&package.manifest_digest).is_err()
+        || !matches!(
+            decode_base64url(&package.producer_signature),
+            Ok(signature) if signature.len() == 64
+        )
         || package.scopes.is_empty()
         || package.scopes.len() > MAX_REFERENCE_COUNT + 1
     {
@@ -518,6 +581,92 @@ fn validate_transport(
         return Err(CryptoError::InvalidProfile);
     }
     Ok(())
+}
+
+fn verify_package_producer(
+    package: &ScriptExecutionEncryptedPackage,
+    expected: &ExpectedScriptExecutionPackageContext,
+) -> Result<(), CryptoError> {
+    let fingerprint = compute_key_fingerprint(
+        &expected.vault_signing_public_key,
+        RecipientKeyKind::VaultSigningEd25519,
+    );
+    if URL_SAFE_NO_PAD.encode(fingerprint) != expected.vault_signing_key_fingerprint {
+        return Err(CryptoError::AuthenticationFailed);
+    }
+    let unsigned = canonical_json(&ScriptExecutionUnsignedPackage {
+        contract_version: package.contract_version,
+        organization_id: &package.organization_id,
+        vault_id: &package.vault_id,
+        grant_id: &package.grant_id,
+        agent_id: &package.agent_id,
+        agent_access_epoch: package.agent_access_epoch,
+        script_entry_id: &package.script_entry_id,
+        script_revision: &package.script_revision,
+        package_revision: &package.package_revision,
+        recipient_agent_key_version: package.recipient_agent_key_version,
+        recipient_agent_key_fingerprint: &package.recipient_agent_key_fingerprint,
+        vault_signing_key_version: package.vault_signing_key_version,
+        vault_signing_key_fingerprint: &package.vault_signing_key_fingerprint,
+        manifest_digest: &package.manifest_digest,
+        scopes: &package.scopes,
+        encoded_package_ciphertext: &package.encoded_package_ciphertext,
+    })?;
+    let signature = Zeroizing::new(decode_base64url(&package.producer_signature)?);
+    verify_domain_signature(
+        SignatureProfile::ScriptExecutionPackage,
+        PROTOCOL_VERSION,
+        &unsigned,
+        &expected.vault_signing_public_key,
+        &signature,
+    )
+}
+
+fn grant_payload_field_ids(encoded: &[u8]) -> Result<BTreeSet<String>, CryptoError> {
+    let text = std::str::from_utf8(encoded).map_err(|_| CryptoError::InvalidEncoding)?;
+    let value = ScriptExecutionSensitiveJson(
+        serde_json::from_str(text).map_err(|_| CryptoError::InvalidEncoding)?,
+    );
+    let canonical = Zeroizing::new(canonical_json(&value.0)?);
+    if canonical.as_slice() != encoded {
+        return Err(CryptoError::InvalidEncoding);
+    }
+    let object = value.0.as_object().ok_or(CryptoError::InvalidEncoding)?;
+    let fields = object
+        .get("fields")
+        .and_then(Value::as_array)
+        .ok_or(CryptoError::InvalidEncoding)?;
+    if object.len() != 3
+        || object.get("schema").and_then(Value::as_str) != Some("palladin.grant-payload.v1")
+        || !matches!(
+            object.get("entryType").and_then(Value::as_str),
+            Some("key" | "credential" | "script" | "creditCard")
+        )
+        || fields.is_empty()
+    {
+        return Err(CryptoError::InvalidProfile);
+    }
+    let mut previous = None::<&str>;
+    let mut field_ids = BTreeSet::new();
+    for field in fields {
+        let field = field.as_object().ok_or(CryptoError::InvalidEncoding)?;
+        let id = field
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(CryptoError::InvalidEncoding)?;
+        if field.len() != 4
+            || !field.contains_key("kind")
+            || !field.contains_key("mode")
+            || !field.contains_key("value")
+            || id.is_empty()
+            || previous.is_some_and(|current| current >= id)
+        {
+            return Err(CryptoError::InvalidProfile);
+        }
+        previous = Some(id);
+        field_ids.insert(id.to_owned());
+    }
+    Ok(field_ids)
 }
 
 fn validate_opened(
@@ -596,6 +745,19 @@ fn validate_opened(
         .collect::<BTreeMap<_, _>>();
     if expected_entries.len() != payload.entries.len() || expected_entries != actual_entries {
         return Err(CryptoError::AuthenticationFailed);
+    }
+    for entry in &payload.entries {
+        let encoded = Zeroizing::new(decode_base64url(&entry.encoded_grant_payload)?);
+        let actual_fields = grant_payload_field_ids(&encoded)?;
+        let expected_fields = manifest
+            .references
+            .iter()
+            .filter(|reference| reference.entry_id == entry.entry_id)
+            .map(|reference| reference.field_id.clone())
+            .collect::<BTreeSet<_>>();
+        if actual_fields != expected_fields {
+            return Err(CryptoError::AuthenticationFailed);
+        }
     }
 
     let structural = structural_scopes(&actual_scopes, &manifest.script_entry_id)?;
@@ -857,6 +1019,8 @@ fn transport_aad(
         package_revision: &package.package_revision,
         recipient_agent_key_version: package.recipient_agent_key_version,
         recipient_agent_key_fingerprint: &package.recipient_agent_key_fingerprint,
+        vault_signing_key_version: package.vault_signing_key_version,
+        vault_signing_key_fingerprint: &package.vault_signing_key_fingerprint,
         manifest_digest: &package.manifest_digest,
         scopes: &package.scopes,
     })
@@ -947,12 +1111,14 @@ mod tests {
         ScriptExecutionEncryptedPackage, ScriptExecutionEntry, ScriptExecutionManifest,
         ScriptExecutionMetadata, ScriptExecutionParameter, ScriptExecutionPayload,
         ScriptExecutionReference, ScriptExecutionScope, ScriptExecutionTransportScope,
-        TRANSPORT_AAD_DOMAIN, canonical_json, encode_script_execution_parameters,
-        open_script_execution_package, transport_aad, validate_script_execution_parameters,
+        ScriptExecutionUnsignedPackage, TRANSPORT_AAD_DOMAIN, canonical_json,
+        encode_script_execution_parameters, open_script_execution_package, transport_aad,
+        validate_script_execution_parameters,
     };
     use crate::{
-        EnvelopeScope, RecipientKeyKind, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1,
-        X25519Identity, X25519SealedBoxSuite, XChaChaVaultSuite, compute_key_fingerprint,
+        Ed25519Identity, EnvelopeScope, RecipientKeyKind, WrapperContext, WrapperPurpose,
+        X25519_WRAPPER_V1, X25519Identity, X25519SealedBoxSuite, XChaChaVaultSuite,
+        compute_key_fingerprint,
     };
     fn definitions() -> Vec<ScriptExecutionParameter> {
         serde_json::from_value(json!([
@@ -1058,8 +1224,11 @@ mod tests {
         const AGENT_ID: &str = "66666666-6666-4666-8666-666666666666";
 
         let recipient = X25519Identity::from_private_bytes(vec![7; 32]).expect("recipient");
+        let signer = Ed25519Identity::from_seed(vec![9; 32]).expect("Vault signer");
         let recipient_fingerprint =
             compute_key_fingerprint(recipient.public_key(), RecipientKeyKind::AgentX25519);
+        let signer_fingerprint =
+            compute_key_fingerprint(signer.public_key(), RecipientKeyKind::VaultSigningEd25519);
         let manifest = ScriptExecutionManifest {
             schema: "palladin.script-execution-manifest.v1".to_owned(),
             contract_version: 1,
@@ -1116,28 +1285,17 @@ mod tests {
             },
             scopes,
         };
-        let member_secret = serde_json::to_vec(&json!({
-            "schema": "palladin.member-secret.v1",
-            "memberLabel": "Fixture key",
-            "agentLabel": null,
-            "discoverable": false,
-            "description": null,
-            "icon": null,
-            "color": null,
-            "agentFieldAccess": {
-                "memberLabel": "never", "agentLabel": "never", "description": "never",
-                "icon": "never", "color": "never", "entryType": "never",
-                "key.value": "onGrantValue", "notes": "never"
-            },
+        let grant_payload = canonical_json(&json!({
+            "schema": "palladin.grant-payload.v1",
             "entryType": "key",
-            "content": {
-                "value": "fixture-secret-never-production",
-                "url": null,
-                "notes": null,
-                "customFields": []
-            }
+            "fields": [{
+                "id": "key.value",
+                "kind": "concealed",
+                "mode": "value",
+                "value": "fixture-secret-never-production"
+            }]
         }))
-        .expect("MemberSecret");
+        .expect("GrantPayload");
         let payload = ScriptExecutionPayload {
             schema: "palladin.script-execution-package-payload.v1".to_owned(),
             binding,
@@ -1145,7 +1303,7 @@ mod tests {
             entries: vec![ScriptExecutionEntry {
                 entry_id: REFERENCE_ID.to_owned(),
                 entry_revision: "4".to_owned(),
-                encoded_member_secret: URL_SAFE_NO_PAD.encode(member_secret),
+                encoded_grant_payload: URL_SAFE_NO_PAD.encode(grant_payload),
             }],
         };
         let plaintext = canonical_json(&payload).expect("package plaintext");
@@ -1162,6 +1320,8 @@ mod tests {
             package_revision: "8".to_owned(),
             recipient_agent_key_version: 2,
             recipient_agent_key_fingerprint: URL_SAFE_NO_PAD.encode(recipient_fingerprint),
+            vault_signing_key_version: 5,
+            vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(signer_fingerprint),
             manifest_digest,
             scopes: vec![
                 ScriptExecutionTransportScope {
@@ -1176,6 +1336,7 @@ mod tests {
                 },
             ],
             encoded_package_ciphertext: String::new(),
+            producer_signature: String::new(),
         };
         let aad = transport_aad(&package).expect("transport AAD");
         let suite_payload =
@@ -1225,6 +1386,75 @@ mod tests {
         };
         package.encoded_package_ciphertext =
             URL_SAFE_NO_PAD.encode(canonical_json(&container).expect("container"));
+        let unsigned = canonical_json(&ScriptExecutionUnsignedPackage {
+            contract_version: package.contract_version,
+            organization_id: &package.organization_id,
+            vault_id: &package.vault_id,
+            grant_id: &package.grant_id,
+            agent_id: &package.agent_id,
+            agent_access_epoch: package.agent_access_epoch,
+            script_entry_id: &package.script_entry_id,
+            script_revision: &package.script_revision,
+            package_revision: &package.package_revision,
+            recipient_agent_key_version: package.recipient_agent_key_version,
+            recipient_agent_key_fingerprint: &package.recipient_agent_key_fingerprint,
+            vault_signing_key_version: package.vault_signing_key_version,
+            vault_signing_key_fingerprint: &package.vault_signing_key_fingerprint,
+            manifest_digest: &package.manifest_digest,
+            scopes: &package.scopes,
+            encoded_package_ciphertext: &package.encoded_package_ciphertext,
+        })
+        .expect("unsigned package");
+        let mut signature_input = b"PLDNV2SIG:SCRIPT-EXECUTION-PACKAGE:".to_vec();
+        signature_input.extend_from_slice(&2_u16.to_be_bytes());
+        signature_input.extend_from_slice(&unsigned);
+        package.producer_signature = URL_SAFE_NO_PAD.encode(signer.sign(&signature_input));
+
+        let mut tampered = package.clone();
+        tampered.encoded_package_ciphertext.push('A');
+        assert!(
+            open_script_execution_package(
+                tampered,
+                &recipient,
+                &ExpectedScriptExecutionPackageContext {
+                    organization_id: ORGANIZATION_ID.to_owned(),
+                    vault_id: VAULT_ID.to_owned(),
+                    grant_id: GRANT_ID.to_owned(),
+                    agent_id: AGENT_ID.to_owned(),
+                    agent_access_epoch: 3,
+                    script_entry_id: SCRIPT_ID.to_owned(),
+                    script_revision: "7".to_owned(),
+                    package_revision: "8".to_owned(),
+                    recipient_agent_key_version: 2,
+                    vault_signing_key_version: 5,
+                    vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(signer_fingerprint),
+                    vault_signing_public_key: *signer.public_key(),
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            open_script_execution_package(
+                package.clone(),
+                &recipient,
+                &ExpectedScriptExecutionPackageContext {
+                    organization_id: ORGANIZATION_ID.to_owned(),
+                    vault_id: VAULT_ID.to_owned(),
+                    grant_id: GRANT_ID.to_owned(),
+                    agent_id: AGENT_ID.to_owned(),
+                    agent_access_epoch: 3,
+                    script_entry_id: SCRIPT_ID.to_owned(),
+                    script_revision: "7".to_owned(),
+                    package_revision: "9".to_owned(),
+                    recipient_agent_key_version: 2,
+                    vault_signing_key_version: 5,
+                    vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(signer_fingerprint),
+                    vault_signing_public_key: *signer.public_key(),
+                },
+            )
+            .is_err(),
+            "a package from another expected revision must be rejected before decryption"
+        );
 
         let opened = open_script_execution_package(
             package,
@@ -1232,16 +1462,27 @@ mod tests {
             &ExpectedScriptExecutionPackageContext {
                 organization_id: ORGANIZATION_ID.to_owned(),
                 vault_id: VAULT_ID.to_owned(),
+                grant_id: GRANT_ID.to_owned(),
                 agent_id: AGENT_ID.to_owned(),
                 agent_access_epoch: 3,
                 script_entry_id: SCRIPT_ID.to_owned(),
                 script_revision: "7".to_owned(),
+                package_revision: "8".to_owned(),
                 recipient_agent_key_version: 2,
+                vault_signing_key_version: 5,
+                vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(signer_fingerprint),
+                vault_signing_public_key: *signer.public_key(),
             },
         )
         .expect("opened package");
         assert_eq!(opened.manifest.script_source, "printf safe");
         assert_eq!(opened.entries.len(), 1);
         assert_eq!(opened.entries[0].entry_id, REFERENCE_ID);
+        assert_eq!(
+            opened.entries[0]
+                .encoded_grant_payload
+                .expose_for_crypto_operation(),
+            br#"{"entryType":"key","fields":[{"id":"key.value","kind":"concealed","mode":"value","value":"fixture-secret-never-production"}],"schema":"palladin.grant-payload.v1"}"#
+        );
     }
 }

@@ -86,7 +86,9 @@ use integrity::{
 };
 
 use palladin_credential::fields::{FieldSelector, resolve_field};
-use palladin_credential::secret::{parse_member_script, parse_secret, resolve_member_secret_field};
+use palladin_credential::secret::{
+    parse_member_script, parse_secret, resolve_grant_payload_field, resolve_member_secret_field,
+};
 
 const DISCOVERY_SYNC_PAGE_SIZE: usize = 200;
 const MAX_DISCOVERY_SYNC_PAGES: usize = 1_000;
@@ -4568,17 +4570,23 @@ impl RuntimeSession<'_> {
                 .script_package
                 .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
             let recipient_key_version = package.recipient_agent_key_version;
+            let package_revision = package.package_revision.clone();
             let mut opened = open_script_execution_package(
                 package,
                 &self.encryption,
                 &ExpectedScriptExecutionPackageContext {
                     organization_id: anchor.organization_id.clone(),
                     vault_id: request.delivery.vault_id.to_owned(),
+                    grant_id: grant_id.clone(),
                     agent_id: agent_id.to_owned(),
                     agent_access_epoch: response.agent_access_epoch,
                     script_entry_id: request.delivery.entry_id.to_owned(),
                     script_revision: discovery.script_revision.clone(),
+                    package_revision,
                     recipient_agent_key_version: recipient_key_version,
+                    vault_signing_key_version: anchor.manifest_signing_key_version,
+                    vault_signing_key_fingerprint: anchor.vault_signing_key_fingerprint.clone(),
+                    vault_signing_public_key: decode_32_url(&anchor.vault_signing_public_key)?,
                 },
             )?;
             if opened.manifest.description != discovery.description
@@ -4599,8 +4607,8 @@ impl RuntimeSession<'_> {
                 if entry.entry_revision != reference.entry_revision {
                     return Err(RuntimeError::InvalidScriptExecutionPackage);
                 }
-                let resolved = resolve_member_secret_field(
-                    entry.encoded_member_secret.expose_for_crypto_operation(),
+                let resolved = resolve_grant_payload_field(
+                    entry.encoded_grant_payload.expose_for_crypto_operation(),
                     &reference.field_id,
                 )
                 .map_err(|_| RuntimeError::InvalidEnvironmentField)?;

@@ -1706,6 +1706,7 @@ dependencies = [
  "percent-encoding",
  "secrecy",
  "serde",
+ "serde_jcs",
  "serde_json",
  "sha1",
  "sha2",

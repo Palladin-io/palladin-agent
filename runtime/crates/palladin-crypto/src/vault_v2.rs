@@ -755,6 +755,7 @@ mod legacy_reason_contract {
 pub enum SignatureProfile {
     VaultManifest,
     EncryptedReason,
+    ScriptExecutionPackage,
 }
 
 impl SignatureProfile {
@@ -762,6 +763,7 @@ impl SignatureProfile {
         match self {
             Self::VaultManifest => b"PLDNV2SIG:VAULT-MANIFEST:",
             Self::EncryptedReason => b"PLDNV2SIG:ENCRYPTED-REASON:",
+            Self::ScriptExecutionPackage => b"PLDNV2SIG:SCRIPT-EXECUTION-PACKAGE:",
         }
     }
 }
