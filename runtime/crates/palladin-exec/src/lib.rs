@@ -1226,6 +1226,49 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
+    async fn hardened_node_executes_inline_command() {
+        let interpreter = resolve_interpreter("node").expect("node");
+        let command = vec![
+            interpreter.executable.to_string_lossy().into_owned(),
+            "-e".to_owned(),
+            "process.exit(0)".to_owned(),
+        ];
+
+        let result = run_command(
+            &command,
+            SecretEnvironment::new(),
+            OperatorOutput::Discard,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("contained inline Node execution");
+
+        assert_eq!(result.exit_code, 0);
+        assert!(!result.cancelled);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn hardened_node_executes_minimal_private_script() {
+        let interpreter = resolve_interpreter("node").expect("node");
+        let result = run_script_captured(
+            &SecretString::from("process.exit(0)".to_owned()),
+            &interpreter,
+            SecretEnvironment::new(),
+            &SecretString::from("{}".to_owned()),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("captured minimal Node execution");
+
+        assert_eq!(result.exit_code, 0);
+        assert!(!result.cancelled);
+        assert!(result.stdout.is_empty());
+        assert!(!result.stdout_too_large);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
     async fn hardened_node_executes_callback_script_with_stdin_and_secret_environment() {
         let interpreter = resolve_interpreter("node").expect("node");
         let script = SecretString::from(
