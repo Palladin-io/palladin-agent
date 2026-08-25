@@ -465,6 +465,13 @@ impl ApiClient {
         let (status, body) =
             read_bounded_response_with_limit(response, MAX_SCRIPT_EXECUTION_RESPONSE_BYTES).await?;
         if !status.is_success() {
+            if status == StatusCode::FORBIDDEN {
+                return match script_execution_denial_reason(&body).as_deref() {
+                    Some("method-not-allowed") => Err(ApiError::ScriptMethodNotAllowed),
+                    Some("expired") => Err(ApiError::ScriptExpired),
+                    _ => Err(ApiError::InvalidResponse),
+                };
+            }
             if status == StatusCode::CONFLICT {
                 return match script_execution_denial_reason(&body).as_deref() {
                     Some("stale-discovery") => Err(ApiError::ScriptStaleDiscovery),
@@ -708,11 +715,11 @@ fn header(value: &str) -> Result<HeaderValue, ApiError> {
 
 fn script_execution_denial_reason(body: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    value
-        .pointer("/errors/generalErrors/0")
-        .or_else(|| value.pointer("/errors/GeneralErrors/0"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
+    let errors = value.pointer("/errors/generalErrors")?.as_array()?;
+    if errors.len() != 1 {
+        return None;
+    }
+    errors.first()?.as_str().map(str::to_owned)
 }
 
 fn encode_component(value: &str) -> String {
@@ -756,6 +763,10 @@ pub enum ApiError {
     SizeLimitExceeded,
     #[error("Script Discovery is stale")]
     ScriptStaleDiscovery,
+    #[error("Script execution is not permitted by the active grant")]
+    ScriptMethodNotAllowed,
+    #[error("Script execution grant is expired")]
+    ScriptExpired,
     #[error("Script execution package is unavailable or invalid")]
     ScriptInvalidPackage,
 }
@@ -1200,6 +1211,45 @@ mod tests {
                 .expect_err("unknown"),
             ApiError::InvalidResponse
         );
+    }
+
+    #[tokio::test]
+    async fn script_execution_maps_only_exact_forbidden_reasons() {
+        let method_not_allowed =
+            r#"{"statusCode":403,"errors":{"generalErrors":["method-not-allowed"]}}"#;
+        let expired = r#"{"statusCode":403,"errors":{"generalErrors":["expired"]}}"#;
+        let unknown = r#"{"statusCode":403,"errors":{"generalErrors":["future-reason"]}}"#;
+        let ambiguous =
+            r#"{"statusCode":403,"errors":{"generalErrors":["method-not-allowed","expired"]}}"#;
+        let (host, _) = response_server(vec![
+            (403, method_not_allowed),
+            (403, expired),
+            (403, unknown),
+            (403, ambiguous),
+        ])
+        .await;
+        let api = client(&host, vec![25; 32], Duration::from_secs(1));
+
+        assert_eq!(
+            api.get_script_execution_package("vault", "script", "7")
+                .await
+                .expect_err("method not allowed"),
+            ApiError::ScriptMethodNotAllowed
+        );
+        assert_eq!(
+            api.get_script_execution_package("vault", "script", "7")
+                .await
+                .expect_err("expired"),
+            ApiError::ScriptExpired
+        );
+        for label in ["unknown", "ambiguous"] {
+            assert_eq!(
+                api.get_script_execution_package("vault", "script", "7")
+                    .await
+                    .expect_err(label),
+                ApiError::InvalidResponse
+            );
+        }
     }
 
     #[tokio::test]

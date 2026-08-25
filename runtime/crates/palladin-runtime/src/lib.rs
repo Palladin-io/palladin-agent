@@ -4551,7 +4551,12 @@ impl RuntimeSession<'_> {
                 Err(ApiError::Http(404)) => {
                     return Ok(CredentialExecOutcome::NotGranted(CredentialAccess::Unavailable));
                 }
-                Err(ApiError::Http(403)) => {
+                Err(ApiError::ScriptMethodNotAllowed) => {
+                    return Ok(CredentialExecOutcome::NotGranted(
+                        CredentialAccess::MethodNotAllowed,
+                    ));
+                }
+                Err(ApiError::ScriptExpired) => {
                     return Ok(CredentialExecOutcome::NotGranted(CredentialAccess::Expired));
                 }
                 Err(ApiError::Http(429)) => {
@@ -5929,6 +5934,75 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct MemorySecretStore(Arc<Mutex<MemorySecretValues>>);
+
+    #[tokio::test]
+    async fn script_method_not_allowed_returns_before_package_open_or_process_spawn() {
+        let body = r#"{"statusCode":403,"errors":{"generalErrors":["method-not-allowed"]}}"#;
+        let (host, requests) = single_response_server(403, body.to_owned()).await;
+        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let mut session = runtime_session(host, api, encryption);
+        let execution = serde_json::from_value(json!({
+            "contractVersion": 1,
+            "description": "Synthetic denied Script",
+            "parameters": [],
+            "returnResultToAgent": true
+        }))
+        .expect("Script execution metadata");
+        let mut discovery = LocalDiscoveryIndex::new();
+        discovery
+            .upsert(
+                TEST_VAULT_ID,
+                TEST_ENTRY_ID,
+                1,
+                [7; 32],
+                DiscoveryPlaintext {
+                    schema: "palladin.agent-discovery.v1".to_owned(),
+                    agent_label: "Synthetic denied Script".to_owned(),
+                    capabilities: vec!["exec".to_owned()],
+                    fields: Vec::new(),
+                    entry_type: "script".to_owned(),
+                    execution: Some(execution),
+                },
+            )
+            .expect("Script discovery");
+        session.discovery = Arc::new(tokio::sync::Mutex::new(discovery));
+        let parameters = json!({});
+
+        let outcome = session
+            .execute_atomic_script(
+                &CredentialExecRequest {
+                    delivery: request(),
+                    command: None,
+                    env_mappings: &[],
+                    parameters: &parameters,
+                    output: OperatorOutput::Discard,
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("content-free denial");
+
+        assert_eq!(
+            outcome,
+            CredentialExecOutcome::NotGranted(CredentialAccess::MethodNotAllowed)
+        );
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains(&format!(
+            "/vaults/{TEST_VAULT_ID}/scripts/{TEST_ENTRY_ID}/execution-package"
+        )));
+        for forbidden in ["parameters", "result", "stdout", "stderr", "scriptSource"] {
+            assert!(!requests[0].contains(forbidden));
+        }
+    }
 
     #[tokio::test]
     async fn stale_refresh_never_recaches_the_rejected_revision() {
