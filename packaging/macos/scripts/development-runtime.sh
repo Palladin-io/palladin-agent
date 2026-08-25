@@ -8,8 +8,11 @@ REPOSITORY_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/../../.." && pwd -P)"
 readonly REPOSITORY_ROOT
 readonly RUNTIME_DIR="$REPOSITORY_ROOT/runtime"
 readonly RUNTIME_BINARY="$RUNTIME_DIR/target/debug/palladin"
+readonly DEVELOPMENT_HELPER_BUILD_BINARY="$RUNTIME_DIR/target/debug/palladin-macos-keychain-helper"
 readonly DEVELOPMENT_IDENTITY="Palladin Local Development"
 readonly DEVELOPMENT_IDENTIFIER="io.palladin.runtime.development"
+readonly DEVELOPMENT_HELPER_IDENTIFIER="io.palladin.runtime.development.keychain-helper.v1"
+readonly DEVELOPMENT_HELPER_FILENAME="palladin-keychain-helper-v1"
 readonly DEVELOPMENT_KEYCHAIN_FILENAME="palladin-development.keychain-db"
 readonly TEMPORARY_IMPORT_PASSWORD="palladin-local-import"
 
@@ -33,6 +36,7 @@ Usage:
   development-runtime.sh sign
   development-runtime.sh run [--local-development] -- [PALLADIN_ARGUMENTS...]
   development-runtime.sh verify
+  development-runtime.sh migrate-keychain-access
   development-runtime.sh install-launcher [--force] ABSOLUTE_PATH
   development-runtime.sh reset --confirm
 
@@ -106,6 +110,34 @@ development_keychain() {
   parent_physical="$(CDPATH='' cd -- "$parent" && pwd -P)" ||
     die "development Keychain directory could not be resolved: $parent"
   printf '%s/%s\n' "$parent_physical" "$DEVELOPMENT_KEYCHAIN_FILENAME"
+}
+
+development_helper() {
+  local configured home root helper parent parent_physical
+  configured="${PALLADIN_DEVELOPMENT_HELPER_PATH:-}"
+  if [[ -n "$configured" ]]; then
+    [[ "$configured" == /* && "$(basename -- "$configured")" == "$DEVELOPMENT_HELPER_FILENAME" ]] ||
+      die "PALLADIN_DEVELOPMENT_HELPER_PATH must be an absolute path ending in $DEVELOPMENT_HELPER_FILENAME"
+    helper="$configured"
+  else
+    home="$(account_home)"
+    root="$home/.palladin"
+    if [[ ! -e "$root" ]]; then
+      mkdir -m 700 "$root"
+    fi
+    [[ -d "$root" && ! -L "$root" ]] || die "the Palladin root is invalid: $root"
+    parent="$root/development"
+    if [[ ! -e "$parent" ]]; then
+      mkdir -m 700 "$parent"
+    fi
+    [[ -d "$parent" && ! -L "$parent" ]] || die "the development helper directory is invalid: $parent"
+    helper="$parent/$DEVELOPMENT_HELPER_FILENAME"
+  fi
+  parent="$(dirname -- "$helper")"
+  [[ -d "$parent" && ! -L "$parent" ]] || die "development helper directory is unavailable: $parent"
+  parent_physical="$(CDPATH='' cd -- "$parent" && pwd -P)" ||
+    die "development helper directory could not be resolved: $parent"
+  printf '%s/%s\n' "$parent_physical" "$DEVELOPMENT_HELPER_FILENAME"
 }
 
 read_user_keychains() {
@@ -271,6 +303,79 @@ verify_runtime_signature() {
   fi
 }
 
+verify_helper_signature() {
+  local helper="$1"
+  local keychain="$2"
+  local fingerprint fingerprint_lower details requirement entitlements mode owner
+  [[ -f "$helper" && ! -L "$helper" ]] || die "the development Keychain helper is unavailable: $helper"
+  mode="$(stat -f '%Lp' "$helper")" || die "the development Keychain helper mode is unavailable"
+  [[ "$mode" == 500 ]] || die "the development Keychain helper must have mode 0500"
+  owner="$(stat -f '%u' "$helper")" || die "the development Keychain helper owner is unavailable"
+  [[ "$owner" == "$(id -u)" ]] || die "the development Keychain helper owner is invalid"
+  [[ "$(file -b "$helper")" == *'Mach-O'* ]] ||
+    die "the development Keychain helper is not a Mach-O executable"
+  fingerprint="$(identity_hash "$keychain")" || die "the development signing certificate is unavailable"
+  fingerprint_lower="$(tr '[:upper:]' '[:lower:]' <<<"$fingerprint")"
+  codesign --verify --strict --verbose=2 "$helper" >/dev/null 2>&1 ||
+    die "the development Keychain helper signature is invalid"
+  details="$(codesign -d --verbose=4 "$helper" 2>&1)" ||
+    die "the development Keychain helper signature details are unavailable"
+  grep -F -x -q "Identifier=$DEVELOPMENT_HELPER_IDENTIFIER" <<<"$details" ||
+    die "the development Keychain helper identifier is invalid"
+  grep -F -x -q "Authority=$DEVELOPMENT_IDENTITY" <<<"$details" ||
+    die "the development Keychain helper authority is invalid"
+  grep -F -x -q 'TeamIdentifier=not set' <<<"$details" ||
+    die "the development Keychain helper unexpectedly has a Team ID"
+  grep -E -q '^CodeDirectory .*flags=0x0\(none\)' <<<"$details" ||
+    die "the development Keychain helper unexpectedly enables signing flags"
+  requirement="$(codesign -d -r- "$helper" 2>&1)" ||
+    die "the development Keychain helper requirement is unavailable"
+  grep -F -q "designated => identifier \"$DEVELOPMENT_HELPER_IDENTIFIER\" and certificate root = H\"$fingerprint_lower\"" \
+    <<<"$requirement" || die "the development Keychain helper requirement is not stable"
+  entitlements="$(codesign -d --entitlements :- "$helper" 2>&1)" ||
+    die "the development Keychain helper entitlements could not be inspected"
+  if grep -F -q '<key>' <<<"$entitlements"; then
+    die "the development Keychain helper must not carry release entitlements"
+  fi
+}
+
+sign_helper_build() {
+  local keychain="$1"
+  local fingerprint
+  [[ -f "$DEVELOPMENT_HELPER_BUILD_BINARY" && ! -L "$DEVELOPMENT_HELPER_BUILD_BINARY" &&
+     -x "$DEVELOPMENT_HELPER_BUILD_BINARY" ]] ||
+    die "the development Keychain helper build is unavailable"
+  fingerprint="$(identity_hash "$keychain")" || die "the development signing certificate is unavailable"
+  codesign --force \
+    --sign "$fingerprint" \
+    --keychain "$keychain" \
+    --identifier "$DEVELOPMENT_HELPER_IDENTIFIER" \
+    --timestamp=none \
+    "$DEVELOPMENT_HELPER_BUILD_BINARY"
+}
+
+ensure_development_helper() {
+  local keychain="$1"
+  local helper helper_dir temporary_helper
+  helper="$(development_helper)"
+  if [[ -e "$helper" || -L "$helper" ]]; then
+    verify_helper_signature "$helper" "$keychain"
+    printf '%s\n' "$helper"
+    return
+  fi
+
+  (cd "$RUNTIME_DIR" && cargo build --locked -p palladin-macos-keychain-helper)
+  sign_helper_build "$keychain"
+  helper_dir="$(dirname -- "$helper")"
+  temporary_helper="$(mktemp "$helper_dir/.palladin-keychain-helper.XXXXXX")"
+  cp "$DEVELOPMENT_HELPER_BUILD_BINARY" "$temporary_helper"
+  chmod 500 "$temporary_helper"
+  mv "$temporary_helper" "$helper"
+  verify_helper_signature "$helper" "$keychain"
+  printf 'Installed stable local Keychain helper: %s\n' "$helper" >&2
+  printf '%s\n' "$helper"
+}
+
 sign_runtime() {
   local keychain fingerprint
   keychain="$(ensure_identity)"
@@ -289,6 +394,7 @@ sign_runtime() {
 
 build_runtime() {
   local enable_local_development="${1:-0}"
+  local keychain
   local -a cargo_arguments=(build --locked -p palladin-cli)
   [[ $# -eq 1 && ( "$enable_local_development" == 0 || "$enable_local_development" == 1 ) ]] ||
     die "invalid internal local-development build mode"
@@ -300,6 +406,31 @@ build_runtime() {
   fi
   (cd "$RUNTIME_DIR" && cargo "${cargo_arguments[@]}")
   sign_runtime
+  keychain="$(development_keychain)"
+  ensure_development_helper "$keychain" >/dev/null
+}
+
+migrate_keychain_access() {
+  local keychain helper helper_details helper_cdhash home login_keychain
+  require_signing_tools
+  keychain="$(development_keychain)"
+  verify_identity "$keychain" || die "the local development signing identity is invalid"
+  helper="$(development_helper)"
+  verify_helper_signature "$helper" "$keychain"
+  helper_details="$(codesign -d --verbose=4 "$helper" 2>&1)" ||
+    die "the development Keychain helper signature details are unavailable"
+  helper_cdhash="$(sed -n 's/^CDHash=//p' <<<"$helper_details")"
+  [[ "$helper_cdhash" =~ ^[0-9a-f]{40}$ ]] || die "the development Keychain helper CDHash is invalid"
+  home="$(account_home)"
+  login_keychain="$home/Library/Keychains/login.keychain-db"
+  [[ -f "$login_keychain" && ! -L "$login_keychain" ]] ||
+    die "the Login Keychain is unavailable"
+  printf 'macOS will request the Login Keychain password once to bind Palladin items to the stable helper.\n' >&2
+  security set-generic-password-partition-list \
+    -s io.palladin.agent \
+    -S "cdhash:$helper_cdhash" \
+    "$login_keychain"
+  printf 'Bound Palladin Login Keychain items to the stable local helper.\n'
 }
 
 install_launcher() {
@@ -336,7 +467,7 @@ install_launcher() {
 }
 
 reset_identity() {
-  local keychain certificate_dir certificate
+  local keychain helper certificate_dir certificate
   [[ "${1:-}" == "--confirm" && $# -eq 1 ]] || usage
   require_signing_tools
   keychain="$(development_keychain)"
@@ -346,10 +477,15 @@ reset_identity() {
   certificate="$certificate_dir/identity.crt"
   security find-certificate -c "$DEVELOPMENT_IDENTITY" -p "$keychain" >"$certificate" 2>/dev/null ||
     die "the development signing certificate is unavailable"
+  helper="$(development_helper)"
+  if [[ -e "$helper" || -L "$helper" ]]; then
+    verify_helper_signature "$helper" "$keychain"
+    rm -f -- "$helper"
+  fi
   security remove-trusted-cert "$certificate" >/dev/null 2>&1 || true
   remove_from_user_keychain_search_list "$keychain"
   security delete-keychain "$keychain"
-  printf 'Removed local macOS development signing identity.\n'
+  printf 'Removed local macOS development signing identity and helper.\n'
 }
 
 command_name="${1:-}"
@@ -393,7 +529,13 @@ case "$command_name" in
     keychain="$(development_keychain)"
     verify_identity "$keychain" || die "the local development signing identity is invalid"
     verify_runtime_signature "$keychain"
-    printf 'Verified stable local Palladin runtime signature.\n'
+    helper="$(development_helper)"
+    verify_helper_signature "$helper" "$keychain"
+    printf 'Verified stable local Palladin runtime and Keychain helper signatures.\n'
+    ;;
+  migrate-keychain-access)
+    [[ $# -eq 0 ]] || usage
+    migrate_keychain_access
     ;;
   install-launcher)
     install_launcher "$@"

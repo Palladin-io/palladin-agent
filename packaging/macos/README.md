@@ -40,14 +40,37 @@ still trust the complete same-user domain and report
 
 The signed debug executable has the fixed identifier
 `io.palladin.runtime.development`, no Team ID, no entitlements and no Hardened
-Runtime flag. Existing Login Keychain items may ask once when moving from an old
-ad hoc build to this identity; subsequent rebuilds and worktrees retain the same
-Designated Requirement.
+Runtime flag. Current macOS releases still partition Login Keychain access for a
+non-Apple development signer by `CDHash`, even when its Designated Requirement
+is stable. Therefore the changing CLI executable never reads Login Keychain
+items directly. The first signed build installs
+`~/.palladin/development/palladin-keychain-helper-v1`, an owner-only (`0500`)
+helper that is deliberately not replaced by later CLI builds. Only this stable
+helper touches the fixed `io.palladin.agent` service. Its bounded binary protocol
+accepts only known secret slots and opaque owners; secret bytes travel through
+anonymous pipes, never argv, environment variables, files or logs.
+
+After upgrading an existing development installation, bind its current Palladin
+items to the helper once:
+
+```bash
+./packaging/macos/scripts/development-runtime.sh build --local-development
+./packaging/macos/scripts/development-runtime.sh migrate-keychain-access
+```
+
+The migration changes only the partition ACL for the exact Palladin service and
+asks for the Login Keychain password once. It neither reads nor rewrites secret
+values. New items are created by the same stable helper, and updates preserve
+their ACL. Normal rebuilds and different worktrees keep using that unchanged
+helper, so they do not need renewed access.
 
 `install-launcher` refuses to overwrite an existing file unless `--force` is
 provided. `reset --confirm` removes only the dedicated development certificate,
-trust setting and Keychain. Never replace this mechanism with an identifier-only
-ad hoc requirement or a wildcard Keychain ACL.
+trust setting, signing Keychain and matching local helper. It does not delete
+Login Keychain items. The next bootstrap installs a new helper and therefore
+requires the explicit ACL migration once again. Never replace this mechanism
+with an identifier-only ad hoc requirement, a wildcard Keychain ACL or a path
+that moves secret values through process arguments.
 
 ## Release boundary
 

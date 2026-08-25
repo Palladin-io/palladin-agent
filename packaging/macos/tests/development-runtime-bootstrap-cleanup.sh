@@ -18,6 +18,7 @@ tree="$test_root/worktree"
 test_tmp="$test_root/tmp"
 fake_bin="$test_root/bin"
 keychain="$test_root/palladin-development.keychain-db"
+helper="$test_root/palladin-keychain-helper-v1"
 cargo_argument_log="$test_root/cargo-arguments.log"
 
 cleanup() {
@@ -30,6 +31,8 @@ cp "$DEVELOPMENT_SCRIPT" "$tree/packaging/macos/scripts/development-runtime.sh"
 chmod 700 "$tree/packaging/macos/scripts/development-runtime.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tree/runtime/target/debug/palladin"
 chmod 700 "$tree/runtime/target/debug/palladin"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$tree/runtime/target/debug/palladin-macos-keychain-helper"
+chmod 700 "$tree/runtime/target/debug/palladin-macos-keychain-helper"
 
 # The real trust-setting operation deliberately requires user-present macOS
 # authorization. These command doubles isolate the first-run cleanup control
@@ -86,14 +89,22 @@ cat >"$fake_bin/codesign" <<'EOF'
 set -euo pipefail
 
 if [[ " $* " == *' --verbose=4 '* ]]; then
+  identifier='io.palladin.runtime.development'
+  if [[ " $* " == *'palladin-keychain-helper'* ]]; then
+    identifier='io.palladin.runtime.development.keychain-helper.v1'
+  fi
   cat >&2 <<'DETAILS'
-Identifier=io.palladin.runtime.development
 Authority=Palladin Local Development
 TeamIdentifier=not set
 CodeDirectory v=20400 size=1 flags=0x0(none) hashes=1+0 location=embedded
 DETAILS
+  printf 'Identifier=%s\n' "$identifier" >&2
 elif [[ " $* " == *' -r- '* ]]; then
-  printf 'designated => identifier "io.palladin.runtime.development" and certificate root = H"0123456789abcdef0123456789abcdef01234567"\n' >&2
+  identifier='io.palladin.runtime.development'
+  if [[ " $* " == *'palladin-keychain-helper'* ]]; then
+    identifier='io.palladin.runtime.development.keychain-helper.v1'
+  fi
+  printf 'designated => identifier "%s" and certificate root = H"0123456789abcdef0123456789abcdef01234567"\n' "$identifier" >&2
 elif [[ " $* " == *' --entitlements '* ]]; then
   printf '<?xml version="1.0"?><plist version="1.0"><dict/></plist>\n' >&2
 fi
@@ -103,10 +114,12 @@ chmod 700 "$fake_bin/cargo" "$fake_bin/file" "$fake_bin/security" "$fake_bin/cod
 
 TMPDIR="$test_tmp" PATH="$fake_bin:$PATH" PALLADIN_CARGO_ARGUMENT_LOG="$cargo_argument_log" \
   PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+  PALLADIN_DEVELOPMENT_HELPER_PATH="$helper" \
   "$tree/packaging/macos/scripts/development-runtime.sh" run -- --version >/dev/null
 
 [[ -f "$keychain" && ! -L "$keychain" ]]
 grep -F -x -q 'build --locked -p palladin-cli' "$cargo_argument_log"
+grep -F -x -q 'build --locked -p palladin-macos-keychain-helper' "$cargo_argument_log"
 if compgen -G "$test_tmp/palladin-development-signing.*" >/dev/null; then
   printf 'first development run left bootstrap key material behind\n' >&2
   exit 1
@@ -117,6 +130,7 @@ launcher="$test_root/palladin"
 : >"$cargo_argument_log"
 TMPDIR="$test_tmp" PATH="$fake_bin:$PATH" PALLADIN_CARGO_ARGUMENT_LOG="$cargo_argument_log" \
   PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+  PALLADIN_DEVELOPMENT_HELPER_PATH="$helper" \
   "$launcher" --local-development --version >/dev/null
 grep -F -x -q 'build --locked -p palladin-cli --features local-development' "$cargo_argument_log"
 

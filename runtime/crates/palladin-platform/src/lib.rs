@@ -11,6 +11,12 @@ pub mod secure_store;
 #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
 mod macos_hardened_store;
 
+#[cfg(all(target_os = "macos", not(feature = "macos-hardened")))]
+mod macos_development_store;
+
+#[cfg(all(target_os = "macos", not(feature = "macos-hardened")))]
+pub use macos_development_store::serve_development_keychain_helper;
+
 #[cfg(target_os = "macos")]
 mod macos_browser;
 

@@ -658,7 +658,13 @@ pub fn storage_tier_description() -> &'static str {
 #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
 pub type NativeSecretStore = crate::macos_hardened_store::MacHardenedSecretStore;
 
-#[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]
+#[cfg(all(target_os = "macos", debug_assertions, not(feature = "macos-hardened")))]
+pub type NativeSecretStore = crate::macos_development_store::MacDevelopmentSecretStore;
+
+#[cfg(not(any(
+    all(target_os = "macos", feature = "macos-hardened"),
+    all(target_os = "macos", debug_assertions, not(feature = "macos-hardened"))
+)))]
 pub type NativeSecretStore = OsSecretStore;
 
 #[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]

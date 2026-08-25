@@ -48,8 +48,10 @@ On macOS, run source CLI commands that can open local Agent state through
 `packaging/macos/scripts/development-runtime.sh run -- ...`. Do not execute a
 fresh `target/debug/palladin` directly: its linker-generated ad hoc Designated
 Requirement changes after rebuilds and causes repeated Login Keychain prompts.
-The development signer remains Convenience-only and must never enter release
-packaging.
+The wrapper installs one owner-only stable Keychain helper; changing CLI builds
+must use that helper and must never replace it implicitly, read Login Keychain
+directly, allow wildcard ACLs, or permit background Keychain UI. The development
+signer and helper remain Convenience-only and must never enter release packaging.
 
 ## Pull Requests
 
