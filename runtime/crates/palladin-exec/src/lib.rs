@@ -1224,6 +1224,39 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn hardened_node_executes_callback_script_with_stdin_and_secret_environment() {
+        let interpreter = resolve_interpreter("node").expect("node");
+        let script = SecretString::from(
+            "let input=''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => { const parameters = JSON.parse(input); if (process.env.DB_USER !== 'fixture-user-not-production') process.exit(2); process.stdout.write(JSON.stringify({limit:parameters.limit})); });"
+                .to_owned(),
+        );
+        let parameters = SecretString::from(r#"{"limit":5}"#.to_owned());
+        let mut environment = SecretEnvironment::new();
+        environment
+            .insert_reference(
+                "DB_USER",
+                SecretString::from("fixture-user-not-production".to_owned()),
+            )
+            .expect("synthetic reference");
+
+        let result = run_script_captured(
+            &script,
+            &interpreter,
+            environment,
+            &parameters,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("captured Node execution");
+
+        assert_eq!(result.exit_code, 0);
+        assert!(!result.cancelled);
+        assert!(!result.stdout_too_large);
+        assert_eq!(result.stdout.as_slice(), br#"{"limit":5}"#);
+    }
+
     #[cfg(not(windows))]
     #[tokio::test]
     async fn captured_script_marks_stdout_larger_than_the_result_contract() {
