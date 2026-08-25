@@ -987,10 +987,10 @@ fn validate_parameter_value_without_enum(
 }
 
 fn manifest_digest(manifest: &ScriptExecutionManifest) -> Result<String, CryptoError> {
-    let encoded = canonical_json(manifest)?;
+    let encoded = Zeroizing::new(canonical_json(manifest)?);
     let mut hasher = Sha256::new();
     hasher.update(MANIFEST_DOMAIN);
-    hasher.update(encoded);
+    hasher.update(encoded.as_slice());
     Ok(URL_SAFE_NO_PAD.encode(hasher.finalize()))
 }
 
@@ -1049,8 +1049,8 @@ where
 {
     let text = std::str::from_utf8(bytes).map_err(|_| CryptoError::InvalidEncoding)?;
     let value: T = serde_json::from_str(text).map_err(|_| CryptoError::InvalidEncoding)?;
-    let encoded = canonical_json(&value)?;
-    if encoded != bytes {
+    let encoded = Zeroizing::new(canonical_json(&value)?);
+    if encoded.as_slice() != bytes {
         return Err(CryptoError::InvalidEncoding);
     }
     Ok(value)
