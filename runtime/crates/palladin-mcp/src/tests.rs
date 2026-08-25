@@ -8,12 +8,16 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
+use palladin_api::{CredentialAccess, CredentialMethod};
+use palladin_credential::access::access_message;
+
 use super::{
-    ApplicationFuture, BoundedLineReader, ExecInput, ExecToolResult, GetInput, InjectInput,
-    InjectToolResult, MAX_BATCH_ITEMS, MAX_FRAME_BYTES, McpApplication, PalladinMcpServer,
-    ProtocolBridgeState, ReportStaleInput, ScriptExecToolResult, SearchInput, ToolOutcome,
-    collect_batch_response, load_tools, parse_input, prepare_incoming_message, pretty_result,
-    serve_io, validate_exec, validate_get, validate_inject, validate_search, wait_options,
+    AccessResult, ApplicationFuture, BoundedLineReader, ExecInput, ExecToolResult, GetInput,
+    InjectInput, InjectToolResult, MAX_BATCH_ITEMS, MAX_FRAME_BYTES, McpApplication,
+    PalladinMcpServer, ProtocolBridgeState, ReportStaleInput, ScriptExecToolResult, SearchInput,
+    ToolOutcome, access_name, collect_batch_response, load_tools, parse_input,
+    prepare_incoming_message, pretty_result, serve_io, validate_exec, validate_get,
+    validate_inject, validate_search, wait_options,
 };
 
 #[derive(Clone, Default)]
@@ -328,6 +332,23 @@ fn script_exec_result_returns_safe_stdout_or_one_explicit_withheld_code() {
     assert_eq!(withheld["resultWithheld"], "protected-literal-detected");
     assert!(withheld.get("result").is_none());
     assert!(withheld.get("stderr").is_none());
+}
+
+#[test]
+fn script_method_not_allowed_mcp_denial_contains_no_execution_output() {
+    let access = CredentialAccess::MethodNotAllowed;
+    let message = access_message(&access, CredentialMethod::Exec).expect("denial message");
+    let outcome = pretty_result(&AccessResult {
+        access: access_name(&access),
+        message: &message,
+    });
+    let result: Value = serde_json::from_str(&outcome.text).expect("access result JSON");
+
+    assert_eq!(result["access"], "method-not-allowed");
+    assert_eq!(result["message"], message);
+    for forbidden in ["result", "resultWithheld", "stdout", "stderr", "exitCode"] {
+        assert!(result.get(forbidden).is_none());
+    }
 }
 
 #[test]

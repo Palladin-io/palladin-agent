@@ -3,8 +3,8 @@ use std::process::Command;
 
 use clap::Parser;
 use palladin_api::{
-    AgentRegistrationResult, AgentVisibleField, CredentialAccess, EntrySearchItem,
-    EntrySearchResult,
+    AgentRegistrationResult, AgentVisibleField, CredentialAccess, CredentialMethod,
+    EntrySearchItem, EntrySearchResult,
 };
 use palladin_cli::args::{Cli, Commands};
 use palladin_cli::output::{
@@ -15,7 +15,7 @@ use palladin_cli::output::{
 };
 use palladin_cli::{CreatedProfile, LegacyCleanupOutcome, LegacyCutoverOutcome};
 use palladin_core::public_store::{PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicRegistry};
-use palladin_credential::access::exit_code_for_access;
+use palladin_credential::access::{access_message, exit_code_for_access};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -372,6 +372,20 @@ fn frozen_exit_codes_cover_usage_environment_retry_and_permission_classes() {
         exit_code_for_access(&CredentialAccess::Denied),
         exit.not_permitted
     );
+}
+
+#[test]
+fn script_method_not_allowed_is_a_stable_content_free_cli_denial() {
+    let access = CredentialAccess::MethodNotAllowed;
+    assert_eq!(exit_code_for_access(&access), 77);
+    let message = access_message(&access, CredentialMethod::Exec).expect("denial message");
+    assert_eq!(
+        message,
+        "This grant does not permit exec. The owner restricted how this credential may be used - try palladin inject or palladin get, or ask them to allow exec."
+    );
+    for forbidden in ["result", "stdout", "stderr", "scriptSource", "parameters"] {
+        assert!(!message.contains(forbidden));
+    }
 }
 
 #[test]
