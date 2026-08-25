@@ -4,7 +4,6 @@ use std::fs::File;
 use std::io::{self, Read as _, Write};
 use std::mem::{size_of, size_of_val};
 use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
-use std::os::windows::fs::OpenOptionsExt as _;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
@@ -22,9 +21,9 @@ use windows::Win32::Security::{
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_DELETE_ON_CLOSE, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_READ, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FileAttributeTagInfo, GetFileInformationByHandleEx, OPEN_EXISTING,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FileAttributeTagInfo, GetFileInformationByHandleEx,
+    OPEN_EXISTING,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::JobObjects::{
@@ -53,6 +52,13 @@ use crate::{
 const APPCONTAINER_NAME_PREFIX: &str = "Palladin.Runtime.Executor.v1";
 const APPCONTAINER_DISPLAY_NAME: &str = "Palladin Hardened Executor";
 const INTERNET_CLIENT_CAPABILITY: &str = "internetClient";
+const NODE_MEMORY_BOOTSTRAP: &str = r#"const fs=require("node:fs"),Module=require("node:module"),{Readable}=require("node:stream");const p=JSON.parse(fs.readFileSync(0,"utf8"));Object.defineProperty(process,"stdin",{value:Readable.from([p.parameters]),configurable:false,enumerable:true,writable:false});const m=new Module("palladin-script.cjs");m.filename="palladin-script.cjs";m.paths=Module._nodeModulePaths(process.cwd());m._compile(p.script,m.filename);"#;
+const PYTHON_MEMORY_BOOTSTRAP: &str = r#"import io,json,sys
+p=json.load(sys.stdin)
+sys.stdin=io.StringIO(p["parameters"])
+code=compile(p["script"],"palladin-script.py","exec")
+del p
+exec(code,{"__name__":"__main__","__file__":"palladin-script.py"})"#;
 const CHILD_MACHINE_ENVIRONMENT: &[&str] =
     &["PATH", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432"];
 
@@ -97,12 +103,6 @@ fn execute(request: ExecutorRequest) -> Result<i32, ExecutorError> {
     }];
     let profile = AppContainerProfile::create(&capability_attributes)?;
     let profile_root = profile.folder()?;
-    let temporary = match &request {
-        ExecutorRequest::Command { .. } => None,
-        ExecutorRequest::Script { script, .. } => {
-            Some(PrivateScript::new(&profile_root, script.as_bytes())?)
-        }
-    };
     let (mut command, environment, script_input) = match &request {
         ExecutorRequest::Command {
             command,
@@ -110,22 +110,13 @@ fn execute(request: ExecutorRequest) -> Result<i32, ExecutorError> {
         } => (command.clone(), environment.as_slice(), None),
         ExecutorRequest::Script {
             interpreter,
+            script,
             stdin,
             environment,
-            ..
-        } => (
-            vec![
-                interpreter.to_string_lossy().into_owned(),
-                temporary
-                    .as_ref()
-                    .ok_or(ExecutorError::TemporaryScript)?
-                    .path()
-                    .to_string_lossy()
-                    .into_owned(),
-            ],
-            environment.as_slice(),
-            Some(stdin.as_bytes()),
-        ),
+        } => {
+            let launch = prepare_memory_script(interpreter, script, stdin)?;
+            (launch.command, environment.as_slice(), Some(launch.payload))
+        }
     };
     let executable = PinnedExecutable::resolve(
         command
@@ -141,14 +132,56 @@ fn execute(request: ExecutorRequest) -> Result<i32, ExecutorError> {
         &profile_root,
         profile.sid(),
         &capability_attributes,
-        script_input,
+        script_input.as_ref().map(|payload| payload.as_slice()),
     );
     drop(request);
     drop(environment);
-    if let Some(temporary) = temporary {
-        temporary.close()?;
-    }
+    drop(script_input);
     exit_code
+}
+
+struct MemoryScriptLaunch {
+    command: Vec<String>,
+    payload: Zeroizing<Vec<u8>>,
+}
+
+#[derive(serde::Serialize)]
+struct MemoryScriptPayload<'a> {
+    script: &'a str,
+    parameters: &'a str,
+}
+
+fn prepare_memory_script(
+    interpreter: &Path,
+    script: &str,
+    parameters: &str,
+) -> Result<MemoryScriptLaunch, ExecutorError> {
+    let executable_name = interpreter
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .ok_or(ExecutorError::ExecutableUnavailable)?;
+    let (flag, bootstrap) = if executable_name.eq_ignore_ascii_case("node") {
+        ("-e", NODE_MEMORY_BOOTSTRAP)
+    } else if executable_name.eq_ignore_ascii_case("python")
+        || executable_name.eq_ignore_ascii_case("python3")
+    {
+        ("-c", PYTHON_MEMORY_BOOTSTRAP)
+    } else {
+        return Err(ExecutorError::ExecutableUnavailable);
+    };
+    let payload = serde_json::to_vec(&MemoryScriptPayload { script, parameters })
+        .map_err(|_| ExecutorError::InvalidRequest)?;
+    if payload.is_empty() || payload.len() > MAX_REQUEST_BYTES {
+        return Err(ExecutorError::InvalidRequest);
+    }
+    Ok(MemoryScriptLaunch {
+        command: vec![
+            interpreter.to_string_lossy().into_owned(),
+            flag.to_owned(),
+            bootstrap.to_owned(),
+        ],
+        payload: Zeroizing::new(payload),
+    })
 }
 
 fn launch_appcontainer(
@@ -650,75 +683,6 @@ unsafe fn wide_pointer_to_path(pointer: *const u16) -> Result<PathBuf, ExecutorE
     Ok(PathBuf::from(OsString::from_wide(units)))
 }
 
-struct PrivateScript {
-    directory: Option<tempfile::TempDir>,
-    file: Option<File>,
-    path: PathBuf,
-}
-
-impl PrivateScript {
-    fn new(profile_root: &Path, contents: &[u8]) -> Result<Self, ExecutorError> {
-        let temp_root = profile_root.join("Temp");
-        std::fs::create_dir_all(&temp_root).map_err(|_| ExecutorError::TemporaryScript)?;
-        let directory = tempfile::Builder::new()
-            .prefix("palladin-script-")
-            .tempdir_in(temp_root)
-            .map_err(|_| ExecutorError::TemporaryScript)?;
-        // Use an explicit CommonJS suffix so Node does not perform a package-type
-        // walk beyond the private AppContainer profile while loading the main file.
-        let path = directory.path().join("script.cjs");
-        let mut options = std::fs::OpenOptions::new();
-        // Node/libuv reopens scripts with read, write and delete sharing. Keep
-        // the writer open without write sharing to pin the bytes, and retain
-        // DELETE_ON_CLOSE so forced executor termination still removes source.
-        options
-            .write(true)
-            .create_new(true)
-            .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_DELETE.0)
-            .custom_flags(FILE_FLAG_DELETE_ON_CLOSE.0);
-        let mut file = options
-            .open(&path)
-            .map_err(|_| ExecutorError::TemporaryScript)?;
-        file.write_all(contents)
-            .and_then(|()| file.sync_all())
-            .map_err(|_| ExecutorError::TemporaryScript)?;
-        Ok(Self {
-            directory: Some(directory),
-            file: Some(file),
-            path,
-        })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn close(mut self) -> Result<(), ExecutorError> {
-        self.file.take();
-        match std::fs::remove_file(&self.path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(_) => return Err(ExecutorError::TemporaryScript),
-        }
-        self.path.clear();
-        if let Some(directory) = self.directory.take() {
-            directory
-                .close()
-                .map_err(|_| ExecutorError::TemporaryScript)?;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for PrivateScript {
-    fn drop(&mut self) {
-        self.file.take();
-        if !self.path.as_os_str().is_empty() {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
 fn build_environment(
     secrets: &[SecretVariable],
     profile_root: &Path,
@@ -975,7 +939,6 @@ mod tests {
 
     const PROBE_PARENT_PID: &str = "CLAW_TEST_PARENT_PID";
     const PROBE_DENIED_PATH: &str = "CLAW_TEST_DENIED_PATH";
-    const PROBE_SCRIPT_PATH: &str = "CLAW_TEST_SCRIPT_PATH";
     const PROBE_SURVIVOR_PATH: &str = "CLAW_TEST_SURVIVOR_PATH";
 
     #[test]
@@ -1059,58 +1022,36 @@ mod tests {
     }
 
     #[test]
-    fn appcontainer_script_is_private_scoped_and_removed_after_execution() {
-        let capability = CapabilitySid::derive(INTERNET_CLIENT_CAPABILITY).expect("capability");
-        let capabilities = [SID_AND_ATTRIBUTES {
-            Sid: capability.sid(),
-            Attributes: 4,
-        }];
-        let profile = AppContainerProfile::create(&capabilities).expect("profile");
-        let profile_root = profile.folder().expect("profile folder");
-        let probe_path = profile_root.join(format!("palladin-probe-{}.exe", std::process::id()));
-        std::fs::copy(
-            std::env::current_exe().expect("test executable"),
-            &probe_path,
+    fn script_source_and_parameters_are_sent_only_in_the_in_memory_payload() {
+        let launch = prepare_memory_script(
+            Path::new(r"C:\Program Files\nodejs\node.exe"),
+            "fixture-script-source",
+            r#"{"limit":5}"#,
         )
-        .expect("copy probe");
-        let script =
-            PrivateScript::new(&profile_root, b"fixture-script-secret").expect("private script");
-        let script_path = script.path().to_path_buf();
-        assert_eq!(script_path.extension(), Some(OsStr::new("cjs")));
+        .expect("memory Script launch");
+        assert_eq!(launch.command[1], "-e");
+        assert_eq!(launch.command[2], NODE_MEMORY_BOOTSTRAP);
         assert!(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open(&script_path)
-                .is_err(),
-            "private script was writable while pinned"
+            launch
+                .command
+                .iter()
+                .all(|argument| !argument.contains("fixture-script-source")
+                    && !argument.contains("limit")),
+            "Script material entered the observable process command line"
         );
-        let secrets = [SecretVariable {
-            name: PROBE_SCRIPT_PATH.to_owned(),
-            value: script_path.to_string_lossy().into_owned(),
-        }];
-        let environment = build_environment(&secrets, &profile_root).expect("environment");
-        let executable = PinnedExecutable::resolve(&probe_path.to_string_lossy()).expect("probe");
-        let arguments = vec![
-            probe_path.to_string_lossy().into_owned(),
-            "--exact".to_owned(),
-            "windows::tests::appcontainer_script_probe_helper".to_owned(),
-            "--ignored".to_owned(),
-        ];
-        let exit = launch_appcontainer(
-            &executable,
-            &arguments,
-            &environment,
-            &profile_root,
-            profile.sid(),
-            &capabilities,
-            None,
+        let payload: serde_json::Value =
+            serde_json::from_slice(&launch.payload).expect("memory payload");
+        assert_eq!(payload["script"], "fixture-script-source");
+        assert_eq!(payload["parameters"], r#"{"limit":5}"#);
+
+        let python = prepare_memory_script(
+            Path::new(r"C:\Python\python.exe"),
+            "raise SystemExit(0)",
+            "{}",
         )
-        .expect("contained script probe");
-        drop(executable);
-        script.close().expect("script cleanup");
-        assert!(!script_path.exists(), "private script survived execution");
-        std::fs::remove_file(probe_path).expect("probe cleanup");
-        assert_eq!(exit, 0);
+        .expect("Python memory Script launch");
+        assert_eq!(python.command[1], "-c");
+        assert_eq!(python.command[2], PYTHON_MEMORY_BOOTSTRAP);
     }
 
     #[test]
@@ -1176,18 +1117,6 @@ mod tests {
             std::fs::read_dir(denied_path).is_err(),
             "AppContainer opened ungranted broker-like storage"
         );
-    }
-
-    #[test]
-    #[ignore = "subprocess helper launched only by the AppContainer script test"]
-    fn appcontainer_script_probe_helper() {
-        assert!(process_is_appcontainer());
-        let script = PathBuf::from(std::env::var_os(PROBE_SCRIPT_PATH).expect("script path"));
-        let script_matches = std::fs::read(script)
-            .expect("private script is readable only inside its profile")
-            == b"fixture-script-secret";
-        assert!(script_matches, "private script payload diverged");
-        assert!(std::env::var_os("PALLADIN_API_KEY").is_none());
     }
 
     #[test]
