@@ -52,7 +52,7 @@ use crate::{
 const APPCONTAINER_NAME_PREFIX: &str = "Palladin.Runtime.Executor.v1";
 const APPCONTAINER_DISPLAY_NAME: &str = "Palladin Hardened Executor";
 const INTERNET_CLIENT_CAPABILITY: &str = "internetClient";
-const NODE_MEMORY_BOOTSTRAP: &str = r#"const fs=require("node:fs"),Module=require("node:module"),{Readable}=require("node:stream");const p=JSON.parse(fs.readFileSync(0,"utf8"));Object.defineProperty(process,"stdin",{value:Readable.from([p.parameters]),configurable:false,enumerable:true,writable:false});const m=new Module("palladin-script.cjs");m.filename="palladin-script.cjs";m.paths=Module._nodeModulePaths(process.cwd());m._compile(p.script,m.filename);"#;
+const NODE_MEMORY_BOOTSTRAP: &str = r#"const fs=require("node:fs"),Module=require("node:module"),path=require("node:path"),{Readable}=require("node:stream");const p=JSON.parse(fs.readFileSync(0,"utf8"));Object.defineProperty(process,"stdin",{value:Readable.from([p.parameters]),configurable:false,enumerable:true,writable:false});const f=path.join(process.cwd(),"palladin-script.js"),m=new Module(f);m.filename=f;m.paths=Module._nodeModulePaths(process.cwd());const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;try{const run=new AsyncFunction("require","module","exports","__filename","__dirname",p.script);run(m.require.bind(m),m,m.exports,f,path.dirname(f)).catch(()=>{process.exitCode=1})}catch{process.exitCode=1}"#;
 const PYTHON_MEMORY_BOOTSTRAP: &str = r#"import io,json,sys
 p=json.load(sys.stdin)
 sys.stdin=io.StringIO(p["parameters"])

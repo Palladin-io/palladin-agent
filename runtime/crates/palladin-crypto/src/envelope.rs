@@ -565,7 +565,7 @@ pub fn decrypt_full_script_member_secret(
         EncodedSuitePayload::from_bytes(decode_base64url(&member_secret.encoded_suite_payload)?)?;
     let secret_key = XChaChaVaultSuite::derive_key(entry_dek.expose_secret(), &secret_descriptor)?;
     let plaintext = XChaChaVaultSuite::open(&secret_key, &secret_payload, &secret_aad)?;
-    validate_raw_member_secret(plaintext.expose_secret())?;
+    validate_full_script_member_secret(plaintext.expose_secret())?;
     Ok(SecretBytes::new(plaintext.expose_secret().to_vec()))
 }
 
@@ -1457,6 +1457,31 @@ pub(crate) fn validate_raw_member_secret(plaintext: &[u8]) -> Result<(), CryptoE
         discoverable,
         object.get("agentLabel"),
     )
+}
+
+fn validate_full_script_member_secret(plaintext: &[u8]) -> Result<(), CryptoError> {
+    let text = std::str::from_utf8(plaintext).map_err(|_| CryptoError::InvalidEncoding)?;
+    let secret = SensitiveJson(
+        serde_json::from_str::<Value>(text).map_err(|_| CryptoError::InvalidEncoding)?,
+    );
+    let mut canonical =
+        serde_json::to_string(&secret.0).map_err(|_| CryptoError::InvalidEncoding)?;
+    let is_canonical = canonical == text;
+    canonical.zeroize();
+    if !is_canonical {
+        return Err(CryptoError::InvalidEncoding);
+    }
+
+    let object = secret.0.as_object().ok_or(CryptoError::InvalidEncoding)?;
+    match object.get("schema") {
+        Some(Value::String(schema)) if schema == "palladin.member-secret.v1" => {
+            validate_raw_member_secret(plaintext)
+        }
+        None if object.get("entryType").is_some_and(Value::is_u64) => {
+            canonical_member_secret_projection(&secret.0).map(|_| ())
+        }
+        _ => Err(CryptoError::InvalidEncoding),
+    }
 }
 
 fn is_optional_string(value: Option<&Value>) -> bool {
