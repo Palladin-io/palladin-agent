@@ -82,6 +82,28 @@ where
     deserialize_protocol_code(deserializer, "memberSecret", MEMBER_SECRET_PURPOSE)
 }
 
+fn deserialize_entry_operation<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let operation = match ProtocolCodeWire::deserialize(deserializer)? {
+        ProtocolCodeWire::Numeric(value) => value,
+        ProtocolCodeWire::Named(value) => match value.as_str() {
+            "created" => 1,
+            "updated" => 2,
+            "archived" => 3,
+            "restored" => 4,
+            "deleted" => 5,
+            _ => return Err(de::Error::custom("unsupported entry operation")),
+        },
+    };
+
+    (1..=5)
+        .contains(&operation)
+        .then_some(operation)
+        .ok_or_else(|| de::Error::custom("unsupported entry operation"))
+}
+
 fn deserialize_agent_recipient_kind<'de, D>(deserializer: D) -> Result<u16, D::Error>
 where
     D: Deserializer<'de>,
@@ -184,6 +206,7 @@ pub struct MemberSecretDescriptor {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MemberSecretBinding {
+    #[serde(deserialize_with = "deserialize_entry_operation")]
     pub operation: u16,
 }
 
