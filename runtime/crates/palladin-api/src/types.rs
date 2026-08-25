@@ -203,7 +203,8 @@ struct CredentialAccessWire {
     entry_id: Option<String>,
     grant_type: Option<CredentialGrantType>,
     delivery_policy: Option<GrantDeliveryPolicyWire>,
-    expires_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_nullable_field")]
+    expires_at: NullableField<String>,
     grant_envelope: Option<Box<EncryptedCredential>>,
     agent_wrapped_vault_key: Option<Box<AgentWrappedVaultKey>>,
     entry_key: Option<Box<VaultEntryKeyEnvelope>>,
@@ -212,6 +213,27 @@ struct CredentialAccessWire {
     created: Option<bool>,
     poll_interval_ms: Option<u64>,
     max_wait_ms: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+enum NullableField<T> {
+    #[default]
+    Missing,
+    Present(Option<T>),
+}
+
+impl<T> NullableField<T> {
+    const fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+}
+
+fn deserialize_nullable_field<'de, D, T>(deserializer: D) -> Result<NullableField<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(NullableField::Present)
 }
 
 impl<'de> Deserialize<'de> for CredentialAccess {
@@ -236,7 +258,7 @@ impl<'de> Deserialize<'de> for CredentialAccess {
             && wire.entry_id.is_none()
             && wire.grant_type.is_none()
             && delivery_policy.is_none()
-            && wire.expires_at.is_none()
+            && wire.expires_at.is_missing()
             && wire.grant_envelope.is_none()
             && wire.agent_wrapped_vault_key.is_none()
             && wire.entry_key.is_none()
@@ -304,7 +326,12 @@ impl<'de> Deserialize<'de> for CredentialAccess {
                     grant_type,
                     delivery_policy: delivery_policy
                         .ok_or_else(|| de::Error::missing_field("deliveryPolicy"))?,
-                    expires_at: wire.expires_at,
+                    expires_at: match wire.expires_at {
+                        NullableField::Present(value) => value,
+                        NullableField::Missing => {
+                            return Err(de::Error::missing_field("expiresAt"));
+                        }
+                    },
                     material,
                 })
             }
@@ -910,6 +937,13 @@ mod tests {
                 ..
             }
         ));
+
+        let mut missing_expiry = granted.clone();
+        missing_expiry
+            .as_object_mut()
+            .expect("FULL response object")
+            .remove("expiresAt");
+        assert!(serde_json::from_value::<CredentialAccess>(missing_expiry).is_err());
 
         granted
             .as_object_mut()
