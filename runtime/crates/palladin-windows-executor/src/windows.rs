@@ -664,7 +664,9 @@ impl PrivateScript {
             .prefix("palladin-script-")
             .tempdir_in(temp_root)
             .map_err(|_| ExecutorError::TemporaryScript)?;
-        let path = directory.path().join("script.js");
+        // Use an explicit CommonJS suffix so Node does not perform a package-type
+        // walk beyond the private AppContainer profile while loading the main file.
+        let path = directory.path().join("script.cjs");
         let mut options = std::fs::OpenOptions::new();
         // Node/libuv reopens scripts with read, write and delete sharing. Keep
         // the writer open without write sharing to pin the bytes, and retain
@@ -1074,7 +1076,7 @@ mod tests {
         let script =
             PrivateScript::new(&profile_root, b"fixture-script-secret").expect("private script");
         let script_path = script.path().to_path_buf();
-        assert_eq!(script_path.extension(), Some(OsStr::new("js")));
+        assert_eq!(script_path.extension(), Some(OsStr::new("cjs")));
         assert!(
             std::fs::OpenOptions::new()
                 .write(true)
