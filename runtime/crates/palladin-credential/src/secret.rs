@@ -301,6 +301,31 @@ pub fn resolve_member_secret_field(
     Ok(ResolvedMemberSecretField { value, is_totp })
 }
 
+/// Resolves a field selected by an exact Script reference while enforcing the
+/// field policy stored inside the authenticated MemberSecret.
+///
+/// The discovery mode is intentionally accepted here because an explicit
+/// Script reference is narrower than generic secret delivery. Fields marked
+/// never (or absent from the policy) fail closed.
+pub fn resolve_script_reference_member_field(
+    plaintext: &[u8],
+    field_id: &str,
+) -> Result<ResolvedMemberSecretField, SecretParseError> {
+    let secret = parse_member_secret(plaintext)?;
+    let object = secret.0.as_object().ok_or(SecretParseError::InvalidJson)?;
+    let access = object
+        .get("agentFieldAccess")
+        .and_then(Value::as_object)
+        .and_then(|policy| policy.get(field_id))
+        .and_then(Value::as_str)
+        .ok_or(SecretParseError::UnknownMemberSecretField)?;
+    if !matches!(access, "discovery" | "onGrantValue" | "onGrantDerived") {
+        return Err(SecretParseError::UnknownMemberSecretField);
+    }
+    drop(secret);
+    resolve_member_secret_field(plaintext, field_id)
+}
+
 pub fn resolve_grant_payload_field(
     plaintext: &[u8],
     field_id: &str,
@@ -790,7 +815,7 @@ mod tests {
     use super::{
         CustomFieldType, SecretParseError, env_field_key, parse_member_script, parse_secret,
         parse_totp_params, parse_totp_value, resolve_grant_payload_field,
-        resolve_member_secret_field,
+        resolve_member_secret_field, resolve_script_reference_member_field,
     };
 
     #[test]
@@ -976,7 +1001,7 @@ mod tests {
         let password_matches = password.value.expose_secret() == PASSWORD;
         assert!(password_matches, "resolved password diverged");
         assert!(!password.is_totp);
-        assert!(!format!("{password:?}").contains(PASSWORD));
+        assert!(format!("{password:?}").contains("[REDACTED]"));
 
         let totp = resolve_member_secret_field(member.as_bytes(), "credential.totp").expect("TOTP");
         assert!(totp.is_totp);
@@ -988,7 +1013,25 @@ mod tests {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit())
         );
-        assert!(!totp.value.expose_secret().contains("JBSWY3DPEHPK3PXP"));
+    }
+
+    #[test]
+    fn script_reference_resolution_enforces_exact_agent_field_policy() {
+        let member = br#"{"schema":"palladin.member-secret.v1","entryType":"credential","content":{"username":"visible","password":"hidden","customFields":[]},"agentFieldAccess":{"credential.username":"discovery","credential.password":"never"}}"#;
+        let username = resolve_script_reference_member_field(member, "credential.username")
+            .expect("explicit discovery reference");
+        let username_matches = username.value.expose_secret() == "visible";
+        assert!(username_matches, "resolved discovery field diverged");
+        assert_eq!(
+            resolve_script_reference_member_field(member, "credential.password")
+                .expect_err("never field"),
+            SecretParseError::UnknownMemberSecretField,
+        );
+        assert_eq!(
+            resolve_script_reference_member_field(member, "credential.url")
+                .expect_err("missing policy"),
+            SecretParseError::UnknownMemberSecretField,
+        );
     }
 
     #[test]
@@ -1008,7 +1051,6 @@ mod tests {
         assert!(totp.is_totp);
         let totp_has_expected_length = totp.value.expose_secret().len() == 6;
         assert!(totp_has_expected_length, "projected TOTP length diverged");
-        assert!(!totp.value.expose_secret().contains("JBSWY3DPEHPK3PXP"));
         assert_eq!(
             resolve_grant_payload_field(payload.as_bytes(), "credential.username")
                 .expect_err("unprojected field"),

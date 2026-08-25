@@ -9,8 +9,9 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::{
     CryptoError, EncodedSuitePayload, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose,
     EnvelopeScope, InstantBinding, RecipientKeyKind, SealedWrappedKey, SecretBytes,
-    VAULT_XCHACHA_V1, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1, X25519Identity,
-    X25519SealedBoxSuite, XChaChaVaultSuite, compute_field_set_commitment,
+    SignatureProfile, VAULT_XCHACHA_V1, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1,
+    X25519Identity, X25519SealedBoxSuite, XChaChaVaultSuite, compute_field_set_commitment,
+    compute_key_fingerprint, verify_domain_signature,
 };
 
 const GRANT_PAYLOAD_PURPOSE: u16 = 10;
@@ -106,6 +107,53 @@ pub struct EncryptedCredential {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentWrappedVaultKey {
     pub wrapped_vault_key: AgentVaultKeyWrapper,
+    pub vault_signing_key_version: u32,
+    pub vault_signing_key_fingerprint: String,
+    pub producer_signature: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnsignedAgentWrappedVaultKey<'a> {
+    vault_signing_key_version: u32,
+    vault_signing_key_fingerprint: &'a str,
+    wrapped_vault_key: &'a AgentVaultKeyWrapper,
+}
+
+pub fn verify_agent_wrapped_vault_key_producer(
+    value: &AgentWrappedVaultKey,
+    expected_signing_key_version: u32,
+    expected_signing_key_fingerprint: &str,
+    signing_public_key: &[u8; 32],
+) -> Result<(), CryptoError> {
+    let computed_fingerprint =
+        compute_key_fingerprint(signing_public_key, RecipientKeyKind::VaultSigningEd25519);
+    if value.vault_signing_key_version != expected_signing_key_version
+        || value.vault_signing_key_fingerprint != expected_signing_key_fingerprint
+        || URL_SAFE_NO_PAD.encode(computed_fingerprint) != expected_signing_key_fingerprint
+    {
+        return Err(CryptoError::AuthenticationFailed);
+    }
+    let canonical = Zeroizing::new(
+        serde_jcs::to_vec(&UnsignedAgentWrappedVaultKey {
+            vault_signing_key_version: value.vault_signing_key_version,
+            vault_signing_key_fingerprint: &value.vault_signing_key_fingerprint,
+            wrapped_vault_key: &value.wrapped_vault_key,
+        })
+        .map_err(|_| CryptoError::InvalidEncoding)?,
+    );
+    let signature = Zeroizing::new(
+        URL_SAFE_NO_PAD
+            .decode(&value.producer_signature)
+            .map_err(|_| CryptoError::InvalidEncoding)?,
+    );
+    verify_domain_signature(
+        SignatureProfile::AgentWrappedVaultKey,
+        2,
+        &canonical,
+        signing_public_key,
+        &signature,
+    )
 }
 
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -2302,17 +2350,84 @@ mod tests {
         CredentialEnvelopeContext, CryptoError, DecryptedCredential, EncryptedCredential,
         FullCredentialEnvelopeContext, FullScriptMemberSecretContext, GrantEnvelopeBinding,
         GrantEnvelopeDescriptor, GrantEnvelopeScope, MemberSecretBinding, MemberSecretDescriptor,
-        MemberSecretEnvelope, VaultEntryKeyDescriptor, VaultEntryKeyEnvelope, VaultKeyBinding,
-        WrappedGrantDek, WrappedGrantDekDescriptor, decrypt_full_credential_at,
-        decrypt_full_script_member_secret, normalize_full_member_secret, normalize_grant_payload,
-        parse_nonzero_u64, parse_uuid, to_descriptor,
+        MemberSecretEnvelope, UnsignedAgentWrappedVaultKey, VaultEntryKeyDescriptor,
+        VaultEntryKeyEnvelope, VaultKeyBinding, WrappedGrantDek, WrappedGrantDekDescriptor,
+        decrypt_full_credential_at, decrypt_full_script_member_secret,
+        normalize_full_member_secret, normalize_grant_payload, parse_nonzero_u64, parse_uuid,
+        to_descriptor, verify_agent_wrapped_vault_key_producer,
     };
     use crate::{
-        EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose, EnvelopeScope, RecipientKeyKind,
-        VAULT_XCHACHA_V1, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1, X25519Identity,
-        X25519SealedBoxSuite, XChaChaVaultSuite, compute_field_set_commitment,
+        Ed25519Identity, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose, EnvelopeScope,
+        RecipientKeyKind, VAULT_XCHACHA_V1, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1,
+        X25519Identity, X25519SealedBoxSuite, XChaChaVaultSuite, compute_field_set_commitment,
         compute_key_fingerprint,
     };
+
+    #[test]
+    fn full_wrapper_producer_signature_is_verified_before_unwrap() {
+        let signer = Ed25519Identity::from_seed(vec![0x51; 32]).expect("signer");
+        let fingerprint =
+            compute_key_fingerprint(signer.public_key(), RecipientKeyKind::VaultSigningEd25519);
+        let mut wrapped = AgentWrappedVaultKey {
+            wrapped_vault_key: AgentVaultKeyWrapper {
+                descriptor: AgentVaultKeyWrapperDescriptor {
+                    protocol_version: 2,
+                    wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                    purpose: 5,
+                    scope: GrantEnvelopeScope {
+                        organization_id: "00112233-4455-4677-8899-aabbccddeeff".to_owned(),
+                        vault_id: "11112222-3333-4444-8555-666677778888".to_owned(),
+                        entry_id: None,
+                        grant_or_request_id: Some(
+                            "12345678-1234-4234-8234-1234567890ab".to_owned(),
+                        ),
+                        agent_id: Some("fedcba98-7654-4321-8765-abcdefabcdef".to_owned()),
+                        member_id: None,
+                    },
+                    resource_revision: "7".to_owned(),
+                    wrapped_key_version: 3,
+                    member_key_generation: None,
+                    recipient_key_kind: 1,
+                    recipient_key_version: 2,
+                    recipient_fingerprint: URL_SAFE_NO_PAD.encode([0x41_u8; 32]),
+                    parent_descriptor_hash: None,
+                },
+                encoded_sealed_key_package: URL_SAFE_NO_PAD.encode([0x31_u8; 120]),
+            },
+            vault_signing_key_version: 5,
+            vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(fingerprint),
+            producer_signature: String::new(),
+        };
+        let canonical = serde_jcs::to_vec(&UnsignedAgentWrappedVaultKey {
+            vault_signing_key_version: wrapped.vault_signing_key_version,
+            vault_signing_key_fingerprint: &wrapped.vault_signing_key_fingerprint,
+            wrapped_vault_key: &wrapped.wrapped_vault_key,
+        })
+        .expect("canonical wrapper");
+        let mut input = b"PLDNV2SIG:AGENT-WRAPPED-VAULT-KEY:".to_vec();
+        input.extend_from_slice(&2_u16.to_be_bytes());
+        input.extend_from_slice(&canonical);
+        wrapped.producer_signature = URL_SAFE_NO_PAD.encode(signer.sign(&input));
+
+        verify_agent_wrapped_vault_key_producer(
+            &wrapped,
+            5,
+            &URL_SAFE_NO_PAD.encode(fingerprint),
+            signer.public_key(),
+        )
+        .expect("signed wrapper");
+        wrapped.wrapped_vault_key.encoded_sealed_key_package =
+            URL_SAFE_NO_PAD.encode([0x32_u8; 120]);
+        assert_eq!(
+            verify_agent_wrapped_vault_key_producer(
+                &wrapped,
+                5,
+                &URL_SAFE_NO_PAD.encode(fingerprint),
+                signer.public_key(),
+            ),
+            Err(CryptoError::AuthenticationFailed),
+        );
+    }
 
     #[test]
     fn full_grant_unwraps_vault_key_only_inside_native_crypto_and_projects_member_policy() {
@@ -2380,6 +2495,9 @@ mod tests {
                 },
                 encoded_sealed_key_package: URL_SAFE_NO_PAD.encode(sealed_vault_key.as_bytes()),
             },
+            vault_signing_key_version: 1,
+            vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode([0_u8; 32]),
+            producer_signature: URL_SAFE_NO_PAD.encode([0_u8; 64]),
         };
 
         let entry_scope = EnvelopeScope {

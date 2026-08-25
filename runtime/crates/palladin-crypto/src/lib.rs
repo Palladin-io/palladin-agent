@@ -19,6 +19,7 @@ pub use envelope::{
     MemberSecretEnvelope, VaultEntryKeyDescriptor, VaultEntryKeyEnvelope, VaultKeyBinding,
     WrappedGrantDek, WrappedGrantDekDescriptor, decrypt_credential, decrypt_credential_at,
     decrypt_full_credential, decrypt_full_credential_at, decrypt_full_script_member_secret,
+    verify_agent_wrapped_vault_key_producer,
 };
 pub use grant::{
     DecryptedGrantPayload, ExpectedGrantContext, GrantEnvelopeV2, decrypt_grant_payload,
