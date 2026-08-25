@@ -301,6 +301,124 @@ pub fn resolve_member_secret_field(
     Ok(ResolvedMemberSecretField { value, is_totp })
 }
 
+pub fn resolve_grant_payload_field(
+    plaintext: &[u8],
+    field_id: &str,
+) -> Result<ResolvedMemberSecretField, SecretParseError> {
+    let text = std::str::from_utf8(plaintext).map_err(|_| SecretParseError::InvalidUtf8)?;
+    let payload = SensitiveJson(
+        serde_json::from_str::<Value>(text).map_err(|_| SecretParseError::InvalidJson)?,
+    );
+    let canonical =
+        Zeroizing::new(serde_jcs::to_vec(&payload.0).map_err(|_| SecretParseError::InvalidJson)?);
+    if canonical.as_slice() != plaintext {
+        return Err(SecretParseError::InvalidGrantPayload);
+    }
+    let object = payload
+        .0
+        .as_object()
+        .ok_or(SecretParseError::InvalidGrantPayload)?;
+    let entry_type = object
+        .get("entryType")
+        .and_then(Value::as_str)
+        .ok_or(SecretParseError::InvalidGrantPayload)?;
+    let fields = object
+        .get("fields")
+        .and_then(Value::as_array)
+        .ok_or(SecretParseError::InvalidGrantPayload)?;
+    if object.len() != 3
+        || object.get("schema").and_then(Value::as_str) != Some("palladin.grant-payload.v1")
+        || !matches!(entry_type, "key" | "credential" | "script" | "creditCard")
+        || fields.is_empty()
+    {
+        return Err(SecretParseError::InvalidGrantPayload);
+    }
+
+    let mut previous_id = None::<&str>;
+    let mut requested = None;
+    for field in fields {
+        let field = field
+            .as_object()
+            .ok_or(SecretParseError::InvalidGrantPayload)?;
+        let id = field
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(SecretParseError::InvalidGrantPayload)?;
+        let kind = field
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or(SecretParseError::InvalidGrantPayload)?;
+        let mode = field
+            .get("mode")
+            .and_then(Value::as_str)
+            .ok_or(SecretParseError::InvalidGrantPayload)?;
+        if field.len() != 4
+            || !field.contains_key("value")
+            || previous_id.is_some_and(|previous| previous >= id)
+            || expected_grant_field(entry_type, id, kind) != Some(mode)
+        {
+            return Err(SecretParseError::InvalidGrantPayload);
+        }
+        previous_id = Some(id);
+        if id == field_id {
+            requested = Some((kind, field.get("value").expect("checked above")));
+        }
+    }
+
+    let (kind, value) = requested.ok_or(SecretParseError::UnknownMemberSecretField)?;
+    let is_totp = kind == "totp";
+    let value = if is_totp {
+        let params = parse_totp_json(value).ok_or(SecretParseError::InvalidTotp)?;
+        crate::totp::generate_totp(&params)
+            .map_err(|_| SecretParseError::InvalidTotp)?
+            .code
+    } else {
+        value
+            .as_str()
+            .ok_or(SecretParseError::InvalidGrantPayload)?
+            .to_owned()
+            .into()
+    };
+    Ok(ResolvedMemberSecretField { value, is_totp })
+}
+
+fn expected_grant_field(entry_type: &str, id: &str, kind: &str) -> Option<&'static str> {
+    let expected = match (entry_type, id) {
+        ("key", "key.value") => ("concealed", "value"),
+        ("credential", "credential.username") => ("text", "value"),
+        ("credential", "credential.password") => ("concealed", "value"),
+        ("credential", "credential.url") => ("url", "value"),
+        ("credential", "credential.urlDomain") => ("text", "value"),
+        ("credential", "credential.totp") => ("totp", "derived"),
+        ("credential" | "key", "notes") => ("multiline", "value"),
+        ("script", "script.source") => ("script", "runtime"),
+        ("script", "script.interpreter") => ("interpreter", "runtime"),
+        ("script", "script.refs") => ("refs", "runtime"),
+        ("creditCard", "creditCard.cardholderName") => ("text", "runtime"),
+        ("creditCard", "creditCard.cardNumber") => ("concealed", "runtime"),
+        ("creditCard", "creditCard.expiryMonth") => ("text", "runtime"),
+        ("creditCard", "creditCard.expiryYear") => ("text", "runtime"),
+        ("creditCard", "creditCard.billingAddress") => ("text", "runtime"),
+        ("script" | "creditCard", "notes") => ("multiline", "runtime"),
+        (_, custom) if custom.starts_with("custom:") => {
+            let mode = if kind == "totp" {
+                "derived"
+            } else if matches!(kind, "text" | "multiline" | "concealed") {
+                if matches!(entry_type, "script" | "creditCard") {
+                    "runtime"
+                } else {
+                    "value"
+                }
+            } else {
+                return None;
+            };
+            return Some(mode);
+        }
+        _ => return None,
+    };
+    (expected.0 == kind).then_some(expected.1)
+}
+
 fn parse_member_secret(plaintext: &[u8]) -> Result<SensitiveJson, SecretParseError> {
     let text = std::str::from_utf8(plaintext).map_err(|_| SecretParseError::InvalidUtf8)?;
     let value = serde_json::from_str::<Value>(text).map_err(|_| SecretParseError::InvalidJson)?;
@@ -655,6 +773,8 @@ pub enum SecretParseError {
     InvalidScriptReference,
     #[error("decrypted MemberSecret is invalid")]
     InvalidMemberSecret,
+    #[error("decrypted GrantPayload is invalid")]
+    InvalidGrantPayload,
     #[error("the referenced MemberSecret field is unavailable")]
     UnknownMemberSecretField,
     #[error("the referenced TOTP descriptor is invalid")]
@@ -669,7 +789,8 @@ mod tests {
 
     use super::{
         CustomFieldType, SecretParseError, env_field_key, parse_member_script, parse_secret,
-        parse_totp_params, parse_totp_value, resolve_member_secret_field,
+        parse_totp_params, parse_totp_value, resolve_grant_payload_field,
+        resolve_member_secret_field,
     };
 
     #[test]
@@ -868,6 +989,39 @@ mod tests {
                 .all(|byte| byte.is_ascii_digit())
         );
         assert!(!totp.value.expose_secret().contains("JBSWY3DPEHPK3PXP"));
+    }
+
+    #[test]
+    fn projected_grant_fields_resolve_locally_without_accepting_member_secret_shape() {
+        const PASSWORD: &str = "fixture-password-never-log";
+        let payload = format!(
+            r#"{{"entryType":"credential","fields":[{{"id":"credential.password","kind":"concealed","mode":"value","value":"{PASSWORD}"}},{{"id":"credential.totp","kind":"totp","mode":"derived","value":{{"algorithm":"SHA1","digits":6,"period":30,"secret":"JBSWY3DPEHPK3PXP"}}}}],"schema":"palladin.grant-payload.v1"}}"#
+        );
+        let password = resolve_grant_payload_field(payload.as_bytes(), "credential.password")
+            .expect("projected password");
+        let password_matches = password.value.expose_secret() == PASSWORD;
+        assert!(password_matches, "projected password diverged");
+        assert!(!password.is_totp);
+
+        let totp = resolve_grant_payload_field(payload.as_bytes(), "credential.totp")
+            .expect("projected TOTP");
+        assert!(totp.is_totp);
+        let totp_has_expected_length = totp.value.expose_secret().len() == 6;
+        assert!(totp_has_expected_length, "projected TOTP length diverged");
+        assert!(!totp.value.expose_secret().contains("JBSWY3DPEHPK3PXP"));
+        assert_eq!(
+            resolve_grant_payload_field(payload.as_bytes(), "credential.username")
+                .expect_err("unprojected field"),
+            SecretParseError::UnknownMemberSecretField,
+        );
+        assert_eq!(
+            resolve_grant_payload_field(
+                br#"{"schema":"palladin.member-secret.v1","entryType":"credential","fields":[]}"#,
+                "credential.password",
+            )
+            .expect_err("MemberSecret shape"),
+            SecretParseError::InvalidGrantPayload,
+        );
     }
 
     #[test]
