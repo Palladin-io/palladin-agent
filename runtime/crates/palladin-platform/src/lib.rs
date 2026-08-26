@@ -15,7 +15,10 @@ mod macos_hardened_store;
 mod macos_development_store;
 
 #[cfg(all(target_os = "macos", not(feature = "macos-hardened")))]
-pub use macos_development_store::serve_development_keychain_helper;
+pub use macos_development_store::{
+    authorize_existing_development_keychain_item, serve_development_keychain_helper,
+    verify_existing_development_keychain_item,
+};
 
 #[cfg(target_os = "macos")]
 mod macos_browser;

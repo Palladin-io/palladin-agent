@@ -14,6 +14,7 @@ use crate::secure_store::{OsSecretStore, SecretSlot, SecretStore, StoreError};
 const REQUEST_MAGIC: &[u8; 6] = b"PLDKC1";
 const RESPONSE_MAGIC: &[u8; 6] = b"PLDKR1";
 const HELPER_FILENAME: &str = "palladin-keychain-helper-v1";
+const DEVELOPMENT_HELPER_SERVICE: &str = "io.palladin.agent.development-helper-v1";
 const MAX_SECRET_BYTES: usize = 64 * 1024;
 const REQUEST_HEADER_BYTES: usize = REQUEST_MAGIC.len() + 1 + 1 + 32 + 4;
 const RESPONSE_HEADER_BYTES: usize = RESPONSE_MAGIC.len() + 1 + 4;
@@ -28,6 +29,36 @@ const RESPONSE_OK: u8 = 2;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MacDevelopmentSecretStore;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct DevelopmentHelperSecretStore;
+
+impl SecretStore for DevelopmentHelperSecretStore {
+    fn get(&self, owner_id: &str, slot: SecretSlot) -> Result<Option<SecretSlice<u8>>, StoreError> {
+        let entry = development_helper_entry(owner_id, slot)?;
+        match entry.get_secret() {
+            Ok(secret) => Ok(Some(secret.into())),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(_) => Err(StoreError::Unavailable),
+        }
+    }
+
+    fn set(&self, owner_id: &str, slot: SecretSlot, secret: &[u8]) -> Result<(), StoreError> {
+        if secret.is_empty() || secret.len() > MAX_SECRET_BYTES {
+            return Err(StoreError::InvalidSecret);
+        }
+        development_helper_entry(owner_id, slot)?
+            .set_secret(secret)
+            .map_err(|_| StoreError::Unavailable)
+    }
+
+    fn delete(&self, owner_id: &str, slot: SecretSlot) -> Result<(), StoreError> {
+        match development_helper_entry(owner_id, slot)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err(StoreError::Unavailable),
+        }
+    }
+}
 
 impl SecretStore for MacDevelopmentSecretStore {
     fn get(&self, owner_id: &str, slot: SecretSlot) -> Result<Option<SecretSlice<u8>>, StoreError> {
@@ -190,7 +221,7 @@ pub fn serve_development_keychain_helper() -> Result<(), StoreError> {
         .read_to_end(&mut request)
         .map_err(|_| StoreError::Unavailable)?;
     let parsed = parse_request(&request)?;
-    let store = OsSecretStore;
+    let store = DevelopmentHelperSecretStore;
     match parsed.operation {
         OP_GET => match store.get(parsed.owner_id, parsed.slot)? {
             Some(secret) => write_response(RESPONSE_FOUND, secret.expose_secret()),
@@ -206,6 +237,65 @@ pub fn serve_development_keychain_helper() -> Result<(), StoreError> {
         }
         _ => Err(StoreError::Unavailable),
     }
+}
+
+pub fn authorize_existing_development_keychain_item(
+    owner_id: &str,
+    slot_code: u8,
+) -> Result<(), StoreError> {
+    access_existing_development_keychain_item(owner_id, slot_code, true)
+}
+
+pub fn verify_existing_development_keychain_item(
+    owner_id: &str,
+    slot_code: u8,
+) -> Result<(), StoreError> {
+    access_existing_development_keychain_item(owner_id, slot_code, false)
+}
+
+fn access_existing_development_keychain_item(
+    owner_id: &str,
+    slot_code: u8,
+    allow_interaction: bool,
+) -> Result<(), StoreError> {
+    if !super::secure_store::valid_opaque_id(owner_id) {
+        return Err(StoreError::InvalidOwner);
+    }
+    let slot = slot_from_code(slot_code)?;
+    if allow_interaction {
+        {
+            let _interaction_lock =
+                SecKeychain::disable_user_interaction().map_err(|_| StoreError::Unavailable)?;
+            if DevelopmentHelperSecretStore.get(owner_id, slot)?.is_some() {
+                return Ok(());
+            }
+        }
+        let secret = OsSecretStore
+            .get(owner_id, slot)?
+            .ok_or(StoreError::Unavailable)?;
+        DevelopmentHelperSecretStore.set(owner_id, slot, secret.expose_secret())?;
+        drop(secret);
+        Ok(())
+    } else {
+        let _interaction_lock =
+            SecKeychain::disable_user_interaction().map_err(|_| StoreError::Unavailable)?;
+        let secret = DevelopmentHelperSecretStore
+            .get(owner_id, slot)?
+            .ok_or(StoreError::Unavailable)?;
+        drop(secret);
+        Ok(())
+    }
+}
+
+fn development_helper_entry(
+    owner_id: &str,
+    slot: SecretSlot,
+) -> Result<keyring::Entry, StoreError> {
+    if !super::secure_store::valid_opaque_id(owner_id) {
+        return Err(StoreError::InvalidOwner);
+    }
+    let account = super::secure_store::account_name(owner_id, slot);
+    keyring::Entry::new(DEVELOPMENT_HELPER_SERVICE, &account).map_err(|_| StoreError::Unavailable)
 }
 
 struct ParsedRequest<'a> {
@@ -292,7 +382,8 @@ fn slot_from_code(code: u8) -> Result<SecretSlot, StoreError> {
 mod tests {
     use super::{
         MAX_SECRET_BYTES, OP_DELETE, OP_GET, OP_SET, REQUEST_HEADER_BYTES, RESPONSE_FOUND,
-        RESPONSE_MAGIC, SecretSlot, Zeroizing, parse_request, parse_response, write_request,
+        RESPONSE_MAGIC, SecretSlot, Zeroizing, parse_request, parse_response, slot_from_code,
+        write_request,
     };
 
     const OWNER: &str = "0123456789abcdef0123456789abcdef";
@@ -348,5 +439,15 @@ mod tests {
         let parsed = parse_response(Zeroizing::new(response)).expect("response");
         assert_eq!(parsed.status, RESPONSE_FOUND);
         assert_eq!(&*parsed.body, body);
+    }
+
+    #[test]
+    fn authorization_slot_codes_accept_only_the_bounded_protocol_allowlist() {
+        for code in 1..=10 {
+            assert!(slot_from_code(code).is_ok());
+        }
+        assert!(slot_from_code(0).is_err());
+        assert!(slot_from_code(11).is_err());
+        assert!(slot_from_code(u8::MAX).is_err());
     }
 }

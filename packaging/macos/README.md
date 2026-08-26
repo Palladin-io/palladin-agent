@@ -58,11 +58,21 @@ items to the helper once:
 ./packaging/macos/scripts/development-runtime.sh migrate-keychain-access
 ```
 
-The migration changes only the partition ACL for the exact Palladin service and
-asks for the Login Keychain password once. It neither reads nor rewrites secret
-values. New items are created by the same stable helper, and updates preserve
-their ACL. Normal rebuilds and different worktrees keep using that unchanged
-helper, so they do not need renewed access.
+The migration explicitly upgrades the stable helper and enumerates only account
+metadata for the exact legacy Palladin service. macOS can show one dialog per
+existing item. After the operator approves each one-time read, the helper copies
+the value in memory to its versioned `io.palladin.agent.development-helper-v1`
+service and immediately drops the in-memory secret. A separate noninteractive
+helper process verifies every migrated copy. The original items remain untouched
+as rollback state. The migration never prints or passes secret values through
+arguments, environment variables or files.
+
+New items are created by that same stable helper, and updates preserve their
+ACL. Normal rebuilds and different worktrees never replace the installed helper,
+so they do not need renewed access. A later helper implementation change must
+bump both the helper filename and its versioned Keychain service before another
+explicit migration; replacing a released helper in place would invalidate its
+saved `CDHash` access.
 
 `install-launcher` refuses to overwrite an existing file unless `--force` is
 provided. `reset --confirm` removes only the dedicated development certificate,

@@ -9,6 +9,8 @@ readonly REPOSITORY_ROOT
 readonly RUNTIME_DIR="$REPOSITORY_ROOT/runtime"
 readonly RUNTIME_BINARY="$RUNTIME_DIR/target/debug/palladin"
 readonly DEVELOPMENT_HELPER_BUILD_BINARY="$RUNTIME_DIR/target/debug/palladin-macos-keychain-helper"
+readonly DEVELOPMENT_MIGRATOR_SOURCE="$REPOSITORY_ROOT/packaging/macos/tools/development-keychain-migrator.c"
+readonly DEVELOPMENT_MIGRATOR_BINARY="$RUNTIME_DIR/target/debug/palladin-development-keychain-migrator"
 readonly DEVELOPMENT_IDENTITY="Palladin Local Development"
 readonly DEVELOPMENT_IDENTIFIER="io.palladin.runtime.development"
 readonly DEVELOPMENT_HELPER_IDENTIFIER="io.palladin.runtime.development.keychain-helper.v1"
@@ -81,6 +83,30 @@ require_signing_tools() {
   require_command security
   require_command codesign
   require_command /usr/bin/openssl
+}
+
+build_keychain_migrator() {
+  require_command xcrun
+  [[ -f "$DEVELOPMENT_MIGRATOR_SOURCE" && ! -L "$DEVELOPMENT_MIGRATOR_SOURCE" ]] ||
+    die "the development Keychain migrator source is unavailable"
+  mkdir -p "$(dirname -- "$DEVELOPMENT_MIGRATOR_BINARY")"
+  xcrun clang \
+    -std=c17 \
+    -O2 \
+    -fstack-protector-strong \
+    -D_FORTIFY_SOURCE=2 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -Wformat=2 \
+    -Wshadow \
+    -Wconversion \
+    -Wno-deprecated-declarations \
+    -framework CoreFoundation \
+    -framework Security \
+    "$DEVELOPMENT_MIGRATOR_SOURCE" \
+    -o "$DEVELOPMENT_MIGRATOR_BINARY"
+  chmod 700 "$DEVELOPMENT_MIGRATOR_BINARY"
 }
 
 account_home() {
@@ -376,6 +402,32 @@ ensure_development_helper() {
   printf '%s\n' "$helper"
 }
 
+replace_development_helper_for_migration() {
+  local keychain="$1"
+  local helper helper_dir temporary_helper
+  [[ $# -eq 1 ]] || die "invalid internal Keychain helper migration invocation"
+  require_command cargo
+  helper="$(development_helper)"
+  if [[ -e "$helper" || -L "$helper" ]]; then
+    verify_helper_signature "$helper" "$keychain"
+  fi
+  (cd "$RUNTIME_DIR" && cargo build --locked -p palladin-macos-keychain-helper)
+  sign_helper_build "$keychain"
+  if [[ -f "$helper" && ! -L "$helper" ]] && cmp -s "$DEVELOPMENT_HELPER_BUILD_BINARY" "$helper"; then
+    verify_helper_signature "$helper" "$keychain"
+    printf '%s\n' "$helper"
+    return
+  fi
+  helper_dir="$(dirname -- "$helper")"
+  temporary_helper="$(mktemp "$helper_dir/.palladin-keychain-helper.XXXXXX")"
+  cp "$DEVELOPMENT_HELPER_BUILD_BINARY" "$temporary_helper"
+  chmod 500 "$temporary_helper"
+  mv -f -- "$temporary_helper" "$helper"
+  verify_helper_signature "$helper" "$keychain"
+  printf 'Installed the explicitly upgraded stable local Keychain helper.\n' >&2
+  printf '%s\n' "$helper"
+}
+
 sign_runtime() {
   local keychain fingerprint
   keychain="$(ensure_identity)"
@@ -411,26 +463,20 @@ build_runtime() {
 }
 
 migrate_keychain_access() {
-  local keychain helper helper_details helper_cdhash home login_keychain
+  local keychain helper home login_keychain
   require_signing_tools
   keychain="$(development_keychain)"
   verify_identity "$keychain" || die "the local development signing identity is invalid"
-  helper="$(development_helper)"
-  verify_helper_signature "$helper" "$keychain"
-  helper_details="$(codesign -d --verbose=4 "$helper" 2>&1)" ||
-    die "the development Keychain helper signature details are unavailable"
-  helper_cdhash="$(sed -n 's/^CDHash=//p' <<<"$helper_details")"
-  [[ "$helper_cdhash" =~ ^[0-9a-f]{40}$ ]] || die "the development Keychain helper CDHash is invalid"
+  helper="$(replace_development_helper_for_migration "$keychain")"
   home="$(account_home)"
   login_keychain="$home/Library/Keychains/login.keychain-db"
   [[ -f "$login_keychain" && ! -L "$login_keychain" ]] ||
     die "the Login Keychain is unavailable"
-  printf 'macOS will request the Login Keychain password once to bind Palladin items to the stable helper.\n' >&2
-  security set-generic-password-partition-list \
-    -s io.palladin.agent \
-    -S "cdhash:$helper_cdhash" \
-    "$login_keychain"
-  printf 'Bound Palladin Login Keychain items to the stable local helper.\n'
+  build_keychain_migrator
+  printf 'macOS may show one authorization dialog per existing Palladin item. Approve each one-time read.\n' >&2
+  if ! "$DEVELOPMENT_MIGRATOR_BINARY" "$login_keychain" "$helper"; then
+    die "one-time Login Keychain migration did not complete; rerun it and approve every existing Palladin item"
+  fi
 }
 
 install_launcher() {

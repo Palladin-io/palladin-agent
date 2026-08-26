@@ -80,9 +80,11 @@ Requirement. Every later run verifies both signatures before it starts:
 ./packaging/macos/scripts/development-runtime.sh install-launcher ~/.local/bin/palladin
 ```
 
-An existing source installation needs one explicit ACL migration after the first
-helper build. It changes only the exact Palladin service ACL and asks for the
-Login Keychain password once:
+An existing source installation needs one explicit authorization migration after
+the first helper build. macOS can show one dialog per existing Palladin item;
+approve each one-time read. The stable helper copies each value only in memory
+to its versioned Keychain service, and a separate noninteractive process verifies
+the migrated copy:
 
 ```bash
 ./packaging/macos/scripts/development-runtime.sh migrate-keychain-access
