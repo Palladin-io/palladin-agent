@@ -27,6 +27,8 @@ Security violations are blocking findings.
 - Preserve actionable CLI errors and consistent non-zero exit codes for failures.
 - Keep user-facing CLI output in English.
 - Avoid speculative abstractions and reuse existing helpers.
+- When variants materially differ in authorization, validation, cryptographic material, lifecycle, or transaction semantics, keep separate commands/API operations and focused handlers instead of branching one generic flow by a type flag.
+- When an API provides an authoritative discriminator such as `GrantType`, require and consume that exact field. Never infer it from nullable fields, payload shape, endpoint, aliases, or current runtime behavior.
 
 ## Commands
 

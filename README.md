@@ -218,6 +218,8 @@ MemberSecret. The complete 32-byte Vault key is sealed to this Agent's X25519 id
 the Organization, Vault, Grant, Agent access epoch, recipient key version/fingerprint and Vault-key
 version. It is opened only inside the native Rust crypto boundary, zeroized after deriving the Entry
 key, and never crosses into the Node launcher, MCP result, child process or browser extension.
+Credential responses carry the authoritative `grantType`; the runtime rejects a missing,
+unknown, or material-mismatched discriminator and never reconstructs it from response shape.
 
 ### `get`: return an approved value
 
