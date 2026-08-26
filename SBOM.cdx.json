@@ -4349,6 +4349,24 @@
       ]
     },
     {
+      "bom-ref": "pkg:cargo/palladin-macos-keychain-helper@0.1.0",
+      "type": "library",
+      "name": "palladin-macos-keychain-helper",
+      "version": "0.1.0",
+      "purl": "pkg:cargo/palladin-macos-keychain-helper@0.1.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/Palladin-io/palladin-agent"
+        }
+      ]
+    },
+    {
       "bom-ref": "pkg:cargo/palladin-mcp@0.1.0",
       "type": "library",
       "name": "palladin-mcp",
