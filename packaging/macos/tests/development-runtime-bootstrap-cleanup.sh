@@ -69,6 +69,12 @@ case "${1:-}" in
     printf '  1) %s "Palladin Local Development"\n' "$fingerprint"
     printf '     1 valid identities found\n'
     ;;
+  find-generic-password)
+    if [[ "${PALLADIN_TEST_HELPER_ITEMS_PRESENT:-0}" == 1 ]]; then
+      exit 0
+    fi
+    exit 44
+    ;;
   list-keychains)
     if [[ " $* " != *' -s '* ]]; then
       printf '    "/Library/Keychains/System.keychain"\n'
@@ -137,6 +143,20 @@ if TMPDIR="$test_tmp" PATH="$fake_bin:$PATH" PALLADIN_CARGO_ARGUMENT_LOG="$cargo
   exit 1
 fi
 grep -F -q 'refusing to replace the versioned Keychain helper in place' "$replacement_error"
+[[ "$(cksum "$helper")" == "$installed_helper_checksum" ]]
+
+reset_error="$test_root/helper-reset-error.txt"
+if TMPDIR="$test_tmp" PATH="$fake_bin:$PATH" PALLADIN_TEST_HELPER_ITEMS_PRESENT=1 \
+  PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+  PALLADIN_DEVELOPMENT_HELPER_PATH="$helper" \
+  "$tree/packaging/macos/scripts/development-runtime.sh" reset --confirm \
+    >"$reset_error" 2>&1; then
+  printf 'reset unexpectedly removed a helper that owns Login Keychain items\n' >&2
+  exit 1
+fi
+grep -F -q 'refusing to reset while versioned helper-owned Login Keychain items exist' \
+  "$reset_error"
+[[ -f "$keychain" && ! -L "$keychain" ]]
 [[ "$(cksum "$helper")" == "$installed_helper_checksum" ]]
 
 launcher="$test_root/palladin"

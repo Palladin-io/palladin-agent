@@ -15,6 +15,7 @@ readonly DEVELOPMENT_IDENTITY="Palladin Local Development"
 readonly DEVELOPMENT_IDENTIFIER="io.palladin.runtime.development"
 readonly DEVELOPMENT_HELPER_IDENTIFIER="io.palladin.runtime.development.keychain-helper.v1"
 readonly DEVELOPMENT_HELPER_FILENAME="palladin-keychain-helper-v1"
+readonly DEVELOPMENT_HELPER_SERVICE="io.palladin.agent.development-helper-v1"
 readonly DEVELOPMENT_KEYCHAIN_FILENAME="palladin-development.keychain-db"
 readonly TEMPORARY_IMPORT_PASSWORD="palladin-local-import"
 
@@ -516,11 +517,27 @@ install_launcher() {
 }
 
 reset_identity() {
-  local keychain helper certificate_dir certificate
+  local keychain helper home login_keychain helper_item_status certificate_dir certificate
   [[ "${1:-}" == "--confirm" && $# -eq 1 ]] || usage
   require_signing_tools
   keychain="$(development_keychain)"
   [[ -f "$keychain" && ! -L "$keychain" ]] || die "the development Keychain is unavailable"
+  home="$(account_home)"
+  login_keychain="$home/Library/Keychains/login.keychain-db"
+  [[ -f "$login_keychain" && ! -L "$login_keychain" ]] ||
+    die "the Login Keychain is unavailable"
+  set +e
+  security find-generic-password -s "$DEVELOPMENT_HELPER_SERVICE" "$login_keychain" \
+    >/dev/null 2>&1
+  helper_item_status=$?
+  set -e
+  case "$helper_item_status" in
+    0)
+      die "refusing to reset while versioned helper-owned Login Keychain items exist; purge local Agent state explicitly before rotating the development identity"
+      ;;
+    44) ;;
+    *) die "the versioned helper-owned Login Keychain item check failed" ;;
+  esac
   certificate_dir="$(mktemp -d "${TMPDIR:-/tmp}/palladin-development-signing.XXXXXX")"
   BOOTSTRAP_TEMP_DIR="$certificate_dir"
   certificate="$certificate_dir/identity.crt"

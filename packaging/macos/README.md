@@ -77,12 +77,13 @@ explicit migration; replacing a released helper in place would invalidate its
 saved `CDHash` access.
 
 `install-launcher` refuses to overwrite an existing file unless `--force` is
-provided. `reset --confirm` removes only the dedicated development certificate,
-trust setting, signing Keychain and matching local helper. It does not delete
-Login Keychain items. The next bootstrap installs a new helper and therefore
-requires the explicit ACL migration once again. Never replace this mechanism
-with an identifier-only ad hoc requirement, a wildcard Keychain ACL or a path
-that moves secret values through process arguments.
+provided. `reset --confirm` refuses to proceed while the versioned helper owns
+any Login Keychain items, because removing that exact binary would orphan their
+ACL. After local Agent state is explicitly purged, reset removes only the
+dedicated development certificate, trust setting, signing Keychain and matching
+local helper. Never replace this mechanism with an identifier-only ad hoc
+requirement, a wildcard Keychain ACL or a path that moves secret values through
+process arguments.
 
 ## Release boundary
 
