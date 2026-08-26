@@ -58,9 +58,11 @@ items to the helper once:
 ./packaging/macos/scripts/development-runtime.sh migrate-keychain-access
 ```
 
-The migration explicitly upgrades the stable helper and enumerates only account
-metadata for the exact legacy Palladin service. macOS can show one dialog per
-existing item. After the operator approves each one-time read, the helper copies
+The migration installs the pinned stable helper when absent, refuses to replace
+a different helper implementation under the same version, and enumerates only
+account metadata for the exact legacy Palladin service. macOS can show one
+dialog per existing item. After the operator approves each one-time read, the
+helper copies
 the value in memory to its versioned `io.palladin.agent.development-helper-v1`
 service and immediately drops the in-memory secret. A separate noninteractive
 helper process verifies every migrated copy. The original items remain untouched

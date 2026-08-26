@@ -125,6 +125,20 @@ if compgen -G "$test_tmp/palladin-development-signing.*" >/dev/null; then
   exit 1
 fi
 
+installed_helper_checksum="$(cksum "$helper")"
+printf '# changed helper implementation\n' >>"$tree/runtime/target/debug/palladin-macos-keychain-helper"
+replacement_error="$test_root/helper-replacement-error.txt"
+if TMPDIR="$test_tmp" PATH="$fake_bin:$PATH" PALLADIN_CARGO_ARGUMENT_LOG="$cargo_argument_log" \
+  PALLADIN_DEVELOPMENT_KEYCHAIN_PATH="$keychain" \
+  PALLADIN_DEVELOPMENT_HELPER_PATH="$helper" \
+  "$tree/packaging/macos/scripts/development-runtime.sh" migrate-keychain-access \
+    >"$replacement_error" 2>&1; then
+  printf 'migration unexpectedly replaced the versioned development helper\n' >&2
+  exit 1
+fi
+grep -F -q 'refusing to replace the versioned Keychain helper in place' "$replacement_error"
+[[ "$(cksum "$helper")" == "$installed_helper_checksum" ]]
+
 launcher="$test_root/palladin"
 "$tree/packaging/macos/scripts/development-runtime.sh" install-launcher "$launcher" >/dev/null
 : >"$cargo_argument_log"

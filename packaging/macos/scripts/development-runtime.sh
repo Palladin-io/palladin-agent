@@ -418,13 +418,16 @@ replace_development_helper_for_migration() {
     printf '%s\n' "$helper"
     return
   fi
+  if [[ -e "$helper" || -L "$helper" ]]; then
+    die "refusing to replace the versioned Keychain helper in place; bump both its filename and Keychain service before migrating"
+  fi
   helper_dir="$(dirname -- "$helper")"
   temporary_helper="$(mktemp "$helper_dir/.palladin-keychain-helper.XXXXXX")"
   cp "$DEVELOPMENT_HELPER_BUILD_BINARY" "$temporary_helper"
   chmod 500 "$temporary_helper"
   mv -f -- "$temporary_helper" "$helper"
   verify_helper_signature "$helper" "$keychain"
-  printf 'Installed the explicitly upgraded stable local Keychain helper.\n' >&2
+  printf 'Installed the stable local Keychain helper for explicit migration.\n' >&2
   printf '%s\n' "$helper"
 }
 
