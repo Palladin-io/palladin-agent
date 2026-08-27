@@ -394,8 +394,12 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
             "vaultId": VAULT_ID,
             "grantId": GRANT_ID,
             "agentId": AGENT_ID,
+            "agentAccessEpoch": 1,
             "approvedMethods": 1,
             "entryId": ENTRY_ID,
+            "grantType": "granular",
+            "deliveryPolicy": "standard",
+            "expiresAt": null,
             "grantEnvelope": envelope,
         })
         .to_string(),

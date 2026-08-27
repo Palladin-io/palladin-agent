@@ -1,4 +1,7 @@
-use palladin_crypto::{EncryptedCredential, EncryptedReasonEnvelope};
+use palladin_crypto::{
+    AgentWrappedVaultKey, EncryptedCredential, EncryptedReasonEnvelope, MemberSecretEnvelope,
+    VaultEntryKeyEnvelope,
+};
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -110,9 +113,13 @@ pub enum CredentialAccess {
         vault_id: String,
         grant_id: String,
         agent_id: String,
+        agent_access_epoch: u32,
         approved_methods: u16,
         entry_id: String,
-        envelope: Box<EncryptedCredential>,
+        grant_type: CredentialGrantType,
+        delivery_policy: u16,
+        expires_at: Option<String>,
+        material: CredentialCiphertext,
     },
     Pending {
         grant_id: String,
@@ -130,6 +137,60 @@ pub enum CredentialAccess {
     Blocked,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum CredentialCiphertext {
+    Granular(Box<EncryptedCredential>),
+    Full {
+        agent_wrapped_vault_key: Box<AgentWrappedVaultKey>,
+        entry_key: Box<VaultEntryKeyEnvelope>,
+        member_secret: Box<MemberSecretEnvelope>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum CredentialGrantType {
+    Full,
+    Granular,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+enum GrantDeliveryPolicy {
+    Standard,
+    ExecOnly,
+    InjectOnly,
+}
+
+impl GrantDeliveryPolicy {
+    const fn code(self) -> u16 {
+        match self {
+            Self::Standard => 0,
+            Self::ExecOnly => 1,
+            Self::InjectOnly => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(untagged)]
+enum GrantDeliveryPolicyWire {
+    Named(GrantDeliveryPolicy),
+    Numeric(u16),
+}
+
+impl GrantDeliveryPolicyWire {
+    fn into_code<E: de::Error>(self) -> Result<u16, E> {
+        let code = match self {
+            Self::Named(policy) => policy.code(),
+            Self::Numeric(code) => code,
+        };
+        (code <= 2)
+            .then_some(code)
+            .ok_or_else(|| E::custom("delivery policy is unsupported"))
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CredentialAccessWire {
@@ -137,13 +198,42 @@ struct CredentialAccessWire {
     organization_id: Option<String>,
     vault_id: Option<String>,
     agent_id: Option<String>,
+    agent_access_epoch: Option<u32>,
     approved_methods: Option<ApprovedCredentialMethodsWire>,
     entry_id: Option<String>,
+    grant_type: Option<CredentialGrantType>,
+    delivery_policy: Option<GrantDeliveryPolicyWire>,
+    #[serde(default, deserialize_with = "deserialize_nullable_field")]
+    expires_at: NullableField<String>,
     grant_envelope: Option<Box<EncryptedCredential>>,
+    agent_wrapped_vault_key: Option<Box<AgentWrappedVaultKey>>,
+    entry_key: Option<Box<VaultEntryKeyEnvelope>>,
+    member_secret: Option<Box<MemberSecretEnvelope>>,
     grant_id: Option<String>,
     created: Option<bool>,
     poll_interval_ms: Option<u64>,
     max_wait_ms: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+enum NullableField<T> {
+    #[default]
+    Missing,
+    Present(Option<T>),
+}
+
+impl<T> NullableField<T> {
+    const fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+}
+
+fn deserialize_nullable_field<'de, D, T>(deserializer: D) -> Result<NullableField<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(NullableField::Present)
 }
 
 impl<'de> Deserialize<'de> for CredentialAccess {
@@ -156,12 +246,23 @@ impl<'de> Deserialize<'de> for CredentialAccess {
             .approved_methods
             .map(ApprovedCredentialMethodsWire::into_bits)
             .transpose()?;
+        let delivery_policy = wire
+            .delivery_policy
+            .map(GrantDeliveryPolicyWire::into_code)
+            .transpose()?;
         let granted_fields_absent = wire.organization_id.is_none()
             && wire.vault_id.is_none()
             && wire.agent_id.is_none()
+            && wire.agent_access_epoch.is_none()
             && approved_methods.is_none()
             && wire.entry_id.is_none()
-            && wire.grant_envelope.is_none();
+            && wire.grant_type.is_none()
+            && delivery_policy.is_none()
+            && wire.expires_at.is_missing()
+            && wire.grant_envelope.is_none()
+            && wire.agent_wrapped_vault_key.is_none()
+            && wire.entry_key.is_none()
+            && wire.member_secret.is_none();
         let pending_fields_absent = wire.grant_id.is_none()
             && wire.created.is_none()
             && wire.poll_interval_ms.is_none()
@@ -172,6 +273,35 @@ impl<'de> Deserialize<'de> for CredentialAccess {
                     && wire.poll_interval_ms.is_none()
                     && wire.max_wait_ms.is_none() =>
             {
+                let grant_type = wire
+                    .grant_type
+                    .ok_or_else(|| de::Error::missing_field("grantType"))?;
+                let material = match grant_type {
+                    CredentialGrantType::Granular
+                        if wire.agent_wrapped_vault_key.is_none()
+                            && wire.entry_key.is_none()
+                            && wire.member_secret.is_none() =>
+                    {
+                        CredentialCiphertext::Granular(
+                            wire.grant_envelope
+                                .ok_or_else(|| de::Error::missing_field("grantEnvelope"))?,
+                        )
+                    }
+                    CredentialGrantType::Full if wire.grant_envelope.is_none() => {
+                        CredentialCiphertext::Full {
+                            agent_wrapped_vault_key: wire
+                                .agent_wrapped_vault_key
+                                .ok_or_else(|| de::Error::missing_field("agentWrappedVaultKey"))?,
+                            entry_key: wire
+                                .entry_key
+                                .ok_or_else(|| de::Error::missing_field("entryKey"))?,
+                            member_secret: wire
+                                .member_secret
+                                .ok_or_else(|| de::Error::missing_field("memberSecret"))?,
+                        }
+                    }
+                    _ => return Err(de::Error::custom("invalid credential material set")),
+                };
                 Ok(Self::Granted {
                     organization_id: wire
                         .organization_id
@@ -185,14 +315,24 @@ impl<'de> Deserialize<'de> for CredentialAccess {
                     agent_id: wire
                         .agent_id
                         .ok_or_else(|| de::Error::missing_field("agentId"))?,
+                    agent_access_epoch: wire
+                        .agent_access_epoch
+                        .ok_or_else(|| de::Error::missing_field("agentAccessEpoch"))?,
                     approved_methods: approved_methods
                         .ok_or_else(|| de::Error::missing_field("approvedMethods"))?,
                     entry_id: wire
                         .entry_id
                         .ok_or_else(|| de::Error::missing_field("entryId"))?,
-                    envelope: wire
-                        .grant_envelope
-                        .ok_or_else(|| de::Error::missing_field("grantEnvelope"))?,
+                    grant_type,
+                    delivery_policy: delivery_policy
+                        .ok_or_else(|| de::Error::missing_field("deliveryPolicy"))?,
+                    expires_at: match wire.expires_at {
+                        NullableField::Present(value) => value,
+                        NullableField::Missing => {
+                            return Err(de::Error::missing_field("expiresAt"));
+                        }
+                    },
+                    material,
                 })
             }
             "pending" if granted_fields_absent => Ok(Self::Pending {
@@ -541,7 +681,7 @@ pub(crate) struct StaleRequestBody {
 mod tests {
     use super::{
         AgentDiscoverySnapshotResponse, AgentVaultManifestsResponse, ApprovedCredentialMethods,
-        CredentialAccess,
+        CredentialAccess, CredentialCiphertext, CredentialGrantType,
     };
 
     const GRANTED: &str = r#"{
@@ -652,8 +792,12 @@ mod tests {
             "vaultId": "11112222-3333-4444-8555-666677778888",
             "grantId": "12345678-1234-4234-8234-1234567890ab",
             "agentId": "fedcba98-7654-4321-8765-abcdefabcdef",
+            "agentAccessEpoch": 1,
             "approvedMethods": "inject",
             "entryId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "grantType": "granular",
+            "deliveryPolicy": "standard",
+            "expiresAt": null,
             "grantEnvelope": {
                 "descriptor": {
                     "protocolVersion": 2,
@@ -706,6 +850,180 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn full_granted_requires_a_disjoint_complete_material_set() {
+        let entry_scope = serde_json::json!({
+            "organizationId": "00112233-4455-4677-8899-aabbccddeeff",
+            "vaultId": "11112222-3333-4444-8555-666677778888",
+            "entryId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "grantOrRequestId": null,
+            "agentId": null,
+            "memberId": null
+        });
+        let wrapper_scope = serde_json::json!({
+            "organizationId": "00112233-4455-4677-8899-aabbccddeeff",
+            "vaultId": "11112222-3333-4444-8555-666677778888",
+            "entryId": null,
+            "grantOrRequestId": "12345678-1234-4234-8234-1234567890ab",
+            "agentId": "fedcba98-7654-4321-8765-abcdefabcdef",
+            "memberId": null
+        });
+        let mut granted = serde_json::json!({
+            "access": "granted",
+            "organizationId": "00112233-4455-4677-8899-aabbccddeeff",
+            "vaultId": "11112222-3333-4444-8555-666677778888",
+            "grantId": "12345678-1234-4234-8234-1234567890ab",
+            "agentId": "fedcba98-7654-4321-8765-abcdefabcdef",
+            "agentAccessEpoch": 7,
+            "approvedMethods": "get",
+            "entryId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "grantType": "full",
+            "deliveryPolicy": "standard",
+            "expiresAt": null,
+            "agentWrappedVaultKey": {
+                "wrappedVaultKey": {
+                    "descriptor": {
+                        "protocolVersion": 2,
+                        "wrapperSuiteId": "palladin-x25519-sealed-box-v1",
+                        "purpose": "agentVaultKey",
+                        "scope": wrapper_scope,
+                        "resourceRevision": "7",
+                        "wrappedKeyVersion": 3,
+                        "memberKeyGeneration": null,
+                        "recipientKeyKind": "agentX25519",
+                        "recipientKeyVersion": 2,
+                        "recipientFingerprint": "fingerprint",
+                        "parentDescriptorHash": null
+                    },
+                    "encodedSealedKeyPackage": "wrapped-vault-key"
+                }
+            },
+            "entryKey": {
+                "descriptor": {
+                    "protocolVersion": 2,
+                    "cryptoSuiteId": "palladin-vault-xchacha-v1",
+                    "purpose": "entryDekByVaultKey",
+                    "scope": entry_scope.clone(),
+                    "resourceRevision": "1",
+                    "keyVersion": 4,
+                    "memberKeyGeneration": 5,
+                    "binding": { "wrappingVaultKeyVersion": 3 }
+                },
+                "encodedSuitePayload": "entry-key"
+            },
+            "memberSecret": {
+                "descriptor": {
+                    "protocolVersion": 2,
+                    "cryptoSuiteId": "palladin-vault-xchacha-v1",
+                    "purpose": "memberSecret",
+                    "scope": entry_scope,
+                    "resourceRevision": "9",
+                    "keyVersion": 4,
+                    "memberKeyGeneration": 5,
+                    "binding": { "operation": 2 }
+                },
+                "encodedSuitePayload": "member-secret"
+            }
+        });
+
+        assert!(matches!(
+            serde_json::from_value::<CredentialAccess>(granted.clone())
+                .expect("complete FULL response"),
+            CredentialAccess::Granted {
+                grant_type: CredentialGrantType::Full,
+                material: CredentialCiphertext::Full { .. },
+                ..
+            }
+        ));
+
+        let mut named_operation = granted.clone();
+        named_operation["memberSecret"]["descriptor"]["binding"]["operation"] =
+            serde_json::json!("updated");
+        assert!(matches!(
+            serde_json::from_value::<CredentialAccess>(named_operation)
+                .expect("FULL response with the backend enum wire format"),
+            CredentialAccess::Granted {
+                grant_type: CredentialGrantType::Full,
+                material: CredentialCiphertext::Full { .. },
+                ..
+            }
+        ));
+
+        let mut unknown_operation = granted.clone();
+        unknown_operation["memberSecret"]["descriptor"]["binding"]["operation"] =
+            serde_json::json!("rotated");
+        assert!(serde_json::from_value::<CredentialAccess>(unknown_operation).is_err());
+
+        let mut missing_expiry = granted.clone();
+        missing_expiry
+            .as_object_mut()
+            .expect("FULL response object")
+            .remove("expiresAt");
+        assert!(serde_json::from_value::<CredentialAccess>(missing_expiry).is_err());
+
+        granted
+            .as_object_mut()
+            .expect("FULL response object")
+            .insert(
+                "grantEnvelope".to_owned(),
+                serde_json::json!({
+                    "descriptor": {
+                        "protocolVersion": 2,
+                        "cryptoSuiteId": "palladin-vault-xchacha-v1",
+                        "purpose": "grantPayload",
+                        "scope": {
+                            "organizationId": "00112233-4455-4677-8899-aabbccddeeff",
+                            "vaultId": "11112222-3333-4444-8555-666677778888",
+                            "entryId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                            "grantOrRequestId": "12345678-1234-4234-8234-1234567890ab",
+                            "agentId": "fedcba98-7654-4321-8765-abcdefabcdef",
+                            "memberId": null
+                        },
+                        "resourceRevision": "1",
+                        "keyVersion": 1,
+                        "memberKeyGeneration": 1,
+                        "binding": {
+                            "entryRevision": "1",
+                            "wrapperSuiteId": "palladin-x25519-sealed-box-v1",
+                            "recipientKeyVersion": 2,
+                            "recipientKeyFingerprint": "fingerprint",
+                            "approvedMethods": 1,
+                            "deliveryPolicy": 0,
+                            "fieldSetCommitment": "commitment",
+                            "expiresAt": null,
+                            "remainingUses": null
+                        }
+                    },
+                    "encodedSuitePayload": "payload",
+                    "wrappedGrantDek": {
+                        "descriptor": {
+                            "protocolVersion": 2,
+                            "wrapperSuiteId": "palladin-x25519-sealed-box-v1",
+                            "purpose": "grantDek",
+                            "scope": {
+                                "organizationId": "00112233-4455-4677-8899-aabbccddeeff",
+                                "vaultId": "11112222-3333-4444-8555-666677778888",
+                                "entryId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                                "grantOrRequestId": "12345678-1234-4234-8234-1234567890ab",
+                                "agentId": "fedcba98-7654-4321-8765-abcdefabcdef",
+                                "memberId": null
+                            },
+                            "resourceRevision": "1",
+                            "wrappedKeyVersion": 1,
+                            "memberKeyGeneration": 1,
+                            "recipientKeyKind": "agentX25519",
+                            "recipientKeyVersion": 2,
+                            "recipientFingerprint": "fingerprint",
+                            "parentDescriptorHash": "hash"
+                        },
+                        "encodedSealedKeyPackage": "wrapped-grant-dek"
+                    },
+                    "fieldIds": ["key.value"]
+                }),
+            );
+        assert!(serde_json::from_value::<CredentialAccess>(granted).is_err());
     }
 
     #[test]
