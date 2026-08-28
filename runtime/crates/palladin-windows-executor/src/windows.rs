@@ -1018,7 +1018,7 @@ mod tests {
     #[test]
     fn script_source_and_parameters_are_sent_only_in_the_in_memory_payload() {
         let launch = prepare_memory_script(
-            super::ScriptInterpreter::Node,
+            crate::ScriptInterpreter::Node,
             Path::new(r"C:\Program Files\nodejs\node-v20.exe"),
             "fixture-script-source",
             r#"{"limit":5}"#,
@@ -1040,7 +1040,7 @@ mod tests {
         assert_eq!(payload["parameters"], r#"{"limit":5}"#);
 
         let python = prepare_memory_script(
-            super::ScriptInterpreter::Python,
+            crate::ScriptInterpreter::Python,
             Path::new(r"C:\Python\python.exe"),
             "raise SystemExit(0)",
             "{}",
