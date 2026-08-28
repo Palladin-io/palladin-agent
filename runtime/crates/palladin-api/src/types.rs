@@ -223,8 +223,8 @@ enum NullableField<T> {
 }
 
 impl<T> NullableField<T> {
-    const fn is_missing(&self) -> bool {
-        matches!(self, Self::Missing)
+    const fn is_absent_or_null(&self) -> bool {
+        matches!(self, Self::Missing | Self::Present(None))
     }
 }
 
@@ -258,7 +258,7 @@ impl<'de> Deserialize<'de> for CredentialAccess {
             && wire.entry_id.is_none()
             && wire.grant_type.is_none()
             && delivery_policy.is_none()
-            && wire.expires_at.is_missing()
+            && wire.expires_at.is_absent_or_null()
             && wire.grant_envelope.is_none()
             && wire.agent_wrapped_vault_key.is_none()
             && wire.entry_key.is_none()
@@ -758,7 +758,10 @@ mod tests {
     fn pending_accepts_the_backend_record_shape_without_weakening_the_union() {
         let pending = r#"{
             "access":"pending","organizationId":null,"vaultId":null,"agentId":null,
-            "approvedMethods":null,"entryId":null,"grantEnvelope":null,
+            "agentAccessEpoch":null,"approvedMethods":null,"entryId":null,
+            "grantType":null,"deliveryPolicy":null,"expiresAt":null,
+            "grantEnvelope":null,"agentWrappedVaultKey":null,"entryKey":null,
+            "memberSecret":null,
             "grantId":"77777777-7777-4777-8777-777777777777","created":true,
             "pollIntervalMs":30000,"maxWaitMs":180000
         }"#;
@@ -773,6 +776,12 @@ mod tests {
         let confused = pending.replace(
             r#""organizationId":null"#,
             r#""organizationId":"organization""#,
+        );
+        assert!(serde_json::from_str::<CredentialAccess>(&confused).is_err());
+
+        let confused = pending.replace(
+            r#""expiresAt":null"#,
+            r#""expiresAt":"2026-08-28T12:00:00Z""#,
         );
         assert!(serde_json::from_str::<CredentialAccess>(&confused).is_err());
     }

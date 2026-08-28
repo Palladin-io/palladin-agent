@@ -2601,6 +2601,19 @@ mod tests {
     }
 
     #[test]
+    fn fixture_local_grant_payload_is_not_the_production_application_dto() {
+        let fixture_local = br#"{"approvedMethods":1,"entryRevision":"1","fields":{"password":"not-a-real-password","username":"fixture-user"}}"#;
+        assert!(matches!(
+            normalize_grant_payload(
+                fixture_local,
+                &["password".to_owned(), "username".to_owned()],
+                1
+            ),
+            Err(CryptoError::InvalidEncoding)
+        ));
+    }
+
+    #[test]
     fn duplicate_keys_and_runtime_fields_on_get_fail_closed() {
         let duplicate = br#"{"entryType":"key","entryType":"key","fields":[{"id":"key.value","kind":"concealed","mode":"value","value":"fixture"}],"schema":"palladin.grant-payload.v1"}"#;
         assert!(matches!(
