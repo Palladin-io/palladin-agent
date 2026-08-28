@@ -1917,8 +1917,8 @@ fn normalize_legacy_mobile_grant_payload(
                         .insert(target.to_owned(), Value::String(value.as_str().to_owned()));
                 }
                 "refs" => {
-                    let value = std::mem::take(&mut field.value);
-                    validate_legacy_script_references(&value)?;
+                    let mut value = std::mem::take(&mut field.value);
+                    normalize_legacy_script_references(&mut value)?;
                     normalized_object.insert(target.to_owned(), value);
                 }
                 _ => return Err(CryptoError::InvalidDescriptor),
@@ -2003,10 +2003,12 @@ fn legacy_mobile_builtin_field(
     }
 }
 
-fn validate_legacy_script_references(value: &Value) -> Result<(), CryptoError> {
-    let references = value.as_array().ok_or(CryptoError::InvalidEncoding)?;
+fn normalize_legacy_script_references(value: &mut Value) -> Result<(), CryptoError> {
+    let references = value.as_array_mut().ok_or(CryptoError::InvalidEncoding)?;
     for reference in references {
-        let object = reference.as_object().ok_or(CryptoError::InvalidEncoding)?;
+        let object = reference
+            .as_object_mut()
+            .ok_or(CryptoError::InvalidEncoding)?;
         if object.len() < 3
             || object.len() > 4
             || !["env", "entryId", "field"]
@@ -2029,7 +2031,8 @@ fn validate_legacy_script_references(value: &Value) -> Result<(), CryptoError> {
         let field = object
             .get("field")
             .and_then(Value::as_str)
-            .ok_or(CryptoError::InvalidEncoding)?;
+            .ok_or(CryptoError::InvalidEncoding)?
+            .to_owned();
         if env.is_empty()
             || env.len() > 128
             || !env.bytes().enumerate().all(|(index, byte)| {
@@ -2040,11 +2043,15 @@ fn validate_legacy_script_references(value: &Value) -> Result<(), CryptoError> {
                 .get("vaultId")
                 .is_some_and(|value| value.as_str().is_none_or(|id| parse_uuid(id).is_err()))
             || !matches!(
-                field,
+                field.as_str(),
                 "value" | "username" | "password" | "url" | "notes" | "totp"
-            ) && parse_uuid(field).is_err()
+            ) && parse_uuid(&field).is_err()
         {
             return Err(CryptoError::InvalidDescriptor);
+        }
+        if parse_uuid(&field).is_ok() {
+            object.remove("field");
+            object.insert("fieldId".to_owned(), Value::String(field));
         }
     }
     Ok(())
@@ -2909,6 +2916,25 @@ mod tests {
                 .as_str()
                 .expect("legacy normalized plaintext")
                 .as_bytes()
+        );
+    }
+
+    #[test]
+    fn legacy_mobile_script_reference_preserves_custom_field_id_semantics() {
+        let custom_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        let payload = format!(
+            r#"{{"entryType":2,"fields":{{"refs":{{"access":"onGrantRuntime","value":[{{"entryId":"11112222-3333-4444-8555-666677778888","env":"TOKEN","field":"{custom_id}"}}]}}}},"schemaVersion":1}}"#,
+        );
+
+        let normalized = normalize_grant_payload(payload.as_bytes(), &["refs".to_owned()], 2)
+            .expect("legacy custom-field reference");
+
+        assert_eq!(
+            normalized.plaintext,
+            format!(
+                r#"{{"refs":[{{"entryId":"11112222-3333-4444-8555-666677778888","env":"TOKEN","fieldId":"{custom_id}"}}]}}"#,
+            )
+            .as_bytes(),
         );
     }
 
