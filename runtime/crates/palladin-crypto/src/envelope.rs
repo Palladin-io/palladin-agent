@@ -2109,20 +2109,10 @@ fn normalize_legacy_mobile_grant_payload(
 ) -> Result<NormalizedGrant, CryptoError> {
     let mut payload: LegacyMobileGrantPayload =
         serde_json::from_str(text).map_err(|_| CryptoError::InvalidEncoding)?;
-    let entry_type = match payload.entry_type {
-        0 => "key",
-        1 => "credential",
-        2 => "script",
-        3 => "creditCard",
-        _ => return Err(CryptoError::InvalidDescriptor),
-    };
     if payload.schema_version != 1
-        || payload.fields.is_empty()
+        || payload.entry_type != 1
         || payload.fields.len() > 256
-        || !matches!(requested_method, 1 | 2 | 4)
-        || (entry_type == "script" && requested_method != 2)
-        || (entry_type == "creditCard" && requested_method != 4)
-        || (requested_method == 4 && !matches!(entry_type, "credential" | "creditCard"))
+        || requested_method != 4
     {
         return Err(CryptoError::InvalidDescriptor);
     }
@@ -2145,189 +2135,27 @@ fn normalize_legacy_mobile_grant_payload(
         .0
         .as_object_mut()
         .ok_or(CryptoError::InvalidEncoding)?;
-    let mut custom_fields = SensitiveValues(Vec::new());
-    let mut has_origin = false;
+    let mut has_url = false;
 
     for (mut raw_id, mut field) in std::mem::take(&mut payload.fields) {
-        if let Some((target, expected_access, value_kind)) =
-            legacy_mobile_builtin_field(entry_type, &raw_id)
+        if !matches!(raw_id.as_str(), "password" | "url" | "username")
+            || field.access != "onGrantValue"
         {
-            if field.access != expected_access {
-                return Err(CryptoError::InvalidDescriptor);
-            }
-            if field.value.is_null() && legacy_mobile_nullable_builtin(entry_type, &raw_id) {
-                raw_id.zeroize();
-                continue;
-            }
-            match value_kind {
-                "string" | "totp" => {
-                    let value = match std::mem::take(&mut field.value) {
-                        Value::String(value) => Zeroizing::new(value),
-                        _ => return Err(CryptoError::InvalidEncoding),
-                    };
-                    if value_kind == "totp" && value.is_empty() {
-                        return Err(CryptoError::InvalidDescriptor);
-                    }
-                    if target == "interpreter"
-                        && !matches!(value.as_str(), "bash" | "sh" | "node" | "python")
-                    {
-                        return Err(CryptoError::InvalidDescriptor);
-                    }
-                    if matches!(target, "url" | "urlDomain") && !value.is_empty() {
-                        has_origin = true;
-                    }
-                    normalized_object
-                        .insert(target.to_owned(), Value::String(value.as_str().to_owned()));
-                }
-                "refs" => {
-                    let mut value = std::mem::take(&mut field.value);
-                    normalize_legacy_script_references(&mut value)?;
-                    normalized_object.insert(target.to_owned(), value);
-                }
-                _ => return Err(CryptoError::InvalidDescriptor),
-            }
-        } else {
-            parse_uuid(&raw_id)?;
-            let (field_type, value) = match field.access.as_str() {
-                "onGrantValue" if matches!(entry_type, "key" | "credential") => {
-                    let value = match std::mem::take(&mut field.value) {
-                        Value::String(value) => Value::String(value),
-                        _ => return Err(CryptoError::InvalidEncoding),
-                    };
-                    ("text", value)
-                }
-                "onGrantRuntime" if matches!(entry_type, "script" | "creditCard") => {
-                    let value = match std::mem::take(&mut field.value) {
-                        Value::String(value) => Value::String(value),
-                        _ => return Err(CryptoError::InvalidEncoding),
-                    };
-                    ("text", value)
-                }
-                "onGrantDerived" => {
-                    let value = std::mem::take(&mut field.value);
-                    if !matches!(value, Value::String(_) | Value::Object(_)) {
-                        return Err(CryptoError::InvalidEncoding);
-                    }
-                    ("totp", value)
-                }
-                _ => return Err(CryptoError::InvalidDescriptor),
-            };
-            custom_fields.0.push(serde_json::json!({
-                "id": raw_id.clone(),
-                "label": raw_id.clone(),
-                "type": field_type,
-                "value": value,
-                "agentVisible": true,
-            }));
+            return Err(CryptoError::InvalidDescriptor);
         }
+        let value = match std::mem::take(&mut field.value) {
+            Value::String(value) => Zeroizing::new(value),
+            _ => return Err(CryptoError::InvalidEncoding),
+        };
+        has_url |= raw_id == "url";
+        normalized_object.insert(raw_id.clone(), Value::String(value.as_str().to_owned()));
         raw_id.zeroize();
     }
-    if !custom_fields.0.is_empty() {
-        normalized_object.insert(
-            "fields".to_owned(),
-            Value::Array(std::mem::take(&mut custom_fields.0)),
-        );
-    }
-    if entry_type == "creditCard" {
-        normalized_object.insert("type".to_owned(), Value::String("creditCard".to_owned()));
-    }
-    if requested_method == 4 && entry_type == "credential" && !has_origin {
+    if !has_url {
         return Err(CryptoError::InvalidDescriptor);
     }
     let plaintext = serde_json::to_vec(&normalized.0).map_err(|_| CryptoError::InvalidEncoding)?;
     Ok(NormalizedGrant { plaintext })
-}
-
-fn legacy_mobile_builtin_field(
-    entry_type: &str,
-    field_id: &str,
-) -> Option<(&'static str, &'static str, &'static str)> {
-    match (entry_type, field_id) {
-        ("key", "value") => Some(("value", "onGrantValue", "string")),
-        ("key", "url") => Some(("url", "onGrantValue", "string")),
-        ("key", "notes") => Some(("notes", "onGrantValue", "string")),
-        ("credential", "username") => Some(("username", "onGrantValue", "string")),
-        ("credential", "password") => Some(("password", "onGrantValue", "string")),
-        ("credential", "url") => Some(("url", "onGrantValue", "string")),
-        ("credential", "urlDomain") => Some(("urlDomain", "onGrantValue", "string")),
-        ("credential", "totp") => Some(("totp", "onGrantDerived", "totp")),
-        ("credential", "notes") => Some(("notes", "onGrantValue", "string")),
-        ("script", "script") => Some(("script", "onGrantRuntime", "string")),
-        ("script", "interpreter") => Some(("interpreter", "onGrantRuntime", "string")),
-        ("script", "refs") => Some(("refs", "onGrantRuntime", "refs")),
-        ("script", "notes") => Some(("notes", "onGrantRuntime", "string")),
-        ("creditCard", "cardholderName") => Some(("cardholderName", "onGrantRuntime", "string")),
-        ("creditCard", "cardNumber") => Some(("cardNumber", "onGrantRuntime", "string")),
-        ("creditCard", "expiryMonth") => Some(("expiryMonth", "onGrantRuntime", "string")),
-        ("creditCard", "expiryYear") => Some(("expiryYear", "onGrantRuntime", "string")),
-        ("creditCard", "billingAddress") => Some(("billingAddress", "onGrantRuntime", "string")),
-        ("creditCard", "notes") => Some(("notes", "onGrantRuntime", "string")),
-        _ => None,
-    }
-}
-
-fn legacy_mobile_nullable_builtin(entry_type: &str, field_id: &str) -> bool {
-    matches!(
-        (entry_type, field_id),
-        ("key", "url" | "notes")
-            | ("credential", "url" | "urlDomain" | "totp" | "notes")
-            | ("script", "notes")
-            | ("creditCard", "billingAddress" | "notes")
-    )
-}
-
-fn normalize_legacy_script_references(value: &mut Value) -> Result<(), CryptoError> {
-    let references = value.as_array_mut().ok_or(CryptoError::InvalidEncoding)?;
-    for reference in references {
-        let object = reference
-            .as_object_mut()
-            .ok_or(CryptoError::InvalidEncoding)?;
-        if object.len() < 3
-            || object.len() > 4
-            || !["env", "entryId", "field"]
-                .iter()
-                .all(|key| object.contains_key(*key))
-            || object
-                .keys()
-                .any(|key| !matches!(key.as_str(), "env" | "vaultId" | "entryId" | "field"))
-        {
-            return Err(CryptoError::InvalidEncoding);
-        }
-        let env = object
-            .get("env")
-            .and_then(Value::as_str)
-            .ok_or(CryptoError::InvalidEncoding)?;
-        let entry_id = object
-            .get("entryId")
-            .and_then(Value::as_str)
-            .ok_or(CryptoError::InvalidEncoding)?;
-        let field = object
-            .get("field")
-            .and_then(Value::as_str)
-            .ok_or(CryptoError::InvalidEncoding)?
-            .to_owned();
-        if env.is_empty()
-            || env.len() > 128
-            || !env.bytes().enumerate().all(|(index, byte)| {
-                byte == b'_' || byte.is_ascii_uppercase() || (index > 0 && byte.is_ascii_digit())
-            })
-            || parse_uuid(entry_id).is_err()
-            || object
-                .get("vaultId")
-                .is_some_and(|value| value.as_str().is_none_or(|id| parse_uuid(id).is_err()))
-            || !matches!(
-                field.as_str(),
-                "value" | "username" | "password" | "url" | "notes" | "totp"
-            ) && parse_uuid(&field).is_err()
-        {
-            return Err(CryptoError::InvalidDescriptor);
-        }
-        if parse_uuid(&field).is_ok() {
-            object.remove("field");
-            object.insert("fieldId".to_owned(), Value::String(field));
-        }
-    }
-    Ok(())
 }
 
 fn expected_field(entry_type: &str, id: &str, kind: &str) -> Result<&'static str, CryptoError> {
@@ -3266,36 +3094,21 @@ mod tests {
     }
 
     #[test]
-    fn legacy_mobile_script_reference_preserves_custom_field_id_semantics() {
+    fn legacy_mobile_rejects_unpublished_script_shapes() {
         let custom_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
         let payload = format!(
             r#"{{"entryType":2,"fields":{{"refs":{{"access":"onGrantRuntime","value":[{{"entryId":"11112222-3333-4444-8555-666677778888","env":"TOKEN","field":"{custom_id}"}}]}}}},"schemaVersion":1}}"#,
         );
 
-        let normalized = normalize_grant_payload(payload.as_bytes(), &["refs".to_owned()], 2)
-            .expect("legacy custom-field reference");
-
-        assert_eq!(
-            normalized.plaintext,
-            format!(
-                r#"{{"refs":[{{"entryId":"11112222-3333-4444-8555-666677778888","env":"TOKEN","fieldId":"{custom_id}"}}]}}"#,
-            )
-            .as_bytes(),
-        );
+        assert!(normalize_grant_payload(payload.as_bytes(), &["refs".to_owned()], 2).is_err());
     }
 
     #[test]
-    fn legacy_mobile_null_optional_builtins_are_authenticated_as_absent() {
+    fn legacy_mobile_rejects_unpublished_nullable_fields() {
         let payload = br#"{"entryType":1,"fields":{"notes":{"access":"onGrantValue","value":null},"password":{"access":"onGrantValue","value":"fixture"},"totp":{"access":"onGrantDerived","value":null},"url":{"access":"onGrantValue","value":null},"urlDomain":{"access":"onGrantValue","value":"example.test"}},"schemaVersion":1}"#;
         let field_ids = ["notes", "password", "totp", "url", "urlDomain"].map(str::to_owned);
 
-        let normalized =
-            normalize_grant_payload(payload, &field_ids, 4).expect("legacy nullable built-ins");
-
-        assert_eq!(
-            normalized.plaintext,
-            br#"{"password":"fixture","urlDomain":"example.test"}"#
-        );
+        assert!(normalize_grant_payload(payload, &field_ids, 4).is_err());
 
         let required_null = br#"{"entryType":1,"fields":{"password":{"access":"onGrantValue","value":null},"urlDomain":{"access":"onGrantValue","value":"example.test"}},"schemaVersion":1}"#;
         assert!(matches!(
