@@ -15,6 +15,7 @@ use palladin_linux_executor::{
     SYSTEM_EXECUTOR, decode_request, parse_install_identity,
 };
 use palladin_windows_executor::{ExecutorRequest, SecretVariable};
+use secrecy::{ExposeSecret, SecretString};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::Command;
@@ -25,6 +26,7 @@ type PreparedRequest = (
     PathBuf,
     Vec<String>,
     Vec<SecretVariable>,
+    Option<SecretString>,
     Option<tempfile::TempDir>,
 );
 
@@ -75,13 +77,17 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let (program, arguments, environment, temporary) = prepare_request(request)?;
+    let (program, arguments, environment, script_input, temporary) = prepare_request(request)?;
     let mut process = Command::new(program);
     process
         .args(arguments)
         .env_clear()
         .envs(base_environment())
-        .stdin(Stdio::null())
+        .stdin(if script_input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -116,6 +122,21 @@ where
         Arc::clone(&writer),
         ExecutorOutput::Stderr,
     ));
+    if let Some(script_input) = script_input {
+        let mut stdin = child
+            .inner()
+            .stdin
+            .take()
+            .ok_or(ExecutorServiceError::Spawn)?;
+        stdin
+            .write_all(script_input.expose_secret().as_bytes())
+            .await
+            .map_err(|_| ExecutorServiceError::Output)?;
+        stdin
+            .shutdown()
+            .await
+            .map_err(|_| ExecutorServiceError::Output)?;
+    }
     let status = tokio::select! {
         status = wait_for_group(&mut child) => status?,
         disconnected = connection_input.read_u8() => {
@@ -152,11 +173,13 @@ fn prepare_request(mut request: ExecutorRequest) -> Result<PreparedRequest, Exec
             let arguments = arguments.to_vec();
             let environment = std::mem::take(environment);
             command.clear();
-            Ok((program, arguments, environment, None))
+            Ok((program, arguments, environment, None, None))
         }
         ExecutorRequest::Script {
             interpreter,
+            interpreter_kind,
             script,
+            stdin,
             environment,
         } => {
             validate_program_path(interpreter)?;
@@ -173,16 +196,21 @@ fn prepare_request(mut request: ExecutorRequest) -> Result<PreparedRequest, Exec
                 .mode(0o600)
                 .open(&path)
                 .map_err(|_| ExecutorServiceError::Temporary)?;
-            file.write_all(script.as_bytes())
+            let prepared =
+                palladin_windows_executor::prepare_private_script_source(*interpreter_kind, script)
+                    .map_err(|_| ExecutorServiceError::Executable)?;
+            file.write_all(&prepared)
                 .and_then(|()| file.sync_all())
                 .map_err(|_| ExecutorServiceError::Temporary)?;
             script.zeroize();
             let interpreter = std::mem::take(interpreter);
+            let stdin = Some(SecretString::from(std::mem::take(stdin)));
             let environment = std::mem::take(environment);
             Ok((
                 interpreter,
                 vec![path.to_string_lossy().into_owned()],
                 environment,
+                stdin,
                 Some(directory),
             ))
         }
@@ -371,7 +399,12 @@ enum ExecutorServiceError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutorServiceError, authorize_broker_uid};
+    use std::{path::PathBuf, time::Duration};
+
+    use palladin_windows_executor::ExecutorRequest;
+    use secrecy::SecretString;
+
+    use super::{ExecutorServiceError, authorize_broker_uid, execute};
 
     #[test]
     fn only_the_installed_non_root_broker_uid_is_authorized() {
@@ -384,5 +417,30 @@ mod tests {
             authorize_broker_uid(982, 981),
             Err(ExecutorServiceError::PeerIdentity)
         ));
+    }
+
+    #[tokio::test]
+    async fn drains_child_output_while_writing_large_script_input() {
+        let script =
+            SecretString::from("head -c 262144 /dev/zero; cat >/dev/null; printf done".to_owned());
+        let input = SecretString::from("x".repeat(262_144));
+        let request = ExecutorRequest::script(
+            PathBuf::from("/bin/sh"),
+            palladin_windows_executor::ScriptInterpreter::Shell,
+            &script,
+            &input,
+            Vec::new(),
+        );
+        let (connection, peer) = tokio::io::duplex(64);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            execute(connection, tokio::io::sink(), request),
+        )
+        .await;
+
+        drop(peer);
+        assert!(result.is_ok(), "executor deadlocked on full child pipes");
+        assert!(result.expect("timeout checked").is_ok());
     }
 }

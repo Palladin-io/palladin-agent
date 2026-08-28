@@ -1,0 +1,208 @@
+{
+  "fixture": "palladin-script-execution-encrypted-wire-v1",
+  "syntheticOnly": true,
+  "deterministicInputs": {
+    "recipientX25519Seed": "1111111111111111111111111111111111111111111111111111111111111111",
+    "vaultSigningEd25519Seed": "2222222222222222222222222222222222222222222222222222222222222222",
+    "sealedBoxEphemeralX25519Seed": "3333333333333333333333333333333333333333333333333333333333333333",
+    "packageDek": "4444444444444444444444444444444444444444444444444444444444444444",
+    "xchacha20Nonce": "555555555555555555555555555555555555555555555555",
+    "recipientX25519PrivateKey": "845b920bda4cd49d251d3329144a0cf8bdaaa07502626fa87f08e80faedab11f"
+  },
+  "publicKeys": {
+    "recipientAgentX25519": "ekbhKf2AUEdEhDfkdE8fFXa-jESf31fgxYDTbFz8Zmg",
+    "vaultSigningEd25519": "oJql9HpnWYAv-VX43C0qFKXJnSO-l_hkEn_5ODRVpPA"
+  },
+  "expected": {
+    "encryptedPackage": {
+      "contractVersion": 1,
+      "organizationId": "66666666-6666-4666-8666-666666666666",
+      "vaultId": "11111111-1111-4111-8111-111111111111",
+      "grantId": "44444444-4444-4444-8444-444444444444",
+      "agentId": "77777777-7777-4777-8777-777777777777",
+      "agentAccessEpoch": 3,
+      "scriptEntryId": "22222222-2222-4222-8222-222222222222",
+      "scriptRevision": "7",
+      "packageRevision": "8",
+      "recipientAgentKeyVersion": 2,
+      "vaultSigningKeyVersion": 5,
+      "recipientAgentKeyFingerprint": "oc4wdkjVcLPntU9KXCHOEwjN4iegwKMpL7zdCDjD9c4",
+      "vaultSigningKeyFingerprint": "eIlglh_0MHyCt47BrH6DP4PXTIzG1V_QT6L96VxCk_A",
+      "manifestDigest": "3UmwJWh-tvTYdGJBmrQavGaXvLQVCpRYdzd3NxUqnf4",
+      "scopes": [
+        {
+          "entryId": "22222222-2222-4222-8222-222222222222",
+          "entryRevision": "7",
+          "isScript": true
+        },
+        {
+          "entryId": "33333333-3333-4333-8333-333333333331",
+          "entryRevision": "3",
+          "isScript": false
+        },
+        {
+          "entryId": "33333333-3333-4333-8333-333333333332",
+          "entryRevision": "1",
+          "isScript": false
+        },
+        {
+          "entryId": "33333333-3333-4333-8333-333333333333",
+          "entryRevision": "4",
+          "isScript": false
+        },
+        {
+          "entryId": "33333333-3333-4333-8333-333333333334",
+          "entryRevision": "6",
+          "isScript": false
+        }
+      ],
+      "encodedPackageCiphertext": "eyJjb250cmFjdFZlcnNpb24iOjEsImVuY29kZWRTZWFsZWRQYWNrYWdlRGVrIjoiVHJUNl91SzlNQmlpVGpFTjZCQmpNOEt6Wk9ydEFwcF9CZGUwWE14M2FEb3Z2clRnQWFXdWE2Z0l0d1VRZERKaFRqQnBMVWNZb0xXRFJCZGVTbHhCT3JYQjk0UVlfck5Uay1KTnh4MkxuRmJpaXVJejVZLWVjZ0toSmh3Y2xhNmdaMWhhMklfR0o4QXVTZ1hNa0NqY19PdjN3MVdGZE10WiIsImVuY29kZWRTdWl0ZVBheWxvYWQiOiJWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVmRsckl0eUlQc1FOYWhRSGdVeXRzWXBGclhmYlVzYm02bHJCNUpPVk1OalBEYWFreThRZFRjdDJ2VVQ5ZVhKYmdvaXkwQ0luUHFidW1WaEJUS3RaYzFKSmNxYlpmbEE0TUpabjZTal9lSFBjSWFia09UbUVxelhNSEhzZWJ3TlUtTy1MVHdmQ29UbHlFUVc0NnZpQmgxYXktc1g3ZHBEY01PSUh0SUlEcjJpMlpUb3UxWXJZSXFxQjczVlRCajA1b0JUU3ljdjd4RkdZQ0VVSTZsWDJWdVhMbE1Ed3MwOXRIWG1OU1VTcHNsZGprSHNJWDRDYVo2SVItb1R1M1lXQURRNklOaUI2UEo1cFQ5RDdPTWN4TkRMTm1TbkNhczlmd3ZtX25IbWdRMlMyMFRyVWs1WnZ3V2w0V240R1Y5eFNfSkRQcjdHa2Z2UGV2aVFBeGRQajdNZGtPQ2FEbWxGZTJaS0RuLTRxU3JjbWJGbVBCc2VqMVFQYThVZ0Y3UWd5Q3EzelZHQ2d2US1JcDRLMDdINWJVV2U1aFlHSmNocHVNTHhxeW03YWFsTEZPUDBKVk5xVnhGcGFCLW84RWZtU1NBTEJsQXR4RVA2Rlp2cnRjdkFOTmxleFEtaGRmUi12Yll2OXhvQkRqMnRLWDJzcW5uMjJkZDNqd1EzZ0NESGVYWDMyREFOMV84VUtsRWpHVGZhWGIzaFhWQ1RuMWJtNXBLMEpQOFJpeHB6S1VpNDU0UHJGc0NWbFVkZDF5OUtCWWszMkFIWk9pOE43QlJ2MWZjSGRaaXN0YUxuRDJXVXdvbjU1dDhnSU9xLU1tUXR4dDR4Qm5MS0V4WVZfdkxjb1U1aTZvMlpsX0IzczlPcFZBR0VFVlhlai1RUVktYlAtUWFzQXN3aGUwVl9hWVpJV1FqOWJVQUVpek1kNGM5TEFkRHc2R3o0OEp3T1lKZkptaUNfUjBqb3VaWm90VXNubEI5dkdBQk81VVQ4Z21XQnJSTDlWQWVROGxaZURBUnJCOExjUG05aC1uOE04ZVdPMmlURVBkaUg1dEdtbDNVcFE3c2R6UGt2Y2VmZGdFZi1OLTRIZ3hhZC0xRnRBQjZlWmh0ZEExRFM4ei1NQzN4WVZNR0Y2VTZacXRFR2UxWEdEVURIdUMxX0RrQjdUN3BtUmNReVdnSFJxN19FWWpIZzNFUWZ0QUsza1pkQmZmNHV1UFFJT3pYLW1kalFNUFVWelMtQ0ZVUHFzcnFVYlZtTHFkWUYzNEhsOFl5bTkyUi1ndmZWQ0JYdWRxQkFxNzJFMEdkSWJzdkFSUXIxRVFQS29DSElMcWVaMXZvZEtJT0lYS3c5SGNRcW5CbXlQRXN3RGpGeTVudGdCUURjSHVqeTZwLW5ld2R0M1p4ckpTNEtXUWI2RHB2VkpTNmV6U1NvS2pxTVllSkJ6eFJWUkROWEFFRk9JRlY5Qm9FNktNMEY0T1pMczhmVndGRVRncFg1ajhMY1BrYzlNRmVXNWZLNjNNTWl3Q1hQV0ptYUpKZkMxVm9jN1BrS3c1TzhidS11cnRoWFFPelg0bHlVZjFuM3pRdGJnRHVYaEc2Z0ZOWFlhRUxHdWhKY3o0d1ZOekxDV2N1N0N2ZlZmd1ZrYVNqTnNTamhkTGRrX0llTmF4TWVPREx4d3c1Wms3NVBhYXp5TDJTdDFTaUJTbkk0ZWp4d0UtM2QzbFl1dC1SRzNDbUNuN0p0MnpjSTYzRmR2TDNOcElxcWt1bG9MVXpJblY0dXFrNFA2TUE1Z3ZGOFFad2ZEZ3dpNlczU3NkMVJNNkkyT1VJZEpVRFZrUkt2X2xlN1JGUzFqZ0dadlZmWEUxQW5NOW1YRGdpejR4aUNhMk9pblNjdkl1WjNDOXN0b19CV1NmMFlZa1dDcHZFNGhBSkFOMkl5S0VqUUpuMGVDb0dELTMzZTlfQmJlTFkzSVk4THUzenNWLXduY182elhUSzJ2aF84cW1tQm1qWk40WjRESGFYVkZFbU13TFRJMlptMXBHNjVURU5PakZYZFR3bVN4UHdPVTRBa3dvdW5xLWlCR0ctekpNeGNOWVFWSUE0T1JYeVZPWEdnNnVnWVAxR1V4TnVlOVhmaWRnUTlUR01NREt5cnhxRDNqZERaTWFZWnRxVUxISUFKSHRiSTl6SUd2QmpqcTJYaDNHdmtpc245dUlpTWJpMThoeGxmbXF0WUVrVEE4c0NreExSZGl4OS1yenBROFV2cksxTklVS1lDTV9objRRZTBxaWpUUV90QTJHcTVfa2dnZHJlcHVaNVBuZjcwN2NRenhtR21ObkV6MGR2N3AtMWM3S1k4NHVHZ184VUxsc0ZodnVhY0g3dFRtY3k0S25wdUVPNTBGZUl6WDUzUlRnUG4yWjdSV3FoZXdZYXBQS1Fsem9QSWRNdkpzOUhrU0FYbjduTEdxMkFKd3NqY2tTaWpQbTg4ajVBc2JPQkw5UlRWV1VKaVB1UDNzNV83aEZtS3E3LXVocDFHVEZDRGF2bTFqamxWVjFPUnZKRHo4aF9DVExFV1dCX3Y1UjRTTmJsYnRDZDI0aTBzdW1STmxuZF94ZjRGRGNOVGtaOGtUMURJc1FWczZ4dnV5ZS1nbHFoN2VuZ0ljem82enNueUI4RTBjeWE4eFNIaWpvVjZGS0wxb1lKODl3aWZ1Wjh2WFA0bTFrV1dael9qVEtTZkJ1dG9UeVdOMTRPUGVIV1hick40NEc1eFFINmg1TTZUd0dnVl9tMlNMS1BVM2Z1akdwQ3JXT01naVU4dURwSklrUjVvUEw0bFlUejd0VWtsUlFGSk9BVDVhWjd5ZFAzOG9tVktxcDdyZWV1OVphNE5HbVFEaUpuNW16YTBvUGtzY294VWVLcGZNcUtyQ0tjYUxrTGNpZHBvaDItLVJfVWFGVEl4VEFBQVJaTG84dUttQkdRZDNPUDhaR0dRZlpyV3FpaHEtQndSR0tHWl9nRVFEd0szWlh4cjFTSGZiVXktOFRGazdkQk5ySjN4aVNtSkxSTFdMSmNNMldDUlU2ZUd6UWJQTUtFVERLN2ZNU2JYV3BvbUw2QjVuZzU2RUlvdzgwMmo0dlhOeVMxY0tNelhmRkI4NjZKbjVCYlF5LUNyWEV1dnJ2VjMzTnJIQ2RTcDZINGhwWjdOTVZ0ampMUkdOX2VHcVZuckRXamw4TU9HaVpBeTBjdXpqemM1S3hvVEpubVlUMGZDSHFNeEhWa2J2V1J1QUdSN0E4SGF0LVQ1TmNjUU5POEtNV21QSzRfajlJR2RZNG9GMlFNWjdydlFjR3N6SU5lUHdEQS10S0VERGJHRnU5SDYzUkkwNEZKT3hZWXFtREdjeXBobHlZN3RKbVFXNDVzaVRPTGM1TWtkT2g5eXN5Q2duTmhSMzgzZWZJcUFFd2ZjU2R1MEJlMWtIMVRIeTNvdnFzTlhQdmNHT2Nua1JiY1VaM2FIUjVWQ1hmdU94SGpacWF1ZDNTVmxkWm5TT3VDSVlnUkpIT0JsbXBfa3hGdnNGd0NsX0dscFNkTURwdFEza1pSQ1RNOHhXcGFmV2xuT3RHN2wtMXNxaU5VMnRfV0tkbHBQRHNkY0syY1QtSmVWbENUZVVEYi1BejlwSThwQjl2VjZxNGZRQnlWeHJkRGFjN0k5YnBuNTFZZXY4aFg3SlRwMjQxWFJfUkFwTHJDOXJwdkh1cF8xTU9pTV9mOWd0SzRYMk0yTGZDWXpzYWZ4SzBuQlhOXzFtNDNGdE9TdG51bDdXWHNFQTh4SFdESEZjWFVrdkthaUg1bmF6d0lvQmRFTFpxVnZvUmZRYTB0WGRmekIyc0pMX09kMTFkVHJLam9nYWhCenZ5UXNlRXhvQXd4RVNETHRJU28wRjMxTVNVbjU4THZJU0NxVG1rV043VUNxazIwOGRwRHd2SUVwUUt3Z3dGUU0wRG1uMnNySXo4QTVfblUwcG9mNU5xQWdodTlRRldkRkhQelV2QnVhT0tuNHR2MUhONW80UlZ1VXlJN01YRzFnZTRIY0hfNm5oRjVVN291T1RsRHpJanNla0xnOXZRQTRRTkZlOVdEbjc2N1ZFdmlUN1NqSlJJb09HTThpTjZmV3hCX0xNRE9TVDJaSEY5RVB3c3BFTWlPaGVMbVZOWWxMRnNHS3ZiSmdOV2R5Ynp0cXJicEQtNWVLaktuUUdvVHN6Q0RZYm1WQXV1WjhSSlpHb0EwQ0tRSS1laThWRFVTbk5BaVVBZE1CMGZLT0xnRUJXb212VTM3eGJueUowYmpBYlRNU0xGNW0xajB4blVTVjdGNFZQb3hueXNMdWQzQU56WFNoczJtNzZIbHcyUy1mYkJCeHhncVgzNE1LTUJRbE5uT0ZXVXI0YWp0S2dFaU1ETWVRdllXTHA4N2ZJelFSSWlTU093eDU0ZFhlYnM5ckNOWUJlNm1rQUJYYlMwS25rZzdsNnk3YWFCSHdKZDFQd1FUbEVNMVVPWUxtN2t2R1dTa3J6UVFuZXhhaUVMRG5WSlV5V3o3Zm1GVDh5akdNQ1BUWnlFOVExd1d3azlPcDJDbXBkMDQ4eTNNN3NVYTFaMzR3S01ROHhEUnNNRmpDU0JJa1p1Ym1MVUNKVVVtYWtrSl9iU1l6OWZ2QkFDVEx1OW9XMG5PSXFLSzdUcFhqeS1tVnhKU01aUlRSa2lWczFZQmFJYUdZckNBdzNuSkZyOG9uZ3phQ1FucVRBWXJPRDJXX05tdjd5M3hRM1hudy01dWY5UmltSkpVMlE3RkVZUjRJWDlpRWFhVHBoV3BoaU5vN3VDZmxJZXZjd1kwMHlzMkt5RE5uVldRd3dUX1NwZ0RWUXZ0MlVtS1ZZclhGUnFUanBvNC0xdEp6UjY1N1BQd3NJZkxwYWpOOGhYb2NWaFZmZW5FcWNobzJ2UF9CR3Y1ejNXVTdvOGRRMXBFQjBfcklQYjIxODFMcHNzZFBNalBrNnpmdjZQQ3V0Mmo3SnpkZHBvcm04Z1pFWkFWRnpWTXFfXzl0andrTkM1cmNENkY3cTR2T3FXQmR1NHZlclBrMjJxV1FVam5la1dVM3NfaUdUdV81YVg2d1lCeWJOYkl1Nm4zcTBIWEFacm83dWFpdXpKRHNPa2cydVRjaDhtTEJVUjNVWGlkZkNlUDBNVDVsZEpiVHF1NnVlOVNWNFNmajh3QS1MaTNlY0NnajI5Y2hDY0tXOGliOEFMZDRyTWMyUFlSc1NpMjFjLXZBMzlBcV9tVlBEZUxHREFpdWpnR2JUaEVXZl9pUGtkdm1INjc3alFFamxQX0ItUGRDRmxCc3hHWVZWUlRmbDI2LUIzSFE5M2lTc1l3a1d5a1NzczZqWElTU3JCWjRxXzM2czdRY1dtWnVpSGJsQ3BKRThrbzJDaW1TT3lzd3pGNktDWEFEeTY3ampuVUNUTERKS3pWNTNzSWN4cHJJZEtKVUkwSTBURTZFbnE5LUg0dExwbTNHWTBmZm1LNjZ5dTEzdGprTUd0b3BIUjRkTTRuODFTWUZzQXlBRmZ2ZDZJamljdG5oNTFEdmg3M1pwQ2NZV05IOUF0VkhMY0QxbWxkUWEySi1CZHZEUFNnRDdMdXE0ZF9SajRneXFETUV2QXFGREl2TjVzNi1lOEo1bzc0LU5EQ1NFNWQ0VHVxZ05mUVlhcldNTFRHcHc5R1UxWHZmTmRZOW93UkFVbHl3YkduNlN1Q3NZc2FjMm96aV8wN3RWWjJZQTY3NzdJQ0k5Q20xdHB1aThPZzFLbmZqT3piZ1owTmNzTXQ5ajdLQ08wVF84dTU1aTJyNnNkbDZRbnJkLXFOc2NDQ1YwZWRtZkgzWkVvdDN1S19FSVVhQWM4N2h6NGF5eGQtWFpBQ0FpeGUtT1ZXUW5kVlJiUGZhbXRkSVlHajROeUFZTTRxVVVSZTVRZjl4MmtiMU1KVFZmV3lYNktwV1lteEFRSWNJcXpFUmx2Y3BVZnB4QkphMEk4eXRVZUptVDEtTEt2N2ROdE9ITnptSUd2aWxiRjQ5MVU2VkViRTBtcVZHV1hXUzgyUlo1Qm9RbW9jd3h0UE1zQ3ZZVHhrNFZKRlo3cUc4dTRSVURtRUtjWlpWUkM0d2lTN1NNTGZSd1lqNThlWUVkaDFxUWJudnR3RXRQQXJqZFhlN05kUEd6MDFWX193TDRYSUtZYWszaG4ydnF1cnBuYXY0emVQYzdNRUxmRG9yQ2NFai1YTlJJcHJEZXVLcjkza1FiUGlUQ0pYVkJsZmw1c2NmY2tKSWEwdE1Nck84ZGItVFVaTEVEUXB0d1VhSjRMbWtRcWlDOGk5VncybG9yazQ5OHBnZm16eVMxYTN2REczLVczaVR1bGl1Y1hnSl9aMHE5RTZ1YWpKQnNEMGhQS2p6WWp1TUN4WTBveXV4THJDbWpMQUpBU1FyS3NBTWpDZDkxMVNoc0xwWW1IS2tPbEE2RjFLUGpIdTR2N2ZvMDY0aUdFXzVqcFRKbXMxM1pQWEprRnNVeDdMTjZBbWxjdWRvQ2Q1b3M4VE1aUElwV0RYUnAzQXBpOV9RV3daQm5fd2RRNmdSblo2cENOT2c1X2VreGp3TVJMUnB0UUVxYVVCOXBWc01CWDN5d3dvY3B3cTllc0dwREZWbG5YT2hPTkkxWld6SmRlWVNyM0JJemo5SVRHeUplM0owcDl1X29WOUotbTdQWkVkOXJzaTJUdVJOVjhJcUtMTFR6Z1JqUVQ5N2g2THFmSWw1cEpRVEVTbTdKWlhPNGJ2RFkxdmplZXF0WUFaQXRXRC1VeHRkdTM2RzlxT0xiZGlZQ3FCalQ2NGhObTY4a2NoZ3FDVWxycTFxQlo4MnVGZmZHNG8xOWJ4VVhsR2dWcHJXUHZsaU5RMXRZMHZuVUtjc2l0c3lBZEE4UzlwS3hZTmh4SVR3bWt0VlBsaEJYYmpLd3lVXzh6RTV6ajhqRUczX3FTei1lcjc3WTZhWVRHNUI0aUgyRTZ4cF9Hc3JUVXVDbGhEYnhfMWRxcjdrMkdrb2ZYeHUtX3JTblZSQmcxRzV4SlV3dnpNVGk3YWZIMGRBcEVGdWxldHJqY3J3RDNTcDBpVGZnbnFFd1QtTGFUTEZZV1FuT3RXbE1DdXd6UkJLSVdPRVZvWTZOTDBWR09rMlI3aFpjRF9sSUJYZU1QU0wwVW5FY29sWFdITmtKRWtZRURLZEFMQm5LVzI1cG40VEp3WVFNcEVpVXNFN20wWXRpQ3JrSkFGNHZyWWdtVlB3anlMSUd6ZFd0S01NTFFXWVJwaDBLTExYcThtR3dreERSbVh6dHJvOGdSTVFBUlZ2SXNta1Y3d1BWSDZwMF93MzVFS3psZG9fQzlGeFd0cVhtYjZSZFBMc3p1Zm5Vb2t0MVg5VGRHWnU5Q0xoSlhLSzNiajFFdU5Pd0hqU01tNlR4Q0dab1lCMXRlaFVZejFpT2gzb0lweDR4TDJOSmlITXgzRmpxRnlvLTVMYXJXM2R3UTE4cF9EcEtzYTVjUEhzWEx0czN1S1o4NTVJMVFzU2p2UkFVdkZTaWhaSjlKbnVCOWY1SDU0YUJ5SGFTSjkzbVhQYUd1Mk1haXg3MHVhNDVySW9oeEltTzk3VUVLY0lieTltVF9oMnBLQm50MXVxM2J1NVdJNjNuZV9DV1FEaGQ0TWciLCJwYWNrYWdlUmV2aXNpb24iOiI4Iiwic2NoZW1hIjoicGFsbGFkaW4uc2NyaXB0LWV4ZWN1dGlvbi1wYWNrYWdlLWNpcGhlcnRleHQudjEifQ",
+      "producerSignature": "OLtDnt0IhcXEwdqfgh-hc2q18BANemKOHVGFcx8onKk8UwVbxoUeX44Nr4tDGFRk1GuribbO7Pmtf0xao_AVBQ"
+    },
+    "decryptedPayload": {
+      "schema": "palladin.script-execution-package-payload.v1",
+      "binding": {
+        "schema": "palladin.script-execution-package-binding.v1",
+        "contractVersion": 1,
+        "organizationId": "66666666-6666-4666-8666-666666666666",
+        "agentId": "77777777-7777-4777-8777-777777777777",
+        "agentAccessEpoch": 3,
+        "vaultId": "11111111-1111-4111-8111-111111111111",
+        "scriptEntryId": "22222222-2222-4222-8222-222222222222",
+        "scriptRevision": "7",
+        "manifestDigest": "3UmwJWh-tvTYdGJBmrQavGaXvLQVCpRYdzd3NxUqnf4",
+        "authorization": {
+          "source": "scriptExecution",
+          "grantId": "44444444-4444-4444-8444-444444444444"
+        },
+        "scopes": [
+          {
+            "vaultId": "11111111-1111-4111-8111-111111111111",
+            "entryId": "22222222-2222-4222-8222-222222222222",
+            "fieldId": "script.source",
+            "entryRevision": "7"
+          },
+          {
+            "vaultId": "11111111-1111-4111-8111-111111111111",
+            "entryId": "33333333-3333-4333-8333-333333333331",
+            "fieldId": "credential.url",
+            "entryRevision": "3"
+          },
+          {
+            "vaultId": "11111111-1111-4111-8111-111111111111",
+            "entryId": "33333333-3333-4333-8333-333333333332",
+            "fieldId": "key.value",
+            "entryRevision": "1"
+          },
+          {
+            "vaultId": "11111111-1111-4111-8111-111111111111",
+            "entryId": "33333333-3333-4333-8333-333333333333",
+            "fieldId": "credential.username",
+            "entryRevision": "4"
+          },
+          {
+            "vaultId": "11111111-1111-4111-8111-111111111111",
+            "entryId": "33333333-3333-4333-8333-333333333334",
+            "fieldId": "credential.password",
+            "entryRevision": "6"
+          }
+        ]
+      },
+      "manifest": {
+        "schema": "palladin.script-execution-manifest.v1",
+        "contractVersion": 1,
+        "organizationId": "66666666-6666-4666-8666-666666666666",
+        "agentId": "77777777-7777-4777-8777-777777777777",
+        "agentAccessEpoch": 3,
+        "vaultId": "11111111-1111-4111-8111-111111111111",
+        "scriptEntryId": "22222222-2222-4222-8222-222222222222",
+        "scriptRevision": "7",
+        "description": "Pobiera użytkowników z bazy",
+        "parameters": [
+          {
+            "name": "activeOnly",
+            "description": "Zwróć tylko aktywnych użytkowników",
+            "type": "boolean",
+            "required": true
+          },
+          {
+            "name": "limit",
+            "description": "Maksymalna liczba użytkowników",
+            "type": "integer",
+            "required": true,
+            "minimum": 1,
+            "maximum": 100
+          },
+          {
+            "name": "role",
+            "description": "Opcjonalny filtr roli",
+            "type": "string",
+            "required": false,
+            "minLength": 5,
+            "maxLength": 6,
+            "enum": [
+              "admin",
+              "member",
+              "viewer"
+            ]
+          }
+        ],
+        "returnResultToAgent": true,
+        "interpreter": "node",
+        "scriptSource": "const p = JSON.parse(await new Promise(r => { let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => r(s)) })); console.log(JSON.stringify({activeOnly:p.activeOnly,limit:p.limit,user:process.env.DB_USER}))",
+        "references": [
+          {
+            "env": "DB_HOST",
+            "vaultId": "11111111-1111-4111-8111-111111111111",
+            "entryId": "33333333-3333-4333-8333-333333333331",
+            "fieldId": "credential.url",
+            "entryRevision": "3"
+          },
+          {
+            "env": "DB_PASSWORD",
+            "vaultId": "11111111-1111-4111-8111-111111111111",
+            "entryId": "33333333-3333-4333-8333-333333333334",
+            "fieldId": "credential.password",
+            "entryRevision": "6"
+          },
+          {
+            "env": "DB_PORT",
+            "vaultId": "11111111-1111-4111-8111-111111111111",
+            "entryId": "33333333-3333-4333-8333-333333333332",
+            "fieldId": "key.value",
+            "entryRevision": "1"
+          },
+          {
+            "env": "DB_USER",
+            "vaultId": "11111111-1111-4111-8111-111111111111",
+            "entryId": "33333333-3333-4333-8333-333333333333",
+            "fieldId": "credential.username",
+            "entryRevision": "4"
+          }
+        ]
+      },
+      "entries": [
+        {
+          "entryId": "33333333-3333-4333-8333-333333333331",
+          "entryRevision": "3",
+          "encodedGrantPayload": "eyJlbnRyeVR5cGUiOiJjcmVkZW50aWFsIiwiZmllbGRzIjpbeyJpZCI6ImNyZWRlbnRpYWwudXJsIiwia2luZCI6InVybCIsIm1vZGUiOiJ2YWx1ZSIsInZhbHVlIjoicG9zdGdyZXNxbDovL2RiLmZpeHR1cmUuaW52YWxpZCJ9XSwic2NoZW1hIjoicGFsbGFkaW4uZ3JhbnQtcGF5bG9hZC52MSJ9"
+        },
+        {
+          "entryId": "33333333-3333-4333-8333-333333333332",
+          "entryRevision": "1",
+          "encodedGrantPayload": "eyJlbnRyeVR5cGUiOiJrZXkiLCJmaWVsZHMiOlt7ImlkIjoia2V5LnZhbHVlIiwia2luZCI6ImNvbmNlYWxlZCIsIm1vZGUiOiJ2YWx1ZSIsInZhbHVlIjoiNTQzMiJ9XSwic2NoZW1hIjoicGFsbGFkaW4uZ3JhbnQtcGF5bG9hZC52MSJ9"
+        },
+        {
+          "entryId": "33333333-3333-4333-8333-333333333333",
+          "entryRevision": "4",
+          "encodedGrantPayload": "eyJlbnRyeVR5cGUiOiJjcmVkZW50aWFsIiwiZmllbGRzIjpbeyJpZCI6ImNyZWRlbnRpYWwudXNlcm5hbWUiLCJraW5kIjoidGV4dCIsIm1vZGUiOiJ2YWx1ZSIsInZhbHVlIjoiZml4dHVyZV91c2VyIn1dLCJzY2hlbWEiOiJwYWxsYWRpbi5ncmFudC1wYXlsb2FkLnYxIn0"
+        },
+        {
+          "entryId": "33333333-3333-4333-8333-333333333334",
+          "entryRevision": "6",
+          "encodedGrantPayload": "eyJlbnRyeVR5cGUiOiJjcmVkZW50aWFsIiwiZmllbGRzIjpbeyJpZCI6ImNyZWRlbnRpYWwucGFzc3dvcmQiLCJraW5kIjoiY29uY2VhbGVkIiwibW9kZSI6InZhbHVlIiwidmFsdWUiOiJmaXh0dXJlX3Bhc3N3b3JkX25ldmVyX3Byb2R1Y3Rpb24ifV0sInNjaGVtYSI6InBhbGxhZGluLmdyYW50LXBheWxvYWQudjEifQ"
+        }
+      ]
+    }
+  }
+}

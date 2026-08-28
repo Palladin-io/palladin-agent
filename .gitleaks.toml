@@ -10,6 +10,7 @@ paths = [
   '''^runtime/Cargo\.lock$''',
   '''^runtime/contracts/v1/encrypted-envelope\.json$''',
   '''^runtime/contracts/v2/envelope-xchacha-hkdf\.json$''',
+  '''^runtime/contracts/script-execution/v1/wire-fixture\.json$''',
   '''^runtime/contracts/vault-v2/fixtures/v2/negative/corruption\.json$''',
   '''^runtime/contracts/vault-v2/fixtures/v2/vectors/envelopes\.json$''',
   '''^runtime/contracts/vault-v2/fixtures/v2/vectors/key-derivation\.json$''',
@@ -20,6 +21,7 @@ paths = [
   '''^runtime/crates/palladin-crypto/tests/script_execution_vectors\.rs$''',
   '''^runtime/crates/palladin-platform/src/broker_protocol\.rs$''',
   '''^runtime/crates/palladin-platform/src/secure_store\.rs$''',
+  '''^runtime/crates/palladin-crypto/tests/script_execution_vectors\.rs$''',
   '''^runtime/crates/palladin-windows-broker/src/windows_store\.rs$''',
   '''^tests/crypto/secret\.test\.ts$''',
 ]

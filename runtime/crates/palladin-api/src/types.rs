@@ -1,6 +1,6 @@
 use palladin_crypto::{
     AgentWrappedVaultKey, EncryptedCredential, EncryptedReasonEnvelope, MemberSecretEnvelope,
-    VaultEntryKeyEnvelope,
+    ScriptExecutionEncryptedPackage, ScriptExecutionParameter, VaultEntryKeyEnvelope,
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
 
@@ -11,7 +11,7 @@ pub struct AgentVisibleField {
     pub value: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntrySearchItem {
     pub entry_id: String,
@@ -21,13 +21,86 @@ pub struct EntrySearchItem {
     pub description: Option<String>,
     #[serde(default)]
     pub agent_fields: Vec<AgentVisibleField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script_execution: Option<ScriptExecutionDiscovery>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScriptExecutionDiscovery {
+    pub contract_version: u16,
+    pub script_revision: String,
+    pub description: String,
+    pub parameters: Vec<ScriptExecutionParameter>,
+    pub return_result_to_agent: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntrySearchResult {
     pub items: Vec<EntrySearchItem>,
     pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScriptExecutionVaultEntry {
+    pub entry_id: String,
+    pub entry_revision: String,
+    #[serde(deserialize_with = "deserialize_delivery_policy")]
+    pub delivery_policy: u16,
+    pub entry_key: VaultEntryKeyEnvelope,
+    pub member_secret: MemberSecretEnvelope,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScriptExecutionPackageResponse {
+    pub status: String,
+    pub authorization_source: String,
+    pub organization_id: String,
+    pub vault_id: String,
+    pub agent_id: String,
+    pub agent_access_epoch: u32,
+    pub script_entry_id: String,
+    pub script_revision: String,
+    pub grant_id: String,
+    pub query_count: u32,
+    pub query_limit: Option<u32>,
+    pub expires_at: Option<String>,
+    pub script_package: Option<ScriptExecutionEncryptedPackage>,
+    pub agent_wrapped_vault_key: Option<AgentWrappedVaultKey>,
+    pub vault_entries: Option<Vec<ScriptExecutionVaultEntry>>,
+}
+
+impl ScriptExecutionPackageResponse {
+    pub(crate) fn validate(self) -> Result<Self, de::value::Error> {
+        let direct = self.authorization_source == "scriptExecution"
+            && self.script_package.is_some()
+            && self.agent_wrapped_vault_key.is_none()
+            && self.vault_entries.is_none();
+        let full = self.authorization_source == "full"
+            && self.script_package.is_none()
+            && self.agent_wrapped_vault_key.is_some()
+            && self.vault_entries.is_some();
+        if self.status != "granted"
+            || self.agent_access_epoch == 0
+            || self.query_count == 0
+            || !(direct || full)
+        {
+            return Err(de::Error::custom(
+                "invalid Script execution package response",
+            ));
+        }
+        Ok(self)
+    }
+}
+
+fn deserialize_delivery_policy<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    GrantDeliveryPolicyWire::deserialize(deserializer)?.into_code()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -461,6 +534,9 @@ pub struct GrantStatusResponse {
     pub status: GrantStatus,
     pub expires_at: Option<String>,
     pub query_limit: Option<u32>,
+    pub created: Option<bool>,
+    pub poll_interval_ms: Option<u64>,
+    pub max_wait_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -907,7 +983,10 @@ mod tests {
                         "parentDescriptorHash": null
                     },
                     "encodedSealedKeyPackage": "wrapped-vault-key"
-                }
+                },
+                "vaultSigningKeyVersion": 5,
+                "vaultSigningKeyFingerprint": "signing-fingerprint",
+                "producerSignature": "producer-signature"
             },
             "entryKey": {
                 "descriptor": {
@@ -964,7 +1043,6 @@ mod tests {
         unknown_operation["memberSecret"]["descriptor"]["binding"]["operation"] =
             serde_json::json!("rotated");
         assert!(serde_json::from_value::<CredentialAccess>(unknown_operation).is_err());
-
         let mut missing_expiry = granted.clone();
         missing_expiry
             .as_object_mut()

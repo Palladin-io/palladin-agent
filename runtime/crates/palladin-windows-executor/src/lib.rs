@@ -93,6 +93,14 @@ impl std::fmt::Debug for SecretVariable {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScriptInterpreter {
+    Node,
+    Python,
+    Shell,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExecutorRequest {
@@ -102,7 +110,9 @@ pub enum ExecutorRequest {
     },
     Script {
         interpreter: PathBuf,
+        interpreter_kind: ScriptInterpreter,
         script: String,
+        stdin: String,
         environment: Vec<SecretVariable>,
     },
 }
@@ -119,12 +129,16 @@ impl ExecutorRequest {
     #[must_use]
     pub fn script(
         interpreter: PathBuf,
+        interpreter_kind: ScriptInterpreter,
         script: &SecretString,
+        stdin: &SecretString,
         environment: Vec<SecretVariable>,
     ) -> Self {
         Self::Script {
             interpreter,
+            interpreter_kind,
             script: script.expose_secret().to_owned(),
+            stdin: stdin.expose_secret().to_owned(),
             environment,
         }
     }
@@ -147,8 +161,9 @@ impl ExecutorRequest {
 
 impl Drop for ExecutorRequest {
     fn drop(&mut self) {
-        if let Self::Script { script, .. } = self {
+        if let Self::Script { script, stdin, .. } = self {
             script.zeroize();
+            stdin.zeroize();
         }
     }
 }
@@ -193,6 +208,29 @@ pub fn trusted_executor_path_from(current_executable: &Path) -> Result<PathBuf, 
 pub fn trusted_executor_path() -> Result<PathBuf, ExecutorError> {
     let current = std::env::current_exe().map_err(|_| ExecutorError::ExecutorUnavailable)?;
     trusted_executor_path_from(&current)
+}
+
+/// Produces the private on-disk source for an interpreter kind that the broker
+/// has already resolved through its exact allowlist. Node Scripts are wrapped
+/// in an async CommonJS function so the cross-platform contract keeps both
+/// top-level `await` and the controlled `require`/module globals. Other
+/// allowlisted interpreters keep the source unchanged. The allowlisted kind is
+/// carried explicitly because canonicalized aliases may have another basename.
+pub fn prepare_private_script_source(
+    interpreter_kind: ScriptInterpreter,
+    script: &str,
+) -> Result<Zeroizing<Vec<u8>>, ExecutorError> {
+    if matches!(interpreter_kind, ScriptInterpreter::Node) {
+        let encoded = Zeroizing::new(
+            serde_json::to_string(script).map_err(|_| ExecutorError::InvalidRequest)?,
+        );
+        let wrapper = Zeroizing::new(format!(
+            "const Module=require(\"node:module\"),path=require(\"node:path\"),f=__filename,m=module,AsyncFunction=Object.getPrototypeOf(async function(){{}}).constructor;try{{const run=new AsyncFunction(\"require\",\"module\",\"exports\",\"__filename\",\"__dirname\",{});run(require,m,m.exports,f,path.dirname(f)).catch(()=>{{process.exitCode=1}})}}catch{{process.exitCode=1}}",
+            encoded.as_str(),
+        ));
+        return Ok(Zeroizing::new(wrapper.as_bytes().to_vec()));
+    }
+    Ok(Zeroizing::new(script.as_bytes().to_vec()))
 }
 
 #[cfg(windows)]
@@ -305,5 +343,26 @@ mod tests {
             trusted_executor_path_from(&worker).expect("trusted executor"),
             fs::canonicalize(executor).expect("canonical executor")
         );
+    }
+
+    #[test]
+    fn private_source_preserves_an_allowlisted_shell_after_canonicalization() {
+        let source = "printf '%s' ok";
+        let prepared = prepare_private_script_source(ScriptInterpreter::Shell, source)
+            .expect("prepared shell source");
+
+        assert_eq!(prepared.as_slice(), source.as_bytes());
+    }
+
+    #[test]
+    fn private_source_wraps_node_by_allowlisted_kind_after_alias_canonicalization() {
+        let source = "await Promise.resolve(); module.exports = 1;";
+        let prepared = prepare_private_script_source(ScriptInterpreter::Node, source)
+            .expect("prepared Node source");
+        let prepared = std::str::from_utf8(&prepared).expect("UTF-8 wrapper");
+
+        assert!(prepared.contains("AsyncFunction"));
+        assert!(prepared.contains("module"));
+        assert!(!prepared.starts_with(source));
     }
 }

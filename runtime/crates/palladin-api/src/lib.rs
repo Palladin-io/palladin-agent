@@ -13,6 +13,7 @@ pub use types::{
     AgentVisibleField, ApprovedCredentialMethods, CredentialAccess, CredentialCiphertext,
     CredentialGrantType, CredentialMethod, EntrySearchItem, EntrySearchResult,
     EnvelopeScopeContract, GetCredentialOptions, GrantStatus, GrantStatusResponse,
-    GrantedCredential, ReportCredentialStaleInput, StaleReasonCode, VaultManifest,
+    GrantedCredential, ReportCredentialStaleInput, ScriptExecutionDiscovery,
+    ScriptExecutionPackageResponse, ScriptExecutionVaultEntry, StaleReasonCode, VaultManifest,
     X25519WrappedKey, X25519WrapperDescriptor,
 };

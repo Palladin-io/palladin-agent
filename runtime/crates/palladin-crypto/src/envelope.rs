@@ -10,9 +10,10 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     CryptoError, EncodedSuitePayload, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose,
-    EnvelopeScope, InstantBinding, RecipientKeyKind, SealedWrappedKey, VAULT_XCHACHA_V1,
-    WrapperContext, WrapperPurpose, X25519_WRAPPER_V1, X25519Identity, X25519SealedBoxSuite,
-    XChaChaVaultSuite, compute_field_set_commitment,
+    EnvelopeScope, InstantBinding, RecipientKeyKind, SealedWrappedKey, SecretBytes,
+    SignatureProfile, VAULT_XCHACHA_V1, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1,
+    X25519Identity, X25519SealedBoxSuite, XChaChaVaultSuite, compute_field_set_commitment,
+    compute_key_fingerprint, verify_domain_signature,
 };
 
 const GRANT_PAYLOAD_PURPOSE: u16 = 10;
@@ -105,7 +106,6 @@ where
         .then_some(operation)
         .ok_or_else(|| de::Error::custom("unsupported entry operation"))
 }
-
 fn deserialize_agent_recipient_kind<'de, D>(deserializer: D) -> Result<u16, D::Error>
 where
     D: Deserializer<'de>,
@@ -130,6 +130,53 @@ pub struct EncryptedCredential {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentWrappedVaultKey {
     pub wrapped_vault_key: AgentVaultKeyWrapper,
+    pub vault_signing_key_version: u32,
+    pub vault_signing_key_fingerprint: String,
+    pub producer_signature: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnsignedAgentWrappedVaultKey<'a> {
+    vault_signing_key_version: u32,
+    vault_signing_key_fingerprint: &'a str,
+    wrapped_vault_key: &'a AgentVaultKeyWrapper,
+}
+
+pub fn verify_agent_wrapped_vault_key_producer(
+    value: &AgentWrappedVaultKey,
+    expected_signing_key_version: u32,
+    expected_signing_key_fingerprint: &str,
+    signing_public_key: &[u8; 32],
+) -> Result<(), CryptoError> {
+    let computed_fingerprint =
+        compute_key_fingerprint(signing_public_key, RecipientKeyKind::VaultSigningEd25519);
+    if value.vault_signing_key_version != expected_signing_key_version
+        || value.vault_signing_key_fingerprint != expected_signing_key_fingerprint
+        || URL_SAFE_NO_PAD.encode(computed_fingerprint) != expected_signing_key_fingerprint
+    {
+        return Err(CryptoError::AuthenticationFailed);
+    }
+    let canonical = Zeroizing::new(
+        serde_jcs::to_vec(&UnsignedAgentWrappedVaultKey {
+            vault_signing_key_version: value.vault_signing_key_version,
+            vault_signing_key_fingerprint: &value.vault_signing_key_fingerprint,
+            wrapped_vault_key: &value.wrapped_vault_key,
+        })
+        .map_err(|_| CryptoError::InvalidEncoding)?,
+    );
+    let signature = Zeroizing::new(
+        URL_SAFE_NO_PAD
+            .decode(&value.producer_signature)
+            .map_err(|_| CryptoError::InvalidEncoding)?,
+    );
+    verify_domain_signature(
+        SignatureProfile::AgentWrappedVaultKey,
+        2,
+        &canonical,
+        signing_public_key,
+        &signature,
+    )
 }
 
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -364,6 +411,16 @@ pub struct FullCredentialEnvelopeContext<'a> {
     pub requested_method: u16,
 }
 
+pub struct FullScriptMemberSecretContext<'a> {
+    pub organization_id: &'a str,
+    pub vault_id: &'a str,
+    pub grant_id: &'a str,
+    pub agent_id: &'a str,
+    pub agent_access_epoch: u32,
+    pub entry_id: &'a str,
+    pub entry_revision: &'a str,
+    pub expires_at: Option<&'a str>,
+}
 pub struct DecryptedCredential {
     plaintext: SecretSlice<u8>,
     grant_expires_at: Option<InstantBinding>,
@@ -427,6 +484,113 @@ pub fn decrypt_full_credential(
     )
 }
 
+pub fn decrypt_full_script_member_secret(
+    wrapped_vault_key: &AgentWrappedVaultKey,
+    entry_key: &VaultEntryKeyEnvelope,
+    member_secret: &MemberSecretEnvelope,
+    identity: &X25519Identity,
+    outer: &FullScriptMemberSecretContext<'_>,
+) -> Result<SecretBytes, CryptoError> {
+    let grant_expires_at = outer.expires_at.map(parse_instant).transpose()?;
+    let now = OffsetDateTime::now_utc();
+    if grant_expires_at.is_some_and(|expires_at| {
+        (expires_at.unix_seconds, expires_at.nanosecond) <= (now.unix_timestamp(), now.nanosecond())
+    }) {
+        return Err(CryptoError::StaleInput);
+    }
+
+    let organization_id = parse_uuid(outer.organization_id)?;
+    let vault_id = parse_uuid(outer.vault_id)?;
+    let grant_id = parse_uuid(outer.grant_id)?;
+    let agent_id = parse_uuid(outer.agent_id)?;
+    let entry_id = parse_uuid(outer.entry_id)?;
+    let entry_revision = parse_nonzero_u64(outer.entry_revision)?;
+    if outer.agent_access_epoch == 0 {
+        return Err(CryptoError::InvalidDescriptor);
+    }
+
+    let wrapper = &wrapped_vault_key.wrapped_vault_key;
+    let wire_wrapper = &wrapper.descriptor;
+    let wrapper_scope = parse_scope(&wire_wrapper.scope)?;
+    let expected_wrapper_scope = EnvelopeScope {
+        organization_id,
+        vault_id,
+        entry_id: None,
+        grant_or_request_id: Some(grant_id),
+        agent_id: Some(agent_id),
+        member_id: None,
+    };
+    let recipient_fingerprint = decode_fixed::<32>(&wire_wrapper.recipient_fingerprint)?;
+    if wire_wrapper.protocol_version != 2
+        || wire_wrapper.wrapper_suite_id != X25519_WRAPPER_V1
+        || wire_wrapper.purpose != WrapperPurpose::AgentVaultKey as u16
+        || wrapper_scope != expected_wrapper_scope
+        || parse_nonzero_u64(&wire_wrapper.resource_revision)?
+            != u64::from(outer.agent_access_epoch)
+        || wire_wrapper.wrapped_key_version == 0
+        || wire_wrapper.member_key_generation.is_some()
+        || wire_wrapper.recipient_key_kind != RecipientKeyKind::AgentX25519 as u16
+        || wire_wrapper.recipient_key_version == 0
+        || recipient_fingerprint
+            != crate::compute_key_fingerprint(identity.public_key(), RecipientKeyKind::AgentX25519)
+        || wire_wrapper.parent_descriptor_hash.is_some()
+    {
+        return Err(CryptoError::InvalidDescriptor);
+    }
+    let wrapper_context = WrapperContext {
+        protocol_version: wire_wrapper.protocol_version,
+        wrapper_suite_id: wire_wrapper.wrapper_suite_id.clone(),
+        purpose: WrapperPurpose::AgentVaultKey,
+        scope: expected_wrapper_scope,
+        resource_revision: u64::from(outer.agent_access_epoch),
+        wrapped_key_version: wire_wrapper.wrapped_key_version,
+        member_key_generation: None,
+        recipient_key_kind: RecipientKeyKind::AgentX25519,
+        recipient_key_version: wire_wrapper.recipient_key_version,
+        recipient_fingerprint,
+        parent_descriptor_hash: None,
+    };
+    let sealed_vault_key =
+        SealedWrappedKey::from_bytes(decode_base64url(&wrapper.encoded_sealed_key_package)?)?;
+    let vault_key = X25519SealedBoxSuite::unwrap(&sealed_vault_key, identity, &wrapper_context)?;
+
+    let entry_descriptor =
+        vault_entry_key_descriptor(entry_key, organization_id, vault_id, entry_id)?;
+    let EnvelopeBinding::VaultKey {
+        wrapping_vault_key_version,
+    } = &entry_descriptor.binding
+    else {
+        return Err(CryptoError::InvalidDescriptor);
+    };
+    if *wrapping_vault_key_version != wire_wrapper.wrapped_key_version {
+        return Err(CryptoError::StaleInput);
+    }
+    let entry_aad = entry_descriptor.canonical_aad()?;
+    let entry_payload =
+        EncodedSuitePayload::from_bytes(decode_base64url(&entry_key.encoded_suite_payload)?)?;
+    let entry_wrapper_key =
+        XChaChaVaultSuite::derive_key(vault_key.expose_secret(), &entry_descriptor)?;
+    let entry_dek = XChaChaVaultSuite::open(&entry_wrapper_key, &entry_payload, &entry_aad)?;
+    if entry_dek.expose_secret().len() != 32 {
+        return Err(CryptoError::InvalidLength);
+    }
+
+    let secret_descriptor =
+        member_secret_descriptor(member_secret, organization_id, vault_id, entry_id)?;
+    if secret_descriptor.resource_revision != entry_revision
+        || secret_descriptor.key_version != entry_descriptor.key_version
+        || secret_descriptor.member_key_generation != entry_descriptor.member_key_generation
+    {
+        return Err(CryptoError::StaleInput);
+    }
+    let secret_aad = secret_descriptor.canonical_aad()?;
+    let secret_payload =
+        EncodedSuitePayload::from_bytes(decode_base64url(&member_secret.encoded_suite_payload)?)?;
+    let secret_key = XChaChaVaultSuite::derive_key(entry_dek.expose_secret(), &secret_descriptor)?;
+    let plaintext = XChaChaVaultSuite::open(&secret_key, &secret_payload, &secret_aad)?;
+    validate_full_script_member_secret(plaintext.expose_secret())?;
+    Ok(SecretBytes::new(plaintext.expose_secret().to_vec()))
+}
 pub fn decrypt_full_credential_at(
     wrapped_vault_key: &AgentWrappedVaultKey,
     entry_key: &VaultEntryKeyEnvelope,
@@ -609,7 +773,6 @@ fn full_grant_member_secret_plaintext_error(error: CryptoError) -> CryptoError {
         error => error,
     }
 }
-
 fn validate_full_delivery_policy(
     outer: &FullCredentialEnvelopeContext<'_>,
 ) -> Result<(), CryptoError> {
@@ -1350,6 +1513,98 @@ fn require_exact_keys(object: &Map<String, Value>, expected: &[&str]) -> Result<
     Ok(())
 }
 
+pub(crate) fn validate_raw_member_secret(plaintext: &[u8]) -> Result<(), CryptoError> {
+    let text = std::str::from_utf8(plaintext).map_err(|_| CryptoError::InvalidEncoding)?;
+    let secret = SensitiveJson(
+        serde_json::from_str::<Value>(text).map_err(|_| CryptoError::InvalidEncoding)?,
+    );
+    let mut canonical =
+        serde_json::to_string(&secret.0).map_err(|_| CryptoError::InvalidEncoding)?;
+    let is_canonical = canonical == text;
+    canonical.zeroize();
+    if !is_canonical {
+        return Err(CryptoError::InvalidEncoding);
+    }
+    let object = secret.0.as_object().ok_or(CryptoError::InvalidEncoding)?;
+    require_exact_keys(
+        object,
+        &[
+            "agentFieldAccess",
+            "agentLabel",
+            "color",
+            "content",
+            "description",
+            "discoverable",
+            "entryType",
+            "icon",
+            "memberLabel",
+            "schema",
+        ],
+    )?;
+    if object.get("schema").and_then(Value::as_str) != Some("palladin.member-secret.v1")
+        || object.get("memberLabel").and_then(Value::as_str).is_none()
+        || !is_optional_string(object.get("agentLabel"))
+        || !is_optional_string(object.get("description"))
+        || !is_optional_string(object.get("color"))
+    {
+        return Err(CryptoError::InvalidEncoding);
+    }
+    let discoverable = object
+        .get("discoverable")
+        .and_then(Value::as_bool)
+        .ok_or(CryptoError::InvalidEncoding)?;
+    let entry_type = object
+        .get("entryType")
+        .and_then(Value::as_str)
+        .ok_or(CryptoError::InvalidEncoding)?;
+    let content = object
+        .get("content")
+        .and_then(Value::as_object)
+        .ok_or(CryptoError::InvalidEncoding)?;
+    validate_member_content(entry_type, content)?;
+    let custom_fields = content
+        .get("customFields")
+        .and_then(Value::as_array)
+        .ok_or(CryptoError::InvalidEncoding)?;
+    let custom_ids = validate_custom_fields(custom_fields)?;
+    let access = object
+        .get("agentFieldAccess")
+        .and_then(Value::as_object)
+        .ok_or(CryptoError::InvalidEncoding)?;
+    validate_agent_field_access(
+        entry_type,
+        access,
+        custom_fields,
+        &custom_ids,
+        discoverable,
+        object.get("agentLabel"),
+    )
+}
+
+fn validate_full_script_member_secret(plaintext: &[u8]) -> Result<(), CryptoError> {
+    let text = std::str::from_utf8(plaintext).map_err(|_| CryptoError::InvalidEncoding)?;
+    let secret = SensitiveJson(
+        serde_json::from_str::<Value>(text).map_err(|_| CryptoError::InvalidEncoding)?,
+    );
+    let mut canonical =
+        serde_json::to_string(&secret.0).map_err(|_| CryptoError::InvalidEncoding)?;
+    let is_canonical = canonical == text;
+    canonical.zeroize();
+    if !is_canonical {
+        return Err(CryptoError::InvalidEncoding);
+    }
+
+    let object = secret.0.as_object().ok_or(CryptoError::InvalidEncoding)?;
+    match object.get("schema") {
+        Some(Value::String(schema)) if schema == "palladin.member-secret.v1" => {
+            validate_raw_member_secret(plaintext)
+        }
+        None if object.get("entryType").is_some_and(Value::is_u64) => {
+            canonical_member_secret_projection(&secret.0).map(|_| ())
+        }
+        _ => Err(CryptoError::InvalidEncoding),
+    }
+}
 fn is_optional_string(value: Option<&Value>) -> bool {
     matches!(value, Some(Value::Null | Value::String(_)))
 }
@@ -1369,7 +1624,33 @@ fn validate_member_content(
             "urlDomain",
             "username",
         ][..],
-        "script" => &["customFields", "interpreter", "notes", "refs", "source"][..],
+        "script" => {
+            let base = ["customFields", "interpreter", "notes", "refs", "source"];
+            if content.len() == base.len() {
+                require_exact_keys(content, &base)?;
+            } else {
+                require_exact_keys(
+                    content,
+                    &[
+                        "customFields",
+                        "execution",
+                        "interpreter",
+                        "notes",
+                        "refs",
+                        "source",
+                    ],
+                )?;
+                let metadata: crate::ScriptExecutionMetadata = serde_json::from_value(
+                    content
+                        .get("execution")
+                        .cloned()
+                        .ok_or(CryptoError::InvalidEncoding)?,
+                )
+                .map_err(|_| CryptoError::InvalidEncoding)?;
+                metadata.validate()?;
+            }
+            &[][..]
+        }
         "creditCard" => &[
             "billingAddress",
             "cardNumber",
@@ -1381,7 +1662,9 @@ fn validate_member_content(
         ][..],
         _ => return Err(CryptoError::InvalidDescriptor),
     };
-    require_exact_keys(content, expected)?;
+    if entry_type != "script" {
+        require_exact_keys(content, expected)?;
+    }
     let required_strings: &[&str] = match entry_type {
         "key" => &["value"],
         "credential" => &["username", "password"],
@@ -2445,18 +2728,86 @@ mod tests {
     use super::{
         AgentVaultKeyWrapper, AgentVaultKeyWrapperDescriptor, AgentWrappedVaultKey,
         CredentialEnvelopeContext, CryptoError, DecryptedCredential, EncryptedCredential,
-        FullCredentialEnvelopeContext, GrantEnvelopeBinding, GrantEnvelopeDescriptor,
-        GrantEnvelopeScope, MemberSecretBinding, MemberSecretDescriptor, MemberSecretEnvelope,
-        VaultEntryKeyDescriptor, VaultEntryKeyEnvelope, VaultKeyBinding, WrappedGrantDek,
-        WrappedGrantDekDescriptor, decrypt_full_credential_at, normalize_full_member_secret,
-        normalize_grant_payload, parse_nonzero_u64, parse_uuid, to_descriptor,
+        FullCredentialEnvelopeContext, FullScriptMemberSecretContext, GrantEnvelopeBinding,
+        GrantEnvelopeDescriptor, GrantEnvelopeScope, MemberSecretBinding, MemberSecretDescriptor,
+        MemberSecretEnvelope, UnsignedAgentWrappedVaultKey, VaultEntryKeyDescriptor,
+        VaultEntryKeyEnvelope, VaultKeyBinding, WrappedGrantDek, WrappedGrantDekDescriptor,
+        decrypt_full_credential_at, decrypt_full_script_member_secret,
+        normalize_full_member_secret, normalize_grant_payload, parse_nonzero_u64, parse_uuid,
+        to_descriptor, verify_agent_wrapped_vault_key_producer,
     };
     use crate::{
-        EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose, EnvelopeScope, RecipientKeyKind,
-        VAULT_XCHACHA_V1, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1, X25519Identity,
-        X25519SealedBoxSuite, XChaChaVaultSuite, compute_field_set_commitment,
+        Ed25519Identity, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose, EnvelopeScope,
+        RecipientKeyKind, VAULT_XCHACHA_V1, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1,
+        X25519Identity, X25519SealedBoxSuite, XChaChaVaultSuite, compute_field_set_commitment,
         compute_key_fingerprint,
     };
+
+    #[test]
+    fn full_wrapper_producer_signature_is_verified_before_unwrap() {
+        let signer = Ed25519Identity::from_seed(vec![0x51; 32]).expect("signer");
+        let fingerprint =
+            compute_key_fingerprint(signer.public_key(), RecipientKeyKind::VaultSigningEd25519);
+        let mut wrapped = AgentWrappedVaultKey {
+            wrapped_vault_key: AgentVaultKeyWrapper {
+                descriptor: AgentVaultKeyWrapperDescriptor {
+                    protocol_version: 2,
+                    wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                    purpose: 5,
+                    scope: GrantEnvelopeScope {
+                        organization_id: "00112233-4455-4677-8899-aabbccddeeff".to_owned(),
+                        vault_id: "11112222-3333-4444-8555-666677778888".to_owned(),
+                        entry_id: None,
+                        grant_or_request_id: Some(
+                            "12345678-1234-4234-8234-1234567890ab".to_owned(),
+                        ),
+                        agent_id: Some("fedcba98-7654-4321-8765-abcdefabcdef".to_owned()),
+                        member_id: None,
+                    },
+                    resource_revision: "7".to_owned(),
+                    wrapped_key_version: 3,
+                    member_key_generation: None,
+                    recipient_key_kind: 1,
+                    recipient_key_version: 2,
+                    recipient_fingerprint: URL_SAFE_NO_PAD.encode([0x41_u8; 32]),
+                    parent_descriptor_hash: None,
+                },
+                encoded_sealed_key_package: URL_SAFE_NO_PAD.encode([0x31_u8; 120]),
+            },
+            vault_signing_key_version: 5,
+            vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(fingerprint),
+            producer_signature: String::new(),
+        };
+        let canonical = serde_jcs::to_vec(&UnsignedAgentWrappedVaultKey {
+            vault_signing_key_version: wrapped.vault_signing_key_version,
+            vault_signing_key_fingerprint: &wrapped.vault_signing_key_fingerprint,
+            wrapped_vault_key: &wrapped.wrapped_vault_key,
+        })
+        .expect("canonical wrapper");
+        let mut input = b"PLDNV2SIG:AGENT-WRAPPED-VAULT-KEY:".to_vec();
+        input.extend_from_slice(&2_u16.to_be_bytes());
+        input.extend_from_slice(&canonical);
+        wrapped.producer_signature = URL_SAFE_NO_PAD.encode(signer.sign(&input));
+
+        verify_agent_wrapped_vault_key_producer(
+            &wrapped,
+            5,
+            &URL_SAFE_NO_PAD.encode(fingerprint),
+            signer.public_key(),
+        )
+        .expect("signed wrapper");
+        wrapped.wrapped_vault_key.encoded_sealed_key_package =
+            URL_SAFE_NO_PAD.encode([0x32_u8; 120]);
+        assert_eq!(
+            verify_agent_wrapped_vault_key_producer(
+                &wrapped,
+                5,
+                &URL_SAFE_NO_PAD.encode(fingerprint),
+                signer.public_key(),
+            ),
+            Err(CryptoError::AuthenticationFailed),
+        );
+    }
 
     #[test]
     fn full_grant_unwraps_vault_key_only_inside_native_crypto_and_projects_member_policy() {
@@ -2524,6 +2875,9 @@ mod tests {
                 },
                 encoded_sealed_key_package: URL_SAFE_NO_PAD.encode(sealed_vault_key.as_bytes()),
             },
+            vault_signing_key_version: 1,
+            vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode([0_u8; 32]),
+            producer_signature: URL_SAFE_NO_PAD.encode([0_u8; 64]),
         };
 
         let entry_scope = EnvelopeScope {
@@ -2670,6 +3024,47 @@ mod tests {
         let expected_digest = Sha256::digest(expected_plaintext);
         assert_eq!(credential_digest, expected_digest);
 
+        let script_member_secret = decrypt_full_script_member_secret(
+            &wrapped_vault_key,
+            &entry_envelope,
+            &secret_envelope,
+            &identity,
+            &FullScriptMemberSecretContext {
+                organization_id: ORGANIZATION_ID,
+                vault_id: VAULT_ID,
+                grant_id: GRANT_ID,
+                agent_id: AGENT_ID,
+                agent_access_epoch: 7,
+                entry_id: ENTRY_ID,
+                entry_revision: "9",
+                expires_at: None,
+            },
+        )
+        .expect("raw FULL member secret for local script execution");
+        assert_eq!(
+            Sha256::digest(script_member_secret.expose_for_crypto_operation()),
+            Sha256::digest(&member_plaintext)
+        );
+
+        assert!(matches!(
+            decrypt_full_script_member_secret(
+                &wrapped_vault_key,
+                &entry_envelope,
+                &secret_envelope,
+                &identity,
+                &FullScriptMemberSecretContext {
+                    organization_id: ORGANIZATION_ID,
+                    vault_id: VAULT_ID,
+                    grant_id: GRANT_ID,
+                    agent_id: AGENT_ID,
+                    agent_access_epoch: 7,
+                    entry_id: ENTRY_ID,
+                    entry_revision: "8",
+                    expires_at: None,
+                },
+            ),
+            Err(CryptoError::StaleInput)
+        ));
         let context = FullCredentialEnvelopeContext {
             organization_id: ORGANIZATION_ID,
             vault_id: VAULT_ID,

@@ -6,6 +6,7 @@ mod identity;
 mod local_cache;
 mod manifest;
 mod reason;
+mod script_execution;
 mod signing;
 mod suite;
 mod vault_v2;
@@ -13,11 +14,12 @@ mod vault_v2;
 pub use envelope::{
     AgentVaultKeyWrapper, AgentVaultKeyWrapperDescriptor, AgentWrappedVaultKey,
     CredentialEnvelopeContext, DecryptedCredential, EncryptedCredential,
-    FullCredentialEnvelopeContext, GrantEnvelopeBinding, GrantEnvelopeDescriptor,
-    GrantEnvelopeScope, MemberSecretBinding, MemberSecretDescriptor, MemberSecretEnvelope,
-    VaultEntryKeyDescriptor, VaultEntryKeyEnvelope, VaultKeyBinding, WrappedGrantDek,
-    WrappedGrantDekDescriptor, decrypt_credential, decrypt_credential_at, decrypt_full_credential,
-    decrypt_full_credential_at,
+    FullCredentialEnvelopeContext, FullScriptMemberSecretContext, GrantEnvelopeBinding,
+    GrantEnvelopeDescriptor, GrantEnvelopeScope, MemberSecretBinding, MemberSecretDescriptor,
+    MemberSecretEnvelope, VaultEntryKeyDescriptor, VaultEntryKeyEnvelope, VaultKeyBinding,
+    WrappedGrantDek, WrappedGrantDekDescriptor, decrypt_credential, decrypt_credential_at,
+    decrypt_full_credential, decrypt_full_credential_at, decrypt_full_script_member_secret,
+    verify_agent_wrapped_vault_key_producer,
 };
 pub use grant::{
     DecryptedGrantPayload, ExpectedGrantContext, GrantEnvelopeV2, decrypt_grant_payload,
@@ -34,6 +36,15 @@ pub use reason::{
     EncryptedReasonBinding, EncryptedReasonContext, EncryptedReasonDescriptor,
     EncryptedReasonEnvelope, EncryptedReasonScope, ReasonWrapperDescriptor, WrappedReasonDek,
     encrypt_reason,
+};
+pub use script_execution::{
+    ExpectedScriptExecutionPackageContext, OpenedScriptExecutionPackage,
+    OpenedScriptExecutionReference, ScriptExecutionAuthorization, ScriptExecutionBinding,
+    ScriptExecutionEncryptedPackage, ScriptExecutionManifest, ScriptExecutionMetadata,
+    ScriptExecutionParameter, ScriptExecutionParameterType, ScriptExecutionParameters,
+    ScriptExecutionReference, ScriptExecutionScope, ScriptExecutionTransportScope,
+    encode_script_execution_parameters, open_script_execution_package,
+    validate_script_execution_parameters,
 };
 pub use signing::{
     SignatureHeaders, body_sha256_base64, canonical_request, generate_nonce_base64, sign_request,

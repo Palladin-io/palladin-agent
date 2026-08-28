@@ -21,6 +21,7 @@ use crate::types::{
 
 const MAX_BOUNDED_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_FORM_MAP_RESPONSE_BYTES: usize = 128 * 1024;
+const MAX_SCRIPT_EXECUTION_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -428,6 +429,120 @@ impl ApiClient {
         }
     }
 
+    pub async fn get_script_execution_package(
+        &self,
+        vault_id: &str,
+        script_entry_id: &str,
+        script_revision: &str,
+    ) -> Result<crate::ScriptExecutionPackageResponse, ApiError> {
+        self.get_script_execution_package_inner(vault_id, script_entry_id, Some(script_revision))
+            .await
+    }
+
+    pub async fn get_current_script_execution_package(
+        &self,
+        vault_id: &str,
+        script_entry_id: &str,
+    ) -> Result<crate::ScriptExecutionPackageResponse, ApiError> {
+        self.get_script_execution_package_inner(vault_id, script_entry_id, None)
+            .await
+    }
+
+    async fn get_script_execution_package_inner(
+        &self,
+        vault_id: &str,
+        script_entry_id: &str,
+        script_revision: Option<&str>,
+    ) -> Result<crate::ScriptExecutionPackageResponse, ApiError> {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RequestBody<'a> {
+            vault_id: &'a str,
+            script_entry_id: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            script_revision: Option<&'a str>,
+        }
+
+        let body = serde_json::to_vec(&RequestBody {
+            vault_id,
+            script_entry_id,
+            script_revision,
+        })
+        .map_err(|_| ApiError::InvalidInput)?;
+        let path = format!(
+            "/api/agent/vaults/{}/scripts/{}/execution-package",
+            encode_component(vault_id),
+            encode_component(script_entry_id)
+        );
+        let response = self
+            .send(
+                Method::POST,
+                &path,
+                Some(body),
+                &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
+            )
+            .await?;
+        let (status, body) =
+            read_bounded_response_with_limit(response, MAX_SCRIPT_EXECUTION_RESPONSE_BYTES).await?;
+        if !status.is_success() {
+            if status == StatusCode::FORBIDDEN {
+                return match script_execution_denial_reason(&body).as_deref() {
+                    Some("method-not-allowed") => Err(ApiError::ScriptMethodNotAllowed),
+                    Some("expired") => Err(ApiError::ScriptExpired),
+                    _ => Err(ApiError::InvalidResponse),
+                };
+            }
+            if status == StatusCode::CONFLICT {
+                return match script_execution_denial_reason(&body).as_deref() {
+                    Some("stale-discovery") => Err(ApiError::ScriptStaleDiscovery),
+                    Some("invalid-package" | "overlapping-grants") => {
+                        Err(ApiError::ScriptInvalidPackage)
+                    }
+                    _ => Err(ApiError::InvalidResponse),
+                };
+            }
+            return Err(ApiError::Http(status.as_u16()));
+        }
+        serde_json::from_slice::<crate::ScriptExecutionPackageResponse>(&body)
+            .map_err(|_| ApiError::InvalidResponse)?
+            .validate()
+            .map_err(|_| ApiError::InvalidResponse)
+    }
+
+    pub async fn request_script_execution_access(
+        &self,
+        vault_id: &str,
+        script_entry_id: &str,
+        encrypted_reason: Option<&EncryptedReasonEnvelope>,
+    ) -> Result<crate::GrantStatusResponse, ApiError> {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RequestBody<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            encrypted_reason: Option<&'a EncryptedReasonEnvelope>,
+        }
+
+        let body = serde_json::to_vec(&RequestBody { encrypted_reason })
+            .map_err(|_| ApiError::InvalidInput)?;
+        let path = format!(
+            "/api/agent/vaults/{}/scripts/{}/request-access",
+            encode_component(vault_id),
+            encode_component(script_entry_id)
+        );
+        let response = self
+            .send(
+                Method::POST,
+                &path,
+                Some(body),
+                &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
+            )
+            .await?;
+        if response.status() == StatusCode::BAD_REQUEST && encrypted_reason.is_none() {
+            return Err(ApiError::ReasonRequired);
+        }
+        decode_bounded_success(response).await
+    }
+
     pub async fn get_grant_status(
         &self,
         vault_id: &str,
@@ -652,6 +767,15 @@ fn header(value: &str) -> Result<HeaderValue, ApiError> {
     HeaderValue::from_str(value).map_err(|_| ApiError::InvalidInput)
 }
 
+fn script_execution_denial_reason(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let errors = value.pointer("/errors/generalErrors")?.as_array()?;
+    if errors.len() != 1 {
+        return None;
+    }
+    errors.first()?.as_str().map(str::to_owned)
+}
+
 fn encode_component(value: &str) -> String {
     utf8_percent_encode(value, ENCODE_URI_COMPONENT).to_string()
 }
@@ -691,6 +815,14 @@ pub enum ApiError {
     InvalidCursor,
     #[error("API response exceeds the size limit")]
     SizeLimitExceeded,
+    #[error("Script Discovery is stale")]
+    ScriptStaleDiscovery,
+    #[error("Script execution is not permitted by the active grant")]
+    ScriptMethodNotAllowed,
+    #[error("Script execution grant is expired")]
+    ScriptExpired,
+    #[error("Script execution package is unavailable or invalid")]
+    ScriptInvalidPackage,
 }
 
 #[cfg(test)]
@@ -744,6 +876,34 @@ mod tests {
 
         assert!(matches!(error, ApiError::InvalidResponse));
         assert!(!format!("{error:?} {error}").contains(CANARY));
+    }
+
+    #[tokio::test]
+    async fn script_execution_access_request_is_single_protocol_v2_request() {
+        let grant_id = "33333333-3333-4333-8333-333333333333";
+        let response = r#"{"grantId":"33333333-3333-4333-8333-333333333333","status":"pending","created":true,"pollIntervalMs":5000,"maxWaitMs":180000,"expiresAt":null,"queryLimit":null}"#;
+        let (host, requests) = response_server(vec![(202, response)]).await;
+        let api = client(&host, vec![31; 32], Duration::from_secs(1));
+
+        let status = api
+            .request_script_execution_access(
+                "22222222-2222-4222-8222-222222222222",
+                "55555555-5555-4555-8555-555555555555",
+                None,
+            )
+            .await
+            .expect("pending Script grant");
+
+        assert_eq!(status.grant_id, grant_id);
+        assert_eq!(status.status, crate::GrantStatus::Pending);
+        assert_eq!(status.created, Some(true));
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with(
+            "POST /api/agent/vaults/22222222-2222-4222-8222-222222222222/scripts/55555555-5555-4555-8555-555555555555/request-access HTTP/1.1"
+        ));
+        assert!(requests[0].contains("x-palladin-vault-protocol: 2"));
+        assert!(requests[0].ends_with("\r\n\r\n{}"));
     }
 
     #[tokio::test]
@@ -1045,6 +1205,131 @@ mod tests {
         assert!(
             requests[1].ends_with(r#"{"vaultId":"vault/id","afterSequence":"12","pageSize":25}"#)
         );
+    }
+
+    #[tokio::test]
+    async fn script_execution_uses_one_value_free_current_package_request() {
+        const VAULT_ID: &str = "11111111-1111-4111-8111-111111111111";
+        const SCRIPT_ID: &str = "22222222-2222-4222-8222-222222222222";
+        let response = r#"{
+          "status":"granted","authorizationSource":"scriptExecution",
+          "organizationId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "vaultId":"11111111-1111-4111-8111-111111111111",
+          "agentId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","agentAccessEpoch":3,
+          "scriptEntryId":"22222222-2222-4222-8222-222222222222","scriptRevision":"7",
+          "grantId":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","queryCount":1,"queryLimit":10,
+          "expiresAt":null,
+          "scriptPackage":{
+            "contractVersion":1,"organizationId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "vaultId":"11111111-1111-4111-8111-111111111111",
+            "grantId":"cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "agentId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","agentAccessEpoch":3,
+            "scriptEntryId":"22222222-2222-4222-8222-222222222222","scriptRevision":"7",
+            "packageRevision":"4","recipientAgentKeyVersion":2,
+            "recipientAgentKeyFingerprint":"fingerprint","vaultSigningKeyVersion":5,
+            "vaultSigningKeyFingerprint":"signer-fingerprint","manifestDigest":"digest",
+            "scopes":[{"entryId":"22222222-2222-4222-8222-222222222222","entryRevision":"7","isScript":true}],
+            "encodedPackageCiphertext":"ciphertext","producerSignature":"signature"
+          },
+          "agentWrappedVaultKey":null,"vaultEntries":null
+        }"#;
+        let (host, requests) = response_server(vec![(200, response)]).await;
+        let api = client(&host, vec![23; 32], Duration::from_secs(1));
+
+        let package = api
+            .get_current_script_execution_package(VAULT_ID, SCRIPT_ID)
+            .await
+            .expect("package");
+        assert_eq!(package.authorization_source, "scriptExecution");
+        assert!(package.script_package.is_some());
+
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with(&format!(
+            "POST /api/agent/vaults/{VAULT_ID}/scripts/{SCRIPT_ID}/execution-package HTTP/1.1"
+        )));
+        let (_, body) = requests[0].split_once("\r\n\r\n").expect("body");
+        assert_eq!(
+            body,
+            format!(r#"{{"vaultId":"{VAULT_ID}","scriptEntryId":"{SCRIPT_ID}"}}"#)
+        );
+        for forbidden in [
+            "parameters",
+            "description",
+            "scriptSource",
+            "result",
+            "stdout",
+            "stderr",
+        ] {
+            assert!(!body.contains(forbidden), "request contains {forbidden}");
+        }
+    }
+
+    #[tokio::test]
+    async fn script_execution_maps_only_exact_conflict_reasons() {
+        let stale = r#"{"statusCode":409,"errors":{"generalErrors":["stale-discovery"]}}"#;
+        let invalid = r#"{"statusCode":409,"errors":{"generalErrors":["invalid-package"]}}"#;
+        let unknown = r#"{"statusCode":409,"errors":{"generalErrors":["future-reason"]}}"#;
+        let (host, _) = response_server(vec![(409, stale), (409, invalid), (409, unknown)]).await;
+        let api = client(&host, vec![24; 32], Duration::from_secs(1));
+
+        assert_eq!(
+            api.get_script_execution_package("vault", "script", "7")
+                .await
+                .expect_err("stale"),
+            ApiError::ScriptStaleDiscovery
+        );
+        assert_eq!(
+            api.get_script_execution_package("vault", "script", "7")
+                .await
+                .expect_err("invalid"),
+            ApiError::ScriptInvalidPackage
+        );
+        assert_eq!(
+            api.get_script_execution_package("vault", "script", "7")
+                .await
+                .expect_err("unknown"),
+            ApiError::InvalidResponse
+        );
+    }
+
+    #[tokio::test]
+    async fn script_execution_maps_only_exact_forbidden_reasons() {
+        let method_not_allowed =
+            r#"{"statusCode":403,"errors":{"generalErrors":["method-not-allowed"]}}"#;
+        let expired = r#"{"statusCode":403,"errors":{"generalErrors":["expired"]}}"#;
+        let unknown = r#"{"statusCode":403,"errors":{"generalErrors":["future-reason"]}}"#;
+        let ambiguous =
+            r#"{"statusCode":403,"errors":{"generalErrors":["method-not-allowed","expired"]}}"#;
+        let (host, _) = response_server(vec![
+            (403, method_not_allowed),
+            (403, expired),
+            (403, unknown),
+            (403, ambiguous),
+        ])
+        .await;
+        let api = client(&host, vec![25; 32], Duration::from_secs(1));
+
+        assert_eq!(
+            api.get_script_execution_package("vault", "script", "7")
+                .await
+                .expect_err("method not allowed"),
+            ApiError::ScriptMethodNotAllowed
+        );
+        assert_eq!(
+            api.get_script_execution_package("vault", "script", "7")
+                .await
+                .expect_err("expired"),
+            ApiError::ScriptExpired
+        );
+        for label in ["unknown", "ambiguous"] {
+            assert_eq!(
+                api.get_script_execution_package("vault", "script", "7")
+                    .await
+                    .expect_err(label),
+                ApiError::InvalidResponse
+            );
+        }
     }
 
     #[tokio::test]

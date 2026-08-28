@@ -27,6 +27,7 @@ artifact-specific SPDX SBOM for every published native package.
 
 ## Apache-2.0 OR BSL-1.0
 
+- [ryu-js 0.2.2](https://github.com/boa-dev/ryu-js)
 - [ryu 1.0.23](https://github.com/dtolnay/ryu)
 
 ## Apache-2.0 OR ISC OR MIT
@@ -285,6 +286,7 @@ artifact-specific SPDX SBOM for every published native package.
 - [serde_core 1.0.229](https://github.com/serde-rs/serde)
 - [serde_derive_internals 0.29.1](https://github.com/serde-rs/serde)
 - [serde_derive 1.0.229](https://github.com/serde-rs/serde)
+- [serde_jcs 0.2.0](https://github.com/l1h3r/serde_jcs)
 - [serde_json 1.0.151](https://github.com/serde-rs/json)
 - [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr)
 - [serde 1.0.229](https://github.com/serde-rs/serde)
@@ -308,6 +310,7 @@ artifact-specific SPDX SBOM for every published native package.
 - [toml_edit 0.25.13+spec-1.1.0](https://github.com/toml-rs/toml)
 - [toml_parser 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml)
 - [typenum 1.20.1](https://github.com/paholg/typenum)
+- [unicode-normalization 0.1.25](https://github.com/unicode-rs/unicode-normalization)
 - [universal-hash 0.5.1](https://github.com/RustCrypto/traits)
 - [url 2.5.8](https://github.com/servo/rust-url)
 - [wasm-bindgen-futures 0.4.76](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures)
