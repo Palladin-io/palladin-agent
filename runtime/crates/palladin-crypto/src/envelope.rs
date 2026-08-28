@@ -1896,6 +1896,10 @@ fn normalize_legacy_mobile_grant_payload(
             if field.access != expected_access {
                 return Err(CryptoError::InvalidDescriptor);
             }
+            if field.value.is_null() && legacy_mobile_nullable_builtin(entry_type, &raw_id) {
+                raw_id.zeroize();
+                continue;
+            }
             match value_kind {
                 "string" | "totp" => {
                     let value = match std::mem::take(&mut field.value) {
@@ -2001,6 +2005,16 @@ fn legacy_mobile_builtin_field(
         ("creditCard", "notes") => Some(("notes", "onGrantRuntime", "string")),
         _ => None,
     }
+}
+
+fn legacy_mobile_nullable_builtin(entry_type: &str, field_id: &str) -> bool {
+    matches!(
+        (entry_type, field_id),
+        ("key", "url" | "notes")
+            | ("credential", "url" | "urlDomain" | "totp" | "notes")
+            | ("script", "notes")
+            | ("creditCard", "billingAddress" | "notes")
+    )
 }
 
 fn normalize_legacy_script_references(value: &mut Value) -> Result<(), CryptoError> {
@@ -2936,6 +2950,30 @@ mod tests {
             )
             .as_bytes(),
         );
+    }
+
+    #[test]
+    fn legacy_mobile_null_optional_builtins_are_authenticated_as_absent() {
+        let payload = br#"{"entryType":1,"fields":{"notes":{"access":"onGrantValue","value":null},"password":{"access":"onGrantValue","value":"fixture"},"totp":{"access":"onGrantDerived","value":null},"url":{"access":"onGrantValue","value":null},"urlDomain":{"access":"onGrantValue","value":"example.test"}},"schemaVersion":1}"#;
+        let field_ids = ["notes", "password", "totp", "url", "urlDomain"].map(str::to_owned);
+
+        let normalized =
+            normalize_grant_payload(payload, &field_ids, 4).expect("legacy nullable built-ins");
+
+        assert_eq!(
+            normalized.plaintext,
+            br#"{"password":"fixture","urlDomain":"example.test"}"#
+        );
+
+        let required_null = br#"{"entryType":1,"fields":{"password":{"access":"onGrantValue","value":null},"urlDomain":{"access":"onGrantValue","value":"example.test"}},"schemaVersion":1}"#;
+        assert!(matches!(
+            normalize_grant_payload(
+                required_null,
+                &["password".to_owned(), "urlDomain".to_owned()],
+                4
+            ),
+            Err(CryptoError::InvalidEncoding)
+        ));
     }
 
     #[test]
