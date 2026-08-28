@@ -222,6 +222,48 @@
           }
         ]
       }
+    },
+    {
+      "id": "current-non-canonical-whitespace",
+      "requestedMethod": 4,
+      "rawUtf8": " {\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.password\",\"kind\":\"concealed\",\"mode\":\"value\",\"value\":\"synthetic-secret\"}],\"schema\":\"palladin.grant-payload.v1\"}"
+    },
+    {
+      "id": "current-non-canonical-key-order",
+      "requestedMethod": 4,
+      "rawUtf8": "{\"schema\":\"palladin.grant-payload.v1\",\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.password\",\"kind\":\"concealed\",\"mode\":\"value\",\"value\":\"synthetic-secret\"}]}"
+    },
+    {
+      "id": "current-duplicate-json-key",
+      "requestedMethod": 4,
+      "rawUtf8": "{\"entryType\":\"credential\",\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.password\",\"kind\":\"concealed\",\"mode\":\"value\",\"value\":\"synthetic-secret\"}],\"schema\":\"palladin.grant-payload.v1\"}"
+    },
+    {
+      "id": "legacy-unsupported-method",
+      "requestedMethod": 1,
+      "fieldIds": [
+        "password",
+        "url",
+        "username"
+      ],
+      "value": {
+        "entryType": 1,
+        "fields": {
+          "password": {
+            "access": "onGrantValue",
+            "value": "synthetic-secret"
+          },
+          "url": {
+            "access": "onGrantValue",
+            "value": "https://example.test/login"
+          },
+          "username": {
+            "access": "onGrantValue",
+            "value": "synthetic-user"
+          }
+        },
+        "schemaVersion": 1
+      }
     }
   ]
 }

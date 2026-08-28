@@ -1069,7 +1069,8 @@ mod tests {
         let totp = resolve_grant_payload_field(payload.as_bytes(), "credential.totp")
             .expect("projected TOTP");
         assert!(totp.is_totp);
-        assert_eq!(totp.value.expose_secret(), "123456");
+        let totp_matches = totp.value.expose_secret() == "123456";
+        assert!(totp_matches, "derived TOTP code diverged");
         let seed_payload = br#"{"entryType":"credential","fields":[{"id":"credential.totp","kind":"totp","mode":"derived","value":{"algorithm":"SHA1","digits":6,"period":30,"secret":"JBSWY3DPEHPK3PXP"}}],"schema":"palladin.grant-payload.v1"}"#;
         assert_eq!(
             resolve_grant_payload_field(seed_payload, "credential.totp")
