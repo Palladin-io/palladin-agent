@@ -2601,6 +2601,37 @@ mod tests {
     }
 
     #[test]
+    fn production_decoder_consumes_the_public_cross_client_contract_vector() {
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../contracts/grant-payload/v1/vectors.json"
+        ))
+        .expect("GrantPayload contract JSON");
+        let vector = &contract["vectors"][0];
+        let plaintext = vector["plaintextCanonical"]
+            .as_str()
+            .expect("canonical plaintext");
+        let field_ids = vector["fieldIds"]
+            .as_array()
+            .expect("field ids")
+            .iter()
+            .map(|value| value.as_str().expect("field id").to_owned())
+            .collect::<Vec<_>>();
+        let requested_method = vector["requestedMethod"]
+            .as_u64()
+            .and_then(|value| u16::try_from(value).ok())
+            .expect("requested method");
+
+        let normalized =
+            normalize_grant_payload(plaintext.as_bytes(), &field_ids, requested_method)
+                .expect("public contract vector");
+
+        assert_eq!(
+            normalized.plaintext,
+            br#"{"password":"synthetic-secret","url":"https://example.test/login","username":"synthetic-user"}"#
+        );
+    }
+
+    #[test]
     fn fixture_local_grant_payload_is_not_the_production_application_dto() {
         let fixture_local = br#"{"approvedMethods":1,"entryRevision":"1","fields":{"password":"not-a-real-password","username":"fixture-user"}}"#;
         assert!(matches!(

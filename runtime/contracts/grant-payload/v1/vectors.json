@@ -1,0 +1,55 @@
+{
+  "contract": "palladin.grant-payload.v1",
+  "schemaVersion": 1,
+  "vectors": [
+    {
+      "id": "credential-inject",
+      "requestedMethod": 4,
+      "fieldIds": [
+        "credential.password",
+        "credential.url",
+        "credential.username"
+      ],
+      "plaintext": {
+        "schema": "palladin.grant-payload.v1",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.password",
+            "kind": "concealed",
+            "mode": "value",
+            "value": "synthetic-secret"
+          },
+          {
+            "id": "credential.url",
+            "kind": "url",
+            "mode": "value",
+            "value": "https://example.test/login"
+          },
+          {
+            "id": "credential.username",
+            "kind": "text",
+            "mode": "value",
+            "value": "synthetic-user"
+          }
+        ]
+      },
+      "plaintextCanonical": "{\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.password\",\"kind\":\"concealed\",\"mode\":\"value\",\"value\":\"synthetic-secret\"},{\"id\":\"credential.url\",\"kind\":\"url\",\"mode\":\"value\",\"value\":\"https://example.test/login\"},{\"id\":\"credential.username\",\"kind\":\"text\",\"mode\":\"value\",\"value\":\"synthetic-user\"}],\"schema\":\"palladin.grant-payload.v1\"}",
+      "plaintextHex": "7b22656e74727954797065223a2263726564656e7469616c222c226669656c6473223a5b7b226964223a2263726564656e7469616c2e70617373776f7264222c226b696e64223a22636f6e6365616c6564222c226d6f6465223a2276616c7565222c2276616c7565223a2273796e7468657469632d736563726574227d2c7b226964223a2263726564656e7469616c2e75726c222c226b696e64223a2275726c222c226d6f6465223a2276616c7565222c2276616c7565223a2268747470733a2f2f6578616d706c652e746573742f6c6f67696e227d2c7b226964223a2263726564656e7469616c2e757365726e616d65222c226b696e64223a2274657874222c226d6f6465223a2276616c7565222c2276616c7565223a2273796e7468657469632d75736572227d5d2c22736368656d61223a2270616c6c6164696e2e6772616e742d7061796c6f61642e7631227d",
+      "plaintextSha256": "ef605b9fb0804a6b8f32ff0f43a6c97633076cacbf28e8a1d2967776a29eb822"
+    }
+  ],
+  "rejectedExamples": [
+    {
+      "id": "fixture-local-plaintext-is-not-the-application-dto",
+      "value": {
+        "approvedMethods": 1,
+        "entryRevision": "1",
+        "fields": {
+          "password": "not-a-real-password",
+          "username": "fixture-user"
+        }
+      }
+    }
+  ]
+}
