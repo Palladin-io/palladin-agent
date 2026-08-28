@@ -6523,8 +6523,8 @@ mod tests {
         let body = grant_response_with_expiry(
             &encryption,
             TEST_ENTRY_ID,
-            r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-sensitive-value"},{"id":"credential.urlDomain","kind":"text","mode":"value","value":"example.test"}],"schema":"palladin.grant-payload.v1"}"#,
-            &["credential.password", "credential.urlDomain"],
+            r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-sensitive-value"},{"id":"credential.url","kind":"url","mode":"value","value":"https://example.test/login"}],"schema":"palladin.grant-payload.v1"}"#,
+            &["credential.password", "credential.url"],
             4,
             Some(expires_at),
         );
@@ -7603,14 +7603,14 @@ mod tests {
             )
             .expect("private key base64");
         let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
-        let payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-password-not-production"},{"id":"credential.urlDomain","kind":"text","mode":"value","value":"login.example.test"},{"id":"credential.username","kind":"text","mode":"value","value":"fixture-user"}],"schema":"palladin.grant-payload.v1"}"#;
+        let payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-password-not-production"},{"id":"credential.url","kind":"url","mode":"value","value":"https://login.example.test/sign-in"},{"id":"credential.username","kind":"text","mode":"value","value":"fixture-user"}],"schema":"palladin.grant-payload.v1"}"#;
         let body = grant_response(
             &encryption,
             TEST_ENTRY_ID,
             payload,
             &[
                 "credential.password",
-                "credential.urlDomain",
+                "credential.url",
                 "credential.username",
             ],
             4,
@@ -7790,7 +7790,9 @@ mod tests {
             .await;
         assert!(matches!(
             outcome,
-            Err(RuntimeError::InvalidCredentialPayload)
+            Err(RuntimeError::Crypto(
+                palladin_crypto::CryptoError::InvalidDescriptor
+            ))
         ));
         let requests = requests.lock().expect("requests");
         assert_eq!(requests.len(), 1);

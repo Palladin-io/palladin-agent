@@ -1000,14 +1000,10 @@ impl Drop for GrantField {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct TotpValue {
-    secret: String,
-    algorithm: String,
-    digits: u8,
-    period: u16,
-    issuer: Option<String>,
-    account: Option<String>,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DerivedTotpValue {
+    code: String,
+    expires_in: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1019,12 +1015,9 @@ struct ScriptReference {
     field_id: String,
 }
 
-impl Drop for TotpValue {
+impl Drop for DerivedTotpValue {
     fn drop(&mut self) {
-        self.secret.zeroize();
-        self.algorithm.zeroize();
-        self.issuer.zeroize();
-        self.account.zeroize();
+        self.code.zeroize();
     }
 }
 
@@ -1445,30 +1438,32 @@ fn normalize_projected_member_secret(
         object.get("agentLabel"),
     )?;
 
-    let mut field_ids: Vec<&str> = access
+    let mut field_ids: Vec<(&str, String)> = access
         .iter()
         .filter_map(|(field_id, mode)| match mode.as_str() {
-            Some("onGrantValue" | "onGrantDerived" | "onGrantRuntime") => Some(field_id.as_str()),
+            Some("onGrantValue" | "onGrantDerived" | "onGrantRuntime") => {
+                public_grant_field_id(entry_type, field_id).map(|id| (field_id.as_str(), id))
+            }
             _ => None,
         })
         .collect();
-    field_ids.sort_unstable();
+    field_ids.sort_unstable_by(|left, right| left.1.cmp(&right.1));
     if field_ids.is_empty() {
         return Err(CryptoError::InvalidDescriptor);
     }
     let fields = field_ids
         .into_iter()
-        .map(|field_id| {
-            let mode = match access.get(field_id).and_then(Value::as_str) {
+        .map(|(policy_id, payload_id)| {
+            let mode = match access.get(policy_id).and_then(Value::as_str) {
                 Some("onGrantValue") => "value",
                 Some("onGrantDerived") => "derived",
                 Some("onGrantRuntime") => "runtime",
                 _ => return Err(CryptoError::InvalidDescriptor),
             };
             let (kind, value) =
-                member_secret_field(entry_type, object, content, custom_fields, field_id)?;
+                member_secret_field(entry_type, object, content, custom_fields, &payload_id)?;
             Ok(serde_json::json!({
-                "id": field_id,
+                "id": payload_id,
                 "kind": kind,
                 "mode": mode,
                 "value": value,
@@ -1487,6 +1482,23 @@ fn normalize_projected_member_secret(
         &projected_field_ids(&projected.0)?,
         requested_method,
     )
+}
+
+fn public_grant_field_id(entry_type: &str, field_id: &str) -> Option<String> {
+    let registered = match (entry_type, field_id) {
+        ("key", "key.value" | "key.url")
+        | (
+            "credential",
+            "credential.username" | "credential.password" | "credential.url" | "credential.totp",
+        )
+        | ("script", "script.source" | "script.refs") => field_id.to_owned(),
+        ("key" | "credential" | "script", "notes") => format!("{entry_type}.notes"),
+        ("key" | "credential" | "script", custom) if is_custom_field_id(custom) => {
+            custom.to_owned()
+        }
+        _ => return None,
+    };
+    Some(registered)
 }
 
 fn require_allowed_keys(
@@ -1869,7 +1881,7 @@ fn member_secret_field(
     field_id: &str,
 ) -> Result<(&'static str, Value), CryptoError> {
     let value = match field_id {
-        "notes" => content.get("notes"),
+        "notes" | "key.notes" | "credential.notes" | "script.notes" => content.get("notes"),
         "key.value" => content.get("value"),
         "key.url" => content.get("url"),
         "credential.username" => content.get("username"),
@@ -1912,7 +1924,7 @@ fn member_secret_field(
         ("key.value" | "credential.password" | "creditCard.cardNumber", None) => "concealed",
         ("key.url" | "credential.url", None) => "url",
         ("credential.totp", None) => "totp",
-        ("notes", None) => "multiline",
+        ("notes" | "key.notes" | "credential.notes" | "script.notes", None) => "multiline",
         ("script.source", None) => "script",
         ("script.interpreter", None) => "interpreter",
         ("script.refs", None) => "refs",
@@ -1978,16 +1990,11 @@ fn normalize_grant_payload(
     let mut payload: GrantPayload =
         serde_json::from_str(text).map_err(|_| CryptoError::InvalidEncoding)?;
     if payload.schema != "palladin.grant-payload.v1"
-        || !matches!(
-            payload.entry_type.as_str(),
-            "key" | "credential" | "script" | "creditCard"
-        )
+        || !matches!(payload.entry_type.as_str(), "key" | "credential" | "script")
         || payload.fields.is_empty()
         || !matches!(requested_method, 1 | 2 | 4)
         || (payload.entry_type == "script" && requested_method != 2)
-        || (payload.entry_type == "creditCard" && requested_method != 4)
-        || (requested_method == 4
-            && !matches!(payload.entry_type.as_str(), "credential" | "creditCard"))
+        || (requested_method == 4 && !matches!(payload.entry_type.as_str(), "key" | "credential"))
     {
         return Err(CryptoError::InvalidDescriptor);
     }
@@ -2012,29 +2019,27 @@ fn normalize_grant_payload(
         .as_object_mut()
         .ok_or(CryptoError::InvalidEncoding)?;
     let mut custom_fields = SensitiveValues(Vec::new());
-    let mut has_encrypted_url_domain = false;
+    let mut has_inject_origin = false;
     for mut field in payload.fields.drain(..) {
         let expected = expected_field(&payload.entry_type, &field.id, &field.kind)?;
         if field.mode != expected {
             return Err(CryptoError::InvalidDescriptor);
         }
-        if field.mode == "runtime"
-            && !((payload.entry_type == "script" && requested_method == 2)
-                || (payload.entry_type == "creditCard" && requested_method == 4))
-        {
+        if field.mode == "runtime" && !(payload.entry_type == "script" && requested_method == 2) {
             return Err(CryptoError::InvalidDescriptor);
         }
         match field.kind.as_str() {
-            "text" | "multiline" | "concealed" | "url" | "script" | "interpreter" => {
+            "text" | "multiline" | "concealed" | "url" | "script" => {
                 let value = match std::mem::take(&mut field.value) {
                     Value::String(value) => value,
                     Value::Null
                         if matches!(
                             field.id.as_str(),
-                            "credential.url"
-                                | "credential.urlDomain"
-                                | "creditCard.billingAddress"
-                                | "notes"
+                            "key.url"
+                                | "key.notes"
+                                | "credential.url"
+                                | "credential.notes"
+                                | "script.notes"
                         ) =>
                     {
                         continue;
@@ -2042,13 +2047,8 @@ fn normalize_grant_payload(
                     _ => return Err(CryptoError::InvalidEncoding),
                 };
                 let value = Zeroizing::new(value);
-                if field.kind == "interpreter"
-                    && !matches!(value.as_str(), "bash" | "sh" | "node" | "python")
-                {
-                    return Err(CryptoError::InvalidDescriptor);
-                }
-                if field.id == "credential.urlDomain" {
-                    has_encrypted_url_domain = !value.is_empty();
+                if matches!(field.id.as_str(), "key.url" | "credential.url") {
+                    has_inject_origin = !value.is_empty();
                 }
                 insert_scalar_field(normalized_object, &mut custom_fields.0, &field, &value)?;
             }
@@ -2057,12 +2057,11 @@ fn normalize_grant_payload(
                 if raw_value.is_null() && field.id == "credential.totp" {
                     continue;
                 }
-                let value: TotpValue =
+                let mut value: DerivedTotpValue =
                     serde_json::from_value(raw_value).map_err(|_| CryptoError::InvalidEncoding)?;
-                validate_totp(&value)?;
-                let value =
-                    serde_json::to_value(&value).map_err(|_| CryptoError::InvalidEncoding)?;
-                custom_fields.0.push(custom_field(&field, value));
+                validate_derived_totp(&value)?;
+                let code = Zeroizing::new(std::mem::take(&mut value.code));
+                custom_fields.0.push(derived_totp_field(&field, &code));
             }
             "refs" => {
                 let references: Vec<ScriptReference> =
@@ -2079,24 +2078,10 @@ fn normalize_grant_payload(
                     let object = converted_reference
                         .as_object_mut()
                         .ok_or(CryptoError::InvalidEncoding)?;
-                    if reference.field_id == "credential.totp" {
-                        object.insert(
-                            "fieldId".to_owned(),
-                            Value::String(reference.field_id.clone()),
-                        );
-                    } else if let Some(custom_id) = reference.field_id.strip_prefix("custom:") {
-                        object.insert("fieldId".to_owned(), Value::String(custom_id.to_owned()));
-                    } else {
-                        let alias = match reference.field_id.as_str() {
-                            "key.value" => "value",
-                            "credential.username" => "username",
-                            "credential.password" => "password",
-                            "credential.url" => "url",
-                            "notes" => "notes",
-                            _ => return Err(CryptoError::InvalidDescriptor),
-                        };
-                        object.insert("field".to_owned(), Value::String(alias.to_owned()));
-                    }
+                    object.insert(
+                        "fieldId".to_owned(),
+                        Value::String(reference.field_id.clone()),
+                    );
                     converted.push(converted_reference);
                 }
                 normalized_object.insert("refs".to_owned(), Value::Array(converted));
@@ -2110,17 +2095,8 @@ fn normalize_grant_payload(
             Value::Array(std::mem::take(&mut custom_fields.0)),
         );
     }
-    if payload.entry_type == "creditCard" {
-        normalized_object.insert("type".to_owned(), Value::String("creditCard".to_owned()));
-    }
-    if requested_method == 4 && payload.entry_type == "credential" && !has_encrypted_url_domain {
-        let origin_present = normalized_object
-            .get("url")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty());
-        if !origin_present {
-            return Err(CryptoError::InvalidDescriptor);
-        }
+    if requested_method == 4 && !has_inject_origin {
+        return Err(CryptoError::InvalidDescriptor);
     }
     let plaintext = serde_json::to_vec(&normalized.0).map_err(|_| CryptoError::InvalidEncoding)?;
     Ok(NormalizedGrant { plaintext })
@@ -2358,28 +2334,18 @@ fn expected_field(entry_type: &str, id: &str, kind: &str) -> Result<&'static str
     let mapping = match (entry_type, id) {
         ("key", "key.value") => ("concealed", "value"),
         ("key", "key.url") => ("url", "value"),
+        ("key", "key.notes") => ("multiline", "value"),
         ("credential", "credential.username") => ("text", "value"),
         ("credential", "credential.password") => ("concealed", "value"),
         ("credential", "credential.url") => ("url", "value"),
-        ("credential", "credential.urlDomain") => ("text", "value"),
+        ("credential", "credential.notes") => ("multiline", "value"),
         ("credential", "credential.totp") => ("totp", "derived"),
-        ("credential" | "key", "notes") => ("multiline", "value"),
         ("script", "script.source") => ("script", "runtime"),
-        ("script", "script.interpreter") => ("interpreter", "runtime"),
         ("script", "script.refs") => ("refs", "runtime"),
-        ("creditCard", "creditCard.cardholderName") => ("text", "runtime"),
-        ("creditCard", "creditCard.cardNumber") => ("concealed", "runtime"),
-        ("creditCard", "creditCard.expiryMonth") => ("text", "runtime"),
-        ("creditCard", "creditCard.expiryYear") => ("text", "runtime"),
-        ("creditCard", "creditCard.billingAddress") => ("text", "runtime"),
-        ("script" | "creditCard", "notes") => ("multiline", "runtime"),
+        ("script", "script.notes") => ("multiline", "runtime"),
         (_, custom) if is_custom_field_id(custom) => {
             return match kind {
-                "text" | "multiline" | "concealed"
-                    if matches!(entry_type, "script" | "creditCard") =>
-                {
-                    Ok("runtime")
-                }
+                "text" | "multiline" | "concealed" if entry_type == "script" => Ok("runtime"),
                 "text" | "multiline" | "concealed" => Ok("value"),
                 "totp" => Ok("derived"),
                 _ => Err(CryptoError::InvalidDescriptor),
@@ -2402,18 +2368,13 @@ fn insert_scalar_field(
     let target = match field.id.as_str() {
         "key.value" => "value",
         "key.url" => "url",
+        "key.notes" => "notes",
         "credential.username" => "username",
         "credential.password" => "password",
         "credential.url" => "url",
-        "credential.urlDomain" => "urlDomain",
-        "notes" => "notes",
+        "credential.notes" => "notes",
         "script.source" => "script",
-        "script.interpreter" => "interpreter",
-        "creditCard.cardholderName" => "cardholderName",
-        "creditCard.cardNumber" => "cardNumber",
-        "creditCard.expiryMonth" => "expiryMonth",
-        "creditCard.expiryYear" => "expiryYear",
-        "creditCard.billingAddress" => "billingAddress",
+        "script.notes" => "notes",
         custom if is_custom_field_id(custom) => {
             custom_fields.push(custom_field(field, Value::String(value.to_owned())));
             return Ok(());
@@ -2434,42 +2395,26 @@ fn custom_field(field: &GrantField, value: Value) -> Value {
     })
 }
 
-fn validate_totp(value: &TotpValue) -> Result<(), CryptoError> {
-    if !matches!(value.algorithm.as_str(), "SHA1" | "SHA256" | "SHA512")
-        || !matches!(value.digits, 6 | 8)
-        || !(15..=120).contains(&value.period)
-        || value.secret.is_empty()
-        || value.secret.ends_with('=')
-        || !value
-            .secret
-            .bytes()
-            .all(|byte| byte.is_ascii_uppercase() || matches!(byte, b'2'..=b'7'))
-        || !is_canonical_base32(&value.secret)
+fn derived_totp_field(field: &GrantField, code: &str) -> Value {
+    serde_json::json!({
+        "id": field.id,
+        "label": field.id,
+        "type": "text",
+        "value": code,
+        "agentVisible": true,
+    })
+}
+
+fn validate_derived_totp(value: &DerivedTotpValue) -> Result<(), CryptoError> {
+    if value.code.is_empty()
+        || value.code.len() > 16
+        || !value.code.bytes().all(|byte| byte.is_ascii_digit())
+        || value.expires_in == 0
+        || value.expires_in > 120
     {
         return Err(CryptoError::InvalidDescriptor);
     }
     Ok(())
-}
-
-fn is_canonical_base32(value: &str) -> bool {
-    let mut accumulator = 0_u32;
-    let mut bits = 0_u8;
-    let mut output_bytes = 0_usize;
-    for byte in value.bytes() {
-        let digit = match byte {
-            b'A'..=b'Z' => u32::from(byte - b'A'),
-            b'2'..=b'7' => u32::from(byte - b'2' + 26),
-            _ => return false,
-        };
-        accumulator = (accumulator << 5) | digit;
-        bits += 5;
-        while bits >= 8 {
-            bits -= 8;
-            output_bytes += 1;
-            accumulator &= (1_u32 << bits).wrapping_sub(1);
-        }
-    }
-    output_bytes > 0 && (bits == 0 || accumulator == 0)
 }
 
 fn validate_reference(reference: &ScriptReference) -> Result<(), CryptoError> {
@@ -2498,20 +2443,12 @@ fn is_field_id(value: &str) -> bool {
         value,
         "key.value"
             | "key.url"
+            | "key.notes"
             | "credential.username"
             | "credential.password"
             | "credential.url"
-            | "credential.urlDomain"
             | "credential.totp"
-            | "notes"
-            | "script.source"
-            | "script.interpreter"
-            | "script.refs"
-            | "creditCard.cardholderName"
-            | "creditCard.cardNumber"
-            | "creditCard.expiryMonth"
-            | "creditCard.expiryYear"
-            | "creditCard.billingAddress"
+            | "credential.notes"
     ) || is_custom_field_id(value)
 }
 
@@ -3437,19 +3374,19 @@ mod tests {
 
     #[test]
     fn inject_accepts_encrypted_origin_and_rejects_missing_origin_or_runtime_fields() {
-        let inject = br#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture"},{"id":"credential.urlDomain","kind":"text","mode":"value","value":"example.test"}],"schema":"palladin.grant-payload.v1"}"#;
+        let inject = br#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture"},{"id":"credential.url","kind":"url","mode":"value","value":"https://example.test/login"}],"schema":"palladin.grant-payload.v1"}"#;
         let normalized = normalize_grant_payload(
             inject,
             &[
                 "credential.password".to_owned(),
-                "credential.urlDomain".to_owned(),
+                "credential.url".to_owned(),
             ],
             4,
         )
         .expect("inject payload with encrypted origin");
         assert_eq!(
             normalized.plaintext,
-            br#"{"password":"fixture","urlDomain":"example.test"}"#
+            br#"{"password":"fixture","url":"https://example.test/login"}"#
         );
 
         let missing_origin = br#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture"}],"schema":"palladin.grant-payload.v1"}"#;
@@ -3464,11 +3401,11 @@ mod tests {
             Err(CryptoError::InvalidDescriptor)
         ));
 
-        let fails_after_sensitive_domain = br#"{"entryType":"credential","fields":[{"id":"credential.urlDomain","kind":"text","mode":"value","value":"drop-canary.example"},{"id":"notes","kind":"text","mode":"value","value":"invalid-kind"}],"schema":"palladin.grant-payload.v1"}"#;
+        let fails_after_sensitive_url = br#"{"entryType":"credential","fields":[{"id":"credential.notes","kind":"text","mode":"value","value":"invalid-kind"},{"id":"credential.url","kind":"url","mode":"value","value":"https://drop-canary.example"}],"schema":"palladin.grant-payload.v1"}"#;
         assert!(matches!(
             normalize_grant_payload(
-                fails_after_sensitive_domain,
-                &["credential.urlDomain".to_owned(), "notes".to_owned()],
+                fails_after_sensitive_url,
+                &["credential.notes".to_owned(), "credential.url".to_owned()],
                 4
             ),
             Err(CryptoError::InvalidDescriptor)
@@ -3477,34 +3414,57 @@ mod tests {
 
     #[test]
     fn nullable_builtin_fields_are_authenticated_as_absent_without_weakening_types() {
-        let payload = br#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture"},{"id":"credential.totp","kind":"totp","mode":"derived","value":null},{"id":"credential.url","kind":"url","mode":"value","value":null},{"id":"credential.urlDomain","kind":"text","mode":"value","value":"example.test"},{"id":"notes","kind":"multiline","mode":"value","value":null}],"schema":"palladin.grant-payload.v1"}"#;
+        let payload = br#"{"entryType":"credential","fields":[{"id":"credential.notes","kind":"multiline","mode":"value","value":null},{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture"},{"id":"credential.totp","kind":"totp","mode":"derived","value":null},{"id":"credential.url","kind":"url","mode":"value","value":null}],"schema":"palladin.grant-payload.v1"}"#;
         let field_ids = [
+            "credential.notes",
             "credential.password",
             "credential.totp",
             "credential.url",
-            "credential.urlDomain",
-            "notes",
         ]
         .map(str::to_owned);
         let normalized =
-            normalize_grant_payload(payload, &field_ids, 4).expect("nullable built-ins");
-        assert_eq!(
-            normalized.plaintext,
-            br#"{"password":"fixture","urlDomain":"example.test"}"#
-        );
+            normalize_grant_payload(payload, &field_ids, 1).expect("nullable built-ins");
+        assert_eq!(normalized.plaintext, br#"{"password":"fixture"}"#);
 
-        let wrong_type = br#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":7},{"id":"credential.urlDomain","kind":"text","mode":"value","value":"example.test"}],"schema":"palladin.grant-payload.v1"}"#;
+        let wrong_type = br#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":7}],"schema":"palladin.grant-payload.v1"}"#;
         assert!(matches!(
-            normalize_grant_payload(
-                wrong_type,
-                &[
-                    "credential.password".to_owned(),
-                    "credential.urlDomain".to_owned()
-                ],
-                4
-            ),
+            normalize_grant_payload(wrong_type, &["credential.password".to_owned()], 1),
             Err(CryptoError::InvalidEncoding)
         ));
+    }
+
+    #[test]
+    fn current_contract_accepts_only_derived_totp_output() {
+        let derived = br#"{"entryType":"credential","fields":[{"id":"credential.totp","kind":"totp","mode":"derived","value":{"code":"123456","expiresIn":30}}],"schema":"palladin.grant-payload.v1"}"#;
+        let normalized = normalize_grant_payload(derived, &["credential.totp".to_owned()], 1)
+            .expect("derived TOTP output");
+        assert_eq!(
+            normalized.plaintext,
+            br#"{"fields":[{"agentVisible":true,"id":"credential.totp","label":"credential.totp","type":"text","value":"123456"}]}"#
+        );
+
+        let seed = br#"{"entryType":"credential","fields":[{"id":"credential.totp","kind":"totp","mode":"derived","value":{"account":null,"algorithm":"SHA1","digits":6,"issuer":null,"period":30,"secret":"JBSWY3DPEHPK3PXP"}}],"schema":"palladin.grant-payload.v1"}"#;
+        assert!(matches!(
+            normalize_grant_payload(seed, &["credential.totp".to_owned()], 1),
+            Err(CryptoError::InvalidEncoding)
+        ));
+    }
+
+    #[test]
+    fn current_contract_closes_field_and_entry_type_vocabulary() {
+        let notes = br#"{"entryType":"key","fields":[{"id":"key.notes","kind":"multiline","mode":"value","value":"fixture"}],"schema":"palladin.grant-payload.v1"}"#;
+        let normalized =
+            normalize_grant_payload(notes, &["key.notes".to_owned()], 1).expect("namespaced notes");
+        assert_eq!(normalized.plaintext, br#"{"notes":"fixture"}"#);
+
+        for (payload, field_id, method) in [
+            (br#"{"entryType":"credential","fields":[{"id":"notes","kind":"multiline","mode":"value","value":"fixture"}],"schema":"palladin.grant-payload.v1"}"#.as_slice(), "notes", 1),
+            (br#"{"entryType":"credential","fields":[{"id":"credential.urlDomain","kind":"text","mode":"value","value":"example.test"}],"schema":"palladin.grant-payload.v1"}"#.as_slice(), "credential.urlDomain", 4),
+            (br#"{"entryType":"script","fields":[{"id":"script.interpreter","kind":"interpreter","mode":"runtime","value":"bash"}],"schema":"palladin.grant-payload.v1"}"#.as_slice(), "script.interpreter", 2),
+            (br#"{"entryType":"creditCard","fields":[{"id":"creditCard.cardNumber","kind":"concealed","mode":"runtime","value":"4111111111111111"}],"schema":"palladin.grant-payload.v1"}"#.as_slice(), "creditCard.cardNumber", 4),
+        ] {
+            assert!(normalize_grant_payload(payload, &[field_id.to_owned()], method).is_err());
+        }
     }
 
     #[test]

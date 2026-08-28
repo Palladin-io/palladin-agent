@@ -170,6 +170,58 @@
         },
         "schemaVersion": 1
       }
+    },
+    {
+      "id": "totp-seed-material-is-not-a-derived-output",
+      "requestedMethod": 1,
+      "fieldIds": [
+        "credential.totp"
+      ],
+      "value": {
+        "schema": "palladin.grant-payload.v1",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "secret": "JBSWY3DPEHPK3PXP",
+              "algorithm": "SHA1",
+              "digits": 6,
+              "period": 30,
+              "issuer": null,
+              "account": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "script-ref-non-canonical-uuid",
+      "requestedMethod": 2,
+      "fieldIds": [
+        "script.refs"
+      ],
+      "value": {
+        "schema": "palladin.grant-payload.v1",
+        "entryType": "script",
+        "fields": [
+          {
+            "id": "script.refs",
+            "kind": "refs",
+            "mode": "runtime",
+            "value": [
+              {
+                "env": "PASSWORD",
+                "vaultId": "------------------------------------",
+                "entryId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                "fieldId": "credential.password"
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
