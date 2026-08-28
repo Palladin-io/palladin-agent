@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use secrecy::{ExposeSecret, SecretSlice};
 use serde::{Deserialize, Deserializer, Serialize, de};
@@ -786,10 +788,42 @@ struct GrantField {
     value: Value,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyMobileGrantPayload {
+    entry_type: u8,
+    fields: BTreeMap<String, LegacyMobileGrantField>,
+    schema_version: u16,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyMobileGrantField {
+    access: String,
+    value: Value,
+}
+
 impl Drop for GrantPayload {
     fn drop(&mut self) {
         self.schema.zeroize();
         self.entry_type.zeroize();
+    }
+}
+
+impl Drop for LegacyMobileGrantPayload {
+    fn drop(&mut self) {
+        for (mut id, mut field) in std::mem::take(&mut self.fields) {
+            id.zeroize();
+            field.access.zeroize();
+            zeroize_json(&mut field.value);
+        }
+    }
+}
+
+impl Drop for LegacyMobileGrantField {
+    fn drop(&mut self) {
+        self.access.zeroize();
+        zeroize_json(&mut self.value);
     }
 }
 
@@ -1643,6 +1677,21 @@ fn normalize_grant_payload(
     requested_method: u16,
 ) -> Result<NormalizedGrant, CryptoError> {
     let text = std::str::from_utf8(plaintext).map_err(|_| CryptoError::InvalidEncoding)?;
+    let canonical_value =
+        SensitiveJson(serde_json::from_str(text).map_err(|_| CryptoError::InvalidEncoding)?);
+    let mut canonical =
+        serde_json::to_string(&canonical_value.0).map_err(|_| CryptoError::InvalidEncoding)?;
+    let is_canonical = canonical == text;
+    canonical.zeroize();
+    if !is_canonical {
+        return Err(CryptoError::InvalidEncoding);
+    }
+    let legacy_mobile = canonical_value.0.as_object().is_some_and(|object| {
+        object.contains_key("schemaVersion") && !object.contains_key("schema")
+    });
+    if legacy_mobile {
+        return normalize_legacy_mobile_grant_payload(text, envelope_field_ids, requested_method);
+    }
     let mut payload: GrantPayload =
         serde_json::from_str(text).map_err(|_| CryptoError::InvalidEncoding)?;
     if payload.schema != "palladin.grant-payload.v1"
@@ -1658,15 +1707,6 @@ fn normalize_grant_payload(
             && !matches!(payload.entry_type.as_str(), "credential" | "creditCard"))
     {
         return Err(CryptoError::InvalidDescriptor);
-    }
-    let canonical_value =
-        SensitiveJson(serde_json::from_str(text).map_err(|_| CryptoError::InvalidEncoding)?);
-    let mut canonical =
-        serde_json::to_string(&canonical_value.0).map_err(|_| CryptoError::InvalidEncoding)?;
-    let is_canonical = canonical == text;
-    canonical.zeroize();
-    if !is_canonical {
-        return Err(CryptoError::InvalidEncoding);
     }
     let payload_ids: Vec<&str> = payload
         .fields
@@ -1801,6 +1841,213 @@ fn normalize_grant_payload(
     }
     let plaintext = serde_json::to_vec(&normalized.0).map_err(|_| CryptoError::InvalidEncoding)?;
     Ok(NormalizedGrant { plaintext })
+}
+
+fn normalize_legacy_mobile_grant_payload(
+    text: &str,
+    envelope_field_ids: &[String],
+    requested_method: u16,
+) -> Result<NormalizedGrant, CryptoError> {
+    let mut payload: LegacyMobileGrantPayload =
+        serde_json::from_str(text).map_err(|_| CryptoError::InvalidEncoding)?;
+    let entry_type = match payload.entry_type {
+        0 => "key",
+        1 => "credential",
+        2 => "script",
+        3 => "creditCard",
+        _ => return Err(CryptoError::InvalidDescriptor),
+    };
+    if payload.schema_version != 1
+        || payload.fields.is_empty()
+        || payload.fields.len() > 256
+        || !matches!(requested_method, 1 | 2 | 4)
+        || (entry_type == "script" && requested_method != 2)
+        || (entry_type == "creditCard" && requested_method != 4)
+        || (requested_method == 4 && !matches!(entry_type, "credential" | "creditCard"))
+    {
+        return Err(CryptoError::InvalidDescriptor);
+    }
+    let payload_ids = payload
+        .fields
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if envelope_field_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        != payload_ids
+    {
+        return Err(CryptoError::InvalidDescriptor);
+    }
+
+    let mut normalized = SensitiveJson(Value::Object(Map::new()));
+    let normalized_object = normalized
+        .0
+        .as_object_mut()
+        .ok_or(CryptoError::InvalidEncoding)?;
+    let mut custom_fields = SensitiveValues(Vec::new());
+    let mut has_origin = false;
+
+    for (mut raw_id, mut field) in std::mem::take(&mut payload.fields) {
+        if let Some((target, expected_access, value_kind)) =
+            legacy_mobile_builtin_field(entry_type, &raw_id)
+        {
+            if field.access != expected_access {
+                return Err(CryptoError::InvalidDescriptor);
+            }
+            match value_kind {
+                "string" | "totp" => {
+                    let value = match std::mem::take(&mut field.value) {
+                        Value::String(value) => Zeroizing::new(value),
+                        _ => return Err(CryptoError::InvalidEncoding),
+                    };
+                    if value_kind == "totp" && value.is_empty() {
+                        return Err(CryptoError::InvalidDescriptor);
+                    }
+                    if target == "interpreter"
+                        && !matches!(value.as_str(), "bash" | "sh" | "node" | "python")
+                    {
+                        return Err(CryptoError::InvalidDescriptor);
+                    }
+                    if matches!(target, "url" | "urlDomain") && !value.is_empty() {
+                        has_origin = true;
+                    }
+                    normalized_object
+                        .insert(target.to_owned(), Value::String(value.as_str().to_owned()));
+                }
+                "refs" => {
+                    let value = std::mem::take(&mut field.value);
+                    validate_legacy_script_references(&value)?;
+                    normalized_object.insert(target.to_owned(), value);
+                }
+                _ => return Err(CryptoError::InvalidDescriptor),
+            }
+        } else {
+            parse_uuid(&raw_id)?;
+            let (field_type, value) = match field.access.as_str() {
+                "onGrantValue" if matches!(entry_type, "key" | "credential") => {
+                    let value = match std::mem::take(&mut field.value) {
+                        Value::String(value) => Value::String(value),
+                        _ => return Err(CryptoError::InvalidEncoding),
+                    };
+                    ("text", value)
+                }
+                "onGrantRuntime" if matches!(entry_type, "script" | "creditCard") => {
+                    let value = match std::mem::take(&mut field.value) {
+                        Value::String(value) => Value::String(value),
+                        _ => return Err(CryptoError::InvalidEncoding),
+                    };
+                    ("text", value)
+                }
+                "onGrantDerived" => {
+                    let value = std::mem::take(&mut field.value);
+                    if !matches!(value, Value::String(_) | Value::Object(_)) {
+                        return Err(CryptoError::InvalidEncoding);
+                    }
+                    ("totp", value)
+                }
+                _ => return Err(CryptoError::InvalidDescriptor),
+            };
+            custom_fields.0.push(serde_json::json!({
+                "id": raw_id.clone(),
+                "label": raw_id.clone(),
+                "type": field_type,
+                "value": value,
+                "agentVisible": true,
+            }));
+        }
+        raw_id.zeroize();
+    }
+    if !custom_fields.0.is_empty() {
+        normalized_object.insert(
+            "fields".to_owned(),
+            Value::Array(std::mem::take(&mut custom_fields.0)),
+        );
+    }
+    if entry_type == "creditCard" {
+        normalized_object.insert("type".to_owned(), Value::String("creditCard".to_owned()));
+    }
+    if requested_method == 4 && entry_type == "credential" && !has_origin {
+        return Err(CryptoError::InvalidDescriptor);
+    }
+    let plaintext = serde_json::to_vec(&normalized.0).map_err(|_| CryptoError::InvalidEncoding)?;
+    Ok(NormalizedGrant { plaintext })
+}
+
+fn legacy_mobile_builtin_field(
+    entry_type: &str,
+    field_id: &str,
+) -> Option<(&'static str, &'static str, &'static str)> {
+    match (entry_type, field_id) {
+        ("key", "value") => Some(("value", "onGrantValue", "string")),
+        ("key", "url") => Some(("url", "onGrantValue", "string")),
+        ("key", "notes") => Some(("notes", "onGrantValue", "string")),
+        ("credential", "username") => Some(("username", "onGrantValue", "string")),
+        ("credential", "password") => Some(("password", "onGrantValue", "string")),
+        ("credential", "url") => Some(("url", "onGrantValue", "string")),
+        ("credential", "urlDomain") => Some(("urlDomain", "onGrantValue", "string")),
+        ("credential", "totp") => Some(("totp", "onGrantDerived", "totp")),
+        ("credential", "notes") => Some(("notes", "onGrantValue", "string")),
+        ("script", "script") => Some(("script", "onGrantRuntime", "string")),
+        ("script", "interpreter") => Some(("interpreter", "onGrantRuntime", "string")),
+        ("script", "refs") => Some(("refs", "onGrantRuntime", "refs")),
+        ("script", "notes") => Some(("notes", "onGrantRuntime", "string")),
+        ("creditCard", "cardholderName") => Some(("cardholderName", "onGrantRuntime", "string")),
+        ("creditCard", "cardNumber") => Some(("cardNumber", "onGrantRuntime", "string")),
+        ("creditCard", "expiryMonth") => Some(("expiryMonth", "onGrantRuntime", "string")),
+        ("creditCard", "expiryYear") => Some(("expiryYear", "onGrantRuntime", "string")),
+        ("creditCard", "billingAddress") => Some(("billingAddress", "onGrantRuntime", "string")),
+        ("creditCard", "notes") => Some(("notes", "onGrantRuntime", "string")),
+        _ => None,
+    }
+}
+
+fn validate_legacy_script_references(value: &Value) -> Result<(), CryptoError> {
+    let references = value.as_array().ok_or(CryptoError::InvalidEncoding)?;
+    for reference in references {
+        let object = reference.as_object().ok_or(CryptoError::InvalidEncoding)?;
+        if object.len() < 3
+            || object.len() > 4
+            || !["env", "entryId", "field"]
+                .iter()
+                .all(|key| object.contains_key(*key))
+            || object
+                .keys()
+                .any(|key| !matches!(key.as_str(), "env" | "vaultId" | "entryId" | "field"))
+        {
+            return Err(CryptoError::InvalidEncoding);
+        }
+        let env = object
+            .get("env")
+            .and_then(Value::as_str)
+            .ok_or(CryptoError::InvalidEncoding)?;
+        let entry_id = object
+            .get("entryId")
+            .and_then(Value::as_str)
+            .ok_or(CryptoError::InvalidEncoding)?;
+        let field = object
+            .get("field")
+            .and_then(Value::as_str)
+            .ok_or(CryptoError::InvalidEncoding)?;
+        if env.is_empty()
+            || env.len() > 128
+            || !env.bytes().enumerate().all(|(index, byte)| {
+                byte == b'_' || byte.is_ascii_uppercase() || (index > 0 && byte.is_ascii_digit())
+            })
+            || parse_uuid(entry_id).is_err()
+            || object
+                .get("vaultId")
+                .is_some_and(|value| value.as_str().is_none_or(|id| parse_uuid(id).is_err()))
+            || !matches!(
+                field,
+                "value" | "username" | "password" | "url" | "notes" | "totp"
+            ) && parse_uuid(field).is_err()
+        {
+            return Err(CryptoError::InvalidDescriptor);
+        }
+    }
+    Ok(())
 }
 
 fn expected_field(entry_type: &str, id: &str, kind: &str) -> Result<&'static str, CryptoError> {
@@ -2629,6 +2876,77 @@ mod tests {
             normalized.plaintext,
             br#"{"password":"synthetic-secret","url":"https://example.test/login","username":"synthetic-user"}"#
         );
+    }
+
+    #[test]
+    fn legacy_mobile_grant_payload_remains_supported() {
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../contracts/grant-payload/v1/vectors.json"
+        ))
+        .expect("GrantPayload contract JSON");
+        let vector = &contract["compatibilityVectors"][0];
+        let plaintext = vector["plaintextCanonical"]
+            .as_str()
+            .expect("legacy canonical plaintext");
+        let field_ids = vector["fieldIds"]
+            .as_array()
+            .expect("legacy field ids")
+            .iter()
+            .map(|value| value.as_str().expect("legacy field id").to_owned())
+            .collect::<Vec<_>>();
+        let requested_method = vector["requestedMethod"]
+            .as_u64()
+            .and_then(|value| u16::try_from(value).ok())
+            .expect("legacy requested method");
+
+        let normalized =
+            normalize_grant_payload(plaintext.as_bytes(), &field_ids, requested_method)
+                .expect("legacy mobile GrantPayload");
+
+        assert_eq!(
+            normalized.plaintext,
+            vector["normalizedCanonical"]
+                .as_str()
+                .expect("legacy normalized plaintext")
+                .as_bytes()
+        );
+    }
+
+    #[test]
+    fn legacy_mobile_compatibility_rejects_broadened_or_hybrid_payloads() {
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../contracts/grant-payload/v1/vectors.json"
+        ))
+        .expect("GrantPayload contract JSON");
+        for vector in contract["rejectedExamples"]
+            .as_array()
+            .expect("rejected examples")
+            .iter()
+            .filter(|vector| {
+                vector["id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("legacy-"))
+            })
+        {
+            let plaintext =
+                serde_json::to_vec(&vector["value"]).expect("rejected canonical plaintext");
+            let field_ids = vector["fieldIds"]
+                .as_array()
+                .expect("rejected field ids")
+                .iter()
+                .map(|value| value.as_str().expect("rejected field id").to_owned())
+                .collect::<Vec<_>>();
+            let requested_method = vector["requestedMethod"]
+                .as_u64()
+                .and_then(|value| u16::try_from(value).ok())
+                .expect("rejected requested method");
+
+            assert!(
+                normalize_grant_payload(&plaintext, &field_ids, requested_method).is_err(),
+                "rejected compatibility vector {} was accepted",
+                vector["id"]
+            );
+        }
     }
 
     #[test]
