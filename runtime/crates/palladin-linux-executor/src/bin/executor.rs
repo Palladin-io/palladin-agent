@@ -177,6 +177,7 @@ fn prepare_request(mut request: ExecutorRequest) -> Result<PreparedRequest, Exec
         }
         ExecutorRequest::Script {
             interpreter,
+            interpreter_kind,
             script,
             stdin,
             environment,
@@ -196,7 +197,7 @@ fn prepare_request(mut request: ExecutorRequest) -> Result<PreparedRequest, Exec
                 .open(&path)
                 .map_err(|_| ExecutorServiceError::Temporary)?;
             let prepared =
-                palladin_windows_executor::prepare_private_script_source(interpreter, script)
+                palladin_windows_executor::prepare_private_script_source(*interpreter_kind, script)
                     .map_err(|_| ExecutorServiceError::Executable)?;
             file.write_all(&prepared)
                 .and_then(|()| file.sync_all())
@@ -423,8 +424,13 @@ mod tests {
         let script =
             SecretString::from("head -c 262144 /dev/zero; cat >/dev/null; printf done".to_owned());
         let input = SecretString::from("x".repeat(262_144));
-        let request =
-            ExecutorRequest::script(PathBuf::from("/bin/sh"), &script, &input, Vec::new());
+        let request = ExecutorRequest::script(
+            PathBuf::from("/bin/sh"),
+            palladin_windows_executor::ScriptInterpreter::Shell,
+            &script,
+            &input,
+            Vec::new(),
+        );
         let (connection, peer) = tokio::io::duplex(64);
 
         let result = tokio::time::timeout(

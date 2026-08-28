@@ -22,6 +22,7 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
+use palladin_windows_executor::ScriptInterpreter;
 #[cfg(any(windows, target_os = "linux"))]
 use palladin_windows_executor::{ExecutorRequest, SecretVariable};
 
@@ -201,6 +202,7 @@ pub enum Interpreter {
 
 pub struct ResolvedInterpreter {
     executable: PathBuf,
+    kind: ScriptInterpreter,
 }
 
 impl std::fmt::Debug for ResolvedInterpreter {
@@ -220,6 +222,14 @@ impl Interpreter {
             Self::Python => "python",
             #[cfg(not(windows))]
             Self::Python => "python3",
+        }
+    }
+
+    const fn protocol_kind(self) -> ScriptInterpreter {
+        match self {
+            Self::Bash | Self::Sh => ScriptInterpreter::Shell,
+            Self::Node => ScriptInterpreter::Node,
+            Self::Python => ScriptInterpreter::Python,
         }
     }
 }
@@ -255,7 +265,10 @@ fn resolve_interpreter_from(
         if !valid_interpreter_candidate(&executable) {
             continue;
         }
-        return Ok(ResolvedInterpreter { executable });
+        return Ok(ResolvedInterpreter {
+            executable,
+            kind: interpreter.protocol_kind(),
+        });
     }
     Err(ExecError::InterpreterUnavailable)
 }
@@ -800,6 +813,7 @@ pub async fn run_script(
         return run_windows_request(
             ExecutorRequest::script(
                 interpreter.executable.clone(),
+                interpreter.kind,
                 script,
                 &empty_input,
                 environment.into_executor_variables(),
@@ -816,6 +830,7 @@ pub async fn run_script(
             return run_linux_request(
                 ExecutorRequest::script(
                     interpreter.executable.clone(),
+                    interpreter.kind,
                     script,
                     &empty_input,
                     environment.into_executor_variables(),
@@ -825,7 +840,7 @@ pub async fn run_script(
             )
             .await;
         }
-        let temporary = TempScript::new(script, &interpreter.executable)?;
+        let temporary = TempScript::new(script, interpreter.kind)?;
         let command = vec![
             interpreter.executable.to_string_lossy().into_owned(),
             temporary.path().to_string_lossy().into_owned(),
@@ -848,6 +863,7 @@ pub async fn run_script_captured(
         return run_windows_request_captured(
             ExecutorRequest::script(
                 interpreter.executable.clone(),
+                interpreter.kind,
                 script,
                 stdin,
                 environment.into_executor_variables(),
@@ -863,6 +879,7 @@ pub async fn run_script_captured(
             return run_linux_request_captured(
                 ExecutorRequest::script(
                     interpreter.executable.clone(),
+                    interpreter.kind,
                     script,
                     stdin,
                     environment.into_executor_variables(),
@@ -874,7 +891,7 @@ pub async fn run_script_captured(
         if cancellation.is_cancelled() {
             return Ok(cancelled_capture());
         }
-        let temporary = TempScript::new(script, &interpreter.executable)?;
+        let temporary = TempScript::new(script, interpreter.kind)?;
         let mut process = Command::new(&interpreter.executable);
         process
             .arg(temporary.path())
@@ -1052,7 +1069,7 @@ struct TempScript {
 
 #[cfg(not(windows))]
 impl TempScript {
-    fn new(script: &SecretString, interpreter: &Path) -> Result<Self, ExecError> {
+    fn new(script: &SecretString, interpreter_kind: ScriptInterpreter) -> Result<Self, ExecError> {
         let directory = tempfile::Builder::new()
             .prefix("palladin-script-")
             .tempdir()
@@ -1076,7 +1093,7 @@ impl TempScript {
             .open(&path)
             .map_err(|_| ExecError::TemporaryScript)?;
         let prepared = palladin_windows_executor::prepare_private_script_source(
-            interpreter,
+            interpreter_kind,
             script.expose_secret(),
         )
         .map_err(|_| ExecError::TemporaryScript)?;
@@ -1441,6 +1458,7 @@ mod tests {
         .expect("PATH");
         let resolved = resolve_interpreter_from(Interpreter::Node, &path).expect("resolved");
         assert!(resolved.executable.is_absolute());
+        assert!(matches!(resolved.kind, ScriptInterpreter::Node));
         assert_eq!(
             resolved.executable,
             std::fs::canonicalize(candidate).expect("canonical")
@@ -1451,7 +1469,7 @@ mod tests {
     #[test]
     fn private_script_is_removed_by_raii() {
         let path = {
-            let script = TempScript::new(&SecretString::from("fixture"), Path::new("/bin/sh"))
+            let script = TempScript::new(&SecretString::from("fixture"), ScriptInterpreter::Shell)
                 .expect("temporary script");
             let path = script.path().to_owned();
             assert!(path.exists());
@@ -1465,7 +1483,7 @@ mod tests {
     fn private_script_has_mode_0600() {
         use std::os::unix::fs::PermissionsExt;
 
-        let script = TempScript::new(&SecretString::from("fixture"), Path::new("/bin/sh"))
+        let script = TempScript::new(&SecretString::from("fixture"), ScriptInterpreter::Shell)
             .expect("temporary script");
         let mode = std::fs::metadata(script.path())
             .expect("metadata")

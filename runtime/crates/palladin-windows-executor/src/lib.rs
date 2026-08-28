@@ -93,6 +93,14 @@ impl std::fmt::Debug for SecretVariable {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScriptInterpreter {
+    Node,
+    Python,
+    Shell,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExecutorRequest {
@@ -102,6 +110,7 @@ pub enum ExecutorRequest {
     },
     Script {
         interpreter: PathBuf,
+        interpreter_kind: ScriptInterpreter,
         script: String,
         stdin: String,
         environment: Vec<SecretVariable>,
@@ -120,12 +129,14 @@ impl ExecutorRequest {
     #[must_use]
     pub fn script(
         interpreter: PathBuf,
+        interpreter_kind: ScriptInterpreter,
         script: &SecretString,
         stdin: &SecretString,
         environment: Vec<SecretVariable>,
     ) -> Self {
         Self::Script {
             interpreter,
+            interpreter_kind,
             script: script.expose_secret().to_owned(),
             stdin: stdin.expose_secret().to_owned(),
             environment,
@@ -199,21 +210,17 @@ pub fn trusted_executor_path() -> Result<PathBuf, ExecutorError> {
     trusted_executor_path_from(&current)
 }
 
-/// Produces the private on-disk source for an interpreter that the broker has
-/// already resolved through its exact allowlist. Node Scripts are wrapped in
-/// an async CommonJS function so the cross-platform contract keeps both
+/// Produces the private on-disk source for an interpreter kind that the broker
+/// has already resolved through its exact allowlist. Node Scripts are wrapped
+/// in an async CommonJS function so the cross-platform contract keeps both
 /// top-level `await` and the controlled `require`/module globals. Other
-/// allowlisted interpreters keep the source unchanged: an allowlisted `sh` may
-/// legitimately canonicalize to `dash` (or another platform shell basename).
+/// allowlisted interpreters keep the source unchanged. The allowlisted kind is
+/// carried explicitly because canonicalized aliases may have another basename.
 pub fn prepare_private_script_source(
-    interpreter: &Path,
+    interpreter_kind: ScriptInterpreter,
     script: &str,
 ) -> Result<Zeroizing<Vec<u8>>, ExecutorError> {
-    let executable_name = interpreter
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .ok_or(ExecutorError::ExecutableUnavailable)?;
-    if executable_name.eq_ignore_ascii_case("node") {
+    if matches!(interpreter_kind, ScriptInterpreter::Node) {
         let encoded = Zeroizing::new(
             serde_json::to_string(script).map_err(|_| ExecutorError::InvalidRequest)?,
         );
@@ -341,9 +348,21 @@ mod tests {
     #[test]
     fn private_source_preserves_an_allowlisted_shell_after_canonicalization() {
         let source = "printf '%s' ok";
-        let prepared = prepare_private_script_source(Path::new("/usr/bin/dash"), source)
+        let prepared = prepare_private_script_source(ScriptInterpreter::Shell, source)
             .expect("prepared shell source");
 
         assert_eq!(prepared.as_slice(), source.as_bytes());
+    }
+
+    #[test]
+    fn private_source_wraps_node_by_allowlisted_kind_after_alias_canonicalization() {
+        let source = "await Promise.resolve(); module.exports = 1;";
+        let prepared = prepare_private_script_source(ScriptInterpreter::Node, source)
+            .expect("prepared Node source");
+        let prepared = std::str::from_utf8(&prepared).expect("UTF-8 wrapper");
+
+        assert!(prepared.contains("AsyncFunction"));
+        assert!(prepared.contains("module"));
+        assert!(!prepared.starts_with(source));
     }
 }

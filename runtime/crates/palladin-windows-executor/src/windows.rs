@@ -110,11 +110,12 @@ fn execute(request: ExecutorRequest) -> Result<i32, ExecutorError> {
         } => (command.clone(), environment.as_slice(), None),
         ExecutorRequest::Script {
             interpreter,
+            interpreter_kind,
             script,
             stdin,
             environment,
         } => {
-            let launch = prepare_memory_script(interpreter, script, stdin)?;
+            let launch = prepare_memory_script(*interpreter_kind, interpreter, script, stdin)?;
             (launch.command, environment.as_slice(), Some(launch.payload))
         }
     };
@@ -152,22 +153,15 @@ struct MemoryScriptPayload<'a> {
 }
 
 fn prepare_memory_script(
+    interpreter_kind: super::ScriptInterpreter,
     interpreter: &Path,
     script: &str,
     parameters: &str,
 ) -> Result<MemoryScriptLaunch, ExecutorError> {
-    let executable_name = interpreter
-        .file_stem()
-        .and_then(OsStr::to_str)
-        .ok_or(ExecutorError::ExecutableUnavailable)?;
-    let (flag, bootstrap) = if executable_name.eq_ignore_ascii_case("node") {
-        ("-e", NODE_MEMORY_BOOTSTRAP)
-    } else if executable_name.eq_ignore_ascii_case("python")
-        || executable_name.eq_ignore_ascii_case("python3")
-    {
-        ("-c", PYTHON_MEMORY_BOOTSTRAP)
-    } else {
-        return Err(ExecutorError::ExecutableUnavailable);
+    let (flag, bootstrap) = match interpreter_kind {
+        super::ScriptInterpreter::Node => ("-e", NODE_MEMORY_BOOTSTRAP),
+        super::ScriptInterpreter::Python => ("-c", PYTHON_MEMORY_BOOTSTRAP),
+        super::ScriptInterpreter::Shell => return Err(ExecutorError::ExecutableUnavailable),
     };
     let payload = serde_json::to_vec(&MemoryScriptPayload { script, parameters })
         .map_err(|_| ExecutorError::InvalidRequest)?;
@@ -1024,7 +1018,8 @@ mod tests {
     #[test]
     fn script_source_and_parameters_are_sent_only_in_the_in_memory_payload() {
         let launch = prepare_memory_script(
-            Path::new(r"C:\Program Files\nodejs\node.exe"),
+            super::ScriptInterpreter::Node,
+            Path::new(r"C:\Program Files\nodejs\node-v20.exe"),
             "fixture-script-source",
             r#"{"limit":5}"#,
         )
@@ -1045,6 +1040,7 @@ mod tests {
         assert_eq!(payload["parameters"], r#"{"limit":5}"#);
 
         let python = prepare_memory_script(
+            super::ScriptInterpreter::Python,
             Path::new(r"C:\Python\python.exe"),
             "raise SystemExit(0)",
             "{}",
