@@ -694,6 +694,7 @@ impl LocalDiscoveryIndex {
             .map(|field| field.value.clone()))
     }
 
+    #[cfg(test)]
     pub(crate) fn script_execution(
         &self,
         vault_id: &str,

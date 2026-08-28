@@ -435,12 +435,32 @@ impl ApiClient {
         script_entry_id: &str,
         script_revision: &str,
     ) -> Result<crate::ScriptExecutionPackageResponse, ApiError> {
+        self.get_script_execution_package_inner(vault_id, script_entry_id, Some(script_revision))
+            .await
+    }
+
+    pub async fn get_current_script_execution_package(
+        &self,
+        vault_id: &str,
+        script_entry_id: &str,
+    ) -> Result<crate::ScriptExecutionPackageResponse, ApiError> {
+        self.get_script_execution_package_inner(vault_id, script_entry_id, None)
+            .await
+    }
+
+    async fn get_script_execution_package_inner(
+        &self,
+        vault_id: &str,
+        script_entry_id: &str,
+        script_revision: Option<&str>,
+    ) -> Result<crate::ScriptExecutionPackageResponse, ApiError> {
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct RequestBody<'a> {
             vault_id: &'a str,
             script_entry_id: &'a str,
-            script_revision: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            script_revision: Option<&'a str>,
         }
 
         let body = serde_json::to_vec(&RequestBody {
@@ -487,6 +507,40 @@ impl ApiClient {
             .map_err(|_| ApiError::InvalidResponse)?
             .validate()
             .map_err(|_| ApiError::InvalidResponse)
+    }
+
+    pub async fn request_script_execution_access(
+        &self,
+        vault_id: &str,
+        script_entry_id: &str,
+        encrypted_reason: Option<&EncryptedReasonEnvelope>,
+    ) -> Result<crate::GrantStatusResponse, ApiError> {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RequestBody<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            encrypted_reason: Option<&'a EncryptedReasonEnvelope>,
+        }
+
+        let body = serde_json::to_vec(&RequestBody { encrypted_reason })
+            .map_err(|_| ApiError::InvalidInput)?;
+        let path = format!(
+            "/api/agent/vaults/{}/scripts/{}/request-access",
+            encode_component(vault_id),
+            encode_component(script_entry_id)
+        );
+        let response = self
+            .send(
+                Method::POST,
+                &path,
+                Some(body),
+                &[("X-Palladin-Vault-Protocol", HeaderValue::from_static("2"))],
+            )
+            .await?;
+        if response.status() == StatusCode::BAD_REQUEST && encrypted_reason.is_none() {
+            return Err(ApiError::ReasonRequired);
+        }
+        decode_bounded_success(response).await
     }
 
     pub async fn get_grant_status(
@@ -825,6 +879,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn script_execution_access_request_is_single_protocol_v2_request() {
+        let grant_id = "33333333-3333-4333-8333-333333333333";
+        let response = r#"{"grantId":"33333333-3333-4333-8333-333333333333","status":"pending","created":true,"pollIntervalMs":5000,"maxWaitMs":180000,"expiresAt":null,"queryLimit":null}"#;
+        let (host, requests) = response_server(vec![(202, response)]).await;
+        let api = client(&host, vec![31; 32], Duration::from_secs(1));
+
+        let status = api
+            .request_script_execution_access(
+                "22222222-2222-4222-8222-222222222222",
+                "55555555-5555-4555-8555-555555555555",
+                None,
+            )
+            .await
+            .expect("pending Script grant");
+
+        assert_eq!(status.grant_id, grant_id);
+        assert_eq!(status.status, crate::GrantStatus::Pending);
+        assert_eq!(status.created, Some(true));
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with(
+            "POST /api/agent/vaults/22222222-2222-4222-8222-222222222222/scripts/55555555-5555-4555-8555-555555555555/request-access HTTP/1.1"
+        ));
+        assert!(requests[0].contains("x-palladin-vault-protocol: 2"));
+        assert!(requests[0].ends_with("\r\n\r\n{}"));
+    }
+
+    #[tokio::test]
     async fn form_map_lookup_is_provider_bound_and_treats_not_found_as_cacheable_absence() {
         const MAP: &str = r#"{
           "mapId":"11111111-1111-4111-8111-111111111111","mapVersion":1,
@@ -1126,7 +1208,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn script_execution_uses_one_value_free_package_request() {
+    async fn script_execution_uses_one_value_free_current_package_request() {
         const VAULT_ID: &str = "11111111-1111-4111-8111-111111111111";
         const SCRIPT_ID: &str = "22222222-2222-4222-8222-222222222222";
         let response = r#"{
@@ -1155,7 +1237,7 @@ mod tests {
         let api = client(&host, vec![23; 32], Duration::from_secs(1));
 
         let package = api
-            .get_script_execution_package(VAULT_ID, SCRIPT_ID, "7")
+            .get_current_script_execution_package(VAULT_ID, SCRIPT_ID)
             .await
             .expect("package");
         assert_eq!(package.authorization_source, "scriptExecution");
@@ -1169,9 +1251,7 @@ mod tests {
         let (_, body) = requests[0].split_once("\r\n\r\n").expect("body");
         assert_eq!(
             body,
-            format!(
-                r#"{{"vaultId":"{VAULT_ID}","scriptEntryId":"{SCRIPT_ID}","scriptRevision":"7"}}"#
-            )
+            format!(r#"{{"vaultId":"{VAULT_ID}","scriptEntryId":"{SCRIPT_ID}"}}"#)
         );
         for forbidden in [
             "parameters",

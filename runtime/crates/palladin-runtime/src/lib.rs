@@ -16,8 +16,8 @@ use palladin_api::{
     AgentPairingActivationResponse, AgentPairingStatus, AgentPairingStatusResponse,
     AgentRegistrationResult, AgentVaultManifestsResponse, AgentVisibleField, ApiClient, ApiError,
     CredentialAccess, CredentialCiphertext, CredentialGrantType, CredentialMethod,
-    EntrySearchResult, FormDiscoveryMap, GetCredentialOptions, GrantStatus,
-    ReportCredentialStaleInput, VaultManifest,
+    EntrySearchResult, FormDiscoveryMap, GetCredentialOptions, GrantStatus, GrantStatusResponse,
+    ReportCredentialStaleInput, ScriptExecutionPackageResponse, VaultManifest,
 };
 use palladin_browser_bridge::secure_transport::{BrowserHostIdentity, SecureTransportError};
 use palladin_browser_bridge::{
@@ -4453,21 +4453,12 @@ impl RuntimeSession<'_> {
             return Err(RuntimeError::CommandProvidedForScript);
         }
         if !has_command {
-            self.sync_local_discovery().await?;
-            self.ensure_operation(RuntimeOperation::ExecWithCredential)?;
-            let entry_type = self
-                .discovery
-                .lock()
-                .await
-                .entry_type(request.delivery.vault_id, request.delivery.entry_id)
-                .map(str::to_owned);
-            if entry_type.as_deref() != Some("script") {
-                return Err(RuntimeError::MissingExecCommand);
-            }
             if !request.env_mappings.is_empty() {
                 return Err(RuntimeError::EnvironmentMappingForScript);
             }
-            return self.execute_atomic_script(&request, cancellation).await;
+            return self
+                .execute_atomic_script(&request, cancellation, &mut heartbeat)
+                .await;
         }
         if request
             .parameters
@@ -4511,83 +4502,157 @@ impl RuntimeSession<'_> {
         Ok(CredentialExecOutcome::Completed(result))
     }
 
-    async fn execute_atomic_script(
+    async fn execute_atomic_script<H>(
         &self,
         request: &CredentialExecRequest<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<CredentialExecOutcome, RuntimeError> {
-        let discovery = self
-            .discovery
-            .lock()
-            .await
-            .script_execution(request.delivery.vault_id, request.delivery.entry_id)?;
-        let parameter_frame =
-            encode_script_execution_parameters(&discovery.parameters, request.parameters)
-                .map_err(|_| RuntimeError::InvalidScriptParameters)?;
-        let parameter_frame = std::str::from_utf8(parameter_frame.expose_for_crypto_operation())
-            .map_err(|_| RuntimeError::InvalidScriptParameters)?
-            .to_owned();
-        let parameter_frame = SecretString::from(parameter_frame);
+        mut heartbeat: H,
+    ) -> Result<CredentialExecOutcome, RuntimeError>
+    where
+        H: FnMut(HeartbeatInfo),
+    {
         let agent_id = self
             .config
             .agent_id
             .as_deref()
             .ok_or(RuntimeError::MissingAgentId)?;
-        let anchor = self
-            .config
-            .vault_trust_anchors
-            .iter()
-            .find(|anchor| anchor.vault_id == request.delivery.vault_id)
-            .ok_or(RuntimeError::UntrustedVaultManifest)?;
-        let response = tokio::select! {
-            biased;
-            () = cancellation.cancelled() => return Err(RuntimeError::WaitCancelled),
-            response = self.api.get_script_execution_package(
+        let response = match self
+            .fetch_script_execution_package(
                 request.delivery.vault_id,
                 request.delivery.entry_id,
-                &discovery.script_revision,
-            ) => match response {
-                Ok(response) => response,
-                Err(ApiError::Http(404)) => {
-                    return Ok(CredentialExecOutcome::NotGranted(CredentialAccess::Unavailable));
+                cancellation,
+            )
+            .await?
+        {
+            Ok(response) => response,
+            Err(CredentialAccess::Unavailable) => {
+                let prepared = self
+                    .credential_options(request.delivery, CredentialMethod::Exec)
+                    .await?;
+                let requested = tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => return Err(RuntimeError::WaitCancelled),
+                    response = self.api.request_script_execution_access(
+                        request.delivery.vault_id,
+                        request.delivery.entry_id,
+                        prepared.options.encrypted_reason.as_ref(),
+                    ) => response?,
+                };
+                self.ensure_authorized()?;
+                let grant_id = requested.grant_id.clone();
+                let hints = WaitHints {
+                    poll_interval_ms: requested.poll_interval_ms,
+                    max_wait_ms: requested.max_wait_ms,
+                };
+                let policy = resolve_wait_policy(request.delivery.wait, hints)?;
+                let access = await_grant_exponential(
+                    script_grant_status_as_access(requested),
+                    policy,
+                    cancellation,
+                    || async {
+                        let status = self
+                            .api
+                            .get_grant_status(request.delivery.vault_id, &grant_id)
+                            .await?;
+                        Ok(script_grant_status_as_access(status))
+                    },
+                    tokio::time::sleep,
+                    &mut heartbeat,
+                )
+                .await
+                .map_err(|error| match error {
+                    WaitError::Cancelled => RuntimeError::WaitCancelled,
+                    WaitError::Poll(error) => RuntimeError::Api(error),
+                })?;
+                self.ensure_authorized()?;
+                if !matches!(access, CredentialAccess::Unavailable) {
+                    return Ok(CredentialExecOutcome::NotGranted(access));
                 }
-                Err(ApiError::ScriptMethodNotAllowed) => {
-                    return Ok(CredentialExecOutcome::NotGranted(
-                        CredentialAccess::MethodNotAllowed,
-                    ));
+                match self
+                    .fetch_script_execution_package(
+                        request.delivery.vault_id,
+                        request.delivery.entry_id,
+                        cancellation,
+                    )
+                    .await?
+                {
+                    Ok(response) => response,
+                    Err(access) => return Ok(CredentialExecOutcome::NotGranted(access)),
                 }
-                Err(ApiError::ScriptExpired) => {
-                    return Ok(CredentialExecOutcome::NotGranted(CredentialAccess::Expired));
-                }
-                Err(ApiError::Http(429)) => {
-                    return Ok(CredentialExecOutcome::NotGranted(CredentialAccess::Consumed));
-                }
-                Err(ApiError::ScriptStaleDiscovery) => {
-                    return Err(RuntimeError::StaleScriptDiscovery);
-                }
-                Err(ApiError::ScriptInvalidPackage) => {
-                    return Err(RuntimeError::InvalidScriptExecutionPackage);
-                }
-                Err(error) => return Err(RuntimeError::Api(error)),
-            },
+            }
+            Err(access) => return Ok(CredentialExecOutcome::NotGranted(access)),
         };
         self.ensure_authorized()?;
-        if response.organization_id != anchor.organization_id
-            || response.vault_id != request.delivery.vault_id
+        if response.vault_id != request.delivery.vault_id
             || response.agent_id != agent_id
-            || u64::from(response.agent_access_epoch) != anchor.agent_access_epoch
             || response.script_entry_id != request.delivery.entry_id
-            || response.script_revision != discovery.script_revision
         {
             return Err(RuntimeError::InvalidScriptExecutionPackage);
         }
+        let (signing_key_version, signing_key_fingerprint) =
+            match response.authorization_source.as_str() {
+                "scriptExecution" => {
+                    let package = response
+                        .script_package
+                        .as_ref()
+                        .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+                    (
+                        package.vault_signing_key_version,
+                        package.vault_signing_key_fingerprint.as_str(),
+                    )
+                }
+                "full" => {
+                    let wrapped_vault_key = response
+                        .agent_wrapped_vault_key
+                        .as_ref()
+                        .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+                    (
+                        wrapped_vault_key.vault_signing_key_version,
+                        wrapped_vault_key.vault_signing_key_fingerprint.as_str(),
+                    )
+                }
+                _ => return Err(RuntimeError::InvalidScriptExecutionPackage),
+            };
+        let cached_anchor = self
+            .config
+            .vault_trust_anchors
+            .iter()
+            .find(|anchor| {
+                anchor.organization_id == response.organization_id
+                    && anchor.vault_id == request.delivery.vault_id
+                    && anchor.agent_access_epoch == u64::from(response.agent_access_epoch)
+                    && anchor.manifest_signing_key_version == signing_key_version
+                    && anchor.vault_signing_key_fingerprint == signing_key_fingerprint
+            })
+            .cloned();
+        let anchor = if let Some(anchor) = cached_anchor {
+            anchor
+        } else {
+            let manifest_batch =
+                self.prepare_manifest_batch(self.api.list_vault_manifests().await?)?;
+            let anchor = manifest_batch
+                .next_anchors
+                .iter()
+                .find(|anchor| {
+                    anchor.organization_id == response.organization_id
+                        && anchor.vault_id == request.delivery.vault_id
+                        && anchor.agent_access_epoch == u64::from(response.agent_access_epoch)
+                        && anchor.manifest_signing_key_version == signing_key_version
+                        && anchor.vault_signing_key_fingerprint == signing_key_fingerprint
+                })
+                .cloned()
+                .ok_or(RuntimeError::UntrustedVaultManifest)?;
+            self.persist_prepared_manifest_batch(&manifest_batch)?;
+            anchor
+        };
 
+        let script_revision = response.script_revision.clone();
         let authorization_source = response.authorization_source.clone();
         let grant_id = response.grant_id.clone();
         let expires_at = response.expires_at.clone();
         let mut environment = SecretEnvironment::new();
         let mut protected_literals = Vec::<SecretString>::new();
-        let (script, interpreter_name, return_result_to_agent) = if authorization_source
+        let (script, interpreter_name, return_result_to_agent, parameters) = if authorization_source
             == "scriptExecution"
         {
             let package = response
@@ -4605,7 +4670,7 @@ impl RuntimeSession<'_> {
                     agent_id: agent_id.to_owned(),
                     agent_access_epoch: response.agent_access_epoch,
                     script_entry_id: request.delivery.entry_id.to_owned(),
-                    script_revision: discovery.script_revision.clone(),
+                    script_revision: script_revision.clone(),
                     package_revision,
                     recipient_agent_key_version: recipient_key_version,
                     vault_signing_key_version: anchor.manifest_signing_key_version,
@@ -4613,12 +4678,6 @@ impl RuntimeSession<'_> {
                     vault_signing_public_key: decode_32_url(&anchor.vault_signing_public_key)?,
                 },
             )?;
-            if opened.manifest.description != discovery.description
-                || opened.manifest.parameters != discovery.parameters
-                || opened.manifest.return_result_to_agent != discovery.return_result_to_agent
-            {
-                return Err(RuntimeError::InvalidScriptExecutionPackage);
-            }
             let entries = opened
                 .entries
                 .iter()
@@ -4643,6 +4702,7 @@ impl RuntimeSession<'_> {
                 SecretString::from(std::mem::take(&mut opened.manifest.script_source)),
                 opened.manifest.interpreter.clone(),
                 opened.manifest.return_result_to_agent,
+                opened.manifest.parameters.clone(),
             )
         } else if authorization_source == "full" {
             let wrapped_vault_key = response
@@ -4669,9 +4729,7 @@ impl RuntimeSession<'_> {
             let script_entry = entries
                 .remove(request.delivery.entry_id)
                 .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
-            if script_entry.entry_revision != discovery.script_revision
-                || script_entry.delivery_policy != 1
-            {
+            if script_entry.entry_revision != script_revision || script_entry.delivery_policy != 1 {
                 return Err(RuntimeError::InvalidScriptExecutionPackage);
             }
             let script_member_secret = decrypt_full_script_member_secret(
@@ -4696,14 +4754,8 @@ impl RuntimeSession<'_> {
                 .execution
                 .as_ref()
                 .ok_or(RuntimeError::ScriptExecutionMetadataUnavailable)?;
-            if metadata.contract_version != discovery.contract_version
-                || metadata.description != discovery.description
-                || metadata.parameters != discovery.parameters
-                || metadata.effective_return_result_to_agent() != discovery.return_result_to_agent
-            {
-                return Err(RuntimeError::InvalidScriptExecutionPackage);
-            }
             let return_result_to_agent = metadata.effective_return_result_to_agent();
+            let parameters = metadata.parameters.clone();
             preflight_script_references_raw(&script.refs, request.delivery.vault_id)?;
             for reference in &script.refs {
                 let entry = entries
@@ -4740,10 +4792,21 @@ impl RuntimeSession<'_> {
                 protected_literals.push(resolved.value.clone());
                 environment.insert_reference(&reference.env, resolved.value)?;
             }
-            (script.script, script.interpreter, return_result_to_agent)
+            (
+                script.script,
+                script.interpreter,
+                return_result_to_agent,
+                parameters,
+            )
         } else {
             return Err(RuntimeError::InvalidScriptExecutionPackage);
         };
+        let parameter_frame = encode_script_execution_parameters(&parameters, request.parameters)
+            .map_err(|_| RuntimeError::InvalidScriptParameters)?;
+        let parameter_frame = std::str::from_utf8(parameter_frame.expose_for_crypto_operation())
+            .map_err(|_| RuntimeError::InvalidScriptParameters)?
+            .to_owned();
+        let parameter_frame = SecretString::from(parameter_frame);
         let interpreter = resolve_interpreter(&interpreter_name)?;
         let captured = run_script_captured(
             &script,
@@ -4757,6 +4820,35 @@ impl RuntimeSession<'_> {
         Ok(CredentialExecOutcome::ScriptCompleted(
             finalize_script_result(captured, return_result_to_agent, &protected_literals),
         ))
+    }
+
+    async fn fetch_script_execution_package(
+        &self,
+        vault_id: &str,
+        script_entry_id: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Result<ScriptExecutionPackageResponse, CredentialAccess>, RuntimeError> {
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(RuntimeError::WaitCancelled),
+            response = self.api.get_current_script_execution_package(
+                vault_id,
+                script_entry_id,
+            ) => match response {
+                Ok(response) => Ok(Ok(response)),
+                Err(ApiError::Http(404)) => Ok(Err(CredentialAccess::Unavailable)),
+                Err(ApiError::ScriptMethodNotAllowed) => {
+                    Ok(Err(CredentialAccess::MethodNotAllowed))
+                }
+                Err(ApiError::ScriptExpired) => Ok(Err(CredentialAccess::Expired)),
+                Err(ApiError::Http(429)) => Ok(Err(CredentialAccess::Consumed)),
+                Err(ApiError::ScriptStaleDiscovery) => Err(RuntimeError::StaleScriptDiscovery),
+                Err(ApiError::ScriptInvalidPackage) => {
+                    Err(RuntimeError::InvalidScriptExecutionPackage)
+                }
+                Err(error) => Err(RuntimeError::Api(error)),
+            },
+        }
     }
 
     async fn deliver_credential<H>(
@@ -5502,6 +5594,24 @@ const fn credential_method_mask(method: CredentialMethod) -> u16 {
     }
 }
 
+fn script_grant_status_as_access(status: GrantStatusResponse) -> CredentialAccess {
+    match status.status {
+        GrantStatus::Pending => CredentialAccess::Pending {
+            grant_id: status.grant_id,
+            created: status.created,
+            poll_interval_ms: status.poll_interval_ms,
+            max_wait_ms: status.max_wait_ms,
+        },
+        // The shared wait primitive stops on every non-Pending value. Unavailable is an
+        // internal signal here: the grant is Active and the caller may fetch the package.
+        GrantStatus::Active => CredentialAccess::Unavailable,
+        GrantStatus::Denied => CredentialAccess::Denied,
+        GrantStatus::Revoked => CredentialAccess::Revoked,
+        GrantStatus::Expired => CredentialAccess::Expired,
+        GrantStatus::Consumed => CredentialAccess::Consumed,
+    }
+}
+
 fn authenticated_inject_metadata(
     plaintext: &[u8],
 ) -> Result<(Option<String>, Vec<AgentVisibleField>), RuntimeError> {
@@ -5948,32 +6058,7 @@ mod tests {
             None,
         )
         .expect("API client");
-        let mut session = runtime_session(host, api, encryption);
-        let execution = serde_json::from_value(json!({
-            "contractVersion": 1,
-            "description": "Synthetic denied Script",
-            "parameters": [],
-            "returnResultToAgent": true
-        }))
-        .expect("Script execution metadata");
-        let mut discovery = LocalDiscoveryIndex::new();
-        discovery
-            .upsert(
-                TEST_VAULT_ID,
-                TEST_ENTRY_ID,
-                1,
-                [7; 32],
-                DiscoveryPlaintext {
-                    schema: "palladin.agent-discovery.v1".to_owned(),
-                    agent_label: "Synthetic denied Script".to_owned(),
-                    capabilities: vec!["exec".to_owned()],
-                    fields: Vec::new(),
-                    entry_type: "script".to_owned(),
-                    execution: Some(execution),
-                },
-            )
-            .expect("Script discovery");
-        session.discovery = Arc::new(tokio::sync::Mutex::new(discovery));
+        let session = runtime_session(host, api, encryption);
         let parameters = json!({});
 
         let outcome = session
@@ -5986,6 +6071,7 @@ mod tests {
                     output: OperatorOutput::Discard,
                 },
                 &CancellationToken::new(),
+                |_| {},
             )
             .await
             .expect("content-free denial");
@@ -6043,6 +6129,58 @@ mod tests {
                 .expect("cache lookup")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn script_exec_requests_one_pending_whole_script_grant() {
+        let (host, requests) = response_server_owned(vec![
+            (404, String::new()),
+            (
+                202,
+                r#"{"grantId":"33333333-3333-4333-8333-333333333333","status":"pending","created":true,"pollIntervalMs":5000,"maxWaitMs":180000}"#
+                    .to_owned(),
+            ),
+        ])
+        .await;
+        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let session = runtime_session(host, api, encryption);
+        let parameters = json!({});
+
+        let outcome = session
+            .execute_atomic_script(
+                &CredentialExecRequest {
+                    delivery: request(),
+                    command: None,
+                    env_mappings: &[],
+                    parameters: &parameters,
+                    output: OperatorOutput::Discard,
+                },
+                &CancellationToken::new(),
+                |_| {},
+            )
+            .await
+            .expect("pending Script grant");
+
+        assert!(matches!(
+            outcome,
+            CredentialExecOutcome::NotGranted(CredentialAccess::Pending {
+                created: Some(true),
+                ..
+            })
+        ));
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("/execution-package"));
+        assert!(requests[1].contains("/request-access"));
+        assert!(!requests.iter().any(|request| request.contains("/entries/")));
     }
 
     #[tokio::test]
@@ -6126,32 +6264,6 @@ mod tests {
                     .expect("Vault signing key version"),
             vdk_version: 1,
         }];
-        let execution = serde_json::from_value(json!({
-            "contractVersion": manifest["contractVersion"].clone(),
-            "description": manifest["description"].clone(),
-            "parameters": manifest["parameters"].clone(),
-            "returnResultToAgent": manifest["returnResultToAgent"].clone()
-        }))
-        .expect("Script execution metadata");
-        let mut discovery = LocalDiscoveryIndex::new();
-        discovery
-            .upsert(
-                vault_id,
-                script_entry_id,
-                script_revision.parse().expect("numeric Script revision"),
-                [7; 32],
-                DiscoveryPlaintext {
-                    schema: "palladin.agent-discovery.v1".to_owned(),
-                    agent_label: "Public four-reference Script fixture".to_owned(),
-                    capabilities: vec!["exec".to_owned()],
-                    fields: Vec::new(),
-                    entry_type: "script".to_owned(),
-                    execution: Some(execution),
-                },
-            )
-            .expect("Script discovery");
-        session.discovery = Arc::new(tokio::sync::Mutex::new(discovery));
-
         let parameters = json!({"activeOnly": true, "limit": 2, "role": "member"});
         let outcome = session
             .execute_atomic_script(
@@ -6172,6 +6284,7 @@ mod tests {
                     output: OperatorOutput::Discard,
                 },
                 &CancellationToken::new(),
+                |_| {},
             )
             .await
             .expect("atomic Script execution");
@@ -6193,9 +6306,7 @@ mod tests {
         let (_, body) = requests[0].split_once("\r\n\r\n").expect("request body");
         assert_eq!(
             body,
-            format!(
-                r#"{{"vaultId":"{vault_id}","scriptEntryId":"{script_entry_id}","scriptRevision":"{script_revision}"}}"#
-            )
+            format!(r#"{{"vaultId":"{vault_id}","scriptEntryId":"{script_entry_id}"}}"#)
         );
     }
 
@@ -7759,6 +7870,28 @@ mod tests {
                 captured.lock().expect("requests").push(request);
                 let response = format!(
                     "HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("write");
+            }
+        });
+        (format!("http://{address}"), requests)
+    }
+
+    async fn response_server_owned(
+        responses: Vec<(u16, String)>,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        tokio::spawn(async move {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let request = read_request(&mut stream).await;
+                captured.lock().expect("requests").push(request);
+                let response = format!(
+                    "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 stream.write_all(response.as_bytes()).await.expect("write");

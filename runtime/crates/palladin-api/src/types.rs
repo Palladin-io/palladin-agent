@@ -534,6 +534,9 @@ pub struct GrantStatusResponse {
     pub status: GrantStatus,
     pub expires_at: Option<String>,
     pub query_limit: Option<u32>,
+    pub created: Option<bool>,
+    pub poll_interval_ms: Option<u64>,
+    pub max_wait_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
