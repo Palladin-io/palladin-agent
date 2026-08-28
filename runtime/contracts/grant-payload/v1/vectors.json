@@ -1,0 +1,269 @@
+{
+  "contract": "palladin.grant-payload.v1",
+  "schemaVersion": 1,
+  "vectors": [
+    {
+      "id": "credential-inject",
+      "requestedMethod": 4,
+      "fieldIds": [
+        "credential.password",
+        "credential.url",
+        "credential.username"
+      ],
+      "plaintext": {
+        "schema": "palladin.grant-payload.v1",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.password",
+            "kind": "concealed",
+            "mode": "value",
+            "value": "synthetic-secret"
+          },
+          {
+            "id": "credential.url",
+            "kind": "url",
+            "mode": "value",
+            "value": "https://example.test/login"
+          },
+          {
+            "id": "credential.username",
+            "kind": "text",
+            "mode": "value",
+            "value": "synthetic-user"
+          }
+        ]
+      },
+      "plaintextCanonical": "{\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.password\",\"kind\":\"concealed\",\"mode\":\"value\",\"value\":\"synthetic-secret\"},{\"id\":\"credential.url\",\"kind\":\"url\",\"mode\":\"value\",\"value\":\"https://example.test/login\"},{\"id\":\"credential.username\",\"kind\":\"text\",\"mode\":\"value\",\"value\":\"synthetic-user\"}],\"schema\":\"palladin.grant-payload.v1\"}",
+      "plaintextHex": "7b22656e74727954797065223a2263726564656e7469616c222c226669656c6473223a5b7b226964223a2263726564656e7469616c2e70617373776f7264222c226b696e64223a22636f6e6365616c6564222c226d6f6465223a2276616c7565222c2276616c7565223a2273796e7468657469632d736563726574227d2c7b226964223a2263726564656e7469616c2e75726c222c226b696e64223a2275726c222c226d6f6465223a2276616c7565222c2276616c7565223a2268747470733a2f2f6578616d706c652e746573742f6c6f67696e227d2c7b226964223a2263726564656e7469616c2e757365726e616d65222c226b696e64223a2274657874222c226d6f6465223a2276616c7565222c2276616c7565223a2273796e7468657469632d75736572227d5d2c22736368656d61223a2270616c6c6164696e2e6772616e742d7061796c6f61642e7631227d",
+      "plaintextSha256": "ef605b9fb0804a6b8f32ff0f43a6c97633076cacbf28e8a1d2967776a29eb822"
+    }
+  ],
+  "compatibilityVectors": [
+    {
+      "id": "legacy-mobile-v1-credential-inject",
+      "producerContract": "flutter-mobile.legacy-grant-payload.v1",
+      "readOnly": true,
+      "requestedMethod": 4,
+      "fieldIds": [
+        "password",
+        "url",
+        "username"
+      ],
+      "plaintext": {
+        "entryType": 1,
+        "fields": {
+          "password": {
+            "access": "onGrantValue",
+            "value": "synthetic-secret"
+          },
+          "url": {
+            "access": "onGrantValue",
+            "value": "https://example.test/login"
+          },
+          "username": {
+            "access": "onGrantValue",
+            "value": "synthetic-user"
+          }
+        },
+        "schemaVersion": 1
+      },
+      "plaintextCanonical": "{\"entryType\":1,\"fields\":{\"password\":{\"access\":\"onGrantValue\",\"value\":\"synthetic-secret\"},\"url\":{\"access\":\"onGrantValue\",\"value\":\"https://example.test/login\"},\"username\":{\"access\":\"onGrantValue\",\"value\":\"synthetic-user\"}},\"schemaVersion\":1}",
+      "plaintextHex": "7b22656e74727954797065223a312c226669656c6473223a7b2270617373776f7264223a7b22616363657373223a226f6e4772616e7456616c7565222c2276616c7565223a2273796e7468657469632d736563726574227d2c2275726c223a7b22616363657373223a226f6e4772616e7456616c7565222c2276616c7565223a2268747470733a2f2f6578616d706c652e746573742f6c6f67696e227d2c22757365726e616d65223a7b22616363657373223a226f6e4772616e7456616c7565222c2276616c7565223a2273796e7468657469632d75736572227d7d2c22736368656d6156657273696f6e223a317d",
+      "plaintextSha256": "5214a2e273b7fc21d21c6488cc5b4a5ce9d92338f969d9caecaf042c4a9a3676",
+      "normalizedCanonical": "{\"password\":\"synthetic-secret\",\"url\":\"https://example.test/login\",\"username\":\"synthetic-user\"}",
+      "normalizedSha256": "c660d2641bb7706ccb02b42c049298925ff8cc189218f8168a44d34f907707ac"
+    }
+  ],
+  "rejectedExamples": [
+    {
+      "id": "fixture-local-plaintext-is-not-the-application-dto",
+      "value": {
+        "approvedMethods": 1,
+        "entryRevision": "1",
+        "fields": {
+          "password": "not-a-real-password",
+          "username": "fixture-user"
+        }
+      }
+    },
+    {
+      "id": "legacy-current-hybrid",
+      "requestedMethod": 4,
+      "fieldIds": [
+        "password",
+        "urlDomain"
+      ],
+      "value": {
+        "entryType": 1,
+        "fields": {
+          "password": {
+            "access": "onGrantValue",
+            "value": "synthetic-secret"
+          },
+          "urlDomain": {
+            "access": "onGrantValue",
+            "value": "example.test"
+          }
+        },
+        "schema": "palladin.grant-payload.v1",
+        "schemaVersion": 1
+      }
+    },
+    {
+      "id": "legacy-broadened-access",
+      "requestedMethod": 4,
+      "fieldIds": [
+        "password",
+        "urlDomain"
+      ],
+      "value": {
+        "entryType": 1,
+        "fields": {
+          "password": {
+            "access": "discovery",
+            "value": "synthetic-secret"
+          },
+          "urlDomain": {
+            "access": "onGrantValue",
+            "value": "example.test"
+          }
+        },
+        "schemaVersion": 1
+      }
+    },
+    {
+      "id": "legacy-field-set-mismatch",
+      "requestedMethod": 4,
+      "fieldIds": [
+        "password",
+        "username"
+      ],
+      "value": {
+        "entryType": 1,
+        "fields": {
+          "password": {
+            "access": "onGrantValue",
+            "value": "synthetic-secret"
+          },
+          "urlDomain": {
+            "access": "onGrantValue",
+            "value": "example.test"
+          }
+        },
+        "schemaVersion": 1
+      }
+    },
+    {
+      "id": "legacy-missing-inject-origin",
+      "requestedMethod": 4,
+      "fieldIds": [
+        "password"
+      ],
+      "value": {
+        "entryType": 1,
+        "fields": {
+          "password": {
+            "access": "onGrantValue",
+            "value": "synthetic-secret"
+          }
+        },
+        "schemaVersion": 1
+      }
+    },
+    {
+      "id": "totp-seed-material-is-not-a-derived-output",
+      "requestedMethod": 1,
+      "fieldIds": [
+        "credential.totp"
+      ],
+      "value": {
+        "schema": "palladin.grant-payload.v1",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "secret": "JBSWY3DPEHPK3PXP",
+              "algorithm": "SHA1",
+              "digits": 6,
+              "period": 30,
+              "issuer": null,
+              "account": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "script-ref-non-canonical-uuid",
+      "requestedMethod": 2,
+      "fieldIds": [
+        "script.refs"
+      ],
+      "value": {
+        "schema": "palladin.grant-payload.v1",
+        "entryType": "script",
+        "fields": [
+          {
+            "id": "script.refs",
+            "kind": "refs",
+            "mode": "runtime",
+            "value": [
+              {
+                "env": "PASSWORD",
+                "vaultId": "------------------------------------",
+                "entryId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                "fieldId": "credential.password"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "current-non-canonical-whitespace",
+      "requestedMethod": 4,
+      "rawUtf8": " {\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.password\",\"kind\":\"concealed\",\"mode\":\"value\",\"value\":\"synthetic-secret\"}],\"schema\":\"palladin.grant-payload.v1\"}"
+    },
+    {
+      "id": "current-non-canonical-key-order",
+      "requestedMethod": 4,
+      "rawUtf8": "{\"schema\":\"palladin.grant-payload.v1\",\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.password\",\"kind\":\"concealed\",\"mode\":\"value\",\"value\":\"synthetic-secret\"}]}"
+    },
+    {
+      "id": "current-duplicate-json-key",
+      "requestedMethod": 4,
+      "rawUtf8": "{\"entryType\":\"credential\",\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.password\",\"kind\":\"concealed\",\"mode\":\"value\",\"value\":\"synthetic-secret\"}],\"schema\":\"palladin.grant-payload.v1\"}"
+    },
+    {
+      "id": "legacy-unsupported-method",
+      "requestedMethod": 1,
+      "fieldIds": [
+        "password",
+        "url",
+        "username"
+      ],
+      "value": {
+        "entryType": 1,
+        "fields": {
+          "password": {
+            "access": "onGrantValue",
+            "value": "synthetic-secret"
+          },
+          "url": {
+            "access": "onGrantValue",
+            "value": "https://example.test/login"
+          },
+          "username": {
+            "access": "onGrantValue",
+            "value": "synthetic-user"
+          }
+        },
+        "schemaVersion": 1
+      }
+    }
+  ]
+}

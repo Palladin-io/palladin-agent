@@ -356,7 +356,7 @@ pub fn resolve_grant_payload_field(
         .ok_or(SecretParseError::InvalidGrantPayload)?;
     if object.len() != 3
         || object.get("schema").and_then(Value::as_str) != Some("palladin.grant-payload.v1")
-        || !matches!(entry_type, "key" | "credential" | "script" | "creditCard")
+        || !matches!(entry_type, "key" | "credential" | "script")
         || fields.is_empty()
     {
         return Err(SecretParseError::InvalidGrantPayload);
@@ -396,10 +396,25 @@ pub fn resolve_grant_payload_field(
     let (kind, value) = requested.ok_or(SecretParseError::UnknownMemberSecretField)?;
     let is_totp = kind == "totp";
     let value = if is_totp {
-        let params = parse_totp_json(value).ok_or(SecretParseError::InvalidTotp)?;
-        crate::totp::generate_totp(&params)
-            .map_err(|_| SecretParseError::InvalidTotp)?
-            .code
+        let object = value
+            .as_object()
+            .filter(|object| object.len() == 2)
+            .ok_or(SecretParseError::InvalidTotp)?;
+        let code = object
+            .get("code")
+            .and_then(Value::as_str)
+            .filter(|code| {
+                !code.is_empty()
+                    && code.len() <= 16
+                    && code.bytes().all(|byte| byte.is_ascii_digit())
+            })
+            .ok_or(SecretParseError::InvalidTotp)?;
+        object
+            .get("expiresIn")
+            .and_then(Value::as_u64)
+            .filter(|expires| (1..=120).contains(expires))
+            .ok_or(SecretParseError::InvalidTotp)?;
+        code.to_owned().into()
     } else {
         value
             .as_str()
@@ -413,26 +428,21 @@ pub fn resolve_grant_payload_field(
 fn expected_grant_field(entry_type: &str, id: &str, kind: &str) -> Option<&'static str> {
     let expected = match (entry_type, id) {
         ("key", "key.value") => ("concealed", "value"),
+        ("key", "key.url") => ("url", "value"),
+        ("key", "key.notes") => ("multiline", "value"),
         ("credential", "credential.username") => ("text", "value"),
         ("credential", "credential.password") => ("concealed", "value"),
         ("credential", "credential.url") => ("url", "value"),
-        ("credential", "credential.urlDomain") => ("text", "value"),
+        ("credential", "credential.notes") => ("multiline", "value"),
         ("credential", "credential.totp") => ("totp", "derived"),
-        ("credential" | "key", "notes") => ("multiline", "value"),
         ("script", "script.source") => ("script", "runtime"),
-        ("script", "script.interpreter") => ("interpreter", "runtime"),
         ("script", "script.refs") => ("refs", "runtime"),
-        ("creditCard", "creditCard.cardholderName") => ("text", "runtime"),
-        ("creditCard", "creditCard.cardNumber") => ("concealed", "runtime"),
-        ("creditCard", "creditCard.expiryMonth") => ("text", "runtime"),
-        ("creditCard", "creditCard.expiryYear") => ("text", "runtime"),
-        ("creditCard", "creditCard.billingAddress") => ("text", "runtime"),
-        ("script" | "creditCard", "notes") => ("multiline", "runtime"),
+        ("script", "script.notes") => ("multiline", "runtime"),
         (_, custom) if custom.starts_with("custom:") => {
             let mode = if kind == "totp" {
                 "derived"
             } else if matches!(kind, "text" | "multiline" | "concealed") {
-                if matches!(entry_type, "script" | "creditCard") {
+                if entry_type == "script" {
                     "runtime"
                 } else {
                     "value"
@@ -1048,7 +1058,7 @@ mod tests {
     fn projected_grant_fields_resolve_locally_without_accepting_member_secret_shape() {
         const PASSWORD: &str = "fixture-password-never-log";
         let payload = format!(
-            r#"{{"entryType":"credential","fields":[{{"id":"credential.password","kind":"concealed","mode":"value","value":"{PASSWORD}"}},{{"id":"credential.totp","kind":"totp","mode":"derived","value":{{"algorithm":"SHA1","digits":6,"period":30,"secret":"JBSWY3DPEHPK3PXP"}}}}],"schema":"palladin.grant-payload.v1"}}"#
+            r#"{{"entryType":"credential","fields":[{{"id":"credential.password","kind":"concealed","mode":"value","value":"{PASSWORD}"}},{{"id":"credential.totp","kind":"totp","mode":"derived","value":{{"code":"123456","expiresIn":30}}}}],"schema":"palladin.grant-payload.v1"}}"#
         );
         let password = resolve_grant_payload_field(payload.as_bytes(), "credential.password")
             .expect("projected password");
@@ -1059,8 +1069,14 @@ mod tests {
         let totp = resolve_grant_payload_field(payload.as_bytes(), "credential.totp")
             .expect("projected TOTP");
         assert!(totp.is_totp);
-        let totp_has_expected_length = totp.value.expose_secret().len() == 6;
-        assert!(totp_has_expected_length, "projected TOTP length diverged");
+        let totp_matches = totp.value.expose_secret() == "123456";
+        assert!(totp_matches, "derived TOTP code diverged");
+        let seed_payload = br#"{"entryType":"credential","fields":[{"id":"credential.totp","kind":"totp","mode":"derived","value":{"algorithm":"SHA1","digits":6,"period":30,"secret":"JBSWY3DPEHPK3PXP"}}],"schema":"palladin.grant-payload.v1"}"#;
+        assert_eq!(
+            resolve_grant_payload_field(seed_payload, "credential.totp")
+                .expect_err("TOTP seed material"),
+            SecretParseError::InvalidTotp,
+        );
         assert_eq!(
             resolve_grant_payload_field(payload.as_bytes(), "credential.username")
                 .expect_err("unprojected field"),
