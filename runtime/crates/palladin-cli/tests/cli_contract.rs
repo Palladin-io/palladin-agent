@@ -3,8 +3,8 @@ use std::process::Command;
 
 use clap::Parser;
 use palladin_api::{
-    AgentRegistrationResult, AgentVisibleField, CredentialAccess, EntrySearchItem,
-    EntrySearchResult,
+    AgentRegistrationResult, AgentVisibleField, CredentialAccess, CredentialMethod,
+    EntrySearchItem, EntrySearchResult,
 };
 use palladin_cli::args::{Cli, Commands};
 use palladin_cli::output::{
@@ -15,7 +15,7 @@ use palladin_cli::output::{
 };
 use palladin_cli::{CreatedProfile, LegacyCleanupOutcome, LegacyCutoverOutcome};
 use palladin_core::public_store::{PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicRegistry};
-use palladin_credential::access::exit_code_for_access;
+use palladin_credential::access::{access_message, exit_code_for_access};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -209,6 +209,36 @@ fn contradictory_wait_flags_preserve_legacy_last_option_wins_behavior() {
 }
 
 #[test]
+fn script_exec_reads_local_parameters_from_stdin_without_putting_values_in_argv() {
+    let parsed = Cli::try_parse_from([
+        "palladin",
+        "exec",
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "--parameters-stdin",
+    ])
+    .expect("Script exec");
+    let Commands::Exec(args) = parsed.command else {
+        panic!("exec command");
+    };
+    assert!(args.command.is_empty());
+    assert!(args.parameters_stdin);
+
+    assert!(
+        Cli::try_parse_from([
+            "palladin",
+            "exec",
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+            "--parameters",
+            r#"{"password":"must-never-enter-argv"}"#,
+        ])
+        .is_err(),
+        "Script parameter values must never be accepted through process arguments"
+    );
+}
+
+#[test]
 fn global_profile_selector_parses_after_the_command() {
     let parsed =
         Cli::try_parse_from(["palladin", "get", "vault", "entry", "--id", "local-profile"])
@@ -345,6 +375,20 @@ fn frozen_exit_codes_cover_usage_environment_retry_and_permission_classes() {
 }
 
 #[test]
+fn script_method_not_allowed_is_a_stable_content_free_cli_denial() {
+    let access = CredentialAccess::MethodNotAllowed;
+    assert_eq!(exit_code_for_access(&access), 77);
+    let message = access_message(&access, CredentialMethod::Exec).expect("denial message");
+    assert_eq!(
+        message,
+        "This grant does not permit exec. The owner restricted how this credential may be used - try palladin inject or palladin get, or ask them to allow exec."
+    );
+    for forbidden in ["result", "stdout", "stderr", "scriptSource", "parameters"] {
+        assert!(!message.contains(forbidden));
+    }
+}
+
+#[test]
 fn frozen_get_outputs_match_the_legacy_json_shape_byte_for_byte() {
     let snapshots = contract().credential_output_snapshots;
     let whole = CredentialOutput {
@@ -418,6 +462,7 @@ fn frozen_command_outputs_cover_every_ported_public_surface() {
                 label: "Region".to_owned(),
                 value: "eu-central-1".to_owned(),
             }],
+            script_execution: None,
         }],
         next_cursor: Some("cursor-1234567890abcdef".to_owned()),
     };

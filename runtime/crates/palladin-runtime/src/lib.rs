@@ -16,8 +16,8 @@ use palladin_api::{
     AgentPairingActivationResponse, AgentPairingStatus, AgentPairingStatusResponse,
     AgentRegistrationResult, AgentVaultManifestsResponse, AgentVisibleField, ApiClient, ApiError,
     CredentialAccess, CredentialCiphertext, CredentialGrantType, CredentialMethod,
-    EntrySearchResult, FormDiscoveryMap, GetCredentialOptions, GrantStatus,
-    ReportCredentialStaleInput, VaultManifest,
+    EntrySearchResult, FormDiscoveryMap, GetCredentialOptions, GrantStatus, GrantStatusResponse,
+    ReportCredentialStaleInput, ScriptExecutionPackageResponse, VaultManifest,
 };
 use palladin_browser_bridge::secure_transport::{BrowserHostIdentity, SecureTransportError};
 use palladin_browser_bridge::{
@@ -44,16 +44,19 @@ use palladin_credential::wait::{
 use palladin_crypto::{
     AgentIdentityBinding, CredentialEnvelopeContext, DecryptedCredential, Ed25519Identity,
     EncodedSuitePayload, EncryptedReasonContext, EnvelopeBinding, EnvelopeDescriptor,
-    EnvelopePurpose, EnvelopeScope, FullCredentialEnvelopeContext, PairingCandidate,
+    EnvelopePurpose, EnvelopeScope, ExpectedScriptExecutionPackageContext,
+    FullCredentialEnvelopeContext, FullScriptMemberSecretContext, PairingCandidate,
     PairingRelayStatus, PinnedVaultTrust, RecipientKeyKind, SealedWrappedKey, SecretBytes,
     VaultManifestV2, WrapperContext, WrapperPurpose, X25519Identity, X25519SealedBoxSuite,
     XChaChaVaultSuite, confirm_pairing_from_relay, decode_base64url, decrypt_credential,
-    decrypt_full_credential, key_fingerprint, open_local_discovery_cache, prepare_pairing,
-    seal_local_discovery_cache, verify_current_manifest, verify_profile_binding,
+    decrypt_full_credential, decrypt_full_script_member_secret, encode_script_execution_parameters,
+    key_fingerprint, open_local_discovery_cache, open_script_execution_package, prepare_pairing,
+    seal_local_discovery_cache, verify_agent_wrapped_vault_key_producer, verify_current_manifest,
+    verify_profile_binding,
 };
 use palladin_exec::{
-    EnvironmentError, SecretEnvironment, resolve_interpreter, run_command, run_script,
-    validate_command, validate_reference_name,
+    CapturedScriptResult, EnvironmentError, SecretEnvironment, resolve_interpreter, run_command,
+    run_script_captured, validate_command, validate_reference_name,
 };
 pub use palladin_platform::secure_store::SecretStore;
 use palladin_platform::secure_store::{
@@ -61,7 +64,7 @@ use palladin_platform::secure_store::{
     OperationScope, SecretSlot, StoreError, delete_identity, delete_legacy_identity,
     delete_legacy_organization_credential, delete_organization_credential,
 };
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -84,7 +87,10 @@ use integrity::{
 };
 
 use palladin_credential::fields::{FieldSelector, resolve_field};
-use palladin_credential::secret::{ScriptPayload, parse_secret};
+use palladin_credential::secret::{
+    parse_member_script, parse_secret, resolve_grant_payload_field,
+    resolve_script_reference_member_field,
+};
 
 const DISCOVERY_SYNC_PAGE_SIZE: usize = 200;
 const MAX_DISCOVERY_SYNC_PAGES: usize = 1_000;
@@ -300,6 +306,7 @@ pub enum OperationDescriptor {
         wait: WaitOptions,
         command: Vec<String>,
         env_mappings: Vec<String>,
+        parameters_digest: [u8; 32],
         output: CredentialOutputPolicy,
     },
     ReportCredentialStale {
@@ -424,6 +431,7 @@ impl OperationDescriptor {
                 wait,
                 command,
                 env_mappings,
+                parameters_digest,
                 output,
             } => {
                 encoder.surface(*surface);
@@ -433,6 +441,7 @@ impl OperationDescriptor {
                 encoder.wait(*wait);
                 encoder.strings(command);
                 encoder.strings(env_mappings);
+                encoder.field(parameters_digest);
                 encoder.output(*output);
             }
             Self::ReportCredentialStale {
@@ -3417,6 +3426,7 @@ pub struct CredentialExecRequest<'a> {
     pub delivery: CredentialDeliveryRequest<'a>,
     pub command: Option<&'a [String]>,
     pub env_mappings: &'a [String],
+    pub parameters: &'a serde_json::Value,
     pub output: OperatorOutput,
 }
 
@@ -4431,6 +4441,32 @@ impl RuntimeSession<'_> {
         self.begin_operation(RuntimeOperation::ExecWithCredential)?;
         let operation_cancellation = self.operation_cancellation(cancellation)?;
         let cancellation = operation_cancellation.token();
+        let has_command = request.command.is_some_and(|command| !command.is_empty());
+        if has_command
+            && self
+                .discovery
+                .lock()
+                .await
+                .entry_type(request.delivery.vault_id, request.delivery.entry_id)
+                == Some("script")
+        {
+            return Err(RuntimeError::CommandProvidedForScript);
+        }
+        if !has_command {
+            if !request.env_mappings.is_empty() {
+                return Err(RuntimeError::EnvironmentMappingForScript);
+            }
+            return self
+                .execute_atomic_script(&request, cancellation, &mut heartbeat)
+                .await;
+        }
+        if request
+            .parameters
+            .as_object()
+            .is_none_or(|parameters| !parameters.is_empty())
+        {
+            return Err(RuntimeError::InvalidScriptParameters);
+        }
         if let Some(command) = request.command.filter(|command| !command.is_empty()) {
             validate_command(command)?;
         }
@@ -4448,102 +4484,371 @@ impl RuntimeSession<'_> {
             };
             return Ok(CredentialExecOutcome::NotGranted(access));
         };
-        let mut parsed = parse_secret(credential.expose_for_authorized_operation())
+        let parsed = parse_secret(credential.expose_for_authorized_operation())
             .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
         drop(credential);
-
-        let result = if let Some(script) = parsed.script.take() {
-            if request.command.is_some_and(|command| !command.is_empty()) {
-                return Err(RuntimeError::CommandProvidedForScript);
-            }
-            if !request.env_mappings.is_empty() {
-                return Err(RuntimeError::EnvironmentMappingForScript);
-            }
-            let interpreter = resolve_interpreter(&script.interpreter)?;
-            drop(parsed);
-            let environment = self
-                .prepare_script_environment(
-                    &request.delivery,
-                    &script,
-                    cancellation,
-                    &mut heartbeat,
-                )
-                .await?;
-            run_script(
-                &script.script,
-                &interpreter,
-                environment,
-                request.output,
-                cancellation,
-            )
-            .await?
-        } else {
-            let command = request
-                .command
-                .filter(|command| !command.is_empty())
-                .ok_or(RuntimeError::MissingExecCommand)?;
-            let mut environment = SecretEnvironment::for_credential(&parsed);
-            prepare_explicit_environment(&parsed, request.env_mappings, &mut environment)?;
-            drop(parsed);
-            run_command(command, environment, request.output, cancellation).await?
-        };
+        if parsed.script.is_some() {
+            return Err(RuntimeError::InvalidCredentialPayload);
+        }
+        let command = request
+            .command
+            .filter(|command| !command.is_empty())
+            .ok_or(RuntimeError::MissingExecCommand)?;
+        let mut environment = SecretEnvironment::for_credential(&parsed);
+        prepare_explicit_environment(&parsed, request.env_mappings, &mut environment)?;
+        drop(parsed);
+        let result = run_command(command, environment, request.output, cancellation).await?;
         self.ensure_authorized()?;
         Ok(CredentialExecOutcome::Completed(result))
     }
 
-    async fn prepare_script_environment<H>(
+    async fn execute_atomic_script<H>(
         &self,
-        main: &CredentialDeliveryRequest<'_>,
-        script: &ScriptPayload,
+        request: &CredentialExecRequest<'_>,
         cancellation: &CancellationToken,
-        heartbeat: &mut H,
-    ) -> Result<SecretEnvironment, RuntimeError>
+        mut heartbeat: H,
+    ) -> Result<CredentialExecOutcome, RuntimeError>
     where
         H: FnMut(HeartbeatInfo),
     {
-        preflight_script_references(script)?;
-        let mut environment = SecretEnvironment::new();
-        for reference in &script.refs {
-            let vault_id = reference.vault_id.as_deref().unwrap_or(main.vault_id);
-            let delivery = self
-                .deliver_credential(
-                    CredentialDeliveryRequest {
-                        vault_id,
-                        entry_id: &reference.entry_id,
-                        reason: main.reason,
-                        wait: main.wait,
-                    },
-                    CredentialMethod::Exec,
-                    cancellation,
-                    &mut *heartbeat,
-                )
-                .await?;
-            let CredentialDelivery::Granted(credential) = delivery else {
-                let CredentialDelivery::NotGranted(_access) = delivery else {
-                    unreachable!("credential delivery variants are exhaustive")
+        let agent_id = self
+            .config
+            .agent_id
+            .as_deref()
+            .ok_or(RuntimeError::MissingAgentId)?;
+        let response = match self
+            .fetch_script_execution_package(
+                request.delivery.vault_id,
+                request.delivery.entry_id,
+                cancellation,
+            )
+            .await?
+        {
+            Ok(response) => response,
+            Err(CredentialAccess::Unavailable) => {
+                let prepared = self
+                    .credential_options(request.delivery, CredentialMethod::Exec)
+                    .await?;
+                let requested = tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => return Err(RuntimeError::WaitCancelled),
+                    response = self.api.request_script_execution_access(
+                        request.delivery.vault_id,
+                        request.delivery.entry_id,
+                        prepared.options.encrypted_reason.as_ref(),
+                    ) => response?,
                 };
-                return Err(RuntimeError::ScriptReferenceNotGranted);
-            };
-            let parsed = parse_secret(credential.expose_for_authorized_operation())
-                .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
-            drop(credential);
-            let value = if reference.field.is_some() || reference.field_id.is_some() {
-                resolve_field(
-                    &parsed,
-                    &FieldSelector {
-                        field: reference.field.clone(),
-                        field_id: reference.field_id.clone(),
+                self.ensure_authorized()?;
+                let grant_id = requested.grant_id.clone();
+                let hints = WaitHints {
+                    poll_interval_ms: requested.poll_interval_ms,
+                    max_wait_ms: requested.max_wait_ms,
+                };
+                let policy = resolve_wait_policy(request.delivery.wait, hints)?;
+                let access = await_grant_exponential(
+                    script_grant_status_as_access(requested),
+                    policy,
+                    cancellation,
+                    || async {
+                        let status = self
+                            .api
+                            .get_grant_status(request.delivery.vault_id, &grant_id)
+                            .await?;
+                        Ok(script_grant_status_as_access(status))
                     },
+                    tokio::time::sleep,
+                    &mut heartbeat,
                 )
-                .map_err(|_| RuntimeError::InvalidEnvironmentField)?
-                .expose_for_authorized_operation()
-                .to_owned()
-            } else {
-                parsed.password.expose_secret().to_owned()
-            };
-            environment.insert_reference(&reference.env, value.into())?;
+                .await
+                .map_err(|error| match error {
+                    WaitError::Cancelled => RuntimeError::WaitCancelled,
+                    WaitError::Poll(error) => RuntimeError::Api(error),
+                })?;
+                self.ensure_authorized()?;
+                if !matches!(access, CredentialAccess::Unavailable) {
+                    return Ok(CredentialExecOutcome::NotGranted(access));
+                }
+                match self
+                    .fetch_script_execution_package(
+                        request.delivery.vault_id,
+                        request.delivery.entry_id,
+                        cancellation,
+                    )
+                    .await?
+                {
+                    Ok(response) => response,
+                    Err(access) => return Ok(CredentialExecOutcome::NotGranted(access)),
+                }
+            }
+            Err(access) => return Ok(CredentialExecOutcome::NotGranted(access)),
+        };
+        self.ensure_authorized()?;
+        if response.vault_id != request.delivery.vault_id
+            || response.agent_id != agent_id
+            || response.script_entry_id != request.delivery.entry_id
+        {
+            return Err(RuntimeError::InvalidScriptExecutionPackage);
         }
-        Ok(environment)
+        let (signing_key_version, signing_key_fingerprint) =
+            match response.authorization_source.as_str() {
+                "scriptExecution" => {
+                    let package = response
+                        .script_package
+                        .as_ref()
+                        .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+                    (
+                        package.vault_signing_key_version,
+                        package.vault_signing_key_fingerprint.as_str(),
+                    )
+                }
+                "full" => {
+                    let wrapped_vault_key = response
+                        .agent_wrapped_vault_key
+                        .as_ref()
+                        .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+                    (
+                        wrapped_vault_key.vault_signing_key_version,
+                        wrapped_vault_key.vault_signing_key_fingerprint.as_str(),
+                    )
+                }
+                _ => return Err(RuntimeError::InvalidScriptExecutionPackage),
+            };
+        let cached_anchor = self
+            .config
+            .vault_trust_anchors
+            .iter()
+            .find(|anchor| {
+                anchor.organization_id == response.organization_id
+                    && anchor.vault_id == request.delivery.vault_id
+                    && anchor.agent_access_epoch == u64::from(response.agent_access_epoch)
+                    && anchor.manifest_signing_key_version == signing_key_version
+                    && anchor.vault_signing_key_fingerprint == signing_key_fingerprint
+            })
+            .cloned();
+        let anchor = if let Some(anchor) = cached_anchor {
+            anchor
+        } else {
+            let manifest_batch =
+                self.prepare_manifest_batch(self.api.list_vault_manifests().await?)?;
+            let anchor = manifest_batch
+                .next_anchors
+                .iter()
+                .find(|anchor| {
+                    anchor.organization_id == response.organization_id
+                        && anchor.vault_id == request.delivery.vault_id
+                        && anchor.agent_access_epoch == u64::from(response.agent_access_epoch)
+                        && anchor.manifest_signing_key_version == signing_key_version
+                        && anchor.vault_signing_key_fingerprint == signing_key_fingerprint
+                })
+                .cloned()
+                .ok_or(RuntimeError::UntrustedVaultManifest)?;
+            self.persist_prepared_manifest_batch(&manifest_batch)?;
+            anchor
+        };
+
+        let script_revision = response.script_revision.clone();
+        let authorization_source = response.authorization_source.clone();
+        let grant_id = response.grant_id.clone();
+        let expires_at = response.expires_at.clone();
+        let mut environment = SecretEnvironment::new();
+        let mut protected_literals = Vec::<SecretString>::new();
+        let (script, interpreter_name, return_result_to_agent, parameters) = if authorization_source
+            == "scriptExecution"
+        {
+            let package = response
+                .script_package
+                .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+            let recipient_key_version = package.recipient_agent_key_version;
+            let package_revision = package.package_revision.clone();
+            let mut opened = open_script_execution_package(
+                package,
+                &self.encryption,
+                &ExpectedScriptExecutionPackageContext {
+                    organization_id: anchor.organization_id.clone(),
+                    vault_id: request.delivery.vault_id.to_owned(),
+                    grant_id: grant_id.clone(),
+                    agent_id: agent_id.to_owned(),
+                    agent_access_epoch: response.agent_access_epoch,
+                    script_entry_id: request.delivery.entry_id.to_owned(),
+                    script_revision: script_revision.clone(),
+                    package_revision,
+                    recipient_agent_key_version: recipient_key_version,
+                    vault_signing_key_version: anchor.manifest_signing_key_version,
+                    vault_signing_key_fingerprint: anchor.vault_signing_key_fingerprint.clone(),
+                    vault_signing_public_key: decode_32_url(&anchor.vault_signing_public_key)?,
+                },
+            )?;
+            let entries = opened
+                .entries
+                .iter()
+                .map(|entry| (entry.entry_id.as_str(), entry))
+                .collect::<BTreeMap<_, _>>();
+            for reference in &opened.manifest.references {
+                let entry = entries
+                    .get(reference.entry_id.as_str())
+                    .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+                if entry.entry_revision != reference.entry_revision {
+                    return Err(RuntimeError::InvalidScriptExecutionPackage);
+                }
+                let resolved = resolve_grant_payload_field(
+                    entry.encoded_grant_payload.expose_for_crypto_operation(),
+                    &reference.field_id,
+                )
+                .map_err(|_| RuntimeError::InvalidEnvironmentField)?;
+                protected_literals.push(resolved.value.clone());
+                environment.insert_reference(&reference.env, resolved.value)?;
+            }
+            (
+                SecretString::from(std::mem::take(&mut opened.manifest.script_source)),
+                opened.manifest.interpreter.clone(),
+                opened.manifest.return_result_to_agent,
+                opened.manifest.parameters.clone(),
+            )
+        } else if authorization_source == "full" {
+            let wrapped_vault_key = response
+                .agent_wrapped_vault_key
+                .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+            verify_agent_wrapped_vault_key_producer(
+                &wrapped_vault_key,
+                anchor.manifest_signing_key_version,
+                &anchor.vault_signing_key_fingerprint,
+                &decode_32_url(&anchor.vault_signing_public_key)?,
+            )
+            .map_err(|_| RuntimeError::InvalidScriptExecutionPackage)?;
+            let entries = response
+                .vault_entries
+                .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+            let entry_count = entries.len();
+            let mut entries = entries
+                .into_iter()
+                .map(|entry| (entry.entry_id.clone(), entry))
+                .collect::<BTreeMap<_, _>>();
+            if entries.len() != entry_count {
+                return Err(RuntimeError::InvalidScriptExecutionPackage);
+            }
+            let script_entry = entries
+                .remove(request.delivery.entry_id)
+                .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+            if script_entry.entry_revision != script_revision || script_entry.delivery_policy != 1 {
+                return Err(RuntimeError::InvalidScriptExecutionPackage);
+            }
+            let script_member_secret = decrypt_full_script_member_secret(
+                &wrapped_vault_key,
+                &script_entry.entry_key,
+                &script_entry.member_secret,
+                &self.encryption,
+                &FullScriptMemberSecretContext {
+                    organization_id: &anchor.organization_id,
+                    vault_id: request.delivery.vault_id,
+                    grant_id: &grant_id,
+                    agent_id,
+                    agent_access_epoch: response.agent_access_epoch,
+                    entry_id: request.delivery.entry_id,
+                    entry_revision: &script_entry.entry_revision,
+                    expires_at: expires_at.as_deref(),
+                },
+            )?;
+            let script = parse_member_script(script_member_secret.expose_for_crypto_operation())
+                .map_err(|_| RuntimeError::InvalidScriptExecutionPackage)?;
+            let metadata = script
+                .execution
+                .as_ref()
+                .ok_or(RuntimeError::ScriptExecutionMetadataUnavailable)?;
+            let return_result_to_agent = metadata.effective_return_result_to_agent();
+            let parameters = metadata.parameters.clone();
+            preflight_script_references_raw(&script.refs, request.delivery.vault_id)?;
+            for reference in &script.refs {
+                let entry = entries
+                    .get(&reference.entry_id)
+                    .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+                if entry.delivery_policy == 2 {
+                    return Err(RuntimeError::InvalidScriptExecutionPackage);
+                }
+                let member_secret = decrypt_full_script_member_secret(
+                    &wrapped_vault_key,
+                    &entry.entry_key,
+                    &entry.member_secret,
+                    &self.encryption,
+                    &FullScriptMemberSecretContext {
+                        organization_id: &anchor.organization_id,
+                        vault_id: request.delivery.vault_id,
+                        grant_id: &grant_id,
+                        agent_id,
+                        agent_access_epoch: response.agent_access_epoch,
+                        entry_id: &entry.entry_id,
+                        entry_revision: &entry.entry_revision,
+                        expires_at: expires_at.as_deref(),
+                    },
+                )?;
+                let field_id = reference
+                    .field_id
+                    .as_deref()
+                    .ok_or(RuntimeError::InvalidScriptExecutionPackage)?;
+                let resolved = resolve_script_reference_member_field(
+                    member_secret.expose_for_crypto_operation(),
+                    field_id,
+                )
+                .map_err(|_| RuntimeError::InvalidEnvironmentField)?;
+                protected_literals.push(resolved.value.clone());
+                environment.insert_reference(&reference.env, resolved.value)?;
+            }
+            (
+                script.script,
+                script.interpreter,
+                return_result_to_agent,
+                parameters,
+            )
+        } else {
+            return Err(RuntimeError::InvalidScriptExecutionPackage);
+        };
+        let parameter_frame = encode_script_execution_parameters(&parameters, request.parameters)
+            .map_err(|_| RuntimeError::InvalidScriptParameters)?;
+        let parameter_frame = std::str::from_utf8(parameter_frame.expose_for_crypto_operation())
+            .map_err(|_| RuntimeError::InvalidScriptParameters)?
+            .to_owned();
+        let parameter_frame = SecretString::from(parameter_frame);
+        let interpreter = resolve_interpreter(&interpreter_name)?;
+        let captured = run_script_captured(
+            &script,
+            &interpreter,
+            environment,
+            &parameter_frame,
+            cancellation,
+        )
+        .await?;
+        self.ensure_authorized()?;
+        Ok(CredentialExecOutcome::ScriptCompleted(
+            finalize_script_result(captured, return_result_to_agent, &protected_literals),
+        ))
+    }
+
+    async fn fetch_script_execution_package(
+        &self,
+        vault_id: &str,
+        script_entry_id: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Result<ScriptExecutionPackageResponse, CredentialAccess>, RuntimeError> {
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(RuntimeError::WaitCancelled),
+            response = self.api.get_current_script_execution_package(
+                vault_id,
+                script_entry_id,
+            ) => match response {
+                Ok(response) => Ok(Ok(response)),
+                Err(ApiError::Http(404)) => Ok(Err(CredentialAccess::Unavailable)),
+                Err(ApiError::ScriptMethodNotAllowed) => {
+                    Ok(Err(CredentialAccess::MethodNotAllowed))
+                }
+                Err(ApiError::ScriptExpired) => Ok(Err(CredentialAccess::Expired)),
+                Err(ApiError::Http(429)) => Ok(Err(CredentialAccess::Consumed)),
+                Err(ApiError::ScriptStaleDiscovery) => Err(RuntimeError::StaleScriptDiscovery),
+                Err(ApiError::ScriptInvalidPackage) => {
+                    Err(RuntimeError::InvalidScriptExecutionPackage)
+                }
+                Err(error) => Err(RuntimeError::Api(error)),
+            },
+        }
     }
 
     async fn deliver_credential<H>(
@@ -4766,7 +5071,52 @@ pub enum CredentialDelivery {
 #[derive(Debug, Eq, PartialEq)]
 pub enum CredentialExecOutcome {
     Completed(ExecResult),
+    ScriptCompleted(ScriptExecutionResult),
     NotGranted(CredentialAccess),
+}
+
+#[derive(Eq, PartialEq)]
+pub struct ScriptExecutionResult {
+    pub exit_code: i32,
+    pub cancelled: bool,
+    pub result: Option<Zeroizing<String>>,
+    pub withheld: Option<ScriptResultWithheld>,
+}
+
+impl std::fmt::Debug for ScriptExecutionResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ScriptExecutionResult")
+            .field("exit_code", &self.exit_code)
+            .field("cancelled", &self.cancelled)
+            .field("result", &self.result.as_ref().map(|_| "[REDACTED]"))
+            .field("withheld", &self.withheld)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScriptResultWithheld {
+    PolicyDisabled,
+    LegacyPolicyDefault,
+    ResultTooLarge,
+    ResultInvalidText,
+    ProtectedLiteralDetected,
+    Cancelled,
+}
+
+impl ScriptResultWithheld {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::PolicyDisabled => "policy-disabled",
+            Self::LegacyPolicyDefault => "legacy-policy-default",
+            Self::ResultTooLarge => "result-too-large",
+            Self::ResultInvalidText => "result-invalid-text",
+            Self::ProtectedLiteralDetected => "protected-literal-detected",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 impl std::fmt::Debug for CredentialDelivery {
@@ -5244,6 +5594,24 @@ const fn credential_method_mask(method: CredentialMethod) -> u16 {
     }
 }
 
+fn script_grant_status_as_access(status: GrantStatusResponse) -> CredentialAccess {
+    match status.status {
+        GrantStatus::Pending => CredentialAccess::Pending {
+            grant_id: status.grant_id,
+            created: status.created,
+            poll_interval_ms: status.poll_interval_ms,
+            max_wait_ms: status.max_wait_ms,
+        },
+        // The shared wait primitive stops on every non-Pending value. Unavailable is an
+        // internal signal here: the grant is Active and the caller may fetch the package.
+        GrantStatus::Active => CredentialAccess::Unavailable,
+        GrantStatus::Denied => CredentialAccess::Denied,
+        GrantStatus::Revoked => CredentialAccess::Revoked,
+        GrantStatus::Expired => CredentialAccess::Expired,
+        GrantStatus::Consumed => CredentialAccess::Consumed,
+    }
+}
+
 fn authenticated_inject_metadata(
     plaintext: &[u8],
 ) -> Result<(Option<String>, Vec<AgentVisibleField>), RuntimeError> {
@@ -5330,6 +5698,10 @@ pub enum RuntimeError {
     InvalidDiscoveryCursor,
     #[error("Agent Discovery does not match the granted Entry revision")]
     DiscoveryRevisionMismatch,
+    #[error(
+        "Script execution metadata is unavailable; refresh Discovery after updating the Script"
+    )]
+    ScriptExecutionMetadataUnavailable,
     #[error("local Discovery index exceeds its hard entry limit")]
     DiscoveryIndexLimitExceeded,
     #[error(
@@ -5404,8 +5776,12 @@ pub enum RuntimeError {
     InvalidEnvironmentMapping,
     #[error("an environment mapping selects an unavailable field")]
     InvalidEnvironmentField,
-    #[error("a Script entry reference was not granted")]
-    ScriptReferenceNotGranted,
+    #[error("Script parameter values do not match the current Discovery schema")]
+    InvalidScriptParameters,
+    #[error("Script Discovery is stale; refresh Discovery before retrying")]
+    StaleScriptDiscovery,
+    #[error("the atomic Script execution package is invalid, stale or substituted")]
+    InvalidScriptExecutionPackage,
 }
 
 impl From<FormMapCacheError> for RuntimeError {
@@ -5454,24 +5830,67 @@ fn prepare_explicit_environment(
     Ok(())
 }
 
-fn preflight_script_references(script: &ScriptPayload) -> Result<(), RuntimeError> {
+fn preflight_script_references_raw(
+    references: &[palladin_credential::secret::ScriptRef],
+    expected_vault_id: &str,
+) -> Result<(), RuntimeError> {
     let mut names = BTreeSet::new();
-    for reference in &script.refs {
+    for reference in references {
         validate_reference_name(&reference.env)?;
         let normalized = reference.env.to_ascii_uppercase();
         if !names.insert(normalized) {
             return Err(EnvironmentError::DuplicateName.into());
         }
-        if reference.entry_id.trim().is_empty()
-            || reference
-                .vault_id
-                .as_ref()
-                .is_some_and(|vault_id| vault_id.trim().is_empty())
+        if Uuid::parse_str(&reference.entry_id).is_err()
+            || reference.vault_id.as_deref() != Some(expected_vault_id)
+            || reference.field_id.as_deref().is_none_or(str::is_empty)
         {
             return Err(RuntimeError::InvalidEnvironmentMapping);
         }
     }
     Ok(())
+}
+
+fn finalize_script_result(
+    captured: CapturedScriptResult,
+    return_result_to_agent: bool,
+    protected_literals: &[SecretString],
+) -> ScriptExecutionResult {
+    let CapturedScriptResult {
+        exit_code,
+        cancelled,
+        mut stdout,
+        stdout_too_large,
+    } = captured;
+    let withheld = if cancelled {
+        Some(ScriptResultWithheld::Cancelled)
+    } else if !return_result_to_agent {
+        Some(ScriptResultWithheld::PolicyDisabled)
+    } else if stdout_too_large {
+        Some(ScriptResultWithheld::ResultTooLarge)
+    } else if std::str::from_utf8(&stdout).is_err() {
+        Some(ScriptResultWithheld::ResultInvalidText)
+    } else if protected_literals.iter().any(|literal| {
+        let literal = literal.expose_secret().as_bytes();
+        !literal.is_empty()
+            && stdout
+                .windows(literal.len())
+                .any(|window| window == literal)
+    }) {
+        Some(ScriptResultWithheld::ProtectedLiteralDetected)
+    } else {
+        None
+    };
+    let result = withheld.is_none().then(|| {
+        let bytes = std::mem::take(stdout.as_mut());
+        Zeroizing::new(String::from_utf8(bytes).expect("UTF-8 was validated above"))
+    });
+    ScriptExecutionResult {
+        exit_code,
+        cancelled,
+        result,
+        withheld,
+    }
 }
 
 fn generate_opaque_id() -> Result<String, RuntimeError> {
@@ -5519,6 +5938,91 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn script_result_is_returned_only_when_policy_and_literal_scan_allow_it() {
+        let allowed = finalize_script_result(
+            CapturedScriptResult {
+                exit_code: 0,
+                cancelled: false,
+                stdout: Zeroizing::new(b"42 users".to_vec()),
+                stdout_too_large: false,
+            },
+            true,
+            &[SecretString::from("fixture-secret".to_owned())],
+        );
+        assert_eq!(
+            allowed.result.as_deref().map(String::as_str),
+            Some("42 users")
+        );
+        assert_eq!(allowed.withheld, None);
+
+        let blocked = finalize_script_result(
+            CapturedScriptResult {
+                exit_code: 0,
+                cancelled: false,
+                stdout: Zeroizing::new(b"prefix fixture-secret suffix".to_vec()),
+                stdout_too_large: false,
+            },
+            true,
+            &[SecretString::from("fixture-secret".to_owned())],
+        );
+        assert!(blocked.result.is_none());
+        assert_eq!(
+            blocked.withheld,
+            Some(ScriptResultWithheld::ProtectedLiteralDetected)
+        );
+    }
+
+    #[test]
+    fn script_result_policy_large_invalid_and_cancelled_states_are_explicit() {
+        for (captured, enabled, expected) in [
+            (
+                CapturedScriptResult {
+                    exit_code: 0,
+                    cancelled: false,
+                    stdout: Zeroizing::new(b"safe".to_vec()),
+                    stdout_too_large: false,
+                },
+                false,
+                ScriptResultWithheld::PolicyDisabled,
+            ),
+            (
+                CapturedScriptResult {
+                    exit_code: 0,
+                    cancelled: false,
+                    stdout: Zeroizing::new(b"safe".to_vec()),
+                    stdout_too_large: true,
+                },
+                true,
+                ScriptResultWithheld::ResultTooLarge,
+            ),
+            (
+                CapturedScriptResult {
+                    exit_code: 0,
+                    cancelled: false,
+                    stdout: Zeroizing::new(vec![0xff]),
+                    stdout_too_large: false,
+                },
+                true,
+                ScriptResultWithheld::ResultInvalidText,
+            ),
+            (
+                CapturedScriptResult {
+                    exit_code: 130,
+                    cancelled: true,
+                    stdout: Zeroizing::new(Vec::new()),
+                    stdout_too_large: false,
+                },
+                true,
+                ScriptResultWithheld::Cancelled,
+            ),
+        ] {
+            let result = finalize_script_result(captured, enabled, &[]);
+            assert!(result.result.is_none());
+            assert_eq!(result.withheld, Some(expected));
+        }
+    }
+
     const TEST_ORGANIZATION_ID: &str = "00112233-4455-4677-8899-aabbccddeeff";
     const TEST_VAULT_ID: &str = "11112222-3333-4444-8555-666677778888";
     const TEST_ENTRY_ID: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -5540,6 +6044,51 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct MemorySecretStore(Arc<Mutex<MemorySecretValues>>);
+
+    #[tokio::test]
+    async fn script_method_not_allowed_returns_before_package_open_or_process_spawn() {
+        let body = r#"{"statusCode":403,"errors":{"generalErrors":["method-not-allowed"]}}"#;
+        let (host, requests) = single_response_server(403, body.to_owned()).await;
+        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let session = runtime_session(host, api, encryption);
+        let parameters = json!({});
+
+        let outcome = session
+            .execute_atomic_script(
+                &CredentialExecRequest {
+                    delivery: request(),
+                    command: None,
+                    env_mappings: &[],
+                    parameters: &parameters,
+                    output: OperatorOutput::Discard,
+                },
+                &CancellationToken::new(),
+                |_| {},
+            )
+            .await
+            .expect("content-free denial");
+
+        assert_eq!(
+            outcome,
+            CredentialExecOutcome::NotGranted(CredentialAccess::MethodNotAllowed)
+        );
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains(&format!(
+            "/vaults/{TEST_VAULT_ID}/scripts/{TEST_ENTRY_ID}/execution-package"
+        )));
+        for forbidden in ["parameters", "result", "stdout", "stderr", "scriptSource"] {
+            assert!(!requests[0].contains(forbidden));
+        }
+    }
 
     #[tokio::test]
     async fn stale_refresh_never_recaches_the_rejected_revision() {
@@ -5579,6 +6128,185 @@ mod tests {
             FormMapCache::get_serialized(root.path(), &host, "accounts.google.com", "playwright")
                 .expect("cache lookup")
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn script_exec_requests_one_pending_whole_script_grant() {
+        let (host, requests) = response_server_owned(vec![
+            (404, String::new()),
+            (
+                202,
+                r#"{"grantId":"33333333-3333-4333-8333-333333333333","status":"pending","created":true,"pollIntervalMs":5000,"maxWaitMs":180000}"#
+                    .to_owned(),
+            ),
+        ])
+        .await;
+        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let session = runtime_session(host, api, encryption);
+        let parameters = json!({});
+
+        let outcome = session
+            .execute_atomic_script(
+                &CredentialExecRequest {
+                    delivery: request(),
+                    command: None,
+                    env_mappings: &[],
+                    parameters: &parameters,
+                    output: OperatorOutput::Discard,
+                },
+                &CancellationToken::new(),
+                |_| {},
+            )
+            .await
+            .expect("pending Script grant");
+
+        assert!(matches!(
+            outcome,
+            CredentialExecOutcome::NotGranted(CredentialAccess::Pending {
+                created: Some(true),
+                ..
+            })
+        ));
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("/execution-package"));
+        assert!(requests[1].contains("/request-access"));
+        assert!(!requests.iter().any(|request| request.contains("/entries/")));
+    }
+
+    #[tokio::test]
+    async fn public_script_fixture_executes_atomically_and_withholds_protected_result() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/script-execution/v1/wire-fixture.json"
+        ))
+        .expect("public Script execution fixture");
+        let manifest = &fixture["expected"]["decryptedPayload"]["manifest"];
+        let organization_id = manifest["organizationId"]
+            .as_str()
+            .expect("organization ID");
+        let vault_id = manifest["vaultId"].as_str().expect("Vault ID");
+        let script_entry_id = manifest["scriptEntryId"].as_str().expect("Script ID");
+        let script_revision = manifest["scriptRevision"]
+            .as_str()
+            .expect("Script revision");
+        let agent_id = manifest["agentId"].as_str().expect("Agent ID");
+        let agent_access_epoch = manifest["agentAccessEpoch"]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .expect("Agent access epoch");
+        let encrypted_package = fixture["expected"]["encryptedPackage"].clone();
+        let grant_id = encrypted_package["grantId"].as_str().expect("grant ID");
+        let response = serde_json::to_string(&json!({
+            "status": "granted",
+            "authorizationSource": "scriptExecution",
+            "organizationId": organization_id,
+            "vaultId": vault_id,
+            "agentId": agent_id,
+            "agentAccessEpoch": agent_access_epoch,
+            "scriptEntryId": script_entry_id,
+            "scriptRevision": script_revision,
+            "grantId": grant_id,
+            "queryCount": 1,
+            "queryLimit": 10,
+            "expiresAt": null,
+            "scriptPackage": encrypted_package,
+            "agentWrappedVaultKey": null,
+            "vaultEntries": null
+        }))
+        .expect("package response");
+        let (host, requests) = single_response_server(200, response).await;
+
+        let private_key = hex::decode(
+            fixture["deterministicInputs"]["recipientX25519PrivateKey"]
+                .as_str()
+                .expect("recipient private key"),
+        )
+        .expect("recipient private key encoding");
+        let encryption =
+            X25519Identity::from_private_bytes(private_key).expect("recipient identity");
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let mut session = runtime_session(host, api, encryption);
+        session.config.agent_id = Some(agent_id.to_owned());
+        session.config.vault_trust_anchors = vec![PublicVaultTrustAnchor {
+            organization_id: organization_id.to_owned(),
+            vault_id: vault_id.to_owned(),
+            agent_access_epoch: u64::from(agent_access_epoch),
+            vault_signing_public_key: fixture["publicKeys"]["vaultSigningEd25519"]
+                .as_str()
+                .expect("Vault signing public key")
+                .to_owned(),
+            vault_signing_key_fingerprint:
+                fixture["expected"]["encryptedPackage"]["vaultSigningKeyFingerprint"]
+                    .as_str()
+                    .expect("Vault signing key fingerprint")
+                    .to_owned(),
+            manifest_revision: "1".to_owned(),
+            manifest_signing_key_version:
+                fixture["expected"]["encryptedPackage"]["vaultSigningKeyVersion"]
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .expect("Vault signing key version"),
+            vdk_version: 1,
+        }];
+        let parameters = json!({"activeOnly": true, "limit": 2, "role": "member"});
+        let outcome = session
+            .execute_atomic_script(
+                &CredentialExecRequest {
+                    delivery: CredentialDeliveryRequest {
+                        vault_id,
+                        entry_id: script_entry_id,
+                        reason: None,
+                        wait: WaitOptions {
+                            wait_ms: Some(0),
+                            poll_ms: None,
+                            progress: None,
+                        },
+                    },
+                    command: None,
+                    env_mappings: &[],
+                    parameters: &parameters,
+                    output: OperatorOutput::Discard,
+                },
+                &CancellationToken::new(),
+                |_| {},
+            )
+            .await
+            .expect("atomic Script execution");
+        assert_eq!(
+            outcome,
+            CredentialExecOutcome::ScriptCompleted(ScriptExecutionResult {
+                exit_code: 0,
+                cancelled: false,
+                result: None,
+                withheld: Some(ScriptResultWithheld::ProtectedLiteralDetected),
+            })
+        );
+
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with(&format!(
+            "POST /api/agent/vaults/{vault_id}/scripts/{script_entry_id}/execution-package HTTP/1.1"
+        )));
+        let (_, body) = requests[0].split_once("\r\n\r\n").expect("request body");
+        assert_eq!(
+            body,
+            format!(r#"{{"vaultId":"{vault_id}","scriptEntryId":"{script_entry_id}"}}"#)
         );
     }
 
@@ -6963,6 +7691,7 @@ mod tests {
                     delivery: request(),
                     command: Some(&command),
                     env_mappings: &[],
+                    parameters: &serde_json::json!({}),
                     output: OperatorOutput::Discard,
                 },
                 &CancellationToken::new(),
@@ -6982,6 +7711,7 @@ mod tests {
                     delivery: request(),
                     command: Some(&command),
                     env_mappings: &[],
+                    parameters: &serde_json::json!({}),
                     output: OperatorOutput::Discard,
                 },
                 &CancellationToken::new(),
@@ -7001,7 +7731,7 @@ mod tests {
 
     #[cfg(not(windows))]
     #[tokio::test]
-    async fn script_resolves_every_reference_before_spawning_the_allowlisted_interpreter() {
+    async fn legacy_script_delivery_never_falls_back_to_n_plus_one_reference_requests() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../contracts/v1/encrypted-envelope.json"
         ))
@@ -7018,7 +7748,6 @@ mod tests {
         let main_payload = format!(
             r#"{{"entryType":"script","fields":[{{"id":"script.interpreter","kind":"interpreter","mode":"runtime","value":"sh"}},{{"id":"script.refs","kind":"refs","mode":"runtime","value":[{{"entryId":"{TEST_REFERENCE_ENTRY_ID}","env":"TEST_SECRET","fieldId":"credential.password","vaultId":"{TEST_VAULT_ID}"}}]}},{{"id":"script.source","kind":"script","mode":"runtime","value":"test \"$TEST_SECRET\" = fixture-password-not-production"}}],"schema":"palladin.grant-payload.v1"}}"#
         );
-        let reference_payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-password-not-production"}],"schema":"palladin.grant-payload.v1"}"#;
         let main = grant_response(
             &encryption,
             TEST_ENTRY_ID,
@@ -7026,14 +7755,7 @@ mod tests {
             &["script.interpreter", "script.refs", "script.source"],
             2,
         );
-        let reference = grant_response(
-            &encryption,
-            TEST_REFERENCE_ENTRY_ID,
-            reference_payload,
-            &["credential.password"],
-            2,
-        );
-        let (host, requests) = credential_server_owned(vec![main, reference]).await;
+        let (host, requests) = credential_server_owned(vec![main]).await;
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
@@ -7043,6 +7765,7 @@ mod tests {
         )
         .expect("API client");
         let session = runtime_session(host, api, encryption);
+        let command = native_exec_test_command();
         let outcome = session
             .execute_with_credential(
                 CredentialExecRequest {
@@ -7056,35 +7779,26 @@ mod tests {
                             progress: None,
                         },
                     },
-                    command: None,
+                    command: Some(&command),
                     env_mappings: &[],
+                    parameters: &serde_json::json!({}),
                     output: OperatorOutput::Discard,
                 },
                 &CancellationToken::new(),
                 |_| {},
             )
-            .await
-            .expect("script exec");
-        assert_eq!(
+            .await;
+        assert!(matches!(
             outcome,
-            CredentialExecOutcome::Completed(ExecResult {
-                exit_code: 0,
-                cancelled: false,
-            })
-        );
+            Err(RuntimeError::InvalidCredentialPayload)
+        ));
         let requests = requests.lock().expect("requests");
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 1);
         assert!(requests[0].contains(&format!(
             "/vaults/{TEST_VAULT_ID}/entries/{TEST_ENTRY_ID}/credential"
         )));
-        assert!(requests[1].contains(&format!(
-            "/vaults/{TEST_VAULT_ID}/entries/{TEST_REFERENCE_ENTRY_ID}/credential"
-        )));
-        assert!(
-            requests
-                .iter()
-                .all(|request| request.contains(r#""method":"Exec""#))
-        );
+        assert!(!requests[0].contains(TEST_REFERENCE_ENTRY_ID));
+        assert!(requests[0].contains(r#""method":"Exec""#));
     }
 
     #[cfg(not(windows))]
@@ -7156,6 +7870,28 @@ mod tests {
                 captured.lock().expect("requests").push(request);
                 let response = format!(
                     "HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("write");
+            }
+        });
+        (format!("http://{address}"), requests)
+    }
+
+    async fn response_server_owned(
+        responses: Vec<(u16, String)>,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        tokio::spawn(async move {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let request = read_request(&mut stream).await;
+                captured.lock().expect("requests").push(request);
+                let response = format!(
+                    "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 stream.write_all(response.as_bytes()).await.expect("write");
