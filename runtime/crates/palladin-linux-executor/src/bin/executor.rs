@@ -195,7 +195,10 @@ fn prepare_request(mut request: ExecutorRequest) -> Result<PreparedRequest, Exec
                 .mode(0o600)
                 .open(&path)
                 .map_err(|_| ExecutorServiceError::Temporary)?;
-            file.write_all(script.as_bytes())
+            let prepared =
+                palladin_windows_executor::prepare_private_script_source(interpreter, script)
+                    .map_err(|_| ExecutorServiceError::Executable)?;
+            file.write_all(&prepared)
                 .and_then(|()| file.sync_all())
                 .map_err(|_| ExecutorServiceError::Temporary)?;
             script.zeroize();

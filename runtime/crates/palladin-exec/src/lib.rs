@@ -226,7 +226,9 @@ impl Interpreter {
 
 pub fn allowed_interpreter(value: &str) -> Result<Interpreter, ExecError> {
     match value.trim().to_ascii_lowercase().as_str() {
+        #[cfg(not(windows))]
         "bash" => Ok(Interpreter::Bash),
+        #[cfg(not(windows))]
         "sh" => Ok(Interpreter::Sh),
         "node" => Ok(Interpreter::Node),
         "python" => Ok(Interpreter::Python),
@@ -823,7 +825,7 @@ pub async fn run_script(
             )
             .await;
         }
-        let temporary = TempScript::new(script)?;
+        let temporary = TempScript::new(script, &interpreter.executable)?;
         let command = vec![
             interpreter.executable.to_string_lossy().into_owned(),
             temporary.path().to_string_lossy().into_owned(),
@@ -872,7 +874,7 @@ pub async fn run_script_captured(
         if cancellation.is_cancelled() {
             return Ok(cancelled_capture());
         }
-        let temporary = TempScript::new(script)?;
+        let temporary = TempScript::new(script, &interpreter.executable)?;
         let mut process = Command::new(&interpreter.executable);
         process
             .arg(temporary.path())
@@ -1050,7 +1052,7 @@ struct TempScript {
 
 #[cfg(not(windows))]
 impl TempScript {
-    fn new(script: &SecretString) -> Result<Self, ExecError> {
+    fn new(script: &SecretString, interpreter: &Path) -> Result<Self, ExecError> {
         let directory = tempfile::Builder::new()
             .prefix("palladin-script-")
             .tempdir()
@@ -1073,7 +1075,12 @@ impl TempScript {
         let mut file = options
             .open(&path)
             .map_err(|_| ExecError::TemporaryScript)?;
-        file.write_all(script.expose_secret().as_bytes())
+        let prepared = palladin_windows_executor::prepare_private_script_source(
+            interpreter,
+            script.expose_secret(),
+        )
+        .map_err(|_| ExecError::TemporaryScript)?;
+        file.write_all(&prepared)
             .and_then(|()| file.sync_all())
             .map_err(|_| ExecError::TemporaryScript)?;
         Ok(Self {
@@ -1224,6 +1231,28 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn node_script_supports_top_level_await_with_commonjs_globals() {
+        let interpreter = resolve_interpreter("node").expect("node");
+        let script = SecretString::from(
+            "const fs=require('node:fs'); const input=JSON.parse(await new Promise(r=>{let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>r(s))})); process.stdout.write(JSON.stringify({limit:input.limit,hasFs:Boolean(fs)}));"
+                .to_owned(),
+        );
+        let result = run_script_captured(
+            &script,
+            &interpreter,
+            SecretEnvironment::new(),
+            &SecretString::from(r#"{"limit":5}"#.to_owned()),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("captured Node execution");
+
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout.as_slice(), br#"{"limit":5,"hasFs":true}"#);
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     async fn hardened_node_executes_inline_command() {
@@ -1366,8 +1395,22 @@ mod tests {
 
     #[test]
     fn interpreter_allowlist_is_exact_and_normalized() {
-        assert_eq!(allowed_interpreter(" Bash "), Ok(Interpreter::Bash));
-        assert_eq!(allowed_interpreter("SH"), Ok(Interpreter::Sh));
+        #[cfg(not(windows))]
+        {
+            assert_eq!(allowed_interpreter(" Bash "), Ok(Interpreter::Bash));
+            assert_eq!(allowed_interpreter("SH"), Ok(Interpreter::Sh));
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                allowed_interpreter(" Bash "),
+                Err(ExecError::UnsupportedInterpreter)
+            );
+            assert_eq!(
+                allowed_interpreter("SH"),
+                Err(ExecError::UnsupportedInterpreter)
+            );
+        }
         assert_eq!(allowed_interpreter("node"), Ok(Interpreter::Node));
         assert_eq!(allowed_interpreter("python"), Ok(Interpreter::Python));
         for denied in ["", "ruby", "sh -c", "/bin/sh", "node\0--eval"] {
@@ -1408,7 +1451,8 @@ mod tests {
     #[test]
     fn private_script_is_removed_by_raii() {
         let path = {
-            let script = TempScript::new(&SecretString::from("fixture")).expect("temporary script");
+            let script = TempScript::new(&SecretString::from("fixture"), Path::new("/bin/sh"))
+                .expect("temporary script");
             let path = script.path().to_owned();
             assert!(path.exists());
             path
@@ -1421,7 +1465,8 @@ mod tests {
     fn private_script_has_mode_0600() {
         use std::os::unix::fs::PermissionsExt;
 
-        let script = TempScript::new(&SecretString::from("fixture")).expect("temporary script");
+        let script = TempScript::new(&SecretString::from("fixture"), Path::new("/bin/sh"))
+            .expect("temporary script");
         let mode = std::fs::metadata(script.path())
             .expect("metadata")
             .permissions()

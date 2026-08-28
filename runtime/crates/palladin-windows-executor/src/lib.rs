@@ -199,6 +199,37 @@ pub fn trusted_executor_path() -> Result<PathBuf, ExecutorError> {
     trusted_executor_path_from(&current)
 }
 
+/// Produces the private on-disk source used by Unix executors. Node Scripts are
+/// wrapped in an async CommonJS function so the cross-platform contract keeps
+/// both top-level `await` and the controlled `require`/module globals.
+pub fn prepare_private_script_source(
+    interpreter: &Path,
+    script: &str,
+) -> Result<Zeroizing<Vec<u8>>, ExecutorError> {
+    let executable_name = interpreter
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .ok_or(ExecutorError::ExecutableUnavailable)?;
+    if executable_name.eq_ignore_ascii_case("node") {
+        let encoded = Zeroizing::new(
+            serde_json::to_string(script).map_err(|_| ExecutorError::InvalidRequest)?,
+        );
+        let wrapper = Zeroizing::new(format!(
+            "const Module=require(\"node:module\"),path=require(\"node:path\"),f=__filename,m=module,AsyncFunction=Object.getPrototypeOf(async function(){{}}).constructor;try{{const run=new AsyncFunction(\"require\",\"module\",\"exports\",\"__filename\",\"__dirname\",{});run(require,m,m.exports,f,path.dirname(f)).catch(()=>{{process.exitCode=1}})}}catch{{process.exitCode=1}}",
+            encoded.as_str(),
+        ));
+        return Ok(Zeroizing::new(wrapper.as_bytes().to_vec()));
+    }
+    if executable_name.eq_ignore_ascii_case("bash")
+        || executable_name.eq_ignore_ascii_case("sh")
+        || executable_name.eq_ignore_ascii_case("python")
+        || executable_name.eq_ignore_ascii_case("python3")
+    {
+        return Ok(Zeroizing::new(script.as_bytes().to_vec()));
+    }
+    Err(ExecutorError::ExecutableUnavailable)
+}
+
 #[cfg(windows)]
 pub fn run_executor_from_standard_input() -> Result<i32, ExecutorError> {
     windows::run_executor_from_standard_input()
