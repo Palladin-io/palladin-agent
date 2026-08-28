@@ -199,9 +199,12 @@ pub fn trusted_executor_path() -> Result<PathBuf, ExecutorError> {
     trusted_executor_path_from(&current)
 }
 
-/// Produces the private on-disk source used by Unix executors. Node Scripts are
-/// wrapped in an async CommonJS function so the cross-platform contract keeps
-/// both top-level `await` and the controlled `require`/module globals.
+/// Produces the private on-disk source for an interpreter that the broker has
+/// already resolved through its exact allowlist. Node Scripts are wrapped in
+/// an async CommonJS function so the cross-platform contract keeps both
+/// top-level `await` and the controlled `require`/module globals. Other
+/// allowlisted interpreters keep the source unchanged: an allowlisted `sh` may
+/// legitimately canonicalize to `dash` (or another platform shell basename).
 pub fn prepare_private_script_source(
     interpreter: &Path,
     script: &str,
@@ -220,14 +223,7 @@ pub fn prepare_private_script_source(
         ));
         return Ok(Zeroizing::new(wrapper.as_bytes().to_vec()));
     }
-    if executable_name.eq_ignore_ascii_case("bash")
-        || executable_name.eq_ignore_ascii_case("sh")
-        || executable_name.eq_ignore_ascii_case("python")
-        || executable_name.eq_ignore_ascii_case("python3")
-    {
-        return Ok(Zeroizing::new(script.as_bytes().to_vec()));
-    }
-    Err(ExecutorError::ExecutableUnavailable)
+    Ok(Zeroizing::new(script.as_bytes().to_vec()))
 }
 
 #[cfg(windows)]
@@ -340,5 +336,14 @@ mod tests {
             trusted_executor_path_from(&worker).expect("trusted executor"),
             fs::canonicalize(executor).expect("canonical executor")
         );
+    }
+
+    #[test]
+    fn private_source_preserves_an_allowlisted_shell_after_canonicalization() {
+        let source = "printf '%s' ok";
+        let prepared = prepare_private_script_source(Path::new("/usr/bin/dash"), source)
+            .expect("prepared shell source");
+
+        assert_eq!(prepared.as_slice(), source.as_bytes());
     }
 }
