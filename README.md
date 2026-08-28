@@ -69,13 +69,25 @@ cargo run -p palladin-cli -- doctor
 
 On macOS, use the repository development launcher for commands that open local
 Agent state. Its one-time offline bootstrap creates a local-only code-signing
-identity; macOS may request approval for that trust setting once. Every later
-run re-signs the debug runtime with the same Designated Requirement, verifies
-that it has no release entitlements or Team ID, and then starts it:
+identity; macOS may request approval for that trust setting once. The first build
+also installs an owner-only helper with a stable binary hash. Changing debug
+runtimes use that unchanged helper for Login Keychain access because current
+macOS versions do not track a non-Apple signer by its stable Designated
+Requirement. Every later run verifies both signatures before it starts:
 
 ```bash
 ./packaging/macos/scripts/development-runtime.sh run -- doctor
 ./packaging/macos/scripts/development-runtime.sh install-launcher ~/.local/bin/palladin
+```
+
+An existing source installation needs one explicit authorization migration after
+the first helper build. macOS can show one dialog per existing Palladin item;
+approve each one-time read. The stable helper copies each value only in memory
+to its versioned Keychain service, and a separate noninteractive process verifies
+the migrated copy:
+
+```bash
+./packaging/macos/scripts/development-runtime.sh migrate-keychain-access
 ```
 
 Pass `--force` to `install-launcher` only after reviewing an existing launcher.
@@ -206,6 +218,8 @@ MemberSecret. The complete 32-byte Vault key is sealed to this Agent's X25519 id
 the Organization, Vault, Grant, Agent access epoch, recipient key version/fingerprint and Vault-key
 version. It is opened only inside the native Rust crypto boundary, zeroized after deriving the Entry
 key, and never crosses into the Node launcher, MCP result, child process or browser extension.
+Credential responses carry the authoritative `grantType`; the runtime rejects a missing,
+unknown, or material-mismatched discriminator and never reconstructs it from response shape.
 
 ### `get`: return an approved value
 

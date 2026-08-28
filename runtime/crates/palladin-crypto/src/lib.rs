@@ -67,6 +67,18 @@ pub enum CryptoError {
     InvalidLength,
     #[error("cryptographic input has an invalid encoding")]
     InvalidEncoding,
+    #[error("FULL grant binding has an invalid encoding")]
+    InvalidFullGrantBindingEncoding,
+    #[error("FULL grant wrapped Vault key has an invalid encoding")]
+    InvalidFullGrantVaultKeyEncoding,
+    #[error("FULL grant Entry key envelope has an invalid encoding")]
+    InvalidFullGrantEntryKeyEncoding,
+    #[error("FULL grant MemberSecret descriptor has an invalid encoding")]
+    InvalidFullGrantMemberSecretDescriptorEncoding,
+    #[error("FULL grant MemberSecret ciphertext has an invalid encoding")]
+    InvalidFullGrantMemberSecretCiphertextEncoding,
+    #[error("FULL grant MemberSecret plaintext has an invalid encoding")]
+    InvalidFullGrantMemberSecretPlaintextEncoding,
     #[error("decrypted grant payload has an invalid encoding")]
     InvalidGrantPayloadEncoding,
     #[error("cryptographic authentication failed")]

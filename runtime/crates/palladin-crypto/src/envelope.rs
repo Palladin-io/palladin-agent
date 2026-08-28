@@ -83,6 +83,27 @@ where
     deserialize_protocol_code(deserializer, "memberSecret", MEMBER_SECRET_PURPOSE)
 }
 
+fn deserialize_entry_operation<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let operation = match ProtocolCodeWire::deserialize(deserializer)? {
+        ProtocolCodeWire::Numeric(value) => value,
+        ProtocolCodeWire::Named(value) => match value.as_str() {
+            "created" => 1,
+            "updated" => 2,
+            "archived" => 3,
+            "restored" => 4,
+            "deleted" => 5,
+            _ => return Err(de::Error::custom("unsupported entry operation")),
+        },
+    };
+
+    (1..=5)
+        .contains(&operation)
+        .then_some(operation)
+        .ok_or_else(|| de::Error::custom("unsupported entry operation"))
+}
 fn deserialize_agent_recipient_kind<'de, D>(deserializer: D) -> Result<u16, D::Error>
 where
     D: Deserializer<'de>,
@@ -232,6 +253,7 @@ pub struct MemberSecretDescriptor {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MemberSecretBinding {
+    #[serde(deserialize_with = "deserialize_entry_operation")]
     pub operation: u16,
 }
 
@@ -397,7 +419,6 @@ pub struct FullScriptMemberSecretContext<'a> {
     pub entry_revision: &'a str,
     pub expires_at: Option<&'a str>,
 }
-
 pub struct DecryptedCredential {
     plaintext: SecretSlice<u8>,
     grant_expires_at: Option<InstantBinding>,
@@ -568,7 +589,6 @@ pub fn decrypt_full_script_member_secret(
     validate_full_script_member_secret(plaintext.expose_secret())?;
     Ok(SecretBytes::new(plaintext.expose_secret().to_vec()))
 }
-
 pub fn decrypt_full_credential_at(
     wrapped_vault_key: &AgentWrappedVaultKey,
     entry_key: &VaultEntryKeyEnvelope,
@@ -578,20 +598,24 @@ pub fn decrypt_full_credential_at(
     now: OffsetDateTime,
 ) -> Result<DecryptedCredential, CryptoError> {
     validate_full_delivery_policy(outer)?;
-    let grant_expires_at = outer.expires_at.map(parse_instant).transpose()?;
+    let grant_expires_at = outer
+        .expires_at
+        .map(parse_instant)
+        .transpose()
+        .map_err(full_grant_binding_error)?;
     if grant_expires_at.is_some_and(|expires_at| {
         (expires_at.unix_seconds, expires_at.nanosecond) <= (now.unix_timestamp(), now.nanosecond())
     }) {
         return Err(CryptoError::StaleInput);
     }
 
-    let organization_id = parse_uuid(outer.organization_id)?;
-    let vault_id = parse_uuid(outer.vault_id)?;
-    let grant_id = parse_uuid(outer.grant_id)?;
-    let agent_id = parse_uuid(outer.agent_id)?;
-    let entry_id = parse_uuid(outer.entry_id)?;
-    if vault_id != parse_uuid(outer.requested_vault_id)?
-        || entry_id != parse_uuid(outer.requested_entry_id)?
+    let organization_id = parse_uuid(outer.organization_id).map_err(full_grant_binding_error)?;
+    let vault_id = parse_uuid(outer.vault_id).map_err(full_grant_binding_error)?;
+    let grant_id = parse_uuid(outer.grant_id).map_err(full_grant_binding_error)?;
+    let agent_id = parse_uuid(outer.agent_id).map_err(full_grant_binding_error)?;
+    let entry_id = parse_uuid(outer.entry_id).map_err(full_grant_binding_error)?;
+    if vault_id != parse_uuid(outer.requested_vault_id).map_err(full_grant_binding_error)?
+        || entry_id != parse_uuid(outer.requested_entry_id).map_err(full_grant_binding_error)?
         || outer.agent_access_epoch == 0
         || outer.agent_access_epoch != outer.trusted_agent_access_epoch
     {
@@ -600,7 +624,7 @@ pub fn decrypt_full_credential_at(
 
     let wrapper = &wrapped_vault_key.wrapped_vault_key;
     let wire_wrapper = &wrapper.descriptor;
-    let wrapper_scope = parse_scope(&wire_wrapper.scope)?;
+    let wrapper_scope = parse_scope(&wire_wrapper.scope).map_err(full_grant_binding_error)?;
     let expected_wrapper_scope = EnvelopeScope {
         organization_id,
         vault_id,
@@ -609,12 +633,13 @@ pub fn decrypt_full_credential_at(
         agent_id: Some(agent_id),
         member_id: None,
     };
-    let recipient_fingerprint = decode_fixed::<32>(&wire_wrapper.recipient_fingerprint)?;
+    let recipient_fingerprint = decode_fixed::<32>(&wire_wrapper.recipient_fingerprint)
+        .map_err(full_grant_vault_key_error)?;
     if wire_wrapper.protocol_version != 2
         || wire_wrapper.wrapper_suite_id != X25519_WRAPPER_V1
         || wire_wrapper.purpose != WrapperPurpose::AgentVaultKey as u16
         || wrapper_scope != expected_wrapper_scope
-        || parse_nonzero_u64(&wire_wrapper.resource_revision)?
+        || parse_nonzero_u64(&wire_wrapper.resource_revision).map_err(full_grant_binding_error)?
             != u64::from(outer.agent_access_epoch)
         || wire_wrapper.wrapped_key_version == 0
         || wire_wrapper.member_key_generation.is_some()
@@ -639,12 +664,17 @@ pub fn decrypt_full_credential_at(
         recipient_fingerprint,
         parent_descriptor_hash: None,
     };
-    let sealed_vault_key =
-        SealedWrappedKey::from_bytes(decode_base64url(&wrapper.encoded_sealed_key_package)?)?;
-    let vault_key = X25519SealedBoxSuite::unwrap(&sealed_vault_key, identity, &wrapper_context)?;
+    let sealed_vault_key = SealedWrappedKey::from_bytes(
+        decode_base64url(&wrapper.encoded_sealed_key_package)
+            .map_err(full_grant_vault_key_error)?,
+    )
+    .map_err(full_grant_vault_key_error)?;
+    let vault_key = X25519SealedBoxSuite::unwrap(&sealed_vault_key, identity, &wrapper_context)
+        .map_err(full_grant_vault_key_error)?;
 
     let entry_descriptor =
-        vault_entry_key_descriptor(entry_key, organization_id, vault_id, entry_id)?;
+        vault_entry_key_descriptor(entry_key, organization_id, vault_id, entry_id)
+            .map_err(full_grant_entry_key_error)?;
     let EnvelopeBinding::VaultKey {
         wrapping_vault_key_version,
     } = &entry_descriptor.binding
@@ -654,39 +684,93 @@ pub fn decrypt_full_credential_at(
     if *wrapping_vault_key_version != wire_wrapper.wrapped_key_version {
         return Err(CryptoError::StaleInput);
     }
-    let entry_aad = entry_descriptor.canonical_aad()?;
-    let entry_payload =
-        EncodedSuitePayload::from_bytes(decode_base64url(&entry_key.encoded_suite_payload)?)?;
+    let entry_aad = entry_descriptor
+        .canonical_aad()
+        .map_err(full_grant_entry_key_error)?;
+    let entry_payload = EncodedSuitePayload::from_bytes(
+        decode_base64url(&entry_key.encoded_suite_payload).map_err(full_grant_entry_key_error)?,
+    )
+    .map_err(full_grant_entry_key_error)?;
     let entry_wrapper_key =
         XChaChaVaultSuite::derive_key(vault_key.expose_secret(), &entry_descriptor)?;
-    let entry_dek = XChaChaVaultSuite::open(&entry_wrapper_key, &entry_payload, &entry_aad)?;
+    let entry_dek = XChaChaVaultSuite::open(&entry_wrapper_key, &entry_payload, &entry_aad)
+        .map_err(full_grant_entry_key_error)?;
     if entry_dek.expose_secret().len() != 32 {
         return Err(CryptoError::InvalidLength);
     }
 
     let secret_descriptor =
-        member_secret_descriptor(member_secret, organization_id, vault_id, entry_id)?;
+        member_secret_descriptor(member_secret, organization_id, vault_id, entry_id)
+            .map_err(full_grant_member_secret_descriptor_error)?;
     if secret_descriptor.key_version != entry_descriptor.key_version
         || secret_descriptor.member_key_generation != entry_descriptor.member_key_generation
     {
         return Err(CryptoError::StaleInput);
     }
-    let secret_aad = secret_descriptor.canonical_aad()?;
-    let secret_payload =
-        EncodedSuitePayload::from_bytes(decode_base64url(&member_secret.encoded_suite_payload)?)?;
+    let secret_aad = secret_descriptor
+        .canonical_aad()
+        .map_err(full_grant_member_secret_descriptor_error)?;
+    let secret_payload = EncodedSuitePayload::from_bytes(
+        decode_base64url(&member_secret.encoded_suite_payload)
+            .map_err(full_grant_member_secret_ciphertext_error)?,
+    )
+    .map_err(full_grant_member_secret_ciphertext_error)?;
     let secret_key = XChaChaVaultSuite::derive_key(entry_dek.expose_secret(), &secret_descriptor)?;
-    let plaintext = XChaChaVaultSuite::open(&secret_key, &secret_payload, &secret_aad)?;
+    let plaintext = XChaChaVaultSuite::open(&secret_key, &secret_payload, &secret_aad)
+        .map_err(full_grant_member_secret_ciphertext_error)?;
     let normalized = normalize_full_member_secret(
         plaintext.expose_secret(),
         outer.requested_method,
         outer.delivery_policy,
-    )?;
+    )
+    .map_err(full_grant_member_secret_plaintext_error)?;
     Ok(DecryptedCredential {
         plaintext: normalized.plaintext.into(),
         grant_expires_at,
     })
 }
 
+fn full_grant_binding_error(error: CryptoError) -> CryptoError {
+    match error {
+        CryptoError::InvalidEncoding => CryptoError::InvalidFullGrantBindingEncoding,
+        error => error,
+    }
+}
+
+fn full_grant_vault_key_error(error: CryptoError) -> CryptoError {
+    match error {
+        CryptoError::InvalidEncoding => CryptoError::InvalidFullGrantVaultKeyEncoding,
+        error => error,
+    }
+}
+
+fn full_grant_entry_key_error(error: CryptoError) -> CryptoError {
+    match error {
+        CryptoError::InvalidEncoding => CryptoError::InvalidFullGrantEntryKeyEncoding,
+        error => error,
+    }
+}
+
+fn full_grant_member_secret_descriptor_error(error: CryptoError) -> CryptoError {
+    match error {
+        CryptoError::InvalidEncoding => CryptoError::InvalidFullGrantMemberSecretDescriptorEncoding,
+        error => error,
+    }
+}
+
+fn full_grant_member_secret_ciphertext_error(error: CryptoError) -> CryptoError {
+    match error {
+        CryptoError::InvalidEncoding => CryptoError::InvalidFullGrantMemberSecretCiphertextEncoding,
+        error => error,
+    }
+}
+
+fn full_grant_member_secret_plaintext_error(error: CryptoError) -> CryptoError {
+    match error {
+        CryptoError::InvalidEncoding => CryptoError::InvalidFullGrantMemberSecretPlaintextEncoding,
+        error => error,
+    }
+}
 fn validate_full_delivery_policy(
     outer: &FullCredentialEnvelopeContext<'_>,
 ) -> Result<(), CryptoError> {
@@ -938,7 +1022,11 @@ fn normalize_full_member_secret(
     if !is_canonical {
         return Err(CryptoError::InvalidEncoding);
     }
-    let projected = canonical_member_secret_projection(&secret.0)?;
+    let projected = match secret.0.get("schema") {
+        Some(Value::String(schema)) if schema == "palladin.member-secret.v1" => secret,
+        Some(_) => return Err(CryptoError::InvalidEncoding),
+        None => canonical_member_secret_projection(&secret.0)?,
+    };
     normalize_projected_member_secret(&projected, requested_method, delivery_policy)
 }
 
@@ -1483,7 +1571,6 @@ fn validate_full_script_member_secret(plaintext: &[u8]) -> Result<(), CryptoErro
         _ => Err(CryptoError::InvalidEncoding),
     }
 }
-
 fn is_optional_string(value: Option<&Value>) -> bool {
     matches!(value, Some(Value::Null | Value::String(_)))
 }
@@ -2710,7 +2797,6 @@ mod tests {
             ),
             Err(CryptoError::StaleInput)
         ));
-
         let context = FullCredentialEnvelopeContext {
             organization_id: ORGANIZATION_ID,
             vault_id: VAULT_ID,
@@ -2807,6 +2893,52 @@ mod tests {
             normalized.plaintext,
             br#"{"password":"not-a-real-password","url":"postgresql://fixture.invalid"}"#
         );
+    }
+
+    #[test]
+    fn full_projection_accepts_the_current_web_member_secret_contract_for_inject() {
+        let plaintext = serde_json::to_string(&serde_json::json!({
+            "agentFieldAccess": {
+                "agentLabel": "discovery",
+                "color": "never",
+                "credential.password": "onGrantValue",
+                "credential.totp": "never",
+                "credential.url": "onGrantValue",
+                "credential.urlDomain": "discovery",
+                "credential.username": "onGrantValue",
+                "description": "never",
+                "entryType": "discovery",
+                "icon": "never",
+                "memberLabel": "never",
+                "notes": "never"
+            },
+            "agentLabel": "Fixture login",
+            "color": null,
+            "content": {
+                "customFields": [],
+                "notes": null,
+                "password": "fixture-password",
+                "totp": null,
+                "url": "https://fixture.invalid/login",
+                "urlDomain": "fixture.invalid",
+                "username": "fixture-user"
+            },
+            "description": null,
+            "discoverable": true,
+            "entryType": "credential",
+            "icon": null,
+            "memberLabel": "Member-only fixture label",
+            "schema": "palladin.member-secret.v1"
+        }))
+        .expect("canonical current Web MemberSecret");
+
+        let normalized = normalize_full_member_secret(plaintext.as_bytes(), 4, 0)
+            .expect("current Web MemberSecret projection");
+        let projected: Value =
+            serde_json::from_slice(&normalized.plaintext).expect("projected Inject credential");
+
+        assert_eq!(projected["username"], "fixture-user");
+        assert_eq!(projected["password"], "fixture-password");
     }
 
     #[test]

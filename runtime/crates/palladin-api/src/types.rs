@@ -1017,6 +1017,23 @@ mod tests {
             }
         ));
 
+        let mut named_operation = granted.clone();
+        named_operation["memberSecret"]["descriptor"]["binding"]["operation"] =
+            serde_json::json!("updated");
+        assert!(matches!(
+            serde_json::from_value::<CredentialAccess>(named_operation)
+                .expect("FULL response with the backend enum wire format"),
+            CredentialAccess::Granted {
+                grant_type: CredentialGrantType::Full,
+                material: CredentialCiphertext::Full { .. },
+                ..
+            }
+        ));
+
+        let mut unknown_operation = granted.clone();
+        unknown_operation["memberSecret"]["descriptor"]["binding"]["operation"] =
+            serde_json::json!("rotated");
+        assert!(serde_json::from_value::<CredentialAccess>(unknown_operation).is_err());
         let mut missing_expiry = granted.clone();
         missing_expiry
             .as_object_mut()

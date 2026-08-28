@@ -40,14 +40,50 @@ still trust the complete same-user domain and report
 
 The signed debug executable has the fixed identifier
 `io.palladin.runtime.development`, no Team ID, no entitlements and no Hardened
-Runtime flag. Existing Login Keychain items may ask once when moving from an old
-ad hoc build to this identity; subsequent rebuilds and worktrees retain the same
-Designated Requirement.
+Runtime flag. Current macOS releases still partition Login Keychain access for a
+non-Apple development signer by `CDHash`, even when its Designated Requirement
+is stable. Therefore the changing CLI executable never reads Login Keychain
+items directly. The first signed build installs
+`~/.palladin/development/palladin-keychain-helper-v1`, an owner-only (`0500`)
+helper that is deliberately not replaced by later CLI builds. Only this stable
+helper touches the fixed `io.palladin.agent` service. Its bounded binary protocol
+accepts only known secret slots and opaque owners; secret bytes travel through
+anonymous pipes, never argv, environment variables, files or logs.
+
+After upgrading an existing development installation, bind its current Palladin
+items to the helper once:
+
+```bash
+./packaging/macos/scripts/development-runtime.sh build --local-development
+./packaging/macos/scripts/development-runtime.sh migrate-keychain-access
+```
+
+The migration installs the pinned stable helper when absent, refuses to replace
+a different helper implementation under the same version, and enumerates only
+account metadata for the exact legacy Palladin service. macOS can show one
+dialog per existing item. After the operator approves each one-time read, the
+helper copies
+the value in memory to its versioned `io.palladin.agent.development-helper-v1`
+service and immediately drops the in-memory secret. A separate noninteractive
+helper process verifies every migrated copy. The original items remain untouched
+as rollback state. The migration never prints or passes secret values through
+arguments, environment variables or files.
+
+New items are created by that same stable helper, and updates preserve their
+ACL. Normal rebuilds and different worktrees never replace the installed helper,
+so they do not need renewed access. A later helper implementation change must
+bump both the helper filename and its versioned Keychain service before another
+explicit migration; replacing a released helper in place would invalidate its
+saved `CDHash` access.
 
 `install-launcher` refuses to overwrite an existing file unless `--force` is
-provided. `reset --confirm` removes only the dedicated development certificate,
-trust setting and Keychain. Never replace this mechanism with an identifier-only
-ad hoc requirement or a wildcard Keychain ACL.
+provided. `reset --confirm` refuses to proceed while the versioned helper owns
+any Login Keychain items, because removing that exact binary would orphan their
+ACL. After local Agent state is explicitly purged, reset removes only the
+dedicated development certificate, trust setting, signing Keychain and matching
+local helper. Never replace this mechanism with an identifier-only ad hoc
+requirement, a wildcard Keychain ACL or a path that moves secret values through
+process arguments.
 
 ## Release boundary
 

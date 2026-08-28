@@ -17,6 +17,8 @@ paths = [
   '''^runtime/contracts/vault-v2/fixtures/v2/vectors/pairing\.json$''',
   '''^runtime/contracts/vault-v2/fixtures/v2/vectors/rotation\.json$''',
   '''^runtime/contracts/vault-v2/fixtures/v2/vectors/signatures\.json$''',
+  '''^runtime/contracts/script-execution/v1/wire-fixture\.json$''',
+  '''^runtime/crates/palladin-crypto/tests/script_execution_vectors\.rs$''',
   '''^runtime/crates/palladin-platform/src/broker_protocol\.rs$''',
   '''^runtime/crates/palladin-platform/src/secure_store\.rs$''',
   '''^runtime/crates/palladin-crypto/tests/script_execution_vectors\.rs$''',

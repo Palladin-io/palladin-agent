@@ -1828,6 +1828,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "palladin-macos-keychain-helper"
+version = "0.1.0"
+dependencies = [
+ "palladin-platform",
+]
+
+[[package]]
 name = "palladin-mcp"
 version = "0.1.0"
 dependencies = [
