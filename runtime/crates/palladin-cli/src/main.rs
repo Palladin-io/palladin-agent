@@ -13,7 +13,9 @@ use palladin_cli::args::{
     AgentsCommand, BrowserCommand, Cli, Commands, ConnectArgs, ExecArgs, GetArgs, InjectArgs,
     McpCommand, ProgressArg, ReportStaleArgs, SearchArgs, SecurityCommand, StaleCodeArg,
 };
-use palladin_cli::browser::{install_manifest, manifest_status, remove_manifest};
+use palladin_cli::browser::{
+    BrowserInstallError, install_manifest, manifest_status, remove_manifest,
+};
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
     render_agent_list, render_connect, render_init, render_legacy_cleanup, render_legacy_cutover,
@@ -92,6 +94,10 @@ async fn main() -> ExitCode {
     }
     let environment = EnvironmentReport::inspect_current();
     let cli = Cli::parse();
+
+    if browser_command_blocked_by_provenance(&cli.command) {
+        return fail(&BrowserInstallError::ExtensionProvenanceUnavailable.to_string());
+    }
 
     if let Commands::Inject(args) = &cli.command
         && inject_uses_deprecated_browser_boundary(args)
@@ -350,6 +356,16 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
             ExitCode::SUCCESS
         }
     }
+}
+
+const fn browser_command_blocked_by_provenance(command: &Commands) -> bool {
+    !palladin_cli::browser::extension_provenance_supported()
+        && matches!(
+            command,
+            Commands::Browser {
+                command: BrowserCommand::Install | BrowserCommand::Status,
+            }
+        )
 }
 
 enum RuntimeSecretStore {
@@ -1892,7 +1908,7 @@ fn print_unsafe_environment(environment: &EnvironmentReport, protocol_stdout: bo
 mod version_policy_gate_tests {
     use clap::Parser;
 
-    use super::{Cli, requires_version_policy};
+    use super::{Cli, browser_command_blocked_by_provenance, requires_version_policy};
 
     fn command(arguments: &[&str]) -> Cli {
         Cli::try_parse_from(arguments).expect("valid command")
@@ -1937,6 +1953,22 @@ mod version_policy_gate_tests {
         ));
         assert!(!requires_version_policy(
             &command(&["palladin", "security", "legacy-status"]).command
+        ));
+    }
+
+    #[test]
+    fn release_blocks_browser_install_and_status_before_runtime_setup() {
+        for arguments in [
+            &["palladin", "browser", "install"][..],
+            &["palladin", "browser", "status"][..],
+        ] {
+            assert_eq!(
+                browser_command_blocked_by_provenance(&command(arguments).command),
+                !cfg!(debug_assertions),
+            );
+        }
+        assert!(!browser_command_blocked_by_provenance(
+            &command(&["palladin", "browser", "uninstall", "--confirm"]).command
         ));
     }
 }
