@@ -294,6 +294,11 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
             ExitCode::SUCCESS
         }
         BrowserCommand::Status => {
+            if !palladin_cli::browser::extension_provenance_supported() {
+                return fail(
+                    "production Chrome extension provenance cannot yet be attested; Agent Inject is available only in development builds",
+                );
+            }
             let installed = match manifest_status(service.repository().root()) {
                 Ok(installed) => installed,
                 Err(error) => return fail(&error.to_string()),
