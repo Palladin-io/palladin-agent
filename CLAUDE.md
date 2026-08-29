@@ -55,6 +55,19 @@ must use that helper and must never replace it implicitly, read Login Keychain
 directly, allow wildcard ACLs, or permit background Keychain UI. The development
 signer and helper remain Convenience-only and must never enter release packaging.
 
+When a source profile points to the local API (`http://127.0.0.1:<port>` or
+`http://[::1]:<port>`), every wrapper command that opens or validates Agent state
+must include the build-mode flag before `--`, for example
+`development-runtime.sh run --local-development -- status`. A wrapper invocation
+without `--local-development` intentionally applies release host policy; it
+rejects loopback HTTP stored in the shared registry and can surface the generic
+`public Agent metadata failed integrity verification` error even when registry
+digests and Ed25519 profile signatures are valid. On that error, rerun `doctor`,
+`agents list`, and the intended command with `--local-development` before
+considering a purge, migration, Keychain reset, or re-signing. `browser status`
+does not open a profile and therefore is not proof that the selected build mode
+can read local Agent state.
+
 ## Pull Requests
 
 - All changes go through pull requests.
