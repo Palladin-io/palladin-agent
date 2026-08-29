@@ -33,9 +33,10 @@ A future implementation must use one of two reviewed designs:
 
 1. An Agent-owned Playwright `Page` passed directly to the reviewed embedded provider described by
    ADR 0005, with no caller-supplied port, WebSocket URL, or CDP endpoint.
-2. A browser extension and native-messaging host with user-mediated pairing, installation-specific
-   keys, authenticated encryption, freshness and replay protection, browser-owned document
-   identity, and origin validation before every release.
+2. A browser extension and native-messaging host where the runtime verifies the browser/platform-
+   authored official extension identity, the local CLI authenticates the installation-scoped host,
+   and authenticated encryption, freshness, replay protection, browser-owned document identity,
+   and origin validation apply before every release.
 
 Native Messaging by itself is not a same-user security boundary. A future design must also account for a malicious local process or an Agent controlling the same browser after a fill. Firefox requires its own extension/native host integration. Safari requires a signed containing application and Safari Web Extension, so it is not an npm-only path.
 

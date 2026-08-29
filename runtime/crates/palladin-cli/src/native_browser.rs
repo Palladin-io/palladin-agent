@@ -22,10 +22,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::time::{Instant, timeout, timeout_at};
 use zeroize::Zeroize;
 
-use crate::browser::{
-    CHROME_EXTENSION_ORIGIN, PAIRING_DISCOVER_TYPE, PairingDiscoveryRequest, PairingOffer,
-    local_socket_path,
-};
+use crate::browser::{CHROME_EXTENSION_ORIGIN, local_socket_path};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -34,6 +31,17 @@ const APPROVAL_TIMEOUT_MARGIN_MS: u64 = 30_000;
 const GRANT_APPROVAL_TIMEOUT: Duration =
     Duration::from_millis(MAX_WAIT_MS + APPROVAL_TIMEOUT_MARGIN_MS);
 const MAX_LOCAL_INJECT_VALIDITY: Duration = Duration::from_millis(MAX_WAIT_MS);
+
+/// Value-free session-local key announcement. The extension keeps this key only in memory and
+/// uses it to validate the signed secure-session transcript; it is not a pairing or trust record.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionOffer {
+    protocol: &'static str,
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    host_signing_public_key: String,
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -305,21 +313,19 @@ where
 {
     let mut native_input = tokio::io::stdin();
     let mut native_output = tokio::io::stdout();
-    let initial: serde_json::Value = timeout(HANDSHAKE_TIMEOUT, read_message(&mut native_input))
+    let offer = SessionOffer {
+        protocol: INJECT_PROVIDER_PROTOCOL,
+        message_type: "session.offer",
+        host_signing_public_key: identity.public_key(),
+    };
+    let _lifecycle = lifecycle_guard(HANDSHAKE_TIMEOUT)?;
+    timeout(HANDSHAKE_TIMEOUT, write_message(&mut native_output, &offer))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
-    let open = match parse_initial_native_message(initial)? {
-        InitialNativeMessage::PairingDiscovery(request) => {
-            let offer = PairingOffer::from_request(request, identity)
-                .map_err(|_| NativeBrowserError::InvalidMessage)?;
-            let _lifecycle = lifecycle_guard(HANDSHAKE_TIMEOUT)?;
-            timeout(HANDSHAKE_TIMEOUT, write_message(&mut native_output, &offer))
-                .await
-                .map_err(|_| NativeBrowserError::Unavailable)??;
-            return Ok(());
-        }
-        InitialNativeMessage::SecureSession(open) => open,
-    };
+    drop(_lifecycle);
+    let open: ExtensionSessionOpen = timeout(HANDSHAKE_TIMEOUT, read_message(&mut native_input))
+        .await
+        .map_err(|_| NativeBrowserError::Unavailable)??;
     let (ready, mut extension_session) = identity.accept(CHROME_EXTENSION_ORIGIN, &open)?;
     let _lifecycle = lifecycle_guard(HANDSHAKE_TIMEOUT)?;
     timeout(
@@ -408,28 +414,6 @@ where
     .await
     .map_err(|_| NativeBrowserError::Unavailable)??;
     Ok(())
-}
-
-enum InitialNativeMessage {
-    PairingDiscovery(PairingDiscoveryRequest),
-    SecureSession(ExtensionSessionOpen),
-}
-
-fn parse_initial_native_message(
-    value: serde_json::Value,
-) -> Result<InitialNativeMessage, NativeBrowserError> {
-    let message_type = value
-        .as_object()
-        .and_then(|object| object.get("type"))
-        .and_then(serde_json::Value::as_str);
-    if message_type == Some(PAIRING_DISCOVER_TYPE) {
-        return serde_json::from_value(value)
-            .map(InitialNativeMessage::PairingDiscovery)
-            .map_err(|_| NativeBrowserError::InvalidMessage);
-    }
-    serde_json::from_value(value)
-        .map(InitialNativeMessage::SecureSession)
-        .map_err(|_| NativeBrowserError::InvalidMessage)
 }
 
 fn validate_prepare(request: &OwnedPrepareRequest) -> Result<(), NativeBrowserError> {
@@ -793,7 +777,7 @@ pub enum NativeBrowserError {
     InvalidMessage,
     #[error("the local browser host socket is unsafe")]
     UnsafeSocket,
-    #[error("the authenticated browser host pairing was revoked")]
+    #[error("the authenticated browser host authorization was revoked")]
     Revoked,
     #[error("the authenticated browser authorization expired")]
     AuthorizationExpired,
@@ -814,40 +798,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initial_native_message_accepts_only_exact_discovery_or_secure_session() {
-        let discovery = serde_json::json!({
-            "protocol": crate::browser::PAIRING_PROTOCOL,
-            "type": crate::browser::PAIRING_DISCOVER_TYPE,
-            "extensionOrigin": CHROME_EXTENSION_ORIGIN,
-            "challenge": "00000000-0000-4000-8000-000000000001"
-        });
-        assert!(matches!(
-            parse_initial_native_message(discovery),
-            Ok(InitialNativeMessage::PairingDiscovery(_))
-        ));
+    fn session_offer_is_exact_and_value_free() {
+        let identity = BrowserHostIdentity::from_secret_bytes([41_u8; 32]);
+        let offer = SessionOffer {
+            protocol: INJECT_PROVIDER_PROTOCOL,
+            message_type: "session.offer",
+            host_signing_public_key: identity.public_key(),
+        };
+        let json = serde_json::to_value(offer).expect("offer json");
+        assert_eq!(json.as_object().expect("object").len(), 3);
+        assert_eq!(json["protocol"], INJECT_PROVIDER_PROTOCOL);
+        assert_eq!(json["type"], "session.offer");
+        assert_eq!(json["hostSigningPublicKey"], identity.public_key());
 
-        let secure = serde_json::json!({
-            "protocol": INJECT_PROVIDER_PROTOCOL,
-            "type": "session.open",
-            "extensionNonce": "A".repeat(43),
-            "extensionEphemeralPublicKey": "A".repeat(43)
-        });
-        assert!(matches!(
-            parse_initial_native_message(secure),
-            Ok(InitialNativeMessage::SecureSession(_))
-        ));
-
-        let discovery_with_extra = serde_json::json!({
-            "protocol": crate::browser::PAIRING_PROTOCOL,
-            "type": crate::browser::PAIRING_DISCOVER_TYPE,
-            "extensionOrigin": CHROME_EXTENSION_ORIGIN,
-            "challenge": "00000000-0000-4000-8000-000000000001",
-            "extra": true
-        });
-        assert!(matches!(
-            parse_initial_native_message(discovery_with_extra),
-            Err(NativeBrowserError::InvalidMessage)
-        ));
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/inject-provider/v1/secure-session.json"
+        ))
+        .expect("secure-session vector");
+        assert_eq!(vector["offer"]["protocol"], INJECT_PROVIDER_PROTOCOL);
+        assert_eq!(vector["offer"]["type"], "session.offer");
+        assert_eq!(
+            vector["offer"]["hostSigningPublicKey"],
+            vector["ready"]["hostSigningPublicKey"]
+        );
     }
 
     #[derive(Default)]

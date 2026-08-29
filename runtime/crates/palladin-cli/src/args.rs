@@ -84,13 +84,13 @@ pub enum Commands {
 
 #[derive(Debug, Subcommand)]
 pub enum BrowserCommand {
-    /// Install the exact Palladin Chrome host for automatic extension discovery.
+    /// Install the exact Palladin Chrome host for automatic Agent Inject.
     Install,
-    /// Check the exact manifest and OS-secured pairing identity.
+    /// Check the exact manifest and OS-secured host authorization.
     Status,
-    /// Remove the manifest and rotate away the paired host identity.
-    Unpair {
-        /// Required acknowledgement because every extension pairing is invalidated.
+    /// Remove the manifest and revoke active browser-host sessions.
+    Uninstall {
+        /// Required acknowledgement because active Agent Inject sessions are invalidated.
         #[arg(long)]
         confirm: bool,
     },

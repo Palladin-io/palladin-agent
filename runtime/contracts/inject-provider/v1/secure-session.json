@@ -8,6 +8,11 @@
     "frameEncryption": "XChaCha20-Poly1305"
   },
   "extensionOrigin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop/",
+  "offer": {
+    "protocol": "palladin.inject-provider.v1",
+    "type": "session.offer",
+    "hostSigningPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w"
+  },
   "syntheticInputs": {
     "hostSigningSecretKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
     "extensionEphemeralSecretKey": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",

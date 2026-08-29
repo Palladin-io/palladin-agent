@@ -279,18 +279,16 @@ outcome. Adding another agent browser does not change the grant, crypto, CLI, or
 
 The extension provider uses the same Palladin extension rather than a provider-specific extension.
 On macOS, `palladin browser install` provisions the host identity in OS secure storage, installs
-`io.palladin.browser_bridge` for Google Chrome, and prints the shortened fingerprint. The extension
-automatically discovers the host's public identity through a challenge-bound, value-free Native
-Messaging exchange; compare the shortened fingerprint shown in both surfaces and choose
-**Trust and pair**. Discovery never writes or replaces the extension-owned pin.
-`palladin browser status` reports the host manifest and provisioned host identity without claiming
-that the separately extension-owned pin is present. The authenticated channel is verified when
-Inject begins.
+`io.palladin.browser_bridge` for Google Chrome, and allowlists only the compiled official Palladin
+extension origin. The extension connects automatically and stores no host key, fingerprint, or
+pairing state. `palladin browser status` reports the manifest and OS-secured host authorization.
+The authenticated channel is verified when Inject begins; no Palladin account or profile in the
+extension participates in that decision.
 
-`palladin browser unpair --confirm` revokes the OS-secured lifecycle token before deleting the host
+`palladin browser uninstall --confirm` revokes the OS-secured lifecycle token before deleting the host
 key and manifest. Browser forwards hold a shared cross-process lease from the final token check
-through the value-free response, while unpair holds the exclusive lease through cleanup, so no
-loaded session can finish after unpair reports success. The post-prepare wait is derived from the
+through the value-free response, while uninstall holds the exclusive lease through cleanup, so no
+loaded session can finish after uninstall reports success. The post-prepare wait is derived from the
 canonical five-minute grant window plus a 30-second margin; secret-bearing browser round trips stay
 bounded to 60 seconds. The local AEAD payload also binds the minimum operation-lease/grant expiry as
 a canonical `CLOCK_MONOTONIC` not-after; the host rechecks it under the shared lifecycle lease
@@ -301,8 +299,13 @@ The host allowlist contains only the compiled extension origin
 The local socket is only a rendezvous point. The CLI signs a fresh ephemeral handshake with the
 OS-secured host identity, the host signs its response, and both derive independent directional
 XChaCha20-Poly1305 keys. The host also dynamically validates that Google-signed Chrome launched it
-before loading the identity. Windows, Linux, other Chromium browsers, Firefox, and Safari fail
+and that Chrome supplied exactly the compiled extension origin before loading the identity. A
+strict value-free `session.offer` announces the public host key only for the current port; the
+extension keeps it in memory to verify the signed transcript. Windows, Linux, other Chromium browsers, Firefox, and Safari fail
 closed until their platform-specific launch attestation and installation paths are implemented.
+Chrome does not attest Web Store installation versus an unpacked extension that reuses the public
+manifest key, so production builds also fail closed today. This automatic path is development-only
+until artifact provenance can be bound independently to the invoking extension.
 
 Codex, Claude, and other MCP clients are callers, not browser providers. They never receive a
 dedicated extension or the credential value. The unshipped Node/Playwright adapters are disabled

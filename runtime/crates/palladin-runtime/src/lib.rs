@@ -118,12 +118,12 @@ const BROWSER_HOST_LIFECYCLE_TOKEN_BYTES: usize = 32;
 
 /// Installation-scoped browser identity and the unforgeable lifecycle generation that was
 /// current when it was opened. The token is intentionally opaque and never crosses either wire.
-pub struct BrowserHostPairing {
+pub struct BrowserHostAuthorization {
     identity: BrowserHostIdentity,
     lifecycle_token: BrowserHostLifecycleToken,
 }
 
-impl BrowserHostPairing {
+impl BrowserHostAuthorization {
     #[must_use]
     pub fn identity(&self) -> &BrowserHostIdentity {
         &self.identity
@@ -148,7 +148,7 @@ impl BrowserHostLifecycleToken {
 }
 
 /// Shared cross-process lease held from the final secure-store token recheck through a complete
-/// browser request/response. Explicit unpair takes the exclusive side of the same lock.
+/// browser request/response. Explicit uninstall takes the exclusive side of the same lock.
 pub struct BrowserHostLifecycleGuard {
     _lock: TransactionLock,
 }
@@ -170,22 +170,22 @@ impl BrowserInjectForwardGuard {
 }
 
 /// Exclusive revocation lease. Callers keep this alive through manifest cleanup so a concurrent
-/// install cannot publish a new pairing until the unpair command has reached its success point.
+/// install cannot publish a new authorization until uninstall has reached its success point.
 pub struct BrowserHostRevocationGuard {
     _lock: TransactionLock,
 }
 
-/// Exclusive provisioning lease kept through manifest publication so install and unpair have one
+/// Exclusive provisioning lease kept through manifest publication so install and uninstall have one
 /// total cross-process order.
 pub struct BrowserHostProvisioningGuard {
-    pairing: BrowserHostPairing,
+    authorization: BrowserHostAuthorization,
     _lock: TransactionLock,
 }
 
 impl BrowserHostProvisioningGuard {
     #[must_use]
     pub fn identity(&self) -> &BrowserHostIdentity {
-        self.pairing.identity()
+        self.authorization.identity()
     }
 }
 
@@ -691,49 +691,53 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         &self.repository
     }
 
-    /// Load the installation-scoped browser host identity. A Native Messaging host must never
-    /// create trust on first use; absence means explicit browser pairing has not completed.
+    /// Load the installation-scoped browser host identity. It authenticates the local CLI-to-host
+    /// transport and is provisioned only by the explicit browser-host installation command.
     pub fn browser_host_identity(&self) -> Result<BrowserHostIdentity, RuntimeError> {
-        Ok(self.browser_host_pairing()?.identity)
+        Ok(self.browser_host_authorization()?.identity)
     }
 
-    /// Open one consistent browser pairing snapshot under the shared lifecycle lock.
-    pub fn browser_host_pairing(&self) -> Result<BrowserHostPairing, RuntimeError> {
+    /// Open one consistent browser-host authorization snapshot under the shared lifecycle lock.
+    pub fn browser_host_authorization(&self) -> Result<BrowserHostAuthorization, RuntimeError> {
         let _lock = self.repository.acquire_shared_transaction_lock()?;
-        self.load_browser_host_pairing()
+        self.load_browser_host_authorization()
     }
 
-    /// Provision the durable host identity only from the explicit pairing flow. The repository
-    /// transaction lock prevents concurrent pairing processes from pinning different keys.
+    /// Provision the durable host identity only from the explicit installation flow. The
+    /// repository transaction lock prevents concurrent installers from publishing different keys.
     pub fn provision_browser_host_identity(&self) -> Result<BrowserHostIdentity, RuntimeError> {
-        Ok(self.provision_browser_host_pairing()?.identity)
+        Ok(self.provision_browser_host_authorization()?.identity)
     }
 
     /// Provision both the durable signing identity and a fresh lifecycle token. Existing
-    /// pre-token installations are upgraded only from this explicit install flow.
-    pub fn provision_browser_host_pairing(&self) -> Result<BrowserHostPairing, RuntimeError> {
+    /// pre-token installations are upgraded only from this explicit installation flow.
+    pub fn provision_browser_host_authorization(
+        &self,
+    ) -> Result<BrowserHostAuthorization, RuntimeError> {
         let BrowserHostProvisioningGuard {
-            pairing,
+            authorization,
             _lock: lock,
-        } = self.provision_browser_host_pairing_locked()?;
+        } = self.provision_browser_host_authorization_locked()?;
         drop(lock);
-        Ok(pairing)
+        Ok(authorization)
     }
 
     /// Provision while retaining the exclusive lifecycle lease. The CLI holds the returned value
     /// until the exact Native Messaging manifest has been durably published.
-    pub fn provision_browser_host_pairing_locked(
+    pub fn provision_browser_host_authorization_locked(
         &self,
     ) -> Result<BrowserHostProvisioningGuard, RuntimeError> {
         let lock = self.repository.acquire_transaction_lock()?;
-        let pairing = self.provision_browser_host_pairing_unlocked()?;
+        let authorization = self.provision_browser_host_authorization_unlocked()?;
         Ok(BrowserHostProvisioningGuard {
-            pairing,
+            authorization,
             _lock: lock,
         })
     }
 
-    fn provision_browser_host_pairing_unlocked(&self) -> Result<BrowserHostPairing, RuntimeError> {
+    fn provision_browser_host_authorization_unlocked(
+        &self,
+    ) -> Result<BrowserHostAuthorization, RuntimeError> {
         let stored_identity = self.secrets.get(
             BROWSER_HOST_IDENTITY_OWNER_ID,
             SecretSlot::BrowserHostEd25519SecretKeyV1,
@@ -743,7 +747,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             SecretSlot::BrowserHostLifecycleTokenV1,
         )?;
         if stored_identity.is_some() && stored_token.is_some() {
-            return self.load_browser_host_pairing();
+            return self.load_browser_host_authorization();
         }
         if stored_identity.is_none() && stored_token.is_some() {
             return Err(RuntimeError::InvalidStoredSecret);
@@ -756,7 +760,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                 SecretSlot::BrowserHostLifecycleTokenV1,
                 lifecycle_token.as_bytes(),
             )?;
-            return Ok(BrowserHostPairing {
+            return Ok(BrowserHostAuthorization {
                 identity,
                 lifecycle_token,
             });
@@ -786,15 +790,15 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             }
             return Err(error.into());
         }
-        Ok(BrowserHostPairing {
+        Ok(BrowserHostAuthorization {
             identity,
             lifecycle_token,
         })
     }
 
-    /// Revalidate a pairing generation while holding the shared side of the cross-process
+    /// Revalidate an authorization generation while holding the shared side of the cross-process
     /// lifecycle lock. The returned guard must live across the complete external forward and its
-    /// response so an exclusive unpair cannot report success while that operation is active.
+    /// response so an exclusive uninstall cannot report success while that operation is active.
     pub fn browser_host_lifecycle_guard(
         &self,
         expected: &[u8; BROWSER_HOST_LIFECYCLE_TOKEN_BYTES],
@@ -841,7 +845,9 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
 
     /// Revoke active browser sessions first, then remove their signing key. The repository's
     /// exclusive lock makes this linearizable against every shared forwarding lease.
-    pub fn unpair_browser_host_identity(&self) -> Result<BrowserHostRevocationGuard, RuntimeError> {
+    pub fn revoke_browser_host_authorization(
+        &self,
+    ) -> Result<BrowserHostRevocationGuard, RuntimeError> {
         let lock = self.repository.acquire_transaction_lock()?;
         self.secrets.delete(
             BROWSER_HOST_IDENTITY_OWNER_ID,
@@ -854,7 +860,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         Ok(BrowserHostRevocationGuard { _lock: lock })
     }
 
-    fn load_browser_host_pairing(&self) -> Result<BrowserHostPairing, RuntimeError> {
+    fn load_browser_host_authorization(&self) -> Result<BrowserHostAuthorization, RuntimeError> {
         let identity = self.secrets.get(
             BROWSER_HOST_IDENTITY_OWNER_ID,
             SecretSlot::BrowserHostEd25519SecretKeyV1,
@@ -864,14 +870,14 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             SecretSlot::BrowserHostLifecycleTokenV1,
         )?;
         let (Some(identity), Some(lifecycle)) = (identity, lifecycle) else {
-            return Err(RuntimeError::BrowserHostNotPaired);
+            return Err(RuntimeError::BrowserHostNotProvisioned);
         };
         if lifecycle.expose_secret().len() != BROWSER_HOST_LIFECYCLE_TOKEN_BYTES {
             return Err(RuntimeError::InvalidStoredSecret);
         }
         let mut lifecycle_token = [0_u8; BROWSER_HOST_LIFECYCLE_TOKEN_BYTES];
         lifecycle_token.copy_from_slice(lifecycle.expose_secret());
-        Ok(BrowserHostPairing {
+        Ok(BrowserHostAuthorization {
             identity: BrowserHostIdentity::from_secret_slice(identity.expose_secret())?,
             lifecycle_token: BrowserHostLifecycleToken::new(lifecycle_token),
         })
@@ -5660,9 +5666,9 @@ pub enum RuntimeError {
     ProfileNotFound,
     #[error("OS secure storage operation failed: {0}")]
     Store(#[from] StoreError),
-    #[error("browser host is not paired; complete explicit extension pairing first")]
-    BrowserHostNotPaired,
-    #[error("the authenticated browser host pairing was revoked")]
+    #[error("browser host authorization is not provisioned; run: palladin browser install")]
+    BrowserHostNotProvisioned,
+    #[error("the authenticated browser host authorization was revoked")]
     BrowserHostRevoked,
     #[error("the authenticated browser host lifecycle is busy")]
     BrowserHostLifecycleBusy,
@@ -6343,7 +6349,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_host_identity_requires_explicit_pairing_and_is_stable() {
+    fn browser_host_identity_requires_explicit_installation_and_is_stable() {
         assert!(std::mem::needs_drop::<BrowserHostLifecycleToken>());
         let root = tempfile::tempdir().expect("root");
         let repository = ProfileRepository::new(root.path().join("state")).expect("repository");
@@ -6352,7 +6358,7 @@ mod tests {
 
         assert!(matches!(
             service.browser_host_identity(),
-            Err(RuntimeError::BrowserHostNotPaired)
+            Err(RuntimeError::BrowserHostNotProvisioned)
         ));
         let provisioned = service
             .provision_browser_host_identity()
@@ -6360,18 +6366,20 @@ mod tests {
         let reopened = service.browser_host_identity().expect("reopen identity");
         let repeated = service
             .provision_browser_host_identity()
-            .expect("repeat pairing");
-        let pairing = service.browser_host_pairing().expect("pairing snapshot");
-        let repeated_pairing = service
-            .provision_browser_host_pairing()
-            .expect("repeat pairing snapshot");
+            .expect("repeat provisioning");
+        let authorization = service
+            .browser_host_authorization()
+            .expect("authorization snapshot");
+        let repeated_authorization = service
+            .provision_browser_host_authorization()
+            .expect("repeat authorization snapshot");
         assert_eq!(provisioned.public_key(), reopened.public_key());
         assert_eq!(provisioned.public_key(), repeated.public_key());
         assert_eq!(provisioned.fingerprint(), reopened.fingerprint());
         assert_eq!(
-            pairing.lifecycle_token(),
-            repeated_pairing.lifecycle_token(),
-            "ordinary install must not revoke already paired sessions"
+            authorization.lifecycle_token(),
+            repeated_authorization.lifecycle_token(),
+            "ordinary install must not revoke active browser sessions"
         );
         assert_eq!(
             store
@@ -6441,7 +6449,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_unpair_linearizes_inflight_inject_and_blocks_post_success_forward() {
+    fn concurrent_uninstall_linearizes_inflight_inject_and_blocks_post_success_forward() {
         use std::sync::mpsc;
         use std::time::Duration;
 
@@ -6456,43 +6464,43 @@ mod tests {
             ProfileRepository::new(state).expect("revoker repository"),
             store,
         );
-        let pairing = active
-            .provision_browser_host_pairing()
-            .expect("provision pairing");
+        let authorization = active
+            .provision_browser_host_authorization()
+            .expect("provision authorization");
         let forward = active
-            .browser_host_lifecycle_guard(pairing.lifecycle_token())
+            .browser_host_lifecycle_guard(authorization.lifecycle_token())
             .expect("begin in-flight forward");
 
         let (started_tx, started_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
-        let unpair = std::thread::spawn(move || {
+        let uninstall = std::thread::spawn(move || {
             started_tx.send(()).expect("started");
-            let result = revoker.unpair_browser_host_identity();
+            let result = revoker.revoke_browser_host_authorization();
             done_tx.send(result).expect("done");
         });
-        started_rx.recv().expect("unpair started");
+        started_rx.recv().expect("uninstall started");
         assert!(
             done_rx.recv_timeout(Duration::from_millis(50)).is_err(),
-            "unpair must not report success while a forwarding lease is active"
+            "uninstall must not report success while a forwarding lease is active"
         );
 
         drop(forward);
         done_rx
             .recv_timeout(Duration::from_secs(2))
-            .expect("unpair completed")
-            .expect("unpair succeeded");
-        unpair.join().expect("unpair thread");
+            .expect("uninstall completed")
+            .expect("uninstall succeeded");
+        uninstall.join().expect("uninstall thread");
         assert!(matches!(
-            active.browser_host_lifecycle_guard(pairing.lifecycle_token()),
+            active.browser_host_lifecycle_guard(authorization.lifecycle_token()),
             Err(RuntimeError::BrowserHostRevoked)
         ));
         let mut extension_received_inject = false;
-        if let Ok(_forward) = active.browser_host_lifecycle_guard(pairing.lifecycle_token()) {
+        if let Ok(_forward) = active.browser_host_lifecycle_guard(authorization.lifecycle_token()) {
             extension_received_inject = true;
         }
         assert!(
             !extension_received_inject,
-            "a loaded session must not forward Inject after unpair succeeds"
+            "a loaded session must not forward Inject after uninstall succeeds"
         );
         let values = active.secrets.0.lock().expect("store");
         assert!(!values.contains_key(&(
@@ -6512,9 +6520,9 @@ mod tests {
         let store = MemorySecretStore::default();
         let service =
             RuntimeService::new(ProfileRepository::new(state).expect("repository"), store);
-        let pairing = service
-            .provision_browser_host_pairing()
-            .expect("provision pairing");
+        let authorization = service
+            .provision_browser_host_authorization()
+            .expect("provision authorization");
 
         let encryption = X25519Identity::from_private_bytes(vec![61; 32]).expect("identity");
         let expires_at =
@@ -6587,8 +6595,11 @@ mod tests {
             .acquire_transaction_lock()
             .expect("exclusive lifecycle lock");
         let mut extension_received_inject = false;
-        let result =
-            session.browser_inject_forward_guard(&service, pairing.lifecycle_token(), &delivered);
+        let result = session.browser_inject_forward_guard(
+            &service,
+            authorization.lifecycle_token(),
+            &delivered,
+        );
         if result.is_ok() {
             extension_received_inject = true;
         }

@@ -123,9 +123,8 @@ These controls are defense in depth inside the selected platform tier. The preci
 ## Browser injection
 
 The provider-neutral form and origin-validation contract is implemented. The macOS Rust runtime now
-has a code-enabled, one-shot Chrome Native Messaging route with challenge-bound public-host
-discovery, explicit out-of-band fingerprint confirmation, a signed ephemeral extension session,
-mutually authenticated local CLI-to-host IPC, lifecycle
+has a code-enabled, one-shot Chrome Native Messaging route with automatic official-extension
+authorization, a signed ephemeral extension session, mutually authenticated local CLI-to-host IPC, lifecycle
 revocation, and directional XChaCha20-Poly1305 frames. It accepts only the compiled Chromium origin
 and the exact schemas in [`contracts/inject-provider/v1`](contracts/inject-provider/v1/README.md).
 The legacy Node extension socket remains unshipped and is never a fallback.
@@ -134,15 +133,19 @@ CLI `inject` and MCP `inject_credential` call one shared native Inject service. 
 the OS Secret Store access, Agent private keys, grant delivery, credential decryption, authenticated
 domain checks and encrypted extension transport. MCP receives only a value-free outcome; no key or
 credential field crosses the MCP boundary. The byte-pinned MCP 1.0 contract remains immutable;
-MCP 1.1 adds only the paired `targetTabId` and exact `targetUrl` hints needed to route an
+MCP 1.1 adds only the `targetTabId` and exact `targetUrl` hints needed to route an
 Agent-prepared operation to one browser tab. The extension treats both as untrusted, independently
 resolves the tab and pins its top-frame document before any grant or credential delivery.
 
 This code-enabled branch is not by itself a production acceptance claim. Release readiness remains
 blocked until the exact signed/notarized packaged binary passes a real Chrome Native Messaging E2E
-with the paired extension, including wrong-pin, revocation, expiry, and disconnect negatives. Source
+with the official extension, including wrong-ID, direct-launch, fake-host, multi-profile,
+revocation, expiry, and disconnect negatives. Source
 and synthetic process tests do not replace that browser gate. Platforms without a completed native
 host adapter fail closed before profile, grant, or credential access.
+Chrome also does not report whether the invoking ID came from the Web Store or an unpacked build
+that reused the public manifest key. Production builds therefore reject browser installation and
+native-host entry until independent signed-artifact provenance is implemented.
 
 AgentBrowser Inject remains unavailable in every build because version 0.33.2 cannot atomically bind
 secret text insertion to the attested element; its MCP package returns before grant, runtime, or
