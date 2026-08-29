@@ -30,6 +30,14 @@ Security violations are blocking findings.
 - When variants materially differ in authorization, validation, cryptographic material, lifecycle, or transaction semantics, keep separate commands/API operations and focused handlers instead of branching one generic flow by a type flag.
 - When an API provides an authoritative discriminator such as `GrantType`, require and consume that exact field. Never infer it from nullable fields, payload shape, endpoint, aliases, or current runtime behavior.
 
+### Trusted Palladin API Responses
+
+- The backend is authoritative for server-owned domain state and business invariants. Do not duplicate those invariants in the launcher or native runtime as extra response checks whose only effect is to reject a valid, version-matched Palladin API response. In particular, do not independently invent lifecycle/status/epoch relationships to detect contract drift at runtime.
+- Keep the transport deserialization and bounds checks required to decode safely, but prove backend/Agent compatibility with shared protocol fixtures, provider/consumer contract tests and CI.
+- Backend authorization and mutation validation remain mandatory; a CLI pre-check is never a security boundary.
+- This rule does not weaken hostile-input handling, local registry integrity, native/browser messaging checks, signed public configuration, or zero-knowledge verification. The runtime must continue to verify signatures, commitments, envelope structure and organization/Vault/Agent/grant/key-version/epoch bindings against an independent authoritative field before opening or using secrets.
+- Any runtime validation of a first-party response beyond safe decoding must identify the independent authority or concrete threat it enforces and include a focused negative test.
+
 ## Commands
 
 ```bash
