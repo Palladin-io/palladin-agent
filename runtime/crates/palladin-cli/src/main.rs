@@ -287,7 +287,7 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
                 Err(error) => return fail(&error.to_string()),
             };
             println!(
-                "Palladin Chrome host installed at {}.\nThe official Palladin extension can now receive Agent Inject requests automatically.",
+                "Palladin Chrome host installed at {}.\nA Chrome extension with the compiled Palladin development origin can now receive Agent Inject requests automatically; artifact provenance is not attested.",
                 safe_terminal_text(&path.to_string_lossy())
             );
             drop(provisioning);
@@ -306,7 +306,7 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
             let authorized = match service.browser_host_identity() {
                 Ok(_identity) => {
                     println!(
-                        "Chrome native host manifest: {}\nHost authorization: provisioned\nExtension access: restricted to the compiled official Chrome extension origin\nAuthenticated channel: verified when Inject begins",
+                        "Chrome native host manifest: {}\nHost authorization: provisioned\nExtension access: restricted to the compiled Chrome development origin; artifact provenance is not attested\nAuthenticated channel: verified when Inject begins",
                         if installed {
                             "installed"
                         } else {
