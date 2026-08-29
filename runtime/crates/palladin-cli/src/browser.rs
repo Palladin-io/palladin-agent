@@ -5,10 +5,17 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const NATIVE_HOST_NAME: &str = "io.palladin.browser_bridge";
+pub const PRODUCTION_NATIVE_HOST_NAME: &str = "io.palladin";
+pub const DEVELOPMENT_NATIVE_HOST_NAME: &str = "io.palladin.debug";
+pub const NATIVE_HOST_NAME: &str = if cfg!(debug_assertions) {
+    DEVELOPMENT_NATIVE_HOST_NAME
+} else {
+    PRODUCTION_NATIVE_HOST_NAME
+};
+const LEGACY_NATIVE_HOST_NAME: &str = "io.palladin.browser_bridge";
 pub const CHROME_EXTENSION_ID: &str = "hmljnknogdeonphikmeofcbkikmpokba";
 pub const CHROME_EXTENSION_ORIGIN: &str = "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/";
-const NATIVE_HOST_DESCRIPTION: &str = "Palladin authenticated Chrome Inject bridge";
+const NATIVE_HOST_DESCRIPTION: &str = "Palladin authenticated Chrome Inject host";
 
 /// Chrome Native Messaging authenticates the extension ID but does not attest Web Store
 /// installation versus an unpacked extension carrying the same public manifest key. Until a
@@ -51,6 +58,7 @@ pub fn install_manifest(palladin_root: &Path) -> Result<PathBuf, BrowserInstallE
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
             .map_err(|_| BrowserInstallError::Directory)?;
     }
+    remove_manifest_file(&directory.join(format!("{LEGACY_NATIVE_HOST_NAME}.json")))?;
     let destination = directory.join(format!("{NATIVE_HOST_NAME}.json"));
     let manifest = NativeHostManifest {
         name: NATIVE_HOST_NAME.to_owned(),
@@ -112,8 +120,14 @@ pub fn manifest_status(palladin_root: &Path) -> Result<bool, BrowserInstallError
 
 pub fn remove_manifest(palladin_root: &Path) -> Result<bool, BrowserInstallError> {
     require_macos()?;
-    let path = manifest_directory(palladin_root)?.join(format!("{NATIVE_HOST_NAME}.json"));
-    match fs::symlink_metadata(&path) {
+    let directory = manifest_directory(palladin_root)?;
+    let current = remove_manifest_file(&directory.join(format!("{NATIVE_HOST_NAME}.json")))?;
+    let legacy = remove_manifest_file(&directory.join(format!("{LEGACY_NATIVE_HOST_NAME}.json")))?;
+    Ok(current || legacy)
+}
+
+fn remove_manifest_file(path: &Path) -> Result<bool, BrowserInstallError> {
+    match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {
             fs::remove_file(path).map_err(|_| BrowserInstallError::Manifest)?;
             Ok(true)
@@ -204,6 +218,19 @@ mod tests {
         assert_eq!(extension_provenance_supported(), cfg!(debug_assertions));
     }
 
+    #[test]
+    fn native_host_name_matches_the_build_security_mode() {
+        assert_eq!(
+            NATIVE_HOST_NAME,
+            if cfg!(debug_assertions) {
+                DEVELOPMENT_NATIVE_HOST_NAME
+            } else {
+                PRODUCTION_NATIVE_HOST_NAME
+            }
+        );
+        assert_ne!(PRODUCTION_NATIVE_HOST_NAME, DEVELOPMENT_NATIVE_HOST_NAME);
+    }
+
     #[cfg(all(target_os = "macos", debug_assertions))]
     #[test]
     fn manifest_lifecycle_is_exact_and_tampering_fails_status() {
@@ -211,7 +238,16 @@ mod tests {
         let home = std::fs::canonicalize(temporary.path()).expect("canonical home");
         let root = home.join(".palladin");
         std::fs::create_dir(&root).expect("root");
+        let manifest_directory = manifest_directory(&root).expect("manifest directory");
+        std::fs::create_dir_all(&manifest_directory).expect("create manifest directory");
+        let legacy_manifest = manifest_directory.join(format!("{LEGACY_NATIVE_HOST_NAME}.json"));
+        std::fs::write(&legacy_manifest, b"legacy").expect("legacy manifest");
         let manifest = install_manifest(&root).expect("install");
+        assert!(!legacy_manifest.exists());
+        assert_eq!(
+            manifest.file_name().and_then(std::ffi::OsStr::to_str),
+            Some("io.palladin.debug.json")
+        );
         assert!(manifest_status(&root).expect("status"));
 
         let mut value: serde_json::Value =

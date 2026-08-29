@@ -278,10 +278,13 @@ outcome. Adding another agent browser does not change the grant, crypto, CLI, or
 | `agent-browser` | `@palladin/agent-browser-mcp` public navigation proxy | No | None — `inject_credential` fails closed before grant/runtime/secret-bearing daemon commands |
 
 The extension provider uses the same Palladin extension rather than a provider-specific extension.
-On macOS, `palladin browser install` provisions the host identity in OS secure storage, installs
-`io.palladin.browser_bridge` for Google Chrome, and allowlists only the compiled official Palladin
-extension origin. The extension connects automatically and stores no host key, fingerprint, or
-pairing state. `palladin browser status` reports the manifest and OS-secured host authorization.
+On macOS, `palladin browser install` provisions the host identity in OS secure storage and installs
+the build-bound Google Chrome host: `io.palladin.debug` for source-development builds and
+`io.palladin` for release builds. Both allowlist only the exact compiled Palladin extension origin;
+there is no runtime flag, backend value, or extension payload that can switch the host identity.
+Installation and uninstallation also remove the retired `io.palladin.browser_bridge` manifest.
+The extension connects automatically and stores no host key, fingerprint, or pairing state.
+`palladin browser status` reports the manifest and OS-secured host authorization.
 The authenticated channel is verified when Inject begins; no Palladin account or profile in the
 extension participates in that decision.
 
