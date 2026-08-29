@@ -143,15 +143,16 @@ where
     S: SecretStore + Sync,
     H: FnMut(HeartbeatInfo),
 {
-    let pairing = service.browser_host_pairing()?;
-    let mut extension = ExtensionClient::connect(service.repository().root(), pairing.identity())
-        .await
-        .map_err(InjectServiceError::Transport)?;
+    let authorization = service.browser_host_authorization()?;
+    let mut extension =
+        ExtensionClient::connect(service.repository().root(), authorization.identity())
+            .await
+            .map_err(InjectServiceError::Transport)?;
     let mut operation_nonce = [0_u8; 32];
     getrandom::fill(&mut operation_nonce).map_err(|_| InjectServiceError::Randomness)?;
     let nonce = hex::encode(operation_nonce);
     let lifecycle = service
-        .browser_host_lifecycle_guard_within(pairing.lifecycle_token(), OPERATION_TIMEOUT)?;
+        .browser_host_lifecycle_guard_within(authorization.lifecycle_token(), OPERATION_TIMEOUT)?;
     let prepared = tokio::select! {
         biased;
         () = cancellation.cancelled() => return Err(InjectServiceError::Cancelled),
@@ -264,8 +265,11 @@ where
             value,
         })
         .collect();
-    let forward =
-        session.browser_inject_forward_guard(service, pairing.lifecycle_token(), &delivered)?;
+    let forward = session.browser_inject_forward_guard(
+        service,
+        authorization.lifecycle_token(),
+        &delivered,
+    )?;
     let monotonic_sample = monotonic_now_ns().map_err(InjectServiceError::Transport)?;
     let authorization_remaining = forward
         .remaining()

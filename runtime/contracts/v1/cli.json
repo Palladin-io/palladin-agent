@@ -35,7 +35,7 @@
     { "argv": ["inject", "vault-fixture", "entry-fixture", "--cdp", "http://127.0.0.1:9222", "--no-wait"], "name": "inject", "secretOutput": false },
     { "argv": ["browser", "install"], "name": "browser", "secretOutput": false },
     { "argv": ["browser", "status"], "name": "browser", "secretOutput": false },
-    { "argv": ["browser", "unpair", "--confirm"], "name": "browser", "secretOutput": false },
+    { "argv": ["browser", "uninstall", "--confirm"], "name": "browser", "secretOutput": false },
     { "argv": ["report-stale", "vault-fixture", "entry-fixture", "--code", "login_rejected"], "name": "report-stale", "secretOutput": false },
     { "argv": ["mcp", "serve"], "name": "mcp", "secretOutput": false },
     { "argv": ["agents", "list"], "name": "agents", "secretOutput": false },

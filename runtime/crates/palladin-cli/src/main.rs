@@ -13,7 +13,9 @@ use palladin_cli::args::{
     AgentsCommand, BrowserCommand, Cli, Commands, ConnectArgs, ExecArgs, GetArgs, InjectArgs,
     McpCommand, ProgressArg, ReportStaleArgs, SearchArgs, SecurityCommand, StaleCodeArg,
 };
-use palladin_cli::browser::{install_manifest, manifest_status, remove_manifest};
+use palladin_cli::browser::{
+    BrowserInstallError, install_manifest, manifest_status, remove_manifest,
+};
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
     render_agent_list, render_connect, render_init, render_legacy_cleanup, render_legacy_cutover,
@@ -92,6 +94,10 @@ async fn main() -> ExitCode {
     }
     let environment = EnvironmentReport::inspect_current();
     let cli = Cli::parse();
+
+    if browser_command_blocked_by_provenance(&cli.command) {
+        return fail(&BrowserInstallError::ExtensionProvenanceUnavailable.to_string());
+    }
 
     if let Commands::Inject(args) = &cli.command
         && inject_uses_deprecated_browser_boundary(args)
@@ -214,6 +220,9 @@ fn is_chrome_native_host_invocation() -> bool {
 async fn chrome_native_host_main() -> ExitCode {
     #[cfg(target_os = "macos")]
     {
+        if !palladin_cli::browser::extension_provenance_supported() {
+            return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
+        }
         if palladin_platform::authenticate_chrome_native_messaging_parent().is_err() {
             return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
         }
@@ -242,16 +251,16 @@ async fn chrome_native_host_main() -> ExitCode {
         } else if !cfg!(debug_assertions) {
             return ExitCode::from(EXIT_FAILURE);
         }
-        let pairing = match service.browser_host_pairing() {
-            Ok(pairing) => pairing,
+        let authorization = match service.browser_host_authorization() {
+            Ok(authorization) => authorization,
             Err(_) => return ExitCode::from(EXIT_FAILURE),
         };
         return match palladin_cli::native_browser::serve_native_host(
             &root,
-            pairing.identity(),
+            authorization.identity(),
             |max_wait| {
                 service
-                    .browser_host_lifecycle_guard_within(pairing.lifecycle_token(), max_wait)
+                    .browser_host_lifecycle_guard_within(authorization.lifecycle_token(), max_wait)
                     .map_err(|_| palladin_cli::native_browser::NativeBrowserError::Revoked)
             },
         )
@@ -270,8 +279,13 @@ async fn chrome_native_host_main() -> ExitCode {
 fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand) -> ExitCode {
     match command {
         BrowserCommand::Install => {
-            let provisioning = match service.provision_browser_host_pairing_locked() {
-                Ok(pairing) => pairing,
+            if !palladin_cli::browser::extension_provenance_supported() {
+                return fail(
+                    "production Chrome extension provenance cannot yet be attested; Agent Inject is available only in development builds",
+                );
+            }
+            let provisioning = match service.provision_browser_host_authorization_locked() {
+                Ok(authorization) => authorization,
                 Err(error) => return fail(&error.to_string()),
             };
             let path = match install_manifest(service.repository().root()) {
@@ -279,34 +293,37 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
                 Err(error) => return fail(&error.to_string()),
             };
             println!(
-                "Palladin Chrome host installed at {}.\nFingerprint: {}\nOpen Agent runtime in the Palladin extension, compare this fingerprint, and choose Trust and pair.",
-                safe_terminal_text(&path.to_string_lossy()),
-                shorten_public_identifier(&provisioning.identity().fingerprint())
+                "Palladin Chrome host installed at {}.\nA Chrome extension with the compiled Palladin development origin can now receive Agent Inject requests automatically; artifact provenance is not attested.",
+                safe_terminal_text(&path.to_string_lossy())
             );
             drop(provisioning);
             ExitCode::SUCCESS
         }
         BrowserCommand::Status => {
+            if !palladin_cli::browser::extension_provenance_supported() {
+                return fail(
+                    "production Chrome extension provenance cannot yet be attested; Agent Inject is available only in development builds",
+                );
+            }
             let installed = match manifest_status(service.repository().root()) {
                 Ok(installed) => installed,
                 Err(error) => return fail(&error.to_string()),
             };
-            let paired = match service.browser_host_identity() {
-                Ok(identity) => {
+            let authorized = match service.browser_host_identity() {
+                Ok(_identity) => {
                     println!(
-                        "Chrome native host manifest: {}\nHost identity: provisioned ({})\nExtension pin: extension-owned; verify in the extension\nAuthenticated channel: verified when Inject begins",
+                        "Chrome native host manifest: {}\nHost authorization: provisioned\nExtension access: restricted to the compiled Chrome development origin; artifact provenance is not attested\nAuthenticated channel: verified when Inject begins",
                         if installed {
                             "installed"
                         } else {
                             "not installed"
-                        },
-                        shorten_public_identifier(&identity.fingerprint())
+                        }
                     );
                     true
                 }
-                Err(RuntimeError::BrowserHostNotPaired) => {
+                Err(RuntimeError::BrowserHostNotProvisioned) => {
                     println!(
-                        "Chrome native host manifest: {}\nHost identity: not provisioned\nExtension pin: extension-owned; verify in the extension\nAuthenticated channel: unavailable",
+                        "Chrome native host manifest: {}\nHost authorization: not provisioned\nExtension access: unavailable\nAuthenticated channel: unavailable",
                         if installed {
                             "installed"
                         } else {
@@ -317,17 +334,17 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
                 }
                 Err(error) => return fail(&error.to_string()),
             };
-            if installed && paired {
+            if installed && authorized {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(EXIT_FAILURE)
             }
         }
-        BrowserCommand::Unpair { confirm } => {
+        BrowserCommand::Uninstall { confirm } => {
             if !confirm {
-                return fail("browser unpair requires --confirm");
+                return fail("browser uninstall requires --confirm");
             }
-            let revocation = match service.unpair_browser_host_identity() {
+            let revocation = match service.revoke_browser_host_authorization() {
                 Ok(revocation) => revocation,
                 Err(error) => return fail(&error.to_string()),
             };
@@ -335,17 +352,20 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
                 return fail(&error.to_string());
             }
             drop(revocation);
-            println!("Palladin Chrome host unpaired and its manifest removed.");
+            println!("Palladin Chrome host uninstalled and active browser sessions revoked.");
             ExitCode::SUCCESS
         }
     }
 }
 
-fn shorten_public_identifier(value: &str) -> String {
-    if value.len() <= 15 {
-        return value.to_owned();
-    }
-    format!("{}…{}", &value[..8], &value[value.len() - 6..])
+const fn browser_command_blocked_by_provenance(command: &Commands) -> bool {
+    !palladin_cli::browser::extension_provenance_supported()
+        && matches!(
+            command,
+            Commands::Browser {
+                command: BrowserCommand::Install | BrowserCommand::Status,
+            }
+        )
 }
 
 enum RuntimeSecretStore {
@@ -1888,7 +1908,7 @@ fn print_unsafe_environment(environment: &EnvironmentReport, protocol_stdout: bo
 mod version_policy_gate_tests {
     use clap::Parser;
 
-    use super::{Cli, requires_version_policy};
+    use super::{Cli, browser_command_blocked_by_provenance, requires_version_policy};
 
     fn command(arguments: &[&str]) -> Cli {
         Cli::try_parse_from(arguments).expect("valid command")
@@ -1920,7 +1940,7 @@ mod version_policy_gate_tests {
                 "--confirm",
             ][..],
             &["palladin", "browser", "install"][..],
-            &["palladin", "browser", "unpair", "--confirm"][..],
+            &["palladin", "browser", "uninstall", "--confirm"][..],
         ] {
             assert!(requires_version_policy(&command(arguments).command));
         }
@@ -1933,6 +1953,22 @@ mod version_policy_gate_tests {
         ));
         assert!(!requires_version_policy(
             &command(&["palladin", "security", "legacy-status"]).command
+        ));
+    }
+
+    #[test]
+    fn release_blocks_browser_install_and_status_before_runtime_setup() {
+        for arguments in [
+            &["palladin", "browser", "install"][..],
+            &["palladin", "browser", "status"][..],
+        ] {
+            assert_eq!(
+                browser_command_blocked_by_provenance(&command(arguments).command),
+                !cfg!(debug_assertions),
+            );
+        }
+        assert!(!browser_command_blocked_by_provenance(
+            &command(&["palladin", "browser", "uninstall", "--confirm"]).command
         ));
     }
 }

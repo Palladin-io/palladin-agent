@@ -8,54 +8,33 @@ value-free result schemas.
 The production macOS Chrome path uses this session. A plaintext stdio or owner-only socket is not
 this security boundary.
 
-## Pairing
+## Browser/platform authorization
 
-The native host owns one installation-scoped Ed25519 signing key in OS secure storage. Explicit
-pairing shows its fingerprint to the user. The extension persists only the full public key and
-fingerprint after the user confirms the same value in both surfaces:
+Chrome Native Messaging's exact `allowed_origins` entry identifies which extension may launch the
+host. The compiled origin is
+`chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/`. The Runtime accepts only Chrome's exact
+browser-authored origin argument and, on macOS, validates the direct Google-signed Chrome parent
+before it opens the host identity or local socket. An Extension ID inside a message payload has no
+authority.
 
-```text
-fingerprint = base64url-no-pad(SHA-256(raw-host-ed25519-public-key))
-```
-
-`palladin browser install` prints the shortened fingerprint in the trusted terminal. When the
-pairing screen opens, the extension sends one public, value-free discovery request to the exact
-allowlisted native host:
-
-```json
-{
-  "protocol": "palladin.inject-pairing.v1",
-  "type": "pairing.discover",
-  "extensionOrigin": "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/",
-  "challenge": "00000000-0000-4000-8000-000000000001"
-}
-```
-
-The host validates the exact compiled extension origin and canonical UUIDv4 challenge, then echoes
-both values with its public identity:
+The extension stores no host key, fingerprint, pairing intent, account, or profile binding. The
+native host owns one installation-scoped Ed25519 signing key in OS secure storage for the local
+CLI↔host authentication and the encrypted host↔extension session. At the start of each Native
+Messaging port it announces only the public key:
 
 ```json
 {
-  "protocol": "palladin.inject-pairing.v1",
-  "type": "pairing.offer",
-  "extensionOrigin": "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/",
-  "challenge": "00000000-0000-4000-8000-000000000001",
-  "hostSigningPublicKey": "...",
-  "fingerprint": "..."
+  "protocol": "palladin.inject-provider.v1",
+  "type": "session.offer",
+  "hostSigningPublicKey": "..."
 }
 ```
 
-The extension rejects unknown fields, stale challenges and mismatched fingerprints. The offer is
-kept in memory and is not trust on first use: the user must compare the shortened fingerprint with
-the independent CLI display and choose **Trust and pair** before the extension persists the full
-public key and derived fingerprint. Native Messaging discovery cannot create or replace the pin.
-
-Chrome Native Messaging's exact `allowed_origins` entry authenticates the extension to the host.
-The compiled origin is
-`chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/`. On macOS the host additionally requires a
-Google-signed Chrome parent process before it loads the key. The signed handshake below
-authenticates the host to the extension. Neither side treats a socket, process ID, argv value, or
-nonce alone as authentication.
+The extension accepts exactly these three fields, keeps the public key only for that port, and uses
+it to validate the signed transcript below. This session-local key check binds the encrypted
+channel; it is not the authority that lets the Runtime release a credential. That authority is the
+browser/platform-authored official extension identity plus the separately authenticated local
+CLI↔host hop.
 
 The CLI reaches this host through the separately mutually authenticated local protocol documented
 in [`local-ipc.md`](local-ipc.md). Plaintext never crosses that socket.
@@ -65,7 +44,7 @@ in [`local-ipc.md`](local-ipc.md). Plaintext never crosses that socket.
 All binary fields use canonical unpadded base64url. Keys and nonces are 32 bytes; the Ed25519
 signature is 64 bytes.
 
-Extension to host:
+After `session.offer`, extension to host:
 
 ```json
 {
@@ -104,7 +83,7 @@ ASCII("palladin.inject-provider.v1\0extension-session-v1\0")
 || item(raw host Ed25519 public key)
 ```
 
-The extension requires the returned host key to equal its paired full key, verifies the Ed25519
+The extension requires the returned host key to equal the session-offer key, verifies the Ed25519
 signature and echoed extension nonce, and checks:
 
 ```text

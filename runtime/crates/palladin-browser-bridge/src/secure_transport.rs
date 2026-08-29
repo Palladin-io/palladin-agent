@@ -1,9 +1,10 @@
 //! Authenticated, encrypted transport for the installed browser-extension provider.
 //!
 //! Chrome Native Messaging authenticates the exact allowlisted extension to the host. The
-//! extension authenticates the host by pinning the public key shown during explicit pairing and
-//! verifying this module's signed ephemeral handshake. Existing Inject protocol messages are then
-//! carried inside directional, replay-protected XChaCha20-Poly1305 frames.
+//! host announces its signing public key in a value-free per-connection offer, and the extension
+//! uses that in-memory key to verify this module's signed ephemeral handshake. Existing Inject
+//! protocol messages are then carried inside directional, replay-protected
+//! XChaCha20-Poly1305 frames.
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chacha20poly1305::{
@@ -482,7 +483,7 @@ pub enum SecureTransportError {
     SequenceExhausted,
 }
 
-/// Verify a host response against the public key pinned during explicit pairing. This helper is
+/// Verify a host response against the public key bound to the current connection. This helper is
 /// also the canonical cross-language verification definition used to produce extension fixtures.
 pub fn verify_host_ready(
     extension_origin: &str,

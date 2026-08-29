@@ -2,6 +2,7 @@
 
 - Status: Accepted; macOS Google Chrome transport implemented
 - Date: 2026-08-11
+- Amended: 2026-08-29 (automatic official-extension authorization replaces manual pairing)
 - Supersedes: ADR 0003 only for authenticated browser providers
 
 ## Context
@@ -36,20 +37,30 @@ package proxies public navigation but returns `provider-unavailable` before requ
 spawning the Palladin runtime, or sending a secret-bearing daemon command. Re-enablement requires an
 upstream atomic element-bound fill primitive in addition to an authenticated session channel.
 
-The accepted extension transport uses a durable Ed25519 host identity in OS secure storage and an
-explicit user pairing that pins only its public key and fingerprint in the extension. Each Native
-Messaging connection performs a host-signed ephemeral X25519 handshake and derives independent
+The accepted extension transport uses a durable Ed25519 host identity in OS secure storage for the
+mutually authenticated CLI↔host hop and session signing. The extension stores no host key,
+fingerprint, or pairing state. Each Native Messaging connection starts with a strict value-free
+`session.offer`; the extension keeps that public key only for the current port, performs a
+host-signed ephemeral X25519 handshake, and derives independent
 directional XChaCha20-Poly1305 keys with HKDF-SHA256. Strict per-direction sequences authenticate
 and replay-protect the existing `prepare`, `inject`, and value-free result messages. The canonical
 wire definition and interoperability vector live in `contracts/inject-provider/v1`.
 
 The macOS Google Chrome implementation installs an exact Native Messaging allowlist for the stable
-Palladin extension ID and dynamically validates the Google-signed Chrome parent. The CLI and Rust
+Palladin extension ID and dynamically validates the Google-signed Chrome parent before opening the
+host identity or socket. The browser/platform-authored identity, not a payload field or Palladin
+account/profile, authorizes the receiving extension. The CLI and Rust
 host also perform a separate mutually signed ephemeral handshake using the OS-secured host identity
 before deriving directional AEAD keys for the local socket. This prevents a fake same-user socket
 from receiving a credential and prevents an arbitrary local client from driving the real host.
 Other operating systems and browsers fail closed until they have equivalent platform launch
 attestation and installation support.
+
+Chrome's Native Messaging contract does not distinguish a Web Store installation from an unpacked
+extension carrying the same public manifest key and therefore the same ID. The current source path
+is enabled only in debug builds with disposable data. Production `browser install` and direct host
+entry fail closed until a separately reviewed mechanism binds the invoking extension to the signed
+Palladin store artifact; Extension ID alone is not sufficient for that provenance claim.
 
 ### Agent-owned Playwright Page transport
 
@@ -67,7 +78,7 @@ authenticated extension/Native Messaging provider.
 
 That authenticated extension provider may receive a WebExtensions `targetTabId` together with the
 exact HTTPS URL observed by the browser framework. This pair is not a browser endpoint or a
-capability: it cannot create a transport or authorize a credential. The already-paired extension
+capability: it cannot create a transport or authorize a credential. The already-authorized extension
 independently resolves only that tab ID, requires its live top-frame URL to equal the snapshot, pins
 the isolated-world page-load document ID, and re-resolves the same tab/document before every
 declared step. Each fill message carries that expected document ID and the isolated world rejects a
@@ -93,7 +104,9 @@ The operation has two distinct phases:
    HTTPS login surface, dismisses cookie/consent overlays, completes allowed public navigation,
    pauses for any human CAPTCHA, then inspects its visible controls and builds a complete bounded,
    value-free form definition. The CLI is not called until this preparation phase is complete.
-2. The native CLI/runtime requests or consumes the approved Inject grant, verifies and decrypts only
+2. The native CLI/runtime first sends a value-free prepare request to the single host admitted by
+   the owner-only local socket. Only after that exact extension reports `ready` does it request or
+   consume the approved Inject grant, verify and decrypt only
    the granted fields in native memory, and sends the definition plus those values to the selected
    provider over its reviewed private transport. The provider validates and executes the definition,
    then returns only a bounded result. The browser session remains available to the Agent.
