@@ -20,7 +20,7 @@
   "dependencies": {
     "@palladin/agent": "file:../..",
     "@palladin/playwright-mcp": "file:../playwright-mcp",
-    "playwright": "1.63.0-alpha-2026-08-05",
+    "playwright": "1.63.0-alpha-1786355137000",
     "typebox": "^1.1.38"
   },
   "devDependencies": {
