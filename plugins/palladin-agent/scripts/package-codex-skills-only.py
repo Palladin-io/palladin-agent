@@ -48,7 +48,7 @@ def collect_entries() -> dict[str, bytes]:
             manifest.pop("mcpServers", None)
             manifest.pop("apps", None)
             version = manifest.get("version")
-            if isinstance(version, str) and "+codex.local-" in version:
+            if isinstance(version, str) and "+" in version:
                 manifest["version"] = version.split("+", 1)[0]
             content = f"{json.dumps(manifest, indent=2)}\n".encode("utf-8")
         entries[archive_path] = content

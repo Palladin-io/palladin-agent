@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const pluginSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const checkOnly = process.argv.includes('--check');
 const version = '0.1.0-preview.2';
-const codexVersion = `${version}+codex.local-20260904-155016`;
+const codexVersion = `${version}+codex.20260904160709`;
 
 const canonicalSkill = await readFile(
   resolve(pluginSourceRoot, 'core/skills/palladin-browser-login/SKILL.md'),
@@ -19,6 +19,7 @@ const providerContract = await readFile(
   resolve(pluginSourceRoot, 'core/provider-contract.json'),
   'utf8',
 );
+const icon = await readFile(resolve(pluginSourceRoot, 'core/assets/icon.png'));
 
 const metadata = {
   version,
@@ -50,7 +51,7 @@ const codexManifest = {
   skills: './skills/',
   mcpServers: './.mcp.json',
   interface: {
-    displayName: 'Palladin Agent',
+    displayName: 'Palladin',
     shortDescription: 'Use granted credentials through Palladin',
     longDescription:
       'Palladin lets Codex discover granted credentials, deliberately retrieve them or use them in local execution when requested, and inject credentials into an exact browser tab through the paired Palladin extension.',
@@ -65,12 +66,12 @@ const codexManifest = {
     websiteURL: 'https://palladin.io',
     defaultPrompt: [
       'Sign me in to this website with Palladin.',
-      'Open the login page and use my Palladin account.',
-      'Use Palladin to sign in on this browser tab.',
       'Find a credential I can use through Palladin.',
       'Run this command with a granted Palladin credential.',
     ],
     brandColor: '#D95A4E',
+    composerIcon: './assets/icon.png',
+    logo: './assets/icon.png',
   },
 };
 
@@ -104,6 +105,7 @@ const targets = [
     mcpPath: '.mcp.json',
     mcp: { mcpServers: { palladin: codexMcpCommand } },
     extraFiles: {
+      'assets/icon.png': icon,
       'skills/palladin-browser-login/agents/openai.yaml': [
         'interface:',
         '  display_name: "Palladin Browser Login"',
@@ -169,13 +171,14 @@ async function listTargetArtifacts(root) {
 }
 
 async function materialize(path, content) {
+  const expected = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
   if (checkOnly) {
-    const current = await readFile(path, 'utf8').catch(() => undefined);
-    if (current !== content) mismatches.push(path);
+    const current = await readFile(path).catch(() => undefined);
+    if (!current?.equals(expected)) mismatches.push(path);
     return;
   }
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, content, 'utf8');
+  await writeFile(path, expected);
 }
 
 for (const target of targets) {
