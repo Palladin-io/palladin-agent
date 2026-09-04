@@ -1,7 +1,7 @@
 {
   "name": "palladin-agent",
-  "version": "0.1.0-preview.2",
-  "description": "Preview of secure Palladin credential injection into an exact browser tab.",
+  "version": "0.1.0-preview.2+codex.20260904160709",
+  "description": "Preview of Palladin credential workflows and secure browser injection.",
   "author": {
     "name": "Palladin.io",
     "url": "https://palladin.io"
@@ -18,21 +18,25 @@
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
-    "displayName": "Palladin Agent",
-    "shortDescription": "Sign in without exposing credentials",
-    "longDescription": "Palladin lets an agent prepare an exact browser tab and request credential injection through the paired Palladin extension. Secrets remain inside the native runtime and authenticated extension transport.",
+    "displayName": "Palladin",
+    "shortDescription": "Use granted credentials through Palladin",
+    "longDescription": "Palladin lets Codex discover granted credentials, deliberately retrieve them or use them in local execution when requested, and inject credentials into an exact browser tab through the paired Palladin extension.",
     "developerName": "Palladin.io",
     "category": "Productivity",
     "capabilities": [
       "Credential discovery",
+      "Explicit credential retrieval",
+      "Local credential execution",
       "Browser credential injection"
     ],
     "websiteURL": "https://palladin.io",
     "defaultPrompt": [
       "Sign me in to this website with Palladin.",
-      "Open the login page and use my Palladin account.",
-      "Use Palladin to sign in on this browser tab."
+      "Find a credential I can use through Palladin.",
+      "Run this command with a granted Palladin credential."
     ],
-    "brandColor": "#D95A4E"
+    "brandColor": "#D95A4E",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png"
   }
 }

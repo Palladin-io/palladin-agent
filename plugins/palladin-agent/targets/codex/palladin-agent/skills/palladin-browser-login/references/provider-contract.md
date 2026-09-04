@@ -19,10 +19,12 @@ Keep three boundaries separate:
 | Exact tab | `targetTabId` | `--target-tab-id` |
 | Exact URL | `targetUrl` | `--page-url` |
 
-Packaged plugins launch `palladin mcp serve` directly, without a shell or secret environment. They
-must not silently fall back to CLI when MCP fails. A CLI-only host adapter must invoke `palladin` as
-one executable with a separate argument list, preserve the same provider and exact-tab values, and
-parse only JSON Search output so complete `vaultId` and `entryId` values reach Inject.
+Packaged plugins launch their generated `palladin` MCP command directly, without a shell or secret
+environment. Codex pins its dedicated profile with `palladin --id codex mcp serve`; the other preview
+targets currently launch `palladin mcp serve`. They must not silently fall back to CLI when MCP
+fails. A CLI-only host adapter must invoke `palladin` as one executable with a separate argument
+list, preserve the same provider and exact-tab values, and parse only JSON Search output so complete
+`vaultId` and `entryId` values reach Inject.
 
 ## Current browser providers
 
