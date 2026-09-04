@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const pluginSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const checkOnly = process.argv.includes('--check');
 const version = '0.1.0-preview.2';
+const codexVersion = `${version}+codex.local-20260904-155016`;
 
 const canonicalSkill = await readFile(
   resolve(pluginSourceRoot, 'core/skills/palladin-browser-login/SKILL.md'),
@@ -21,7 +22,7 @@ const providerContract = await readFile(
 
 const metadata = {
   version,
-  description: 'Preview of secure Palladin credential injection into an exact browser tab.',
+  description: 'Preview of Palladin credential workflows and secure browser injection.',
   author: {
     name: 'Palladin.io',
     url: 'https://palladin.io',
@@ -37,24 +38,37 @@ const mcpCommand = {
   args: ['mcp', 'serve'],
 };
 
+const codexMcpCommand = {
+  command: 'palladin',
+  args: ['--id', 'codex', 'mcp', 'serve'],
+};
+
 const codexManifest = {
   name: 'palladin-agent',
   ...metadata,
+  version: codexVersion,
   skills: './skills/',
   mcpServers: './.mcp.json',
   interface: {
     displayName: 'Palladin Agent',
-    shortDescription: 'Sign in without exposing credentials',
+    shortDescription: 'Use granted credentials through Palladin',
     longDescription:
-      'Palladin lets an agent prepare an exact browser tab and request credential injection through the paired Palladin extension. Secrets remain inside the native runtime and authenticated extension transport.',
+      'Palladin lets Codex discover granted credentials, deliberately retrieve them or use them in local execution when requested, and inject credentials into an exact browser tab through the paired Palladin extension.',
     developerName: 'Palladin.io',
     category: 'Productivity',
-    capabilities: ['Credential discovery', 'Browser credential injection'],
+    capabilities: [
+      'Credential discovery',
+      'Explicit credential retrieval',
+      'Local credential execution',
+      'Browser credential injection',
+    ],
     websiteURL: 'https://palladin.io',
     defaultPrompt: [
       'Sign me in to this website with Palladin.',
       'Open the login page and use my Palladin account.',
       'Use Palladin to sign in on this browser tab.',
+      'Find a credential I can use through Palladin.',
+      'Run this command with a granted Palladin credential.',
     ],
     brandColor: '#D95A4E',
   },
@@ -88,7 +102,7 @@ const targets = [
     manifestPath: '.codex-plugin/plugin.json',
     manifest: codexManifest,
     mcpPath: '.mcp.json',
-    mcp: { mcpServers: { palladin: mcpCommand } },
+    mcp: { mcpServers: { palladin: codexMcpCommand } },
     extraFiles: {
       'skills/palladin-browser-login/agents/openai.yaml': [
         'interface:',
