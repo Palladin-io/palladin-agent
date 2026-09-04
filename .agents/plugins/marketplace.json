@@ -1,0 +1,20 @@
+{
+  "name": "palladin-local",
+  "interface": {
+    "displayName": "Palladin Local Plugins"
+  },
+  "plugins": [
+    {
+      "name": "palladin-agent",
+      "source": {
+        "source": "local",
+        "path": "./plugins/palladin-agent/targets/codex/palladin-agent"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
