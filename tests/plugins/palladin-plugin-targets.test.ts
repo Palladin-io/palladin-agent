@@ -18,6 +18,7 @@ const canonicalProviderReference = resolve(
   'core/skills/palladin-browser-login/references/provider-contract.md',
 );
 const canonicalProviderContract = resolve(pluginSourceRoot, 'core/provider-contract.json');
+const canonicalIcon = resolve(pluginSourceRoot, 'core/assets/icon.png');
 
 type Target = {
   id: 'codex' | 'claude' | 'openclaw' | 'hermes';
@@ -109,10 +110,23 @@ describe('Palladin plugin targets', () => {
 
     expect(manifest.name).toBe(basename(root));
     expect(manifest.version).toMatch(
-      /^0\.1\.0-preview\.\d+(?:\+codex\.local-\d{8}-\d{6})?$/u,
+      /^0\.1\.0-preview\.\d+(?:\+codex\.\d{14})?$/u,
     );
     if (target.id === 'codex') {
-      expect(manifest.version).toContain('+codex.local-');
+      expect(manifest.version).toContain('+codex.');
+      const interfaceMetadata = manifest.interface as {
+        composerIcon: string;
+        defaultPrompt: string[];
+        displayName: string;
+        logo: string;
+      };
+      expect(interfaceMetadata.displayName).toBe('Palladin');
+      expect(interfaceMetadata.composerIcon).toBe('./assets/icon.png');
+      expect(interfaceMetadata.logo).toBe('./assets/icon.png');
+      expect(interfaceMetadata.defaultPrompt).toHaveLength(3);
+      expect(await readFile(resolve(root, interfaceMetadata.composerIcon))).toEqual(
+        await readFile(canonicalIcon),
+      );
     }
     expect((await stat(resolve(root, 'skills'))).isDirectory()).toBe(true);
 
@@ -209,6 +223,7 @@ describe('Palladin plugin targets', () => {
       expect(summary.entries).toContain(
         'palladin-agent/.codex-plugin/plugin.json',
       );
+      expect(summary.entries).toContain('palladin-agent/assets/icon.png');
       expect(summary.entries.some((entry) => basename(entry) === '.mcp.json')).toBe(
         false,
       );
