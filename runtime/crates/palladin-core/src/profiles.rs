@@ -16,6 +16,7 @@ use crate::public_store::{
 
 const CLEANUP_SCHEMA_VERSION: u32 = 1;
 const DISCOVERY_CACHE_FILE: &str = "discovery-cache.bin";
+const BROWSER_PAIRING_STATE_FILE: &str = "browser-pairing-state.json";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -267,6 +268,46 @@ impl ProfileRepository {
         Ok(())
     }
 
+    /// Load the value-free, signed browser-pairing recovery record without following links.
+    /// Signature and semantic verification belong to the runtime because the repository never
+    /// receives access to identity keys.
+    pub fn load_browser_pairing_state(
+        &self,
+        identity_id: &str,
+        max_bytes: usize,
+    ) -> Result<Option<Vec<u8>>, ProfileError> {
+        let path = self.browser_pairing_state_path(identity_id)?;
+        match fs::symlink_metadata(&path) {
+            Ok(_) => Ok(Some(load_private_blob(&path, max_bytes)?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn save_browser_pairing_state(
+        &self,
+        identity_id: &str,
+        bytes: &[u8],
+    ) -> Result<(), ProfileError> {
+        let path = self.browser_pairing_state_path(identity_id)?;
+        let parent = path.parent().ok_or(ProfileError::InvalidRoot)?;
+        ensure_private_directory(&self.root)?;
+        ensure_private_directory(&self.root.join("identities"))?;
+        ensure_private_directory(parent)?;
+        Ok(save_private_blob_atomic(&path, bytes)?)
+    }
+
+    pub fn remove_browser_pairing_state_if_present(
+        &self,
+        identity_id: &str,
+    ) -> Result<(), ProfileError> {
+        remove_known_file_if_present(
+            &self.browser_pairing_state_path(identity_id)?,
+            "browser pairing state",
+        )?;
+        Ok(())
+    }
+
     pub fn load_legacy_config_v2(
         &self,
         identity_id: &str,
@@ -332,6 +373,10 @@ impl ProfileRepository {
                 remove_known_file_if_present(
                     &directory.join(DISCOVERY_CACHE_FILE),
                     "discovery cache",
+                )?;
+                remove_known_file_if_present(
+                    &directory.join(BROWSER_PAIRING_STATE_FILE),
+                    "browser pairing state",
                 )?;
                 remove_known_file_if_present(&directory.join("config.json"), "profile config")?;
                 fs::remove_dir(directory)?;
@@ -459,6 +504,12 @@ impl ProfileRepository {
         Ok(self
             .identity_directory(identity_id)?
             .join(DISCOVERY_CACHE_FILE))
+    }
+
+    fn browser_pairing_state_path(&self, identity_id: &str) -> Result<PathBuf, ProfileError> {
+        Ok(self
+            .identity_directory(identity_id)?
+            .join(BROWSER_PAIRING_STATE_FILE))
     }
 
     fn identity_directory(&self, identity_id: &str) -> Result<PathBuf, ProfileError> {
@@ -722,7 +773,10 @@ fn path_present_no_follow(path: &Path) -> bool {
 fn validate_identity_directory_contents(directory: &Path) -> Result<(), std::io::Error> {
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
-        if entry.file_name() != "config.json" && entry.file_name() != DISCOVERY_CACHE_FILE {
+        if entry.file_name() != "config.json"
+            && entry.file_name() != DISCOVERY_CACHE_FILE
+            && entry.file_name() != BROWSER_PAIRING_STATE_FILE
+        {
             return Err(private_path_error(
                 "identity directory contains an unexpected artifact",
             ));
@@ -870,7 +924,10 @@ fn private_path_error(message: &str) -> std::io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProfileName, ProfileRepository, add_profile, is_lock_contention, rename_profile};
+    use super::{
+        BROWSER_PAIRING_STATE_FILE, ProfileName, ProfileRepository, add_profile,
+        is_lock_contention, rename_profile,
+    };
     use crate::public_store::PublicRegistry;
 
     const IDENTITY_ID: &str = "11111111111111111111111111111111";
@@ -907,6 +964,57 @@ mod tests {
         let identity = identities.join(IDENTITY_ID);
         make_private_directory(&identity);
         identity
+    }
+
+    #[test]
+    fn browser_pairing_state_round_trips_and_is_removed_with_the_identity() {
+        let root = private_tempdir();
+        let state = root.path().join("state");
+        let repository = ProfileRepository::new(state.clone()).expect("repository");
+        let payload = br#"{"schemaVersion":1}"#;
+
+        repository
+            .save_browser_pairing_state(IDENTITY_ID, payload)
+            .expect("save pairing state");
+        assert_eq!(
+            repository
+                .load_browser_pairing_state(IDENTITY_ID, 1024)
+                .expect("load pairing state")
+                .as_deref(),
+            Some(payload.as_slice())
+        );
+
+        repository
+            .remove_identity_directory(IDENTITY_ID)
+            .expect("remove identity");
+        assert!(
+            repository
+                .load_browser_pairing_state(IDENTITY_ID, 1024)
+                .expect("missing pairing state")
+                .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn browser_pairing_state_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = private_tempdir();
+        let state = root.path().join("state");
+        let repository = ProfileRepository::new(state.clone()).expect("repository");
+        let identity = identity_directory(&state);
+        let target = root.path().join("target");
+        write_private_file(&target, b"outside");
+        symlink(&target, identity.join(BROWSER_PAIRING_STATE_FILE)).expect("pairing symlink");
+
+        assert!(
+            repository
+                .load_browser_pairing_state(IDENTITY_ID, 1024)
+                .is_err()
+        );
+        assert!(repository.remove_identity_directory(IDENTITY_ID).is_err());
+        assert_eq!(std::fs::read(&target).expect("target"), b"outside");
     }
 
     #[test]

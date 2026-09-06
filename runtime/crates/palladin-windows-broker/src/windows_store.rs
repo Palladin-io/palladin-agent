@@ -112,10 +112,10 @@ impl SecretStore for BrokerSecretStore {
     fn authorize_operation(
         &self,
         scope: &OperationScope,
-        _prompt: AuthorizationPrompt,
+        prompt: AuthorizationPrompt,
         binding: &[u8],
     ) -> Result<OperationAuthorization, StoreError> {
-        OperationAuthorization::for_current_platform(scope, binding)
+        OperationAuthorization::for_current_platform_prompt(scope, binding, prompt)
     }
 
     fn get_authorized(

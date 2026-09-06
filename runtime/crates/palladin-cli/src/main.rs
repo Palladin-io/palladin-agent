@@ -11,7 +11,8 @@ use palladin_api::{
 use palladin_browser_bridge::{InjectionFormDefinition, ProviderId};
 use palladin_cli::args::{
     AgentsCommand, BrowserCommand, Cli, Commands, ConnectArgs, ExecArgs, GetArgs, InjectArgs,
-    McpCommand, ProgressArg, ReportStaleArgs, SearchArgs, SecurityCommand, StaleCodeArg,
+    McpCommand, PairAgentArgs, ProgressArg, ReportStaleArgs, SearchArgs, SecurityCommand,
+    StaleCodeArg,
 };
 use palladin_cli::browser::{
     BrowserInstallError, install_manifest, manifest_status, remove_manifest,
@@ -52,7 +53,8 @@ use palladin_platform::secure_store::{
     SecretStore, StoreError, storage_tier_description,
 };
 use palladin_runtime::{
-    CredentialOutputPolicy, InvocationSurface, OperationConnection, OperationDescriptor,
+    BrowserPairingMetadata, CredentialOutputPolicy, InvocationSurface, OperationConnection,
+    OperationDescriptor, open_system_browser,
 };
 #[cfg(windows)]
 use palladin_windows_broker::BrokerSecretStore;
@@ -174,6 +176,7 @@ async fn main() -> ExitCode {
         Commands::Connect(args) => {
             connect(&service, cli.id.as_deref(), args, runtime_storage_tier).await
         }
+        Commands::PairAgent(args) => pair_agent(&service, cli.id.as_deref(), args).await,
         Commands::Status => status(&service, cli.id.as_deref(), runtime_storage_tier).await,
         Commands::Pair => pair(&service, cli.id.as_deref()).await,
         Commands::Disconnect { purge, confirm } => disconnect(
@@ -632,6 +635,7 @@ const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
         } => EnvironmentRequirement::DiagnosticOnly,
         Commands::Init { .. }
         | Commands::Connect(_)
+        | Commands::PairAgent(_)
         | Commands::Status
         | Commands::Pair
         | Commands::Disconnect { .. }
@@ -670,7 +674,11 @@ async fn mcp(
     command: McpCommand,
 ) -> ExitCode {
     match command {
-        McpCommand::Serve => {
+        McpCommand::Serve { host } => {
+            let pairing_host = match ApiHost::parse(&host) {
+                Ok(host) => host,
+                Err(error) => return fail(&error.to_string()),
+            };
             let hostname = match operating_system_hostname() {
                 Ok(hostname) => hostname,
                 Err(error) => return fail(error),
@@ -679,7 +687,13 @@ async fn mcp(
                 Ok(connection) => connection,
                 Err(error) => return fail(&error.to_string()),
             };
-            let server = match palladin_mcp::native_server(service, profile, hostname, connection) {
+            let server = match palladin_mcp::native_server(
+                service,
+                profile,
+                hostname,
+                connection,
+                pairing_host,
+            ) {
                 Ok(server) => server,
                 Err(error) => return fail(&error.to_string()),
             };
@@ -897,6 +911,64 @@ async fn connect(
         outcome.config_saved,
         runtime_storage_tier,
     ))
+}
+
+async fn pair_agent(
+    service: &RuntimeService<RuntimeSecretStore>,
+    profile: Option<&str>,
+    args: PairAgentArgs,
+) -> ExitCode {
+    let host = match ApiHost::parse(&args.host) {
+        Ok(host) => host,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let metadata = match BrowserPairingMetadata::resolve(
+        args.setup_descriptor.as_deref(),
+        args.display_name.as_deref(),
+        args.r#type.as_deref(),
+    ) {
+        Ok(metadata) => metadata,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let outcome = match service
+        .browser_pair(
+            profile,
+            host,
+            metadata,
+            &hostname,
+            InvocationSurface::Cli,
+            &connection,
+            &tokio_util::sync::CancellationToken::new(),
+            open_system_browser,
+        )
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => return fail(&error.to_string()),
+    };
+    println!(
+        "Agent paired: {}",
+        safe_terminal_text(&outcome.profile_name)
+    );
+    println!(
+        "Agent ID: {}",
+        palladin_cli::shorten_identifier(&outcome.agent_id)
+    );
+    if let Some(display_name) = outcome.display_name {
+        println!("Display name: {}", safe_terminal_text(&display_name));
+    }
+    if let Some(agent_type) = outcome.agent_type {
+        println!("Type: {}", safe_terminal_text(&agent_type));
+    }
+    ExitCode::SUCCESS
 }
 
 async fn status(
@@ -1793,9 +1865,63 @@ fn read_script_parameters(from_stdin: bool) -> Result<ScriptExecutionParameters,
 }
 
 fn argv_contains_api_key() -> bool {
-    std::env::args_os()
-        .skip(1)
-        .any(|argument| os_argument_contains_api_key(&argument))
+    arguments_contain_api_key(std::env::args_os().skip(1))
+}
+
+fn arguments_contain_api_key(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
+    let arguments = arguments.into_iter().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < arguments.len() {
+        let argument = &arguments[index];
+        if argument == "--setup-descriptor" {
+            if let Some(value) = arguments.get(index + 1) {
+                match setup_descriptor_api_key_status(value) {
+                    Some(contains_api_key) => {
+                        if contains_api_key {
+                            return true;
+                        }
+                        index += 2;
+                        continue;
+                    }
+                    None if os_argument_contains_api_key(value) => return true,
+                    None => {}
+                }
+            }
+        } else if let Some(argument) = argument.to_str()
+            && let Some(value) = argument.strip_prefix("--setup-descriptor=")
+        {
+            match setup_descriptor_api_key_status(std::ffi::OsStr::new(value)) {
+                Some(contains_api_key) => {
+                    if contains_api_key {
+                        return true;
+                    }
+                    index += 1;
+                    continue;
+                }
+                None if argument.as_bytes().windows(3).any(|bytes| bytes == b"pl_") => {
+                    return true;
+                }
+                None => {}
+            }
+        }
+
+        if os_argument_contains_api_key(argument) {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+fn setup_descriptor_api_key_status(value: &std::ffi::OsStr) -> Option<bool> {
+    let descriptor = value.to_str()?;
+    let metadata = BrowserPairingMetadata::resolve(Some(descriptor), None, None).ok()?;
+    Some(
+        metadata
+            .display_name
+            .as_deref()
+            .is_some_and(|name| name.contains("pl_")),
+    )
 }
 
 fn deprecated_connect_id_usage() -> bool {
@@ -1846,6 +1972,55 @@ fn os_argument_contains_api_key(argument: &std::ffi::OsStr) -> bool {
     value
         .windows(3)
         .any(|value| value == ['p' as u16, 'l' as u16, '_' as u16])
+}
+
+#[cfg(test)]
+mod argv_secret_scan_tests {
+    use std::ffi::OsString;
+
+    use palladin_runtime::encode_setup_descriptor;
+
+    use super::arguments_contain_api_key;
+
+    fn arguments(values: impl IntoIterator<Item = impl Into<OsString>>) -> Vec<OsString> {
+        values.into_iter().map(Into::into).collect()
+    }
+
+    #[test]
+    fn canonical_descriptor_is_not_rejected_when_its_encoding_contains_marker_bytes() {
+        let descriptor = encode_setup_descriptor(Some("𫺉𓩗𨢧")).expect("descriptor");
+        assert!(
+            descriptor.contains("pl_"),
+            "fixture must exercise the raw marker collision"
+        );
+        assert!(!arguments_contain_api_key(arguments([
+            "pair-agent".to_owned(),
+            "--setup-descriptor".to_owned(),
+            descriptor.clone(),
+        ])));
+        assert!(!arguments_contain_api_key(arguments([
+            "pair-agent".to_owned(),
+            format!("--setup-descriptor={descriptor}"),
+        ])));
+    }
+
+    #[test]
+    fn scanner_still_rejects_api_keys_and_descriptors_that_carry_one_as_metadata() {
+        assert!(arguments_contain_api_key(arguments([
+            "connect".to_owned(),
+            "pl_secret".to_owned(),
+        ])));
+        let descriptor = encode_setup_descriptor(Some("pl_secret")).expect("descriptor");
+        assert!(arguments_contain_api_key(arguments([
+            "pair-agent".to_owned(),
+            "--setup-descriptor".to_owned(),
+            descriptor,
+        ])));
+        assert!(arguments_contain_api_key(arguments([
+            "pair-agent".to_owned(),
+            "--setup-descriptor=pl_secret".to_owned(),
+        ])));
+    }
 }
 
 fn fail(message: &str) -> ExitCode {

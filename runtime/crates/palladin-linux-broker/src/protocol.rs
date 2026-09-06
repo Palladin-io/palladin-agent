@@ -5,7 +5,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::Zeroize;
 
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 pub const RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SOURCE_SHA: &str = match option_env!("SOURCE_SHA") {
     Some(value) => value,
@@ -106,6 +106,10 @@ pub enum ServerFrame {
         sequence: u64,
         bytes: Vec<u8>,
     },
+    OpenUrl {
+        request_id: [u8; 16],
+        url: String,
+    },
     Exited {
         request_id: [u8; 16],
         code: u8,
@@ -142,6 +146,11 @@ impl std::fmt::Debug for ServerFrame {
                 .field("stream", stream)
                 .field("sequence", sequence)
                 .field("bytes", &"[REDACTED]")
+                .finish(),
+            Self::OpenUrl { request_id, .. } => formatter
+                .debug_struct("OpenUrl")
+                .field("request_id", request_id)
+                .field("url", &"[REDACTED]")
                 .finish(),
             Self::Exited { request_id, code } => formatter
                 .debug_struct("Exited")

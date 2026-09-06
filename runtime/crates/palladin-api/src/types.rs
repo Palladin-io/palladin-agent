@@ -711,6 +711,48 @@ pub(crate) struct AgentDiscoveryDeltaBody<'a> {
     pub page_size: Option<u32>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StartBrowserPairingBody<'a> {
+    pub pairing_id: &'a str,
+    pub public_key: &'a str,
+    pub signing_public_key: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<&'a str>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StartBrowserPairingResponse {
+    pub pairing_id: String,
+    pub approval_url: String,
+    pub expires_at: String,
+    pub poll_interval_milliseconds: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserPairingCredentialEnvelopeResponse {
+    pub suite: String,
+    pub ephemeral_public_key: String,
+    pub nonce: String,
+    pub ciphertext: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserPairingStatusResponse {
+    pub status: String,
+    pub organization_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub api_key_id: Option<String>,
+    pub credential: Option<BrowserPairingCredentialEnvelopeResponse>,
+    pub display_name: Option<String>,
+    pub r#type: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPairingActivationResponse {

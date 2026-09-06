@@ -35,6 +35,17 @@ struct Contract {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CliContractExtension {
+    contract: String,
+    version: String,
+    status: String,
+    synthetic_only: bool,
+    compatibility_base: String,
+    additional_commands: Vec<CommandCase>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct IdentityModel {
     api_key_owner: String,
     organization_key_may_be_shared_by_agents: bool,
@@ -105,12 +116,18 @@ fn contract() -> Contract {
     serde_json::from_str(include_str!("../../../contracts/v1/cli.json")).expect("CLI contract")
 }
 
+fn pairing_contract_extension() -> CliContractExtension {
+    serde_json::from_str(include_str!("../../../contracts/cli/v1.1/cli.json"))
+        .expect("pairing CLI contract extension")
+}
+
 fn command_name(command: &Commands) -> &'static str {
     match command {
         Commands::VerifyReleasePolicy { .. } => "verify-release-policy",
         Commands::Init { .. } => "init",
         Commands::Doctor => "doctor",
         Commands::Connect(_) => "connect",
+        Commands::PairAgent(_) => "pair-agent",
         Commands::Status => "status",
         Commands::Pair => "pair",
         Commands::Disconnect { .. } => "disconnect",
@@ -170,6 +187,25 @@ fn frozen_contract_parses_every_supported_command() {
             matches!(parsed.command, Commands::Get(_)),
             "only explicit get/retrieve may write a plaintext credential"
         );
+    }
+}
+
+#[test]
+fn pairing_contract_extension_is_additive_and_parses_every_command() {
+    let extension = pairing_contract_extension();
+    assert_eq!(extension.contract, "native-cli-v2");
+    assert_eq!(extension.version, "1.1.0");
+    assert_eq!(extension.status, "frozen");
+    assert!(extension.synthetic_only);
+    assert_eq!(extension.compatibility_base, "../../v1/cli.json");
+
+    for case in extension.additional_commands {
+        let mut argv = vec!["palladin".to_owned()];
+        argv.extend(case.argv);
+        let parsed = Cli::try_parse_from(argv)
+            .unwrap_or_else(|error| panic!("contract case {} did not parse: {error}", case.name));
+        assert_eq!(command_name(&parsed.command), case.name);
+        assert!(!case.secret_output, "pairing commands never emit secrets");
     }
 }
 

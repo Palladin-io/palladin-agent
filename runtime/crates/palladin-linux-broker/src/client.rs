@@ -37,7 +37,19 @@ use crate::protocol::{
 use crate::{INSTALL_MARKER, SOCKET_PATH, SYSTEM_CLIENT};
 
 const SAFE_CLIENT_ENVIRONMENT: &[&str] = &[
-    "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TZ",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
 ];
 #[cfg(target_os = "linux")]
 const SAFE_CONVENIENCE_WORKER_ENVIRONMENT: &[&str] = &[
@@ -54,6 +66,9 @@ const SAFE_CONVENIENCE_WORKER_ENVIRONMENT: &[&str] = &[
     "TERM",
     "COLORTERM",
     "TZ",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
     "XDG_RUNTIME_DIR",
     "DBUS_SESSION_BUS_ADDRESS",
 ];
@@ -243,6 +258,12 @@ async fn proxy(
                     .await
                     .map_err(|_| ClientError::BrokerProtocol)?,
             },
+            ServerFrame::OpenUrl {
+                request_id: received,
+                url,
+            } if *received == request_id => {
+                open_interactive_browser(url).await?;
+            }
             ServerFrame::Exited {
                 request_id: received,
                 code,
@@ -260,6 +281,38 @@ async fn proxy(
             }
         }
     }
+}
+
+async fn open_interactive_browser(url: &str) -> Result<(), ClientError> {
+    palladin_platform::broker_browser::validate_broker_browser_open_url(url)
+        .map_err(|_| ClientError::BrowserOpen)?;
+    // The URL contains only the validated, value-free pairing handle. Hardened
+    // Agents commonly run under a nologin UID without access to the operator's
+    // desktop session, so always expose the authenticated handoff on stderr.
+    // MCP stdout remains an untouched JSON-RPC transport.
+    eprintln!("Palladin approval page (open manually if needed): {url}");
+    let child = Command::new("xdg-open")
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        eprintln!("Palladin could not start the system browser; use the approval page above.");
+        return Ok(());
+    };
+    match tokio::time::timeout(std::time::Duration::from_millis(500), child.wait()).await {
+        Ok(Ok(status)) if status.success() => {}
+        Ok(_) => {
+            eprintln!("Palladin could not open the system browser; use the approval page above.");
+        }
+        Err(_) => {
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+            });
+        }
+    }
+    Ok(())
 }
 
 async fn send_input_closed(
@@ -582,6 +635,8 @@ pub enum ClientError {
         "Hardened connect requires a masked terminal prompt or a protected pipe with --api-key-stdin"
     )]
     ApiKeyInput,
+    #[error("the validated Palladin approval page could not be opened in the user session")]
+    BrowserOpen,
 }
 
 #[cfg(test)]
@@ -641,6 +696,9 @@ mod tests {
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>();
         assert!(names.contains(&"PATH"));
+        assert!(names.contains(&"DISPLAY"));
+        assert!(names.contains(&"WAYLAND_DISPLAY"));
+        assert!(names.contains(&"XAUTHORITY"));
         assert!(names.contains(&"XDG_RUNTIME_DIR"));
         assert!(names.contains(&"DBUS_SESSION_BUS_ADDRESS"));
         assert!(!names.contains(&"LD_PRELOAD"));

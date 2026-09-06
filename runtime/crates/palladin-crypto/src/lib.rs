@@ -5,6 +5,7 @@ mod grant;
 mod identity;
 mod local_cache;
 mod manifest;
+mod pairing;
 mod reason;
 mod script_execution;
 mod signing;
@@ -24,7 +25,9 @@ pub use envelope::{
 pub use grant::{
     DecryptedGrantPayload, ExpectedGrantContext, GrantEnvelopeV2, decrypt_grant_payload,
 };
-pub use identity::{Ed25519Identity, X25519Identity, verify_profile_binding};
+pub use identity::{
+    Ed25519Identity, X25519Identity, verify_browser_pairing_state, verify_profile_binding,
+};
 pub use local_cache::{open_local_discovery_cache, seal_local_discovery_cache};
 pub use manifest::{
     AgentIdentityBinding, MemberPairingConfirmation, PairingCandidate, PairingRelayStatus,
@@ -32,6 +35,7 @@ pub use manifest::{
     confirm_pairing, confirm_pairing_from_relay, prepare_pairing, verify_current_manifest,
     verify_manifest_update,
 };
+pub use pairing::{BrowserPairingEnvelope, open_browser_pairing_credential};
 pub use reason::{
     EncryptedReasonBinding, EncryptedReasonContext, EncryptedReasonDescriptor,
     EncryptedReasonEnvelope, EncryptedReasonScope, ReasonWrapperDescriptor, WrappedReasonDek,

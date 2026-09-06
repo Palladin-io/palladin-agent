@@ -1,13 +1,21 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+mod browser_pairing;
 mod discovery;
 mod form_map_cache;
 mod integrity;
 pub mod version_policy;
+
+pub use browser_pairing::{BrowserPairingMetadata, SetupDescriptorError, encode_setup_descriptor};
+use browser_pairing::{
+    MAX_PENDING_BROWSER_PAIRING_STATE_BYTES, PendingBrowserPairingState,
+    PendingBrowserPairingStateError,
+};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -15,9 +23,9 @@ use palladin_api::{
     AgentDiscoveryEnvelope, AgentDiscoveryEnvelopeDescriptor, AgentDiscoverySyncItem,
     AgentPairingActivationResponse, AgentPairingStatus, AgentPairingStatusResponse,
     AgentRegistrationResult, AgentVaultManifestsResponse, AgentVisibleField, ApiClient, ApiError,
-    CredentialAccess, CredentialCiphertext, CredentialGrantType, CredentialMethod,
-    EntrySearchResult, FormDiscoveryMap, GetCredentialOptions, GrantStatus, GrantStatusResponse,
-    ReportCredentialStaleInput, ScriptExecutionPackageResponse, VaultManifest,
+    BrowserPairingClient, CredentialAccess, CredentialCiphertext, CredentialGrantType,
+    CredentialMethod, EntrySearchResult, FormDiscoveryMap, GetCredentialOptions, GrantStatus,
+    GrantStatusResponse, ReportCredentialStaleInput, ScriptExecutionPackageResponse, VaultManifest,
 };
 use palladin_browser_bridge::secure_transport::{BrowserHostIdentity, SecureTransportError};
 use palladin_browser_bridge::{
@@ -42,17 +50,17 @@ use palladin_credential::wait::{
     resolve_wait_policy,
 };
 use palladin_crypto::{
-    AgentIdentityBinding, CredentialEnvelopeContext, DecryptedCredential, Ed25519Identity,
-    EncodedSuitePayload, EncryptedReasonContext, EnvelopeBinding, EnvelopeDescriptor,
-    EnvelopePurpose, EnvelopeScope, ExpectedScriptExecutionPackageContext,
+    AgentIdentityBinding, BrowserPairingEnvelope, CredentialEnvelopeContext, DecryptedCredential,
+    Ed25519Identity, EncodedSuitePayload, EncryptedReasonContext, EnvelopeBinding,
+    EnvelopeDescriptor, EnvelopePurpose, EnvelopeScope, ExpectedScriptExecutionPackageContext,
     FullCredentialEnvelopeContext, FullScriptMemberSecretContext, PairingCandidate,
     PairingRelayStatus, PinnedVaultTrust, RecipientKeyKind, SealedWrappedKey, SecretBytes,
     VaultManifestV2, WrapperContext, WrapperPurpose, X25519Identity, X25519SealedBoxSuite,
     XChaChaVaultSuite, confirm_pairing_from_relay, decode_base64url, decrypt_credential,
     decrypt_full_credential, decrypt_full_script_member_secret, encode_script_execution_parameters,
-    key_fingerprint, open_local_discovery_cache, open_script_execution_package, prepare_pairing,
-    seal_local_discovery_cache, verify_agent_wrapped_vault_key_producer, verify_current_manifest,
-    verify_profile_binding,
+    key_fingerprint, open_browser_pairing_credential, open_local_discovery_cache,
+    open_script_execution_package, prepare_pairing, seal_local_discovery_cache,
+    verify_agent_wrapped_vault_key_producer, verify_current_manifest, verify_profile_binding,
 };
 use palladin_exec::{
     CapturedScriptResult, EnvironmentError, SecretEnvironment, resolve_interpreter, run_command,
@@ -198,6 +206,7 @@ fn new_browser_host_lifecycle_token() -> Result<BrowserHostLifecycleToken, Runti
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeOperation {
     Connect,
+    BrowserPairing,
     Status,
     SearchEntries,
     GetCredential,
@@ -216,6 +225,7 @@ impl RuntimeOperation {
     const fn protocol_name(self) -> &'static str {
         match self {
             Self::Connect => "connect",
+            Self::BrowserPairing => "browser_pairing",
             Self::Status => "status",
             Self::SearchEntries => "search_entries",
             Self::GetCredential => "get_credential",
@@ -234,6 +244,7 @@ impl RuntimeOperation {
     const fn authorization_prompt(self) -> AuthorizationPrompt {
         match self {
             Self::Connect => AuthorizationPrompt::Connect,
+            Self::BrowserPairing => AuthorizationPrompt::BrowserPairing,
             Self::Status => AuthorizationPrompt::Status,
             Self::SearchEntries => AuthorizationPrompt::SearchEntries,
             Self::GetCredential => AuthorizationPrompt::GetCredential,
@@ -271,6 +282,13 @@ pub enum OperationDescriptor {
         display_name: Option<String>,
         agent_type: Option<String>,
         api_key_digest: [u8; 32],
+    },
+    BrowserPairing {
+        surface: InvocationSurface,
+        host: String,
+        pairing_id: String,
+        display_name: Option<String>,
+        agent_type: Option<String>,
     },
     Status,
     SearchEntries {
@@ -340,6 +358,7 @@ impl OperationDescriptor {
     pub const fn operation(&self) -> RuntimeOperation {
         match self {
             Self::Connect { .. } => RuntimeOperation::Connect,
+            Self::BrowserPairing { .. } => RuntimeOperation::BrowserPairing,
             Self::Status => RuntimeOperation::Status,
             Self::SearchEntries { .. } => RuntimeOperation::SearchEntries,
             Self::GetCredential { .. } => RuntimeOperation::GetCredential,
@@ -369,6 +388,19 @@ impl OperationDescriptor {
                 encoder.optional(display_name.as_deref());
                 encoder.optional(agent_type.as_deref());
                 encoder.field(api_key_digest);
+            }
+            Self::BrowserPairing {
+                surface,
+                host,
+                pairing_id,
+                display_name,
+                agent_type,
+            } => {
+                encoder.surface(*surface);
+                encoder.field(host.as_bytes());
+                encoder.field(pairing_id.as_bytes());
+                encoder.optional(display_name.as_deref());
+                encoder.optional(agent_type.as_deref());
             }
             Self::Status
             | Self::VerifyIdentity
@@ -537,7 +569,15 @@ impl OperationRequest {
         let not_after_unix_ms = OffsetDateTime::now_utc()
             .unix_timestamp_nanos()
             .checked_div(1_000_000)
-            .and_then(|now| now.checked_add(OPERATION_TTL_MS))
+            .and_then(|now| {
+                now.checked_add(
+                    if matches!(descriptor, OperationDescriptor::BrowserPairing { .. }) {
+                        31 * 60 * 1_000
+                    } else {
+                        OPERATION_TTL_MS
+                    },
+                )
+            })
             .ok_or(RuntimeError::OperationAuthorizationExpired)?;
         Ok(Self {
             operation: descriptor.operation(),
@@ -1253,6 +1293,440 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             )?;
         }
         Ok(())
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the pairing boundary binds host, metadata, identity and cancellation explicitly"
+    )]
+    pub async fn browser_pair<F>(
+        &self,
+        profile_name: Option<&str>,
+        host: ApiHost,
+        metadata: BrowserPairingMetadata,
+        hostname: &str,
+        surface: InvocationSurface,
+        connection: &OperationConnection,
+        external_cancellation: &CancellationToken,
+        open_approval_url: F,
+    ) -> Result<BrowserPairingOutcome, RuntimeError>
+    where
+        F: FnOnce(&str) -> Result<(), RuntimeError>,
+    {
+        let host_string = host.as_url().as_str().trim_end_matches('/').to_owned();
+
+        // Only preparation is serialized. The signed, value-free recovery record is durable
+        // before the first network call, so a crash or cancellation can resume the same backend
+        // request without keeping the repository lock through browser approval.
+        let (agent, pending, pending_bytes, encryption, signing, lease, resuming) = {
+            let _lock = self.repository.acquire_transaction_lock()?;
+            self.recover_pending_operations_locked()?;
+            let (agent, created_profile) = match self.resolve_profile_locked(profile_name) {
+                Ok(agent) => (agent, false),
+                Err(RuntimeError::ProfileNotFound) => {
+                    let name = profile_name.unwrap_or("default");
+                    self.create_profile_locked(name, metadata.agent_type.clone())?;
+                    (self.resolve_profile_locked(Some(name))?, true)
+                }
+                Err(error) => return Err(error),
+            };
+
+            let prepared = (|| {
+                let state = self.verified_state_locked()?;
+                if state.configs.contains_key(&agent.identity_id) {
+                    self.repository
+                        .remove_browser_pairing_state_if_present(&agent.identity_id)?;
+                    return Err(RuntimeError::PairingProfileAlreadyConfigured);
+                }
+
+                let stored = self.repository.load_browser_pairing_state(
+                    &agent.identity_id,
+                    MAX_PENDING_BROWSER_PAIRING_STATE_BYTES,
+                )?;
+                let decoded = stored
+                    .as_deref()
+                    .map(PendingBrowserPairingState::decode)
+                    .transpose()?;
+                let resuming = decoded.is_some();
+                let effective_metadata = decoded.as_ref().map_or_else(
+                    || BrowserPairingMetadata {
+                        display_name: metadata.display_name.clone(),
+                        agent_type: metadata
+                            .agent_type
+                            .clone()
+                            .or_else(|| agent.agent_type.clone()),
+                    },
+                    PendingBrowserPairingState::metadata,
+                );
+                let pairing_id = decoded.as_ref().map_or_else(generate_pairing_id, |state| {
+                    Ok(state.pairing_id().to_owned())
+                })?;
+                let descriptor = OperationDescriptor::BrowserPairing {
+                    surface,
+                    host: host_string.clone(),
+                    pairing_id: pairing_id.clone(),
+                    display_name: effective_metadata.display_name.clone(),
+                    agent_type: effective_metadata.agent_type.clone(),
+                };
+                let request = connection.request(&descriptor)?;
+                let organization_owners = Vec::<String>::new();
+                let operation_binding =
+                    request.binding(&state, &agent, None, hostname, &organization_owners);
+                let scope = OperationScope::new(&agent.identity_id, &organization_owners)?;
+                let authorization = self.secrets.authorize_operation(
+                    &scope,
+                    request.operation.authorization_prompt(),
+                    &operation_binding,
+                )?;
+                let (encryption, signing) = self.load_identity_verified_authorized(
+                    &agent.identity_id,
+                    None,
+                    &authorization,
+                    &operation_binding,
+                )?;
+                let pending = if let Some(pending) = decoded {
+                    pending.verify(
+                        &agent.identity_id,
+                        &host_string,
+                        &metadata,
+                        &encryption,
+                        &signing,
+                    )?;
+                    pending
+                } else {
+                    PendingBrowserPairingState::create(
+                        &agent.identity_id,
+                        &host_string,
+                        &pairing_id,
+                        &effective_metadata,
+                        created_profile,
+                        &encryption,
+                        &signing,
+                    )?
+                };
+                let pending_bytes = pending.encode()?;
+                self.repository
+                    .save_browser_pairing_state(&agent.identity_id, &pending_bytes)?;
+                let lease = authorization.into_lease()?;
+                lease
+                    .ensure_active()
+                    .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+                Ok((
+                    agent.clone(),
+                    pending,
+                    pending_bytes,
+                    encryption,
+                    signing,
+                    lease,
+                    resuming,
+                ))
+            })();
+
+            if prepared.is_err() && created_profile {
+                self.rollback_new_pairing_profile_locked(&agent)?;
+            }
+            prepared?
+        };
+
+        let client = BrowserPairingClient::new(host, pending.pairing_id(), &encryption, &signing)?;
+        let cancellation = lease.cancellation_token();
+        let effective_metadata = pending.metadata();
+        let mut initial_status = None;
+        if resuming {
+            let remaining = lease
+                .remaining()
+                .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+            let resumed = tokio::select! {
+                biased;
+                () = external_cancellation.cancelled() => return Err(RuntimeError::WaitCancelled),
+                () = cancellation.cancelled() => return Err(RuntimeError::OperationAuthorizationExpired),
+                () = tokio::time::sleep(remaining) => return Err(RuntimeError::OperationAuthorizationExpired),
+                result = client.poll() => result,
+            };
+            match resumed {
+                Ok(status) => match status.status.as_str() {
+                    "pending" => {}
+                    "rejected" => {
+                        self.finish_terminal_browser_pairing(&agent, &pending, &pending_bytes)?;
+                        return Err(RuntimeError::PairingRejected);
+                    }
+                    "expired" => {
+                        self.finish_terminal_browser_pairing(&agent, &pending, &pending_bytes)?;
+                        return Err(RuntimeError::PairingExpired);
+                    }
+                    "active" => initial_status = Some(status),
+                    _ => return Err(RuntimeError::InvalidPairingResponse),
+                },
+                Err(ApiError::Http(404)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        let mut interval = std::time::Duration::from_millis(1_000);
+        if initial_status.is_none() {
+            let remaining = lease
+                .remaining()
+                .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+            let start = tokio::select! {
+                biased;
+                () = external_cancellation.cancelled() => return Err(RuntimeError::WaitCancelled),
+                () = cancellation.cancelled() => return Err(RuntimeError::OperationAuthorizationExpired),
+                () = tokio::time::sleep(remaining) => return Err(RuntimeError::OperationAuthorizationExpired),
+                result = client.start(
+                    effective_metadata.display_name.as_deref(),
+                    effective_metadata.agent_type.as_deref(),
+                ) => result?,
+            };
+            if start.pairing_id != pending.pairing_id() {
+                return Err(RuntimeError::InvalidPairingResponse);
+            }
+            validate_approval_url(&host_string, &start.approval_url, pending.pairing_id())?;
+            open_approval_url(&start.approval_url)?;
+            interval = std::time::Duration::from_millis(
+                start.poll_interval_milliseconds.clamp(500, 10_000),
+            );
+        }
+
+        let active = if let Some(active) = initial_status {
+            active
+        } else {
+            loop {
+                let remaining = lease
+                    .remaining()
+                    .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+                tokio::select! {
+                    biased;
+                    () = external_cancellation.cancelled() => return Err(RuntimeError::WaitCancelled),
+                    () = cancellation.cancelled() => return Err(RuntimeError::OperationAuthorizationExpired),
+                    () = tokio::time::sleep(remaining) => return Err(RuntimeError::OperationAuthorizationExpired),
+                    () = tokio::time::sleep(interval) => {}
+                }
+                let remaining = lease
+                    .remaining()
+                    .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+                let status = tokio::select! {
+                    biased;
+                    () = external_cancellation.cancelled() => return Err(RuntimeError::WaitCancelled),
+                    () = cancellation.cancelled() => return Err(RuntimeError::OperationAuthorizationExpired),
+                    () = tokio::time::sleep(remaining) => return Err(RuntimeError::OperationAuthorizationExpired),
+                    result = client.poll() => result?,
+                };
+                match status.status.as_str() {
+                    "pending" => {}
+                    "rejected" => {
+                        self.finish_terminal_browser_pairing(&agent, &pending, &pending_bytes)?;
+                        return Err(RuntimeError::PairingRejected);
+                    }
+                    "expired" => {
+                        self.finish_terminal_browser_pairing(&agent, &pending, &pending_bytes)?;
+                        return Err(RuntimeError::PairingExpired);
+                    }
+                    "active" => break status,
+                    _ => return Err(RuntimeError::InvalidPairingResponse),
+                }
+            }
+        };
+        if external_cancellation.is_cancelled() {
+            return Err(RuntimeError::WaitCancelled);
+        }
+        lease
+            .ensure_active()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        let organization_id = active
+            .organization_id
+            .as_deref()
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .ok_or(RuntimeError::InvalidPairingResponse)?;
+        let agent_id = active
+            .agent_id
+            .as_deref()
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .ok_or(RuntimeError::InvalidPairingResponse)?;
+        let api_key_id = active
+            .api_key_id
+            .as_deref()
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .ok_or(RuntimeError::InvalidPairingResponse)?;
+        let credential = active
+            .credential
+            .ok_or(RuntimeError::InvalidPairingResponse)?;
+        let envelope = BrowserPairingEnvelope {
+            suite: credential.suite,
+            ephemeral_public_key: credential.ephemeral_public_key,
+            nonce: credential.nonce,
+            ciphertext: credential.ciphertext,
+        };
+        let plaintext = open_browser_pairing_credential(
+            pending.pairing_id(),
+            &organization_id.to_string(),
+            &agent_id.to_string(),
+            &api_key_id.to_string(),
+            &encryption,
+            &envelope,
+        )?;
+        let organization_api_key = OrganizationApiKey::new(plaintext.expose_secret().to_owned());
+        let organization_credential_id = generate_opaque_id()?;
+        let allocation = SecretAllocation::OrganizationCredential {
+            organization_credential_id: organization_credential_id.clone(),
+        };
+
+        // Revalidate all mutable local state after the unlocked approval wait. Another process may
+        // have renamed, deleted, configured, or replaced the profile while the browser was open.
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let state = self.verified_state_locked()?;
+        let current_agent = state
+            .registry
+            .agents
+            .iter()
+            .find(|entry| entry.identity_id == agent.identity_id)
+            .cloned()
+            .ok_or(RuntimeError::ProfileNotFound)?;
+        if state.configs.contains_key(&agent.identity_id) {
+            self.repository
+                .remove_browser_pairing_state_if_present(&agent.identity_id)?;
+            return Err(RuntimeError::PairingProfileAlreadyConfigured);
+        }
+        let current_pending = self
+            .repository
+            .load_browser_pairing_state(
+                &agent.identity_id,
+                MAX_PENDING_BROWSER_PAIRING_STATE_BYTES,
+            )?
+            .ok_or(RuntimeError::IntegrityViolation)?;
+        if current_pending != pending_bytes {
+            return Err(RuntimeError::IntegrityViolation);
+        }
+        lease
+            .ensure_active()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        self.begin_allocation(&state, vec![allocation.clone()])?;
+        if let Err(error) = self.secrets.set(
+            &organization_credential_id,
+            SecretSlot::OrganizationApiKey,
+            organization_api_key
+                .expose_for_authorized_request()
+                .as_bytes(),
+        ) {
+            self.rollback_allocation(&state, &[allocation])?;
+            return Err(error.into());
+        }
+
+        let mut config = PublicProfileConfig {
+            schema_version: PUBLIC_SCHEMA_VERSION,
+            identity_id: agent.identity_id.clone(),
+            host: host_string,
+            organization_credential_id: organization_credential_id.clone(),
+            retired_organization_credential_ids: Vec::new(),
+            vault_trust_anchors: Vec::new(),
+            discovery_cache: None,
+            agent_id: Some(agent_id.to_string()),
+            agent_active: true,
+            encryption_public_key: Some(STANDARD.encode(encryption.public_key())),
+            signing_public_key: Some(STANDARD.encode(signing.public_key())),
+            binding_signature: STANDARD.encode([0_u8; 64]),
+        };
+        let binding =
+            profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+        let digest =
+            profile_config_digest(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        let mut registry = state.registry.clone();
+        let entry = registry
+            .agents
+            .iter_mut()
+            .find(|entry| entry.identity_id == agent.identity_id)
+            .ok_or(RuntimeError::IntegrityViolation)?;
+        entry.config_digest = Some(digest);
+        entry.agent_type.clone_from(&active.r#type);
+        self.commit_authorized_transition(
+            &state,
+            registry,
+            vec![ConfigWrite {
+                identity_id: agent.identity_id.clone(),
+                config,
+            }],
+            Vec::new(),
+            Vec::new(),
+            false,
+            &lease,
+        )?;
+        self.repository
+            .remove_browser_pairing_state_if_present(&agent.identity_id)?;
+        Ok(BrowserPairingOutcome {
+            profile_name: current_agent.name,
+            organization_id: organization_id.to_string(),
+            agent_id: agent_id.to_string(),
+            display_name: active.display_name,
+            agent_type: active.r#type,
+        })
+    }
+
+    fn finish_terminal_browser_pairing(
+        &self,
+        agent: &PublicAgentEntry,
+        pending: &PendingBrowserPairingState,
+        expected_bytes: &[u8],
+    ) -> Result<(), RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let Some(current) = self.repository.load_browser_pairing_state(
+            &agent.identity_id,
+            MAX_PENDING_BROWSER_PAIRING_STATE_BYTES,
+        )?
+        else {
+            return Ok(());
+        };
+        if current != expected_bytes {
+            return Err(RuntimeError::IntegrityViolation);
+        }
+        if pending.remove_profile_on_terminal()
+            && self
+                .verified_state_locked()?
+                .registry
+                .agents
+                .iter()
+                .any(|entry| entry.identity_id == agent.identity_id)
+        {
+            self.rollback_new_pairing_profile_locked(agent)
+        } else {
+            self.repository
+                .remove_browser_pairing_state_if_present(&agent.identity_id)?;
+            Ok(())
+        }
+    }
+
+    fn rollback_new_pairing_profile_locked(
+        &self,
+        profile: &PublicAgentEntry,
+    ) -> Result<(), RuntimeError> {
+        let state = self.verified_state_locked()?;
+        if state.configs.contains_key(&profile.identity_id) {
+            return Ok(());
+        }
+        let Some(current_profile) = state
+            .registry
+            .agents
+            .iter()
+            .find(|entry| entry.identity_id == profile.identity_id)
+        else {
+            return Ok(());
+        };
+        let name = ProfileName::parse(&current_profile.name)?;
+        let (updated, deleted) = purge_profile(&state.registry, &name)?;
+        if deleted.identity_id != profile.identity_id {
+            return Err(RuntimeError::IntegrityViolation);
+        }
+        self.commit_transition(
+            &state,
+            updated,
+            Vec::new(),
+            vec![deleted.identity_id.clone()],
+            vec![SecretDeletion::Identity {
+                identity_id: deleted.identity_id,
+            }],
+            false,
+        )
     }
 
     #[allow(
@@ -3228,6 +3702,15 @@ pub struct CreatedProfile {
 pub struct ConnectOutcome {
     pub registration: AgentRegistrationResult,
     pub config_saved: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserPairingOutcome {
+    pub profile_name: String,
+    pub organization_id: String,
+    pub agent_id: String,
+    pub display_name: Option<String>,
+    pub agent_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -5684,6 +6167,18 @@ pub enum RuntimeError {
     InvalidFormDiscoveryMap,
     #[error("API key is invalid; it must start with pl_")]
     InvalidApiKey,
+    #[error("this local Agent profile is already configured; choose another --id")]
+    PairingProfileAlreadyConfigured,
+    #[error("Agent pairing was rejected in Palladin")]
+    PairingRejected,
+    #[error("Agent pairing expired before approval")]
+    PairingExpired,
+    #[error("Palladin returned an invalid Agent pairing response")]
+    InvalidPairingResponse,
+    #[error("pending browser pairing state failed integrity validation")]
+    PendingBrowserPairingState,
+    #[error("the system browser could not be opened")]
+    BrowserOpenFailed,
     #[error("stored Agent identity is incomplete")]
     MissingIdentity,
     #[error("stored organization credential is missing")]
@@ -5788,6 +6283,12 @@ pub enum RuntimeError {
     StaleScriptDiscovery,
     #[error("the atomic Script execution package is invalid, stale or substituted")]
     InvalidScriptExecutionPackage,
+}
+
+impl From<PendingBrowserPairingStateError> for RuntimeError {
+    fn from(_: PendingBrowserPairingStateError) -> Self {
+        Self::PendingBrowserPairingState
+    }
 }
 
 impl From<FormMapCacheError> for RuntimeError {
@@ -5915,6 +6416,107 @@ fn generate_opaque_id() -> Result<String, RuntimeError> {
     }
 }
 
+fn generate_pairing_id() -> Result<String, RuntimeError> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| RuntimeError::RandomGenerationFailed)?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(Uuid::from_bytes(bytes).to_string())
+}
+
+fn validate_approval_url(
+    api_host: &str,
+    approval_url: &str,
+    pairing_id: &str,
+) -> Result<(), RuntimeError> {
+    let url = url::Url::parse(approval_url).map_err(|_| RuntimeError::InvalidPairingResponse)?;
+    let valid_path = url.path() == format!("/agent-pairing/{pairing_id}")
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.username().is_empty()
+        && url.password().is_none();
+    let valid_origin = match api_host {
+        "https://api.palladin.io" => {
+            url.scheme() == "https" && url.host_str() == Some("palladin.io") && url.port().is_none()
+        }
+        "https://api.stage.palladin.io" => {
+            url.scheme() == "https"
+                && url.host_str() == Some("stage.palladin.io")
+                && url.port().is_none()
+        }
+        _ => {
+            url.scheme() == "http"
+                && url.port().is_some_and(|port| port != 0)
+                && match url.host() {
+                    Some(url::Host::Ipv4(host)) => host.is_loopback(),
+                    Some(url::Host::Ipv6(host)) => host.is_loopback(),
+                    _ => false,
+                }
+        }
+    };
+    if valid_path && valid_origin {
+        Ok(())
+    } else {
+        Err(RuntimeError::InvalidPairingResponse)
+    }
+}
+
+pub fn open_system_browser(url: &str) -> Result<(), RuntimeError> {
+    if let Ok(binding) = std::env::var(palladin_platform::broker_browser::BROKER_BROWSER_OPEN_ENV) {
+        let request =
+            palladin_platform::broker_browser::encode_broker_browser_open_request(&binding, url)
+                .map_err(|_| RuntimeError::BrowserOpenFailed)?;
+        let mut error = std::io::stderr().lock();
+        error
+            .write_all(request.as_bytes())
+            .and_then(|()| error.flush())
+            .map_err(|_| RuntimeError::BrowserOpenFailed)?;
+        return Ok(());
+    }
+    palladin_platform::broker_browser::validate_broker_browser_open_url(url)
+        .map_err(|_| RuntimeError::BrowserOpenFailed)?;
+    // A graphical opener may exist yet fail after spawn (common on headless
+    // Linux). Keep the value-free, validated approval URL available to the
+    // human on stderr; MCP stdout remains exclusively JSON-RPC.
+    eprintln!("Palladin approval page (open manually if needed): {url}");
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("/usr/bin/open");
+    #[cfg(target_os = "macos")]
+    command.arg(url);
+    #[cfg(target_os = "linux")]
+    let mut command = std::process::Command::new("xdg-open");
+    #[cfg(target_os = "linux")]
+    command.arg(url);
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("rundll32.exe");
+    #[cfg(target_os = "windows")]
+    command.arg("url.dll,FileProtocolHandler").arg(url);
+    if spawn_browser_launcher(&mut command).is_err() {
+        eprintln!("Palladin could not start the system browser; use the approval page above.");
+    }
+    Ok(())
+}
+
+fn spawn_browser_launcher(command: &mut std::process::Command) -> Result<(), RuntimeError> {
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| RuntimeError::BrowserOpenFailed)?;
+    std::thread::Builder::new()
+        .name("palladin-browser-launcher-reaper".to_owned())
+        .spawn(move || {
+            if !child.wait().is_ok_and(|status| status.success()) {
+                eprintln!(
+                    "Palladin could not open the system browser; use the approval page above."
+                );
+            }
+        })
+        .map(|_| ())
+        .map_err(|_| RuntimeError::BrowserOpenFailed)
+}
+
 fn now_rfc3339() -> Result<String, RuntimeError> {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
@@ -5943,6 +6545,204 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+
+    #[test]
+    fn browser_approval_url_is_pinned_to_expected_origin_path_and_opaque_handle() {
+        let pairing_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        assert!(
+            validate_approval_url(
+                "https://api.palladin.io",
+                "https://palladin.io/agent-pairing/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                pairing_id,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_approval_url(
+                "http://[::1]:5000",
+                "http://[::1]:45173/agent-pairing/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                pairing_id,
+            )
+            .is_ok()
+        );
+        for invalid in [
+            "https://palladin.io/agent-pairing/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa?displayName=Fox",
+            "https://palladin.io/agent-pairing/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa#secret",
+            "https://evil.example/agent-pairing/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "https://palladin.io/agent-pairing/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        ] {
+            assert!(validate_approval_url("https://api.palladin.io", invalid, pairing_id).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn browser_launcher_has_null_stdio_and_does_not_wait_for_handler_exit() {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "printf ignored; sleep 2"]);
+        let started = std::time::Instant::now();
+
+        spawn_browser_launcher(&mut command).expect("detached launcher");
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn browser_pairing_releases_the_repository_lock_and_resumes_the_same_signed_request() {
+        let (host, requests) = resumable_browser_pairing_server(3).await;
+        let root = tempfile::tempdir().expect("root");
+        let state_root = root.path().join("state");
+        let store = MemorySecretStore::default();
+        let service = Arc::new(RuntimeService::new(
+            ProfileRepository::new(state_root.clone()).expect("repository"),
+            store.clone(),
+        ));
+        let cancellation = CancellationToken::new();
+        let task_cancellation = cancellation.clone();
+        let task_service = Arc::clone(&service);
+        let task_host = ApiHost::parse(&host).expect("local host");
+        let (opened_tx, opened_rx) = tokio::sync::oneshot::channel();
+        let first = tokio::spawn(async move {
+            task_service
+                .browser_pair(
+                    Some("codex"),
+                    task_host,
+                    BrowserPairingMetadata::resolve(
+                        None,
+                        Some("Spokojna Wydra"),
+                        Some("custom/runtime"),
+                    )
+                    .expect("metadata"),
+                    "fixture-host",
+                    InvocationSurface::Cli,
+                    &OperationConnection::new().expect("connection"),
+                    &task_cancellation,
+                    move |_| {
+                        let _ = opened_tx.send(());
+                        Ok(())
+                    },
+                )
+                .await
+        });
+        opened_rx.await.expect("browser opened");
+
+        let contender = ProfileRepository::new(state_root.clone()).expect("contender");
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            tokio::task::spawn_blocking(move || contender.acquire_transaction_lock()),
+        )
+        .await
+        .expect("approval wait must not hold the repository lock")
+        .expect("lock task")
+        .expect("exclusive lock");
+        cancellation.cancel();
+        assert!(matches!(
+            first.await.expect("first task"),
+            Err(RuntimeError::WaitCancelled)
+        ));
+
+        let registry = service.repository().load_registry().expect("registry");
+        let identity_id = registry.agents[0].identity_id.clone();
+        let persisted = service
+            .repository()
+            .load_browser_pairing_state(&identity_id, MAX_PENDING_BROWSER_PAIRING_STATE_BYTES)
+            .expect("pairing state")
+            .expect("persisted before browser approval");
+        assert!(!persisted.windows(3).any(|window| window == b"pl_"));
+
+        let retry = RuntimeService::new(
+            ProfileRepository::new(state_root).expect("retry repository"),
+            store,
+        );
+        let retry_cancellation = CancellationToken::new();
+        let opened_cancellation = retry_cancellation.clone();
+        let result = retry
+            .browser_pair(
+                Some("codex"),
+                ApiHost::parse(&host).expect("local host"),
+                BrowserPairingMetadata::resolve(None, None, None).expect("resume metadata"),
+                "fixture-host",
+                InvocationSurface::Mcp,
+                &OperationConnection::new().expect("connection"),
+                &retry_cancellation,
+                move |_| {
+                    opened_cancellation.cancel();
+                    Ok(())
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(RuntimeError::WaitCancelled)));
+
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 3);
+        let pairing_ids = requests
+            .iter()
+            .filter(|request| request.starts_with("POST "))
+            .map(|request| {
+                let (_, body) = request.split_once("\r\n\r\n").expect("request body");
+                serde_json::from_str::<serde_json::Value>(body).expect("JSON body")["pairingId"]
+                    .as_str()
+                    .expect("pairing ID")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(pairing_ids[0], pairing_ids[1]);
+        assert!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("POST "))
+                .all(|request| request.contains("Spokojna Wydra"))
+        );
+        assert!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("POST "))
+                .all(|request| request.contains("custom/runtime"))
+        );
+    }
+
+    #[test]
+    fn terminal_pairing_cleanup_tracks_identity_across_profile_rename() {
+        let root = tempfile::tempdir().expect("root");
+        let store = MemorySecretStore::default();
+        let service = RuntimeService::new(
+            ProfileRepository::new(root.path().to_path_buf()).expect("repository"),
+            store,
+        );
+        service
+            .create_profile("pairing", None)
+            .expect("pairing profile");
+        let pairing = service
+            .resolve_profile(Some("pairing"))
+            .expect("pairing profile");
+        service
+            .rename_profile("pairing", "renamed-pairing")
+            .expect("rename pairing profile");
+        let replacement = service
+            .create_profile("pairing", None)
+            .expect("replacement profile");
+
+        {
+            let _lock = service
+                .repository
+                .acquire_transaction_lock()
+                .expect("transaction lock");
+            service
+                .rollback_new_pairing_profile_locked(&pairing)
+                .expect("identity-bound cleanup");
+        }
+
+        let registry = service.registry().expect("registry");
+        assert!(
+            registry
+                .agents
+                .iter()
+                .all(|entry| entry.identity_id != pairing.identity_id)
+        );
+        assert!(registry.agents.iter().any(|entry| {
+            entry.name == "pairing" && entry.identity_id == replacement.identity_id
+        }));
+    }
 
     #[test]
     fn script_result_is_returned_only_when_policy_and_literal_scan_allow_it() {
@@ -7869,6 +8669,54 @@ mod tests {
 
     async fn credential_server(bodies: Vec<&'static str>) -> (String, Arc<Mutex<Vec<String>>>) {
         credential_server_owned(bodies.into_iter().map(str::to_owned).collect()).await
+    }
+
+    async fn resumable_browser_pairing_server(
+        exchanges: usize,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        tokio::spawn(async move {
+            for _ in 0..exchanges {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let request = read_request(&mut stream).await;
+                let response_body = if request.starts_with("POST ") {
+                    let (_, request_body) = request.split_once("\r\n\r\n").expect("request body");
+                    let body: serde_json::Value =
+                        serde_json::from_str(request_body).expect("pairing request JSON");
+                    let requested_pairing_id =
+                        body["pairingId"].as_str().expect("pairing ID").to_owned();
+                    json!({
+                        "pairingId": requested_pairing_id.clone(),
+                        "approvalUrl": format!("http://127.0.0.1:5173/agent-pairing/{requested_pairing_id}"),
+                        "expiresAt": "2099-01-01T00:00:00Z",
+                        "pollIntervalMilliseconds": 500
+                    })
+                    .to_string()
+                } else {
+                    assert!(request.starts_with("GET "));
+                    json!({
+                        "status": "pending",
+                        "organizationId": null,
+                        "agentId": null,
+                        "apiKeyId": null,
+                        "credential": null,
+                        "displayName": null,
+                        "type": null
+                    })
+                    .to_string()
+                };
+                captured.lock().expect("requests").push(request);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("write");
+            }
+        });
+        (format!("http://{address}"), requests)
     }
 
     async fn credential_server_owned(bodies: Vec<String>) -> (String, Arc<Mutex<Vec<String>>>) {

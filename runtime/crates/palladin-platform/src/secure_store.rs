@@ -162,6 +162,7 @@ impl OperationScope {
 /// Runtime-owned operations with fixed, non-spoofable OS prompt copy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthorizationPrompt {
+    BrowserPairing,
     Connect,
     Status,
     SearchEntries,
@@ -177,6 +178,7 @@ impl AuthorizationPrompt {
     #[must_use]
     pub const fn reason(self) -> &'static str {
         match self {
+            Self::BrowserPairing => "Allow Palladin to pair this Agent in your browser",
             Self::Connect => "Allow Palladin to connect this Agent",
             Self::Status => "Allow Palladin to inspect Agent status",
             Self::SearchEntries => "Allow Palladin to search vault entries",
@@ -316,8 +318,25 @@ impl Drop for OperationCommitGuard<'_> {
 }
 
 impl OperationLease {
+    pub(crate) fn for_prompt(
+        scope: &OperationScope,
+        prompt: AuthorizationPrompt,
+    ) -> Result<Self, StoreError> {
+        if prompt == AuthorizationPrompt::BrowserPairing {
+            if !scope.organization_owners().is_empty() {
+                return Err(StoreError::AuthorizationFailed);
+            }
+            return Self::bounded(Duration::from_secs(31 * 60), Duration::from_secs(31 * 60));
+        }
+        Self::new(MAX_OPERATION_LEASE)
+    }
+
     pub(crate) fn new(duration: Duration) -> Result<Self, StoreError> {
-        if duration.is_zero() || duration > MAX_OPERATION_LEASE {
+        Self::bounded(duration, MAX_OPERATION_LEASE)
+    }
+
+    fn bounded(duration: Duration, maximum: Duration) -> Result<Self, StoreError> {
+        if duration.is_zero() || duration > maximum {
             return Err(StoreError::AuthorizationFailed);
         }
         Ok(Self {
@@ -421,10 +440,19 @@ impl OperationAuthorization {
         scope: &OperationScope,
         binding: &[u8],
     ) -> Result<Self, StoreError> {
+        Self::for_current_platform_prompt(scope, binding, AuthorizationPrompt::IdentityManagement)
+    }
+
+    #[doc(hidden)]
+    pub fn for_current_platform_prompt(
+        scope: &OperationScope,
+        binding: &[u8],
+        prompt: AuthorizationPrompt,
+    ) -> Result<Self, StoreError> {
         Ok(Self {
             binding_digest: Self::validate_binding(binding)?,
             scope: scope.clone(),
-            lease: OperationLease::new(MAX_OPERATION_LEASE)?,
+            lease: OperationLease::for_prompt(scope, prompt)?,
             #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
             macos: None,
         })
@@ -509,10 +537,10 @@ pub trait SecretStore {
     fn authorize_operation(
         &self,
         scope: &OperationScope,
-        _prompt: AuthorizationPrompt,
+        prompt: AuthorizationPrompt,
         binding: &[u8],
     ) -> Result<OperationAuthorization, StoreError> {
-        OperationAuthorization::for_current_platform(scope, binding)
+        OperationAuthorization::for_current_platform_prompt(scope, binding, prompt)
     }
 
     fn get_authorized(
@@ -572,10 +600,10 @@ impl SecretStore for OsSecretStore {
     fn authorize_operation(
         &self,
         scope: &OperationScope,
-        _prompt: AuthorizationPrompt,
+        prompt: AuthorizationPrompt,
         binding: &[u8],
     ) -> Result<OperationAuthorization, StoreError> {
-        OperationAuthorization::for_current_platform(scope, binding)
+        OperationAuthorization::for_current_platform_prompt(scope, binding, prompt)
     }
 
     fn get_authorized(
@@ -920,6 +948,39 @@ mod tests {
         assert!(OperationLease::new(MAX_OPERATION_LEASE).is_ok());
         assert!(
             OperationLease::new(MAX_OPERATION_LEASE + std::time::Duration::from_nanos(1)).is_err()
+        );
+    }
+
+    #[test]
+    fn browser_pairing_lease_is_longer_only_for_identity_only_scope() {
+        let scope = OperationScope::new("11111111111111111111111111111111", Vec::<String>::new())
+            .expect("scope");
+        let lease = OperationLease::for_prompt(&scope, AuthorizationPrompt::BrowserPairing)
+            .expect("pairing lease");
+        assert!(
+            lease
+                .state
+                .deadline
+                .duration_since(std::time::Instant::now())
+                > std::time::Duration::from_secs(30 * 60)
+        );
+        let ordinary = OperationLease::for_prompt(&scope, AuthorizationPrompt::GetCredential)
+            .expect("ordinary lease");
+        assert!(
+            ordinary
+                .state
+                .deadline
+                .duration_since(std::time::Instant::now())
+                <= MAX_OPERATION_LEASE
+        );
+        let organization_scope = OperationScope::new(
+            "11111111111111111111111111111111",
+            ["22222222222222222222222222222222"],
+        )
+        .expect("scope");
+        assert!(
+            OperationLease::for_prompt(&organization_scope, AuthorizationPrompt::BrowserPairing)
+                .is_err()
         );
     }
 

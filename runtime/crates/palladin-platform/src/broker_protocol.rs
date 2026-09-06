@@ -18,7 +18,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::{Zeroize, Zeroizing};
 
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 pub const RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SOURCE_SHA: &str = match option_env!("SOURCE_SHA") {
     Some(value) => value,
@@ -31,7 +31,7 @@ const MAX_ARGUMENTS: usize = 256;
 const MAX_ARGUMENT_BYTES: usize = 32 * 1024;
 const MAX_AGENT_ID_BYTES: usize = 256;
 const MAX_CONSENT_PUBLIC_KEY_BYTES: usize = 8 * 1024;
-const CONSENT_DOMAIN: &[u8] = b"palladin.windows.secure-consent.v4\0";
+const CONSENT_DOMAIN: &[u8] = b"palladin.windows.secure-consent.v5\0";
 const MCP_CONSENT_DOMAIN: &[u8] = b"palladin.windows.mcp-operation.v1\0";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -40,6 +40,7 @@ pub enum SecureOperation {
     Init,
     Doctor,
     Connect,
+    PairAgent,
     Status,
     Pair,
     Disconnect,
@@ -47,6 +48,7 @@ pub enum SecureOperation {
     Get,
     ReportStale,
     McpServe,
+    McpPairAgent,
     McpSearchEntries,
     McpGetCredential,
     McpExecWithCredential,
@@ -64,6 +66,7 @@ impl SecureOperation {
             "init" => Some(Self::Init),
             "doctor" => Some(Self::Doctor),
             "connect" => Some(Self::Connect),
+            "pair-agent" => Some(Self::PairAgent),
             "status" => Some(Self::Status),
             "pair" => Some(Self::Pair),
             "disconnect" => Some(Self::Disconnect),
@@ -356,6 +359,10 @@ pub enum BrokerFrame {
         stream: OutputStream,
         bytes: Vec<u8>,
     },
+    OpenUrl {
+        request_id: [u8; 16],
+        url: String,
+    },
     Exited {
         request_id: [u8; 16],
         exit_code: i32,
@@ -409,6 +416,11 @@ impl std::fmt::Debug for BrokerFrame {
                 .field("sequence", sequence)
                 .field("stream", stream)
                 .field("bytes", &"[redacted]")
+                .finish(),
+            Self::OpenUrl { request_id, .. } => formatter
+                .debug_struct("OpenUrl")
+                .field("request_id", request_id)
+                .field("url", &"[redacted]")
                 .finish(),
             Self::Exited {
                 request_id,
@@ -682,6 +694,7 @@ pub fn mcp_secret_operations(message: &[u8]) -> Result<Vec<McpSecretOperation>, 
             .pointer("/params/name")
             .and_then(serde_json::Value::as_str)
         {
+            Some("pair_agent") => SecureOperation::McpPairAgent,
             Some("search_entries") => SecureOperation::McpSearchEntries,
             Some("get_credential") => SecureOperation::McpGetCredential,
             Some("exec_with_credential") => SecureOperation::McpExecWithCredential,
@@ -716,7 +729,8 @@ pub fn mcp_operation_hash(
         || message.len() > MAX_FRAME_BYTES
         || !matches!(
             operation,
-            SecureOperation::McpSearchEntries
+            SecureOperation::McpPairAgent
+                | SecureOperation::McpSearchEntries
                 | SecureOperation::McpGetCredential
                 | SecureOperation::McpExecWithCredential
                 | SecureOperation::McpInjectCredential
@@ -1563,9 +1577,14 @@ mod tests {
 
     #[tokio::test]
     async fn unsupported_protocol_version_is_rejected() {
-        let body = br#"{"protocol_version":5,"release_version":"0.1.0","source_sha":"development","payload":{"type":"cancel","request_id":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}}"#;
+        let body = format!(
+            "{{\"protocol_version\":{},\"release_version\":\"{}\",\"source_sha\":\"{}\",\"payload\":{{\"type\":\"cancel\",\"request_id\":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}}}}",
+            PROTOCOL_VERSION - 1,
+            RELEASE_VERSION,
+            SOURCE_SHA
+        );
         let mut frame = Vec::from((body.len() as u32).to_be_bytes());
-        frame.extend_from_slice(body);
+        frame.extend_from_slice(body.as_bytes());
         let result = read_frame::<_, ClientFrame>(&mut frame.as_slice()).await;
         assert!(matches!(result, Err(ProtocolError::UnsupportedVersion)));
     }

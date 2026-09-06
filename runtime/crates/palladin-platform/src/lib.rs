@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+pub mod broker_browser;
 pub mod broker_protocol;
 pub mod legacy_typescript_store;
 pub mod secure_store;
