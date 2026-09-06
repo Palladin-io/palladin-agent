@@ -6704,6 +6704,12 @@ mod tests {
     #[test]
     fn terminal_pairing_cleanup_tracks_identity_across_profile_rename() {
         let root = tempfile::tempdir().expect("root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("private profile root");
+        }
         let store = MemorySecretStore::default();
         let service = RuntimeService::new(
             ProfileRepository::new(root.path().to_path_buf()).expect("repository"),

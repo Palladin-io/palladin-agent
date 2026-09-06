@@ -924,10 +924,9 @@ fn private_path_error(message: &str) -> std::io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BROWSER_PAIRING_STATE_FILE, ProfileName, ProfileRepository, add_profile,
-        is_lock_contention, rename_profile,
-    };
+    #[cfg(unix)]
+    use super::BROWSER_PAIRING_STATE_FILE;
+    use super::{ProfileName, ProfileRepository, add_profile, is_lock_contention, rename_profile};
     use crate::public_store::PublicRegistry;
 
     const IDENTITY_ID: &str = "11111111111111111111111111111111";
