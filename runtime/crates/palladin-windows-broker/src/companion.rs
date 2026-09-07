@@ -584,6 +584,10 @@ async fn relay_output(stream: OutputStream, bytes: &[u8]) -> Result<(), Companio
 fn open_interactive_browser(url: &str) -> Result<(), CompanionError> {
     palladin_platform::broker_browser::validate_broker_browser_open_url(url)
         .map_err(|_| CompanionError::BrowserOpen)?;
+    // This validated URL contains only the public pairing ID, not the broker handoff
+    // capability. Match the other interactive launchers so a broken URL association
+    // does not leave the human without an approval page while the worker polls.
+    eprintln!("Palladin approval page (open manually if needed): {url}");
     let mut child = std::process::Command::new("rundll32.exe")
         .arg("url.dll,FileProtocolHandler")
         .arg(url)
@@ -595,7 +599,11 @@ fn open_interactive_browser(url: &str) -> Result<(), CompanionError> {
     std::thread::Builder::new()
         .name("palladin-browser-launcher-reaper".to_owned())
         .spawn(move || {
-            let _ = child.wait();
+            if !child.wait().is_ok_and(|status| status.success()) {
+                eprintln!(
+                    "Palladin could not open the system browser; use the approval page above."
+                );
+            }
         })
         .map(|_| ())
         .map_err(|_| CompanionError::BrowserOpen)
