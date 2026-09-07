@@ -714,6 +714,7 @@ pub(crate) struct AgentDiscoveryDeltaBody<'a> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StartBrowserPairingBody<'a> {
+    pub hostname: &'a str,
     pub pairing_id: &'a str,
     pub public_key: &'a str,
     pub signing_public_key: &'a str,

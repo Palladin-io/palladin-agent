@@ -1343,6 +1343,9 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                     &agent.identity_id,
                     MAX_PENDING_BROWSER_PAIRING_STATE_BYTES,
                 )?;
+                if !created_profile && stored.is_none() {
+                    return Err(RuntimeError::PairingProfileAlreadyConfigured);
+                }
                 let decoded = stored
                     .as_deref()
                     .map(PendingBrowserPairingState::decode)
@@ -1475,6 +1478,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                 result = client.start(
                     effective_metadata.display_name.as_deref(),
                     effective_metadata.agent_type.as_deref(),
+                    hostname,
                 ) => result?,
             };
             if start.pairing_id != pending.pairing_id() {
@@ -6167,7 +6171,9 @@ pub enum RuntimeError {
     InvalidFormDiscoveryMap,
     #[error("API key is invalid; it must start with pl_")]
     InvalidApiKey,
-    #[error("this local Agent profile is already configured; choose another --id")]
+    #[error(
+        "this local Agent profile already exists and cannot start a new pairing; choose another --id"
+    )]
     PairingProfileAlreadyConfigured,
     #[error("Agent pairing was rejected in Palladin")]
     PairingRejected,
@@ -6698,6 +6704,50 @@ mod tests {
                 .iter()
                 .filter(|request| request.starts_with("POST "))
                 .all(|request| request.contains("custom/runtime"))
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_pairing_preserves_an_existing_unconfigured_profile() {
+        let root = tempfile::tempdir().expect("root");
+        let service = RuntimeService::new(
+            ProfileRepository::new(root.path().join("state")).expect("repository"),
+            MemorySecretStore::default(),
+        );
+        let original = service
+            .create_profile("existing", Some("original/type".to_owned()))
+            .expect("profile");
+        let result = service
+            .browser_pair(
+                Some("existing"),
+                ApiHost::parse("https://api.palladin.io").expect("host"),
+                BrowserPairingMetadata::resolve(None, Some("New name"), Some("new/type"))
+                    .expect("metadata"),
+                "fixture-host",
+                InvocationSurface::Cli,
+                &OperationConnection::new().expect("connection"),
+                &CancellationToken::new(),
+                |_| panic!("a collision must not open a browser"),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(RuntimeError::PairingProfileAlreadyConfigured)
+        ));
+        let current = service
+            .resolve_profile(Some("existing"))
+            .expect("preserved profile");
+        assert_eq!(current.identity_id, original.identity_id);
+        assert_eq!(current.agent_type.as_deref(), Some("original/type"));
+        assert!(
+            service
+                .repository()
+                .load_browser_pairing_state(
+                    &original.identity_id,
+                    MAX_PENDING_BROWSER_PAIRING_STATE_BYTES,
+                )
+                .expect("state")
+                .is_none()
         );
     }
 

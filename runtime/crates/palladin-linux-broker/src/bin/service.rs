@@ -38,6 +38,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const LONG_SESSION_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(4 * 60 * 60);
 const ADMIN_OPERATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const PAIRING_OPERATION_TIMEOUT: Duration = Duration::from_secs(32 * 60);
 const MAX_CONCURRENT_SESSIONS: usize = 32;
 const MAX_SESSIONS_PER_UID: usize = 4;
 const MAX_SESSION_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -712,6 +713,7 @@ fn valid_pair_agent_arguments(arguments: &[String]) -> bool {
 fn operation_timeout(arguments: &[String]) -> Duration {
     match arguments.first().map(String::as_str) {
         Some("mcp") => LONG_SESSION_TIMEOUT,
+        Some("pair-agent") => PAIRING_OPERATION_TIMEOUT,
         Some("search" | "get" | "retrieve" | "exec" | "report-stale") => OPERATION_TIMEOUT,
         _ => ADMIN_OPERATION_TIMEOUT,
     }
@@ -816,7 +818,7 @@ mod tests {
         }
         assert_eq!(
             operation_timeout(&args(&["pair-agent"])),
-            super::ADMIN_OPERATION_TIMEOUT
+            super::PAIRING_OPERATION_TIMEOUT
         );
     }
 

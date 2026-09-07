@@ -55,6 +55,7 @@ impl<'a> BrowserPairingClient<'a> {
         &self,
         display_name: Option<&str>,
         agent_type: Option<&str>,
+        hostname: &str,
     ) -> Result<crate::StartBrowserPairingResponse, ApiError> {
         let public_key = STANDARD.encode(self.encryption_identity.public_key());
         let signing_public_key = STANDARD.encode(self.signing_identity.public_key());
@@ -64,6 +65,7 @@ impl<'a> BrowserPairingClient<'a> {
             signing_public_key: &signing_public_key,
             display_name,
             r#type: agent_type,
+            hostname,
         })
         .map_err(|_| ApiError::InvalidInput)?;
         let response = self
@@ -1294,7 +1296,7 @@ mod tests {
         .expect("pairing client");
 
         client
-            .start(None, Some("custom/runtime"))
+            .start(None, Some("custom/runtime"), "pairing-workstation")
             .await
             .expect("start");
         let status = client.poll().await.expect("retried pending status");
@@ -1312,6 +1314,7 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_str(body).expect("pairing JSON");
         assert_eq!(payload["pairingId"], pairing_id);
         assert_eq!(payload["type"], "custom/runtime");
+        assert_eq!(payload["hostname"], "pairing-workstation");
         assert!(payload.get("displayName").is_none());
 
         let timestamp = header_value(headers, "x-agent-timestamp")
@@ -1358,7 +1361,7 @@ mod tests {
 
         assert_eq!(
             client
-                .start(None, None)
+                .start(None, None, "pairing-workstation")
                 .await
                 .expect_err("oversized response"),
             ApiError::SizeLimitExceeded

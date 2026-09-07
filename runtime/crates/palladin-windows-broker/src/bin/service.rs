@@ -59,6 +59,7 @@ mod windows_service_entry {
     const USER_RATE_WINDOW: Duration = Duration::from_secs(60);
     const ONE_SHOT_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
     const MCP_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+    const PAIRING_SESSION_TIMEOUT: Duration = Duration::from_secs(32 * 60);
     const OUTPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
     const MAX_WORKER_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
     const MAX_CONNECT_INPUT_BYTES: usize = 4096;
@@ -485,6 +486,7 @@ mod windows_service_entry {
             request.standard_input = std::mem::take(&mut *deferred_input);
         }
         let session_timeout = match request.operation {
+            SecureOperation::PairAgent => PAIRING_SESSION_TIMEOUT,
             palladin_platform::broker_protocol::SecureOperation::McpServe => MCP_SESSION_TIMEOUT,
             _ => ONE_SHOT_SESSION_TIMEOUT,
         };
@@ -682,11 +684,19 @@ mod windows_service_entry {
             lifecycle.clone(),
         ));
 
-        let mut completion = tokio::select! {
-            status = child.wait() => WorkerCompletion::Exited(status?),
-            control = control_receiver.recv() => control.unwrap_or(WorkerCompletion::Disconnected),
-            () = tokio::time::sleep(session_timeout) => WorkerCompletion::TimedOut,
-            () = lifecycle.wait_for_revocation() => WorkerCompletion::SessionRevoked,
+        let mut deadline = tokio::time::Instant::now() + session_timeout;
+        let mut completion = loop {
+            let event = tokio::select! {
+                status = child.wait() => WorkerCompletion::Exited(status?),
+                control = control_receiver.recv() => control.unwrap_or(WorkerCompletion::Disconnected),
+                () = tokio::time::sleep_until(deadline) => WorkerCompletion::TimedOut,
+                () = lifecycle.wait_for_revocation() => WorkerCompletion::SessionRevoked,
+            };
+            if matches!(event, WorkerCompletion::PairingAdmitted) {
+                deadline = pairing_deadline(deadline, tokio::time::Instant::now());
+                continue;
+            }
+            break event;
         };
         if !lifecycle.is_current() {
             // Lock, logout and power revocation are security state changes and
@@ -695,6 +705,7 @@ mod windows_service_entry {
             completion = WorkerCompletion::SessionRevoked;
         }
         let mut exit_code = match &completion {
+            WorkerCompletion::PairingAdmitted => unreachable!("pairing admission is not terminal"),
             WorkerCompletion::Exited(status) => status.code().unwrap_or(1),
             WorkerCompletion::Cancelled => {
                 let _ = child.kill().await;
@@ -738,6 +749,7 @@ mod windows_service_entry {
         }
 
         let terminal_frame = match completion {
+            WorkerCompletion::PairingAdmitted => unreachable!("pairing admission is not terminal"),
             WorkerCompletion::Exited(_) | WorkerCompletion::Cancelled => BrokerFrame::Exited {
                 request_id,
                 exit_code,
@@ -783,7 +795,15 @@ mod windows_service_entry {
         Ok(())
     }
 
+    fn pairing_deadline(
+        current: tokio::time::Instant,
+        admitted_at: tokio::time::Instant,
+    ) -> tokio::time::Instant {
+        current.max(admitted_at + PAIRING_SESSION_TIMEOUT)
+    }
+
     enum WorkerCompletion {
+        PairingAdmitted,
         Exited(std::process::ExitStatus),
         Cancelled,
         Disconnected,
@@ -1075,6 +1095,17 @@ mod windows_service_entry {
                     .await
                     {
                         let _ = control.try_send(failure.into_completion());
+                        return;
+                    }
+                    if mcp_secret_operations(&message.bytes).is_ok_and(|operations| {
+                        operations
+                            .iter()
+                            .any(|operation| operation.operation == SecureOperation::McpPairAgent)
+                    }) && control
+                        .send(WorkerCompletion::PairingAdmitted)
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
                     message.bytes.zeroize();
@@ -1488,6 +1519,20 @@ mod windows_service_entry {
         fn secure_sessions_have_explicit_absolute_ttls() {
             assert_eq!(ONE_SHOT_SESSION_TIMEOUT.as_secs(), 30 * 60);
             assert_eq!(MCP_SESSION_TIMEOUT.as_secs(), 30 * 60);
+            assert!(super::PAIRING_SESSION_TIMEOUT.as_secs() > 31 * 60);
+        }
+
+        #[test]
+        fn an_authorized_late_pairing_gets_its_full_window_without_shortening_the_session() {
+            let start = tokio::time::Instant::now();
+            let original = start + MCP_SESSION_TIMEOUT;
+            let admitted = start + Duration::from_secs(29 * 60);
+            let extended = super::pairing_deadline(original, admitted);
+            assert_eq!(
+                extended.duration_since(admitted),
+                super::PAIRING_SESSION_TIMEOUT
+            );
+            assert_eq!(super::pairing_deadline(extended, start), extended);
         }
 
         #[test]
