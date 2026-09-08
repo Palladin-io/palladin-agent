@@ -57,6 +57,7 @@
     "test:e2e:inject-x": "vite-node tests/e2e/inject-x.ts",
     "plugins:generate": "node plugins/palladin-agent/scripts/generate-targets.mjs",
     "plugins:check": "node plugins/palladin-agent/scripts/generate-targets.mjs --check",
+    "plugins:package:codex-skills-only": "python3 plugins/palladin-agent/scripts/package-codex-skills-only.py",
     "verify:form-maps": "PALLADIN_VERIFY_FORM_MAPS=1 vite-node scripts/verify-form-maps.ts",
     "test:release": "node --test packaging/npm/release-scripts.security.mjs",
     "oss:generate": "node packaging/npm/generate-oss-metadata.mjs",

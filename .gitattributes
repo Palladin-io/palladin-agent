@@ -3,3 +3,4 @@ runtime/contracts/script-execution/v1/wire-fixture.json text eol=lf
 runtime/contracts/vault-v2/fixtures/v2/** text eol=lf
 tests/contracts/__snapshots__/*.snap text eol=lf
 plugins/palladin-agent/** text eol=lf
+plugins/palladin-agent/**/*.png -text

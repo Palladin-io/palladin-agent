@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const pluginSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const checkOnly = process.argv.includes('--check');
 const version = '0.1.0-preview.2';
+const codexVersion = `${version}+codex.20260904160709`;
 
 const canonicalSkill = await readFile(
   resolve(pluginSourceRoot, 'core/skills/palladin-browser-login/SKILL.md'),
@@ -18,10 +19,11 @@ const providerContract = await readFile(
   resolve(pluginSourceRoot, 'core/provider-contract.json'),
   'utf8',
 );
+const icon = await readFile(resolve(pluginSourceRoot, 'core/assets/icon.png'));
 
 const metadata = {
   version,
-  description: 'Preview of secure Palladin credential injection into an exact browser tab.',
+  description: 'Preview of Palladin credential workflows and secure browser injection.',
   author: {
     name: 'Palladin.io',
     url: 'https://palladin.io',
@@ -37,26 +39,39 @@ const mcpCommand = {
   args: ['mcp', 'serve'],
 };
 
+const codexMcpCommand = {
+  command: 'palladin',
+  args: ['--id', 'codex', 'mcp', 'serve'],
+};
+
 const codexManifest = {
   name: 'palladin-agent',
   ...metadata,
+  version: codexVersion,
   skills: './skills/',
   mcpServers: './.mcp.json',
   interface: {
-    displayName: 'Palladin Agent',
-    shortDescription: 'Sign in without exposing credentials',
+    displayName: 'Palladin',
+    shortDescription: 'Use granted credentials through Palladin',
     longDescription:
-      'Palladin lets an agent prepare an exact browser tab and request credential injection through the paired Palladin extension. Secrets remain inside the native runtime and authenticated extension transport.',
+      'Palladin lets Codex discover granted credentials, deliberately retrieve them or use them in local execution when requested, and inject credentials into an exact browser tab through the paired Palladin extension.',
     developerName: 'Palladin.io',
     category: 'Productivity',
-    capabilities: ['Credential discovery', 'Browser credential injection'],
+    capabilities: [
+      'Credential discovery',
+      'Explicit credential retrieval',
+      'Local credential execution',
+      'Browser credential injection',
+    ],
     websiteURL: 'https://palladin.io',
     defaultPrompt: [
       'Sign me in to this website with Palladin.',
-      'Open the login page and use my Palladin account.',
-      'Use Palladin to sign in on this browser tab.',
+      'Find a credential I can use through Palladin.',
+      'Run this command with a granted Palladin credential.',
     ],
     brandColor: '#D95A4E',
+    composerIcon: './assets/icon.png',
+    logo: './assets/icon.png',
   },
 };
 
@@ -88,8 +103,9 @@ const targets = [
     manifestPath: '.codex-plugin/plugin.json',
     manifest: codexManifest,
     mcpPath: '.mcp.json',
-    mcp: { mcpServers: { palladin: mcpCommand } },
+    mcp: { mcpServers: { palladin: codexMcpCommand } },
     extraFiles: {
+      'assets/icon.png': icon,
       'skills/palladin-browser-login/agents/openai.yaml': [
         'interface:',
         '  display_name: "Palladin Browser Login"',
@@ -155,13 +171,14 @@ async function listTargetArtifacts(root) {
 }
 
 async function materialize(path, content) {
+  const expected = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
   if (checkOnly) {
-    const current = await readFile(path, 'utf8').catch(() => undefined);
-    if (current !== content) mismatches.push(path);
+    const current = await readFile(path).catch(() => undefined);
+    if (!current?.equals(expected)) mismatches.push(path);
     return;
   }
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, content, 'utf8');
+  await writeFile(path, expected);
 }
 
 for (const target of targets) {
