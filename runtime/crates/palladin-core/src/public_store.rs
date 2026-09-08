@@ -23,6 +23,9 @@ const ED25519_PUBLIC_KEY_BYTES: usize = 32;
 const ED25519_SIGNATURE_BYTES: usize = 64;
 const X25519_PUBLIC_KEY_BYTES: usize = 32;
 const SHA256_BYTES: usize = 32;
+const MAX_AGENT_TYPE_CODE_POINTS: usize = 100;
+const MAX_AGENT_TYPE_BYTES: usize = MAX_AGENT_TYPE_CODE_POINTS * 4;
+const LEGACY_MAX_AGENT_TYPE_BYTES: usize = 128;
 pub const MAX_VAULT_TRUST_ANCHORS: usize = 256;
 
 fn deserialize_nullable_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -73,7 +76,7 @@ impl PublicRegistry {
                     || agent
                         .agent_type
                         .as_deref()
-                        .is_some_and(|value| !is_safe_public_text(value, 128))
+                        .is_some_and(|value| !is_safe_agent_type(value))
                     || agent
                         .config_digest
                         .as_deref()
@@ -668,6 +671,16 @@ fn is_safe_public_text(value: &str, maximum_bytes: usize) -> bool {
         && value.trim() == value
 }
 
+fn is_safe_agent_type(value: &str) -> bool {
+    is_safe_public_text(value, MAX_AGENT_TYPE_BYTES)
+        && (value.chars().count() <= MAX_AGENT_TYPE_CODE_POINTS
+            // Schema v3 registries written before browser pairing accepted any
+            // safe type up to 128 UTF-8 bytes. Keep those signed registries
+            // readable; all newly declared types are still limited to 100 code
+            // points at the CLI/MCP/backend input boundaries.
+            || value.len() <= LEGACY_MAX_AGENT_TYPE_BYTES)
+}
+
 fn is_sha256_hex(value: &str) -> bool {
     value.len() == SHA256_HEX_LENGTH
         && value
@@ -1014,6 +1027,35 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    #[test]
+    fn agent_type_uses_the_hundred_code_point_contract_not_an_ascii_byte_limit() {
+        let directory = private_tempdir();
+        let path = directory.path().join("registry.json");
+        let mut registry = PublicRegistry {
+            schema_version: PUBLIC_SCHEMA_VERSION,
+            default: "build".to_owned(),
+            agents: vec![PublicAgentEntry {
+                name: "build".to_owned(),
+                identity_id: "11111111111111111111111111111111".to_owned(),
+                created_at: "2026-09-05T00:00:00Z".to_owned(),
+                agent_type: Some("🦀".repeat(100)),
+                config_digest: None,
+            }],
+        };
+
+        save_registry(&path, &registry).expect("hundred-code-point type");
+        assert_eq!(load_registry(&path).expect("load type"), registry);
+
+        registry.agents[0].agent_type = Some("🦀".repeat(101));
+        assert!(save_registry(&path, &registry).is_err());
+
+        registry.agents[0].agent_type = Some("x".repeat(128));
+        save_registry(&path, &registry).expect("legacy 128-byte type remains readable");
+
+        registry.agents[0].agent_type = Some("x".repeat(129));
+        assert!(save_registry(&path, &registry).is_err());
     }
 
     #[test]

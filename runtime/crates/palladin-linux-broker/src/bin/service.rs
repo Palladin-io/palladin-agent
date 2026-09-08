@@ -22,10 +22,14 @@ use palladin_linux_broker::store::LinuxBrokerSecretStore;
 use palladin_linux_broker::{
     SOCKET_PATH, STATE_ROOT, SYSTEM_MASTER_KEY, SYSTEM_POLICY_ROOT, SYSTEM_WORKER,
 };
+use palladin_platform::broker_browser::{
+    BROKER_BROWSER_OPEN_ENV, MAX_BROKER_BROWSER_CONTROL_LINE_BYTES,
+    decode_broker_browser_open_request, generate_broker_browser_open_binding,
+};
 use palladin_runtime::RuntimeService;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, Semaphore, mpsc};
@@ -34,6 +38,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const LONG_SESSION_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(4 * 60 * 60);
 const ADMIN_OPERATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const PAIRING_OPERATION_TIMEOUT: Duration = Duration::from_secs(32 * 60);
 const MAX_CONCURRENT_SESSIONS: usize = 32;
 const MAX_SESSIONS_PER_UID: usize = 4;
 const MAX_SESSION_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -149,7 +154,18 @@ async fn handle(
         return Ok(());
     }
     let session_timeout = operation_timeout(&arguments);
-    if arguments.first().map(String::as_str) == Some("connect") {
+    let browser_open_binding = if matches!(
+        arguments.first().map(String::as_str),
+        Some("pair-agent" | "mcp")
+    ) {
+        Some(generate_broker_browser_open_binding().map_err(|_| ServiceError::Protocol)?)
+    } else {
+        None
+    };
+    if matches!(
+        arguments.first().map(String::as_str),
+        Some("connect" | "pair-agent" | "mcp")
+    ) {
         arguments.push("--host".to_owned());
         arguments.push(peer.host);
     }
@@ -164,7 +180,14 @@ async fn handle(
             return Ok(());
         }
     };
-    let mut child = match spawn_worker(&arguments, &profile_root, &policy).await {
+    let mut child = match spawn_worker(
+        &arguments,
+        &profile_root,
+        &policy,
+        browser_open_binding.as_deref(),
+    )
+    .await
+    {
         Ok(child) => child,
         Err(_) => {
             reject(stream, Some(request_id), RejectionCode::Unavailable).await;
@@ -176,7 +199,7 @@ async fn handle(
         .map_err(|_| ServiceError::Protocol)?;
     match tokio::time::timeout(
         session_timeout,
-        proxy_worker(stream, &mut child, request_id),
+        proxy_worker(stream, &mut child, request_id, browser_open_binding),
     )
     .await
     {
@@ -192,6 +215,7 @@ async fn spawn_worker(
     arguments: &[String],
     profile_root: &Path,
     policy: &SystemPolicyService,
+    browser_open_binding: Option<&str>,
 ) -> Result<Child, ServiceError> {
     let mut worker = open_system_worker(Path::new(SYSTEM_WORKER))?;
     let worker_sha256 = sha256_open_file(&mut worker)?;
@@ -221,6 +245,9 @@ async fn spawn_worker(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if let Some(binding) = browser_open_binding {
+        process.env(BROKER_BROWSER_OPEN_ENV, binding);
+    }
     let child = process.spawn().map_err(|_| ServiceError::Worker)?;
     drop(worker);
     Ok(child)
@@ -303,6 +330,7 @@ async fn proxy_worker(
     stream: UnixStream,
     child: &mut Child,
     request_id: [u8; 16],
+    browser_open_binding: Option<String>,
 ) -> Result<(), ServiceError> {
     let mut child_input = child.stdin.take().ok_or(ServiceError::Worker)?;
     let child_output = child.stdout.take().ok_or(ServiceError::Worker)?;
@@ -318,6 +346,7 @@ async fn proxy_worker(
         failure_sender.clone(),
         request_id,
         OutputStream::Stdout,
+        None,
     );
     let stderr_task = spawn_output_task(
         child_error,
@@ -326,6 +355,7 @@ async fn proxy_worker(
         failure_sender,
         request_id,
         OutputStream::Stderr,
+        browser_open_binding,
     );
     let mut input_task: tokio::task::JoinHandle<Result<(), ServiceError>> =
         tokio::spawn(async move {
@@ -422,9 +452,18 @@ fn spawn_output_task<R: AsyncRead + Unpin + Send + 'static>(
     failure_sender: mpsc::Sender<ServiceError>,
     request_id: [u8; 16],
     stream: OutputStream,
+    browser_open_binding: Option<String>,
 ) -> tokio::task::JoinHandle<Result<(), ServiceError>> {
     tokio::spawn(async move {
-        let result = copy_output(reader, writer, output_bytes, request_id, stream).await;
+        let result = copy_output(
+            reader,
+            writer,
+            output_bytes,
+            request_id,
+            stream,
+            browser_open_binding.as_deref(),
+        )
+        .await;
         if result.is_err() {
             let _ = failure_sender.send(ServiceError::Output).await;
         }
@@ -438,7 +477,19 @@ async fn copy_output<R: AsyncRead + Unpin>(
     output_bytes: Arc<AtomicUsize>,
     request_id: [u8; 16],
     stream: OutputStream,
+    browser_open_binding: Option<&str>,
 ) -> Result<(), ServiceError> {
+    if let Some(binding) = browser_open_binding {
+        return copy_broker_control_output(
+            reader,
+            writer,
+            output_bytes,
+            request_id,
+            stream,
+            binding,
+        )
+        .await;
+    }
     let mut sequence = 0_u64;
     loop {
         let mut bytes = vec![0_u8; MAX_STREAM_CHUNK_BYTES];
@@ -473,6 +524,83 @@ async fn copy_output<R: AsyncRead + Unpin>(
         .map_err(|_| ServiceError::Timeout)?
         .map_err(|_| ServiceError::Protocol)?;
         sequence = sequence.checked_add(1).ok_or(ServiceError::Protocol)?;
+    }
+}
+
+async fn copy_broker_control_output<R: AsyncRead + Unpin>(
+    reader: R,
+    writer: Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    output_bytes: Arc<AtomicUsize>,
+    request_id: [u8; 16],
+    stream: OutputStream,
+    browser_open_binding: &str,
+) -> Result<(), ServiceError> {
+    let mut reader = BufReader::new(reader);
+    let mut sequence = 0_u64;
+    loop {
+        let Some(bytes) = read_bounded_control_line(&mut reader).await? else {
+            return Ok(());
+        };
+        let count = bytes.len();
+        let previous = output_bytes.fetch_add(count, Ordering::AcqRel);
+        if previous
+            .checked_add(count)
+            .is_none_or(|total| total > MAX_SESSION_OUTPUT_BYTES)
+        {
+            return Err(ServiceError::OutputLimit);
+        }
+        let frame = match decode_broker_browser_open_request(&bytes, browser_open_binding)
+            .map_err(|_| ServiceError::Protocol)?
+        {
+            Some(url) => ServerFrame::OpenUrl { request_id, url },
+            None => {
+                let frame = ServerFrame::Output {
+                    request_id,
+                    stream,
+                    sequence,
+                    bytes,
+                };
+                sequence = sequence.checked_add(1).ok_or(ServiceError::Protocol)?;
+                frame
+            }
+        };
+        tokio::time::timeout(IO_TIMEOUT, async {
+            write_frame(&mut *writer.lock().await, &frame).await
+        })
+        .await
+        .map_err(|_| ServiceError::Timeout)?
+        .map_err(|_| ServiceError::Protocol)?;
+    }
+}
+
+async fn read_bounded_control_line<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+) -> Result<Option<Vec<u8>>, ServiceError> {
+    let mut line = Vec::new();
+    loop {
+        let (chunk, complete) = {
+            let available = reader.fill_buf().await.map_err(|_| ServiceError::Worker)?;
+            if available.is_empty() {
+                return if line.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(line))
+                };
+            }
+            let count = available
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(available.len(), |index| index + 1);
+            (available[..count].to_vec(), available[count - 1] == b'\n')
+        };
+        if line.len().saturating_add(chunk.len()) > MAX_BROKER_BROWSER_CONTROL_LINE_BYTES {
+            return Err(ServiceError::OutputLimit);
+        }
+        reader.consume(chunk.len());
+        line.extend_from_slice(&chunk);
+        if complete {
+            return Ok(Some(line));
+        }
     }
 }
 
@@ -548,6 +676,7 @@ fn validate_operation(arguments: &[String]) -> Result<(), ServiceError> {
         {
             Ok(())
         }
+        Some("pair-agent") if valid_pair_agent_arguments(arguments) => Ok(()),
         Some("search" | "get" | "retrieve" | "exec" | "report-stale") => Ok(()),
         Some("mcp") if arguments.len() == 2 && arguments[1] == "serve" => Ok(()),
         Some("agents") if arguments.len() == 2 && arguments[1] == "list" => Ok(()),
@@ -556,9 +685,35 @@ fn validate_operation(arguments: &[String]) -> Result<(), ServiceError> {
     }
 }
 
+fn valid_pair_agent_arguments(arguments: &[String]) -> bool {
+    let mut index = 1;
+    while index < arguments.len() {
+        let Some(option) = arguments.get(index).map(String::as_str) else {
+            return false;
+        };
+        if matches!(option, "--setup-descriptor" | "--display-name" | "--type") {
+            if arguments.get(index + 1).is_none() {
+                return false;
+            }
+            index += 2;
+            continue;
+        }
+        if option.starts_with("--setup-descriptor=")
+            || option.starts_with("--display-name=")
+            || option.starts_with("--type=")
+        {
+            index += 1;
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
 fn operation_timeout(arguments: &[String]) -> Duration {
     match arguments.first().map(String::as_str) {
         Some("mcp") => LONG_SESSION_TIMEOUT,
+        Some("pair-agent") => PAIRING_OPERATION_TIMEOUT,
         Some("search" | "get" | "retrieve" | "exec" | "report-stale") => OPERATION_TIMEOUT,
         _ => ADMIN_OPERATION_TIMEOUT,
     }
@@ -608,7 +763,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     use super::{open_attested_worker, sha256_open_file};
-    use super::{proxy_worker, validate_operation};
+    use super::{operation_timeout, proxy_worker, read_bounded_control_line, validate_operation};
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
@@ -639,6 +794,32 @@ mod tests {
     fn hardened_pairing_allows_only_the_exact_command() {
         assert!(validate_operation(&args(&["pair"])).is_ok());
         assert!(validate_operation(&args(&["pair", "unexpected"])).is_err());
+    }
+
+    #[test]
+    fn hardened_browser_pairing_accepts_only_value_free_metadata_options() {
+        assert!(validate_operation(&args(&["pair-agent"])).is_ok());
+        assert!(
+            validate_operation(&args(&[
+                "pair-agent",
+                "--display-name",
+                "Spokojna Wydra",
+                "--type=custom-runtime",
+            ]))
+            .is_ok()
+        );
+        for denied in [
+            args(&["pair-agent", "--host", "https://evil.example"]),
+            args(&["pair-agent", "--api-key", "secret"]),
+            args(&["pair-agent", "--display-name"]),
+            args(&["pair-agent", "unexpected"]),
+        ] {
+            assert!(validate_operation(&denied).is_err());
+        }
+        assert_eq!(
+            operation_timeout(&args(&["pair-agent"])),
+            super::PAIRING_OPERATION_TIMEOUT
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -709,7 +890,7 @@ mod tests {
 
             let broker = tokio::spawn(async move {
                 let mut child = child;
-                proxy_worker(server, &mut child, request_id).await
+                proxy_worker(server, &mut child, request_id, None).await
             });
             write_frame(
                 &mut client,
@@ -733,5 +914,12 @@ mod tests {
             assert_eq!(code, 0);
             assert!(broker.await.expect("broker task").is_ok());
         }
+    }
+
+    #[tokio::test]
+    async fn browser_control_line_is_rejected_before_unbounded_allocation() {
+        let input = vec![b'x'; super::MAX_BROKER_BROWSER_CONTROL_LINE_BYTES + 1];
+        let mut reader = tokio::io::BufReader::new(std::io::Cursor::new(input));
+        assert!(read_bounded_control_line(&mut reader).await.is_err());
     }
 }

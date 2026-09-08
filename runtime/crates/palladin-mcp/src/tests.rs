@@ -14,10 +14,10 @@ use palladin_credential::access::access_message;
 use super::{
     AccessResult, ApplicationFuture, BoundedLineReader, ExecInput, ExecToolResult, GetInput,
     InjectInput, InjectToolResult, MAX_BATCH_ITEMS, MAX_FRAME_BYTES, McpApplication,
-    PalladinMcpServer, ProtocolBridgeState, ReportStaleInput, ScriptExecToolResult, SearchInput,
-    ToolOutcome, access_name, collect_batch_response, load_tools, parse_input,
+    PairAgentInput, PalladinMcpServer, ProtocolBridgeState, ReportStaleInput, ScriptExecToolResult,
+    SearchInput, ToolOutcome, access_name, collect_batch_response, load_tools, parse_input,
     prepare_incoming_message, pretty_result, serve_io, validate_exec, validate_get,
-    validate_inject, validate_search, wait_options,
+    validate_inject, validate_pair_agent, validate_search, wait_options,
 };
 
 #[derive(Clone, Default)]
@@ -26,6 +26,21 @@ struct FakeApplication {
 }
 
 impl McpApplication for FakeApplication {
+    fn pair_agent<'a>(
+        &'a self,
+        input: PairAgentInput,
+        _cancellation: CancellationToken,
+    ) -> ApplicationFuture<'a> {
+        Box::pin(async move {
+            self.calls.lock().await.push(format!(
+                "pair:{}:{}",
+                input.display_name.as_deref().unwrap_or("absent"),
+                input.r#type.as_deref().unwrap_or("absent")
+            ));
+            ToolOutcome::success("synthetic-pair")
+        })
+    }
+
     fn search<'a>(
         &'a self,
         input: SearchInput,
@@ -82,7 +97,7 @@ impl McpApplication for FakeApplication {
 }
 
 #[test]
-fn frozen_contract_exposes_exactly_five_legacy_tools() {
+fn frozen_contract_exposes_pairing_and_exactly_five_legacy_tools() {
     let tools = load_tools().expect("contract");
     assert_eq!(
         tools
@@ -90,6 +105,7 @@ fn frozen_contract_exposes_exactly_five_legacy_tools() {
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
         vec![
+            "pair_agent",
             "search_entries",
             "get_credential",
             "exec_with_credential",
@@ -141,6 +157,38 @@ fn frozen_inject_contract_requires_the_trusted_inject_method() {
         inject.input_schema["properties"]["targetUrl"]["type"],
         "string"
     );
+}
+
+#[test]
+fn pair_agent_contract_is_free_form_bounded_and_rejects_unknown_arguments() {
+    let tools = load_tools().expect("contract");
+    let pair = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "pair_agent")
+        .expect("pair tool");
+    assert_eq!(pair.input_schema["additionalProperties"], false);
+    assert_eq!(
+        pair.input_schema["properties"]["displayName"]["maxLength"],
+        64
+    );
+    assert_eq!(pair.input_schema["properties"]["type"]["maxLength"], 100);
+    assert!(
+        pair.input_schema["properties"]["type"]
+            .get("enum")
+            .is_none()
+    );
+
+    let boundary = parse_input::<PairAgentInput>(json!({
+        "displayName": "n".repeat(64),
+        "type": "t".repeat(100)
+    }))
+    .expect("boundary shape");
+    validate_pair_agent(&boundary).expect("boundary metadata");
+
+    let overlong =
+        parse_input::<PairAgentInput>(json!({"type": "t".repeat(101)})).expect("overlong shape");
+    assert!(validate_pair_agent(&overlong).is_err());
+    assert!(parse_input::<PairAgentInput>(json!({"apiKey": "must-not-be-accepted"})).is_err());
 }
 
 #[test]
@@ -423,7 +471,7 @@ async fn declared_protocol_versions_complete_the_raw_stdio_lifecycle() {
         assert_eq!(listed["id"], 2);
         assert_eq!(
             listed["result"]["tools"].as_array().expect("tools").len(),
-            5
+            6
         );
 
         send(
@@ -432,25 +480,46 @@ async fn declared_protocol_versions_complete_the_raw_stdio_lifecycle() {
                 "jsonrpc":"2.0",
                 "id":3,
                 "method":"tools/call",
-                "params":{"name":"search_entries","arguments":{"query":"fixture"}}
+                "params":{"name":"pair_agent","arguments":{"displayName":"Runtime Helper","type":"custom/runtime"}}
             }),
         )
         .await;
-        let called = receive(&mut client_read).await;
-        assert_eq!(called["id"], 3);
-        assert!(
-            called["result"]["content"][0]["text"]
-                .as_str()
-                .expect("text")
-                .contains("fixture")
+        let paired = receive(&mut client_read).await;
+        assert_eq!(paired["id"], 3);
+        assert_eq!(paired["result"]["content"][0]["text"], "synthetic-pair");
+        assert_eq!(
+            calls.lock().await.as_slice(),
+            ["pair:Runtime Helper:custom/runtime"]
         );
-        assert_eq!(calls.lock().await.as_slice(), ["search"]);
 
         send(
             &mut client_write,
             &json!({
                 "jsonrpc":"2.0",
                 "id":4,
+                "method":"tools/call",
+                "params":{"name":"search_entries","arguments":{"query":"fixture"}}
+            }),
+        )
+        .await;
+        let called = receive(&mut client_read).await;
+        assert_eq!(called["id"], 4);
+        assert!(
+            called["result"]["content"][0]["text"]
+                .as_str()
+                .expect("text")
+                .contains("fixture")
+        );
+        assert_eq!(
+            calls.lock().await.as_slice(),
+            ["pair:Runtime Helper:custom/runtime", "search"]
+        );
+
+        send(
+            &mut client_write,
+            &json!({
+                "jsonrpc":"2.0",
+                "id":5,
                 "method":"tools/call",
                 "params":{
                     "name":"inject_credential",
@@ -464,10 +533,13 @@ async fn declared_protocol_versions_complete_the_raw_stdio_lifecycle() {
         )
         .await;
         let rejected = receive(&mut client_read).await;
-        assert_eq!(rejected["id"], 4);
+        assert_eq!(rejected["id"], 5);
         assert!(rejected["result"]["isError"].is_null());
         assert_eq!(rejected["result"]["content"][0]["text"], "synthetic-inject");
-        assert_eq!(calls.lock().await.as_slice(), ["search", "inject"]);
+        assert_eq!(
+            calls.lock().await.as_slice(),
+            ["pair:Runtime Helper:custom/runtime", "search", "inject"]
+        );
 
         client_write
             .shutdown()

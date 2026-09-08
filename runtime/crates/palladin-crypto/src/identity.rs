@@ -6,6 +6,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::CryptoError;
 
 const PROFILE_BINDING_DOMAIN: &[u8] = b"palladin.profile-trust.v1\0";
+const BROWSER_PAIRING_STATE_DOMAIN: &[u8] = b"palladin.browser-pairing-state.v1\0";
 
 pub struct X25519Identity {
     private_key: SecretSlice<u8>,
@@ -129,6 +130,18 @@ impl Ed25519Identity {
         message.extend_from_slice(canonical_binding);
         self.sign(&message)
     }
+
+    /// Sign the value-free, crash-recovery state for one browser pairing. Keeping this
+    /// domain separate from profile trust prevents a valid pairing record from being
+    /// replayed as another signed runtime artifact.
+    #[must_use]
+    pub fn sign_browser_pairing_state(&self, canonical_state: &[u8]) -> [u8; 64] {
+        let mut message =
+            Vec::with_capacity(BROWSER_PAIRING_STATE_DOMAIN.len() + canonical_state.len());
+        message.extend_from_slice(BROWSER_PAIRING_STATE_DOMAIN);
+        message.extend_from_slice(canonical_state);
+        self.sign(&message)
+    }
 }
 
 pub fn verify_profile_binding(
@@ -141,6 +154,22 @@ pub fn verify_profile_binding(
     let mut message = Vec::with_capacity(PROFILE_BINDING_DOMAIN.len() + canonical_binding.len());
     message.extend_from_slice(PROFILE_BINDING_DOMAIN);
     message.extend_from_slice(canonical_binding);
+    verifying_key
+        .verify(&message, &Signature::from_bytes(signature))
+        .map_err(|_| CryptoError::AuthenticationFailed)
+}
+
+pub fn verify_browser_pairing_state(
+    public_key: &[u8; 32],
+    canonical_state: &[u8],
+    signature: &[u8; 64],
+) -> Result<(), CryptoError> {
+    let verifying_key =
+        VerifyingKey::from_bytes(public_key).map_err(|_| CryptoError::InvalidEncoding)?;
+    let mut message =
+        Vec::with_capacity(BROWSER_PAIRING_STATE_DOMAIN.len() + canonical_state.len());
+    message.extend_from_slice(BROWSER_PAIRING_STATE_DOMAIN);
+    message.extend_from_slice(canonical_state);
     verifying_key
         .verify(&message, &Signature::from_bytes(signature))
         .map_err(|_| CryptoError::AuthenticationFailed)
@@ -166,7 +195,9 @@ impl std::fmt::Debug for Ed25519Identity {
 mod tests {
     use secrecy::ExposeSecret;
 
-    use super::{Ed25519Identity, X25519Identity, verify_profile_binding};
+    use super::{
+        Ed25519Identity, X25519Identity, verify_browser_pairing_state, verify_profile_binding,
+    };
 
     #[test]
     fn identities_have_redacted_debug_output() {
@@ -176,6 +207,18 @@ mod tests {
         assert!(output.contains("[REDACTED]"));
         assert!(!output.contains("7, 7"));
         assert!(!output.contains("9, 9"));
+    }
+
+    #[test]
+    fn browser_pairing_state_has_a_dedicated_authenticated_domain() {
+        let signing = Ed25519Identity::from_seed(vec![9; 32]).expect("Ed25519");
+        let state = b"canonical pairing state";
+        let signature = signing.sign_browser_pairing_state(state);
+
+        verify_browser_pairing_state(signing.public_key(), state, &signature)
+            .expect("pairing signature");
+        assert!(verify_profile_binding(signing.public_key(), state, &signature).is_err());
+        assert!(verify_browser_pairing_state(signing.public_key(), b"other", &signature).is_err());
     }
 
     #[test]

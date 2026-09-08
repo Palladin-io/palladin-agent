@@ -1,4 +1,5 @@
 use std::io::{self, BufRead, IsTerminal, Read};
+use std::process::Stdio;
 use std::time::Duration;
 
 use palladin_platform::broker_protocol::{
@@ -62,6 +63,8 @@ pub enum CompanionError {
     InvalidRequest,
     #[error("Palladin Windows worker is unavailable; repair the installation")]
     WorkerUnavailable,
+    #[error("the validated Palladin approval page could not be opened in the user session")]
+    BrowserOpen,
     #[error("could not read the organization API key from the masked prompt")]
     ApiKeyPrompt,
     #[error("--api-key-stdin requires redirected standard input")]
@@ -270,6 +273,12 @@ where
                                 .ok_or(CompanionError::InvalidResponse)?;
                             relay_output(*stream, bytes).await?;
                         }
+                    BrokerFrame::OpenUrl {
+                        request_id: response_id,
+                        url,
+                    } if *response_id == request_id && accepted => {
+                        open_interactive_browser(url)?;
+                    }
                     BrokerFrame::Exited { request_id: response_id, exit_code }
                         if *response_id == request_id && accepted => return Ok(*exit_code),
                     BrokerFrame::Rejected { request_id: response_id, code }
@@ -395,6 +404,12 @@ async fn execute_duplex(
                                 .ok_or(CompanionError::InvalidResponse)?;
                             relay_output(*stream, bytes).await?;
                         }
+                    BrokerFrame::OpenUrl {
+                        request_id: response_id,
+                        url,
+                    } if *response_id == request_id && accepted => {
+                        open_interactive_browser(url)?;
+                    }
                     BrokerFrame::Challenge {
                         request_id: consent_request_id,
                         nonce,
@@ -408,7 +423,8 @@ async fn execute_duplex(
                         && challenge_agent_id == &agent_id
                         && matches!(
                             operation,
-                            SecureOperation::McpSearchEntries
+                            SecureOperation::McpPairAgent
+                                | SecureOperation::McpSearchEntries
                                 | SecureOperation::McpGetCredential
                                 | SecureOperation::McpExecWithCredential
                                 | SecureOperation::McpReportCredentialStale
@@ -563,6 +579,34 @@ async fn relay_output(stream: OutputStream, bytes: &[u8]) -> Result<(), Companio
     })
     .await
     .map_err(|_| CompanionError::Transport)?
+}
+
+fn open_interactive_browser(url: &str) -> Result<(), CompanionError> {
+    palladin_platform::broker_browser::validate_broker_browser_open_url(url)
+        .map_err(|_| CompanionError::BrowserOpen)?;
+    // This validated URL contains only the public pairing ID, not the broker handoff
+    // capability. Match the other interactive launchers so a broken URL association
+    // does not leave the human without an approval page while the worker polls.
+    eprintln!("Palladin approval page (open manually if needed): {url}");
+    let mut child = std::process::Command::new("rundll32.exe")
+        .arg("url.dll,FileProtocolHandler")
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| CompanionError::BrowserOpen)?;
+    std::thread::Builder::new()
+        .name("palladin-browser-launcher-reaper".to_owned())
+        .spawn(move || {
+            if !child.wait().is_ok_and(|status| status.success()) {
+                eprintln!(
+                    "Palladin could not open the system browser; use the approval page above."
+                );
+            }
+        })
+        .map(|_| ())
+        .map_err(|_| CompanionError::BrowserOpen)
 }
 
 async fn write_client_frame<W: tokio::io::AsyncWrite + Unpin>(
@@ -809,6 +853,7 @@ const fn operation_display_name(operation: SecureOperation) -> &'static str {
         SecureOperation::Init => "initialize Agent identity",
         SecureOperation::Doctor => "inspect runtime diagnostics",
         SecureOperation::Connect => "connect organization credential",
+        SecureOperation::PairAgent => "pair Agent through Palladin",
         SecureOperation::Status => "read Agent status",
         SecureOperation::Pair => "pair vault trust anchors",
         SecureOperation::Disconnect => "disconnect Agent profile",
@@ -816,6 +861,7 @@ const fn operation_display_name(operation: SecureOperation) -> &'static str {
         SecureOperation::Get => "release credential",
         SecureOperation::ReportStale => "report stale credential",
         SecureOperation::McpServe => "open MCP transport",
+        SecureOperation::McpPairAgent => "pair Agent through Palladin via MCP",
         SecureOperation::McpSearchEntries => "search vault metadata through MCP",
         SecureOperation::McpGetCredential => "release credential through MCP",
         SecureOperation::McpExecWithCredential => "execute with credential through MCP",

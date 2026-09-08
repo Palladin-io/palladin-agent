@@ -13,6 +13,7 @@ use palladin_api::{
     ApiError, CredentialAccess, CredentialMethod, ReportCredentialStaleInput, StaleReasonCode,
 };
 use palladin_browser_bridge::ProviderId;
+use palladin_core::host::ApiHost;
 use palladin_credential::access::access_message;
 use palladin_credential::fields::{
     FieldSelector, ResolvedField, redact_totp_secrets, resolve_field,
@@ -25,9 +26,10 @@ use palladin_credential::wait::{
 use palladin_crypto::ScriptExecutionParameters;
 use palladin_inject::{BrowserTarget, InjectExecution, InjectOperation, InjectServiceError};
 use palladin_runtime::{
-    CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
-    CredentialOutputPolicy, InvocationSurface, OperationConnection, OperationDescriptor,
-    OperatorOutput, RuntimeError, RuntimeService, SecretStore,
+    BrowserPairingMetadata, CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome,
+    CredentialExecRequest, CredentialOutputPolicy, InvocationSurface, OperationConnection,
+    OperationDescriptor, OperatorOutput, RuntimeError, RuntimeService, SecretStore,
+    open_system_browser,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
@@ -56,11 +58,19 @@ const UNSUPPORTED_VERSION_SENTINEL: &str = "palladin-unsupported-version";
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
     ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 const GET_EXPOSURE_WARNING: &str = "Note: this secret is now in the Agent's context. On a hosted LLM it may leave your machine. Prefer exec_with_credential or inject_credential when the credential only needs to authenticate another operation.";
-const CONTRACT_JSON: &str = include_str!("../../../contracts/mcp/v1.2/mcp-tools.json");
+const CONTRACT_JSON: &str = include_str!("../../../contracts/mcp/v1.3/mcp-tools.json");
 
 type ApplicationFuture<'a> = Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
 
 pub trait McpApplication: Send + Sync + 'static {
+    fn pair_agent<'a>(
+        &'a self,
+        _input: PairAgentInput,
+        _cancellation: CancellationToken,
+    ) -> ApplicationFuture<'a> {
+        Box::pin(async { ToolOutcome::error("Browser pairing is unavailable in this runtime.") })
+    }
+
     fn search<'a>(
         &'a self,
         input: SearchInput,
@@ -106,6 +116,7 @@ pub struct NativeApplication<S> {
     profile: Option<String>,
     hostname: String,
     connection: OperationConnection,
+    pairing_host: ApiHost,
 }
 
 impl<S> NativeApplication<S> {
@@ -115,12 +126,14 @@ impl<S> NativeApplication<S> {
         profile: Option<String>,
         hostname: String,
         connection: OperationConnection,
+        pairing_host: ApiHost,
     ) -> Self {
         Self {
             service,
             profile,
             hostname,
             connection,
+            pairing_host,
         }
     }
 }
@@ -129,6 +142,45 @@ impl<S> McpApplication for NativeApplication<S>
 where
     S: SecretStore + Send + Sync + 'static,
 {
+    fn pair_agent<'a>(
+        &'a self,
+        input: PairAgentInput,
+        cancellation: CancellationToken,
+    ) -> ApplicationFuture<'a> {
+        Box::pin(async move {
+            let metadata = match BrowserPairingMetadata::resolve(
+                input.setup_descriptor.as_deref(),
+                input.display_name.as_deref(),
+                input.r#type.as_deref(),
+            ) {
+                Ok(metadata) => metadata,
+                Err(error) => return ToolOutcome::error(error.to_string()),
+            };
+            match self
+                .service
+                .browser_pair(
+                    self.profile.as_deref(),
+                    self.pairing_host.clone(),
+                    metadata,
+                    &self.hostname,
+                    InvocationSurface::Mcp,
+                    &self.connection,
+                    &cancellation,
+                    open_system_browser,
+                )
+                .await
+            {
+                Ok(outcome) => pretty_result(&PairAgentResult {
+                    status: "active",
+                    agent_id: outcome.agent_id,
+                    display_name: outcome.display_name,
+                    r#type: outcome.agent_type,
+                }),
+                Err(error) => runtime_failure(&error),
+            }
+        })
+    }
+
     fn search<'a>(
         &'a self,
         input: SearchInput,
@@ -538,6 +590,17 @@ impl<A: McpApplication> PalladinMcpServer<A> {
             })
             .unwrap_or_else(|| context.ct.clone());
         let outcome = match request.name.as_ref() {
+            "pair_agent" => {
+                let input = parse_input::<PairAgentInput>(arguments)?;
+                validate_pair_agent(&input)?;
+                let _operation = self.secret_limit.clone().try_acquire_owned().map_err(|_| {
+                    McpError::internal_error(
+                        "Another Agent identity operation is in progress",
+                        None,
+                    )
+                })?;
+                self.application.pair_agent(input, cancellation).await
+            }
             "search_entries" => {
                 let input = parse_input::<SearchInput>(arguments)?;
                 validate_search(&input)?;
@@ -1131,12 +1194,17 @@ pub fn native_server<S>(
     profile: Option<String>,
     hostname: String,
     connection: OperationConnection,
+    pairing_host: ApiHost,
 ) -> Result<PalladinMcpServer<NativeApplication<S>>, ContractError>
 where
     S: SecretStore + Send + Sync + 'static,
 {
     PalladinMcpServer::new(NativeApplication::new(
-        service, profile, hostname, connection,
+        service,
+        profile,
+        hostname,
+        connection,
+        pairing_host,
     ))
 }
 
@@ -1267,7 +1335,7 @@ fn load_tools() -> Result<Vec<Tool>, ContractError> {
     let contract: ContractFile =
         serde_json::from_str(CONTRACT_JSON).map_err(|_| ContractError::Invalid)?;
     if contract.contract != "palladin-agent-mcp-tools"
-        || contract.version != "1.2.0"
+        || contract.version != "1.3.0"
         || contract.status != "frozen"
         || contract.server.name != "Palladin Agents"
         || contract.server.title != "Palladin Agent Runtime"
@@ -1286,6 +1354,7 @@ fn load_tools() -> Result<Vec<Tool>, ContractError> {
         return Err(ContractError::Invalid);
     }
     let expected = [
+        ("pair_agent", None),
         ("search_entries", None),
         ("get_credential", Some("Get")),
         ("exec_with_credential", Some("Exec")),
@@ -1318,6 +1387,28 @@ fn valid_required(value: &str, max: usize) -> bool {
 
 fn exceeds_chars(value: &str, max: usize) -> bool {
     value.chars().count() > max
+}
+
+fn validate_pair_agent(input: &PairAgentInput) -> Result<(), McpError> {
+    if input
+        .setup_descriptor
+        .as_ref()
+        .is_some_and(|value| exceeds_chars(value, 1024))
+        || input
+            .display_name
+            .as_ref()
+            .is_some_and(|value| exceeds_chars(value, 64))
+        || input
+            .r#type
+            .as_ref()
+            .is_some_and(|value| exceeds_chars(value, 100))
+    {
+        return Err(McpError::invalid_params(
+            "Agent pairing metadata is too large",
+            None,
+        ));
+    }
+    Ok(())
 }
 
 fn validate_search(input: &SearchInput) -> Result<(), McpError> {
@@ -1438,6 +1529,14 @@ fn validate_report(input: &ReportStaleInput) -> Result<(), McpError> {
         ));
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PairAgentInput {
+    pub setup_descriptor: Option<String>,
+    pub display_name: Option<String>,
+    pub r#type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1769,6 +1868,17 @@ fn access_name(access: &CredentialAccess) -> &'static str {
         CredentialAccess::Unavailable => "unavailable",
         CredentialAccess::Blocked => "blocked",
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PairAgentResult {
+    status: &'static str,
+    agent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    r#type: Option<String>,
 }
 
 #[derive(Serialize)]

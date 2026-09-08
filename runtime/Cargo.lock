@@ -1886,6 +1886,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "url",
  "zeroize",
 ]
 
@@ -1917,6 +1918,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
+ "unicode-normalization",
  "url",
  "uuid",
  "zeroize",

@@ -16,10 +16,133 @@ use thiserror::Error;
 use crate::types::{
     AgentDiscoveryDeltaBody, AgentDiscoverySnapshotBody, AgentRegistrationResult,
     CreatePairingActivationBody, CredentialAccess, CredentialRequestBody, GetCredentialOptions,
-    RegistrationBody, ReportCredentialStaleInput, StaleRequestBody,
+    RegistrationBody, ReportCredentialStaleInput, StaleRequestBody, StartBrowserPairingBody,
 };
 
+pub struct BrowserPairingClient<'a> {
+    http: reqwest::Client,
+    host: ApiHost,
+    pairing_id: &'a str,
+    encryption_identity: &'a X25519Identity,
+    signing_identity: &'a Ed25519Identity,
+}
+
+impl<'a> BrowserPairingClient<'a> {
+    pub fn new(
+        host: ApiHost,
+        pairing_id: &'a str,
+        encryption_identity: &'a X25519Identity,
+        signing_identity: &'a Ed25519Identity,
+    ) -> Result<Self, ApiError> {
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .no_proxy()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|_| ApiError::Transport)?;
+        Ok(Self {
+            http,
+            host,
+            pairing_id,
+            encryption_identity,
+            signing_identity,
+        })
+    }
+
+    pub async fn start(
+        &self,
+        display_name: Option<&str>,
+        agent_type: Option<&str>,
+        hostname: &str,
+    ) -> Result<crate::StartBrowserPairingResponse, ApiError> {
+        let public_key = STANDARD.encode(self.encryption_identity.public_key());
+        let signing_public_key = STANDARD.encode(self.signing_identity.public_key());
+        let body = serde_json::to_vec(&StartBrowserPairingBody {
+            pairing_id: self.pairing_id,
+            public_key: &public_key,
+            signing_public_key: &signing_public_key,
+            display_name,
+            r#type: agent_type,
+            hostname,
+        })
+        .map_err(|_| ApiError::InvalidInput)?;
+        let response = self
+            .signed_send(Method::POST, "/api/agent-pairings", Some(body))
+            .await?;
+        decode_bounded_success_with_limit(response, MAX_PAIRING_RESPONSE_BYTES).await
+    }
+
+    pub async fn poll(&self) -> Result<crate::BrowserPairingStatusResponse, ApiError> {
+        let path = format!(
+            "/api/agent-pairings/{}/status",
+            encode_component(self.pairing_id)
+        );
+        let response = self.signed_send(Method::GET, &path, None).await?;
+        decode_bounded_success_with_limit(response, MAX_PAIRING_RESPONSE_BYTES).await
+    }
+
+    async fn signed_send(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<reqwest::Response, ApiError> {
+        let url = self
+            .host
+            .endpoint(path)
+            .map_err(|_| ApiError::InvalidInput)?;
+        let attempts = if method == Method::GET { 3 } else { 1 };
+        for attempt in 0..attempts {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| ApiError::Clock)?
+                .as_secs();
+            let nonce = generate_nonce_base64().map_err(|_| ApiError::Signing)?;
+            let signed = sign_request(
+                self.pairing_id,
+                self.signing_identity,
+                method.as_str(),
+                path,
+                timestamp,
+                &nonce,
+                body.as_deref().unwrap_or_default(),
+            )
+            .map_err(|_| ApiError::Signing)?;
+            let mut request = self
+                .http
+                .request(method.clone(), url.clone())
+                .header("X-Agent-Id", header(&signed.agent_id)?)
+                .header("X-Agent-Timestamp", signed.timestamp)
+                .header("X-Agent-Nonce", header(&signed.nonce_base64)?)
+                .header("X-Agent-Signature", header(&signed.signature_base64)?);
+            if let Some(body) = body.as_ref() {
+                request = request
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(body.clone());
+            }
+            match request.send().await {
+                Ok(response)
+                    if attempt + 1 < attempts
+                        && matches!(
+                            response.status(),
+                            StatusCode::BAD_GATEWAY
+                                | StatusCode::SERVICE_UNAVAILABLE
+                                | StatusCode::GATEWAY_TIMEOUT
+                        ) => {}
+                Ok(response) => return Ok(response),
+                Err(_) if attempt + 1 < attempts => {}
+                Err(_) => return Err(ApiError::Transport),
+            }
+            tokio::time::sleep(Duration::from_millis(50 * (attempt + 1) as u64)).await;
+        }
+        Err(ApiError::Transport)
+    }
+}
+
 const MAX_BOUNDED_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_PAIRING_RESPONSE_BYTES: usize = 32 * 1024;
 const MAX_FORM_MAP_RESPONSE_BYTES: usize = 128 * 1024;
 const MAX_SCRIPT_EXECUTION_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
@@ -654,7 +777,14 @@ impl ApiClient {
 async fn decode_bounded_success<T: serde::de::DeserializeOwned>(
     response: reqwest::Response,
 ) -> Result<T, ApiError> {
-    let (status, body) = read_bounded_response(response).await?;
+    decode_bounded_success_with_limit(response, MAX_BOUNDED_RESPONSE_BYTES).await
+}
+
+async fn decode_bounded_success_with_limit<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+    maximum_bytes: usize,
+) -> Result<T, ApiError> {
+    let (status, body) = read_bounded_response_with_limit(response, maximum_bytes).await?;
     if !status.is_success() {
         return Err(ApiError::Http(status.as_u16()));
     }
@@ -845,8 +975,9 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::{
-        ApiClient, ApiError, MAX_BOUNDED_RESPONSE_BYTES, SigningContext, diagnostics_enabled_for,
-        encode_component, enforce_vault_manifest_item_limit,
+        ApiClient, ApiError, BrowserPairingClient, MAX_BOUNDED_RESPONSE_BYTES,
+        MAX_PAIRING_RESPONSE_BYTES, SigningContext, diagnostics_enabled_for, encode_component,
+        enforce_vault_manifest_item_limit,
     };
     use crate::{
         AgentRegistrationResult, CredentialMethod, GetCredentialOptions,
@@ -1145,6 +1276,96 @@ mod tests {
             .expect("public key")
             .verify(canonical.as_bytes(), &signature)
             .expect("valid signature");
+    }
+
+    #[tokio::test]
+    async fn browser_pairing_is_signed_value_free_and_retries_only_status_gets() {
+        let pairing_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let start = r#"{"pairingId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","approvalUrl":"https://palladin.io/agent-pairing/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","expiresAt":"2026-09-05T12:00:00Z","pollIntervalMilliseconds":500}"#;
+        let pending = r#"{"status":"pending","organizationId":null,"agentId":null,"apiKeyId":null,"credential":null,"displayName":null,"type":null}"#;
+        let (host, requests) = response_server(vec![(200, start), (503, ""), (200, pending)]).await;
+        let encryption = X25519Identity::from_private_bytes(vec![23; 32]).expect("X25519");
+        let signing = Ed25519Identity::from_seed(vec![24; 32]).expect("Ed25519");
+        let signing_public_key = *signing.public_key();
+        let client = BrowserPairingClient::new(
+            ApiHost::parse(&host).expect("host"),
+            pairing_id,
+            &encryption,
+            &signing,
+        )
+        .expect("pairing client");
+
+        client
+            .start(None, Some("custom/runtime"), "pairing-workstation")
+            .await
+            .expect("start");
+        let status = client.poll().await.expect("retried pending status");
+        assert_eq!(status.status, "pending");
+
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 3);
+        let (headers, body) = requests[0].split_once("\r\n\r\n").expect("pairing request");
+        assert!(headers.starts_with("POST /api/agent-pairings HTTP/1.1"));
+        assert!(
+            headers
+                .lines()
+                .all(|line| !line.to_ascii_lowercase().starts_with("x-api-key:"))
+        );
+        let payload: serde_json::Value = serde_json::from_str(body).expect("pairing JSON");
+        assert_eq!(payload["pairingId"], pairing_id);
+        assert_eq!(payload["type"], "custom/runtime");
+        assert_eq!(payload["hostname"], "pairing-workstation");
+        assert!(payload.get("displayName").is_none());
+
+        let timestamp = header_value(headers, "x-agent-timestamp")
+            .parse::<u64>()
+            .expect("timestamp");
+        let nonce = header_value(headers, "x-agent-nonce");
+        let canonical = canonical_request(
+            "POST",
+            "/api/agent-pairings",
+            timestamp,
+            nonce,
+            body.as_bytes(),
+        )
+        .expect("canonical");
+        let signature_bytes = STANDARD
+            .decode(header_value(headers, "x-agent-signature"))
+            .expect("signature base64");
+        VerifyingKey::from_bytes(&signing_public_key)
+            .expect("public key")
+            .verify(
+                canonical.as_bytes(),
+                &Signature::from_slice(&signature_bytes).expect("signature"),
+            )
+            .expect("valid signature");
+        assert_ne!(
+            header_value(&requests[1], "x-agent-nonce"),
+            header_value(&requests[2], "x-agent-nonce")
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_pairing_responses_have_a_tight_byte_budget() {
+        let oversized = Box::leak("x".repeat(MAX_PAIRING_RESPONSE_BYTES + 1).into_boxed_str());
+        let (host, _) = response_server(vec![(200, oversized)]).await;
+        let encryption = X25519Identity::from_private_bytes(vec![25; 32]).expect("X25519");
+        let signing = Ed25519Identity::from_seed(vec![26; 32]).expect("Ed25519");
+        let client = BrowserPairingClient::new(
+            ApiHost::parse(&host).expect("host"),
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            &encryption,
+            &signing,
+        )
+        .expect("pairing client");
+
+        assert_eq!(
+            client
+                .start(None, None, "pairing-workstation")
+                .await
+                .expect_err("oversized response"),
+            ApiError::SizeLimitExceeded
+        );
     }
 
     #[tokio::test]

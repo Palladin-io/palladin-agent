@@ -8,7 +8,7 @@ Security violations are blocking findings.
 
 - Never print, log, return, or persist plaintext credentials unnecessarily.
 - Never log private keys, API keys, access tokens, passwords, or injected secrets.
-- The API key belongs to the organization and may be shared by multiple Agents. `agentId`, X25519, and Ed25519 identify an individual Agent; do not introduce API keys per Agent.
+- The user-visible API key is a logical organization credential and may be shared by multiple Agents. Browser pairing may provision a distinct, random Agent-bound child credential under that logical API key only when the backend keeps it completely hidden, attributes audit and revoke to the logical key, and gives it no independent permissions, grants, UI, or lifecycle. `agentId`, X25519, and Ed25519 remain the Agent identity; never introduce a user-visible per-Agent API key or expose the hidden child credential.
 - The public Node launcher must never read secure storage, API keys, private keys, decrypted credentials, or public profile state.
 - Native secret storage fails closed. There is no file, environment-variable, TypeScript, Login Keychain, or weaker-store fallback from a Hardened build.
 - macOS Hardened storage uses a signed/provisioned app bundle, one fixed Data Protection Keychain access group, non-synchronizable `WhenUnlockedThisDeviceOnly` items, and user presence for the organization credential.

@@ -69,6 +69,7 @@ child.stdout.on('data', (chunk) => {
     if (responses.length === 2) {
       const names = message?.result?.tools?.map((tool) => tool?.name);
       const expected = [
+        'pair_agent',
         'search_entries',
         'get_credential',
         'exec_with_credential',

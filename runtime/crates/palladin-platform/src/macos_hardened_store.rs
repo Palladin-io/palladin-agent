@@ -163,7 +163,7 @@ impl SecretStore for MacHardenedSecretStore {
     ) -> Result<OperationAuthorization, StoreError> {
         OperationAuthorization::validate_binding(binding)?;
         validate_query(scope.identity_owner())?;
-        let lease = OperationLease::new(std::time::Duration::from_secs(5 * 60))?;
+        let lease = OperationLease::for_prompt(scope, prompt)?;
         crate::macos_lifecycle::register(&lease);
         let context = FreshLocalAuthenticationContext::new(prompt.reason());
         let seed = authorized_password(

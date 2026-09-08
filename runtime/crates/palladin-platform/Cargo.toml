@@ -42,4 +42,5 @@ subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+url.workspace = true
 zeroize.workspace = true

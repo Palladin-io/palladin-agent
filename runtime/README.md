@@ -69,6 +69,17 @@ Vault creation, onboarding, and recovery materially more complex.
 
 ## Identity ownership
 
+Browser pairing creates a fresh local profile or resumes its matching signed pending record;
+an existing unconfigured profile without that record is a collision, not implicit consent to reuse
+its identity. The start request includes the runtime hostname inside the signed body. The backend
+captures the connection IP; neither value is supplied by the approval browser.
+
+The identity-only pairing lease lasts 31 minutes for a 30-minute browser approval window. Linux
+and Windows one-shot pairing workers have a 32-minute outer bound. Windows MCP keeps its ordinary
+30-minute session bound, extended only after a separately authorized pairing call to allow that
+call its full 32-minute worker window. This does not extend ordinary operation leases or bypass
+consent, lock/logout revocation, cancellation, output limits or disconnection checks.
+
 - The API key belongs to an organization. Multiple Agent profiles may reference the same organization credential.
 - Every Agent has a separate stable identity ID and separate X25519 and Ed25519 keys.
 - Profile names are aliases. Renaming an alias never renames or copies a secret slot.

@@ -16,6 +16,10 @@ mod windows_service_entry {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant, SystemTime};
 
+    use palladin_platform::broker_browser::{
+        BROKER_BROWSER_OPEN_ENV, MAX_BROKER_BROWSER_CONTROL_LINE_BYTES,
+        decode_broker_browser_open_request, generate_broker_browser_open_binding,
+    };
     use palladin_platform::broker_protocol::{
         BrokerFrame, ClientFrame, ConsentExpectation, ConsentSignatureVerifier, ExecuteRequest,
         MAX_MCP_MESSAGE_BYTES, OutputStream, ProtocolError, RejectionCode, ReplayGuard,
@@ -28,7 +32,9 @@ mod windows_service_entry {
         trusted_worker_path,
     };
     use thiserror::Error;
-    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+    use tokio::io::{
+        AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+    };
     use tokio::net::windows::named_pipe::NamedPipeServer;
     use tokio::process::Command;
     use tokio::sync::{Semaphore, mpsc};
@@ -53,6 +59,7 @@ mod windows_service_entry {
     const USER_RATE_WINDOW: Duration = Duration::from_secs(60);
     const ONE_SHOT_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
     const MCP_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+    const PAIRING_SESSION_TIMEOUT: Duration = Duration::from_secs(32 * 60);
     const OUTPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
     const MAX_WORKER_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
     const MAX_CONNECT_INPUT_BYTES: usize = 4096;
@@ -479,6 +486,7 @@ mod windows_service_entry {
             request.standard_input = std::mem::take(&mut *deferred_input);
         }
         let session_timeout = match request.operation {
+            SecureOperation::PairAgent => PAIRING_SESSION_TIMEOUT,
             palladin_platform::broker_protocol::SecureOperation::McpServe => MCP_SESSION_TIMEOUT,
             _ => ONE_SHOT_SESSION_TIMEOUT,
         };
@@ -582,6 +590,13 @@ mod windows_service_entry {
         lifecycle: ConnectionLifecycle,
     ) -> Result<(), ServiceError> {
         let mut command = Command::new(worker);
+        let browser_open_binding = matches!(
+            request.operation,
+            SecureOperation::PairAgent | SecureOperation::McpServe
+        )
+        .then(generate_broker_browser_open_binding)
+        .transpose()
+        .map_err(|_| ProtocolError::InvalidRequest)?;
         command
             .args(&request.arguments)
             .env_clear()
@@ -590,6 +605,9 @@ mod windows_service_entry {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        if let Some(binding) = &browser_open_binding {
+            command.env(BROKER_BROWSER_OPEN_ENV, binding);
+        }
         // The SCM constructs the service environment from machine-level state,
         // not from the untrusted Node/AppContainer caller. Pass only the fixed
         // executable-discovery allowlist needed by Script interpreters.
@@ -641,6 +659,8 @@ mod windows_service_entry {
             output_budget.clone(),
             output_sender.clone(),
             control_sender.clone(),
+            request_id,
+            None,
         ));
         let stderr_task = tokio::spawn(read_worker_output(
             stderr,
@@ -648,6 +668,8 @@ mod windows_service_entry {
             output_budget,
             output_sender.clone(),
             control_sender.clone(),
+            request_id,
+            browser_open_binding,
         ));
         let input_task = tokio::spawn(read_client_input(
             pipe_reader,
@@ -662,11 +684,19 @@ mod windows_service_entry {
             lifecycle.clone(),
         ));
 
-        let mut completion = tokio::select! {
-            status = child.wait() => WorkerCompletion::Exited(status?),
-            control = control_receiver.recv() => control.unwrap_or(WorkerCompletion::Disconnected),
-            () = tokio::time::sleep(session_timeout) => WorkerCompletion::TimedOut,
-            () = lifecycle.wait_for_revocation() => WorkerCompletion::SessionRevoked,
+        let mut deadline = tokio::time::Instant::now() + session_timeout;
+        let mut completion = loop {
+            let event = tokio::select! {
+                status = child.wait() => WorkerCompletion::Exited(status?),
+                control = control_receiver.recv() => control.unwrap_or(WorkerCompletion::Disconnected),
+                () = tokio::time::sleep_until(deadline) => WorkerCompletion::TimedOut,
+                () = lifecycle.wait_for_revocation() => WorkerCompletion::SessionRevoked,
+            };
+            if matches!(event, WorkerCompletion::PairingAdmitted) {
+                deadline = pairing_deadline(deadline, tokio::time::Instant::now());
+                continue;
+            }
+            break event;
         };
         if !lifecycle.is_current() {
             // Lock, logout and power revocation are security state changes and
@@ -675,6 +705,7 @@ mod windows_service_entry {
             completion = WorkerCompletion::SessionRevoked;
         }
         let mut exit_code = match &completion {
+            WorkerCompletion::PairingAdmitted => unreachable!("pairing admission is not terminal"),
             WorkerCompletion::Exited(status) => status.code().unwrap_or(1),
             WorkerCompletion::Cancelled => {
                 let _ = child.kill().await;
@@ -718,6 +749,7 @@ mod windows_service_entry {
         }
 
         let terminal_frame = match completion {
+            WorkerCompletion::PairingAdmitted => unreachable!("pairing admission is not terminal"),
             WorkerCompletion::Exited(_) | WorkerCompletion::Cancelled => BrokerFrame::Exited {
                 request_id,
                 exit_code,
@@ -763,7 +795,15 @@ mod windows_service_entry {
         Ok(())
     }
 
+    fn pairing_deadline(
+        current: tokio::time::Instant,
+        admitted_at: tokio::time::Instant,
+    ) -> tokio::time::Instant {
+        current.max(admitted_at + PAIRING_SESSION_TIMEOUT)
+    }
+
     enum WorkerCompletion {
+        PairingAdmitted,
         Exited(std::process::ExitStatus),
         Cancelled,
         Disconnected,
@@ -798,7 +838,15 @@ mod windows_service_entry {
         budget: Option<Arc<AtomicUsize>>,
         sender: mpsc::Sender<OutboundItem>,
         control: mpsc::Sender<WorkerCompletion>,
+        request_id: [u8; 16],
+        browser_open_binding: Option<String>,
     ) -> Result<(), ServiceError> {
+        if let Some(binding) = browser_open_binding {
+            return read_worker_control_output(
+                reader, budget, sender, control, request_id, binding,
+            )
+            .await;
+        }
         let mut buffer = Zeroizing::new([0_u8; OUTPUT_CHUNK_BYTES]);
         loop {
             let read = match reader.read(&mut buffer[..]).await {
@@ -826,6 +874,83 @@ mod windows_service_entry {
                 .is_err()
             {
                 return Ok(());
+            }
+        }
+    }
+
+    async fn read_worker_control_output<R: AsyncRead + Unpin>(
+        reader: R,
+        budget: Option<Arc<AtomicUsize>>,
+        sender: mpsc::Sender<OutboundItem>,
+        control: mpsc::Sender<WorkerCompletion>,
+        request_id: [u8; 16],
+        browser_open_binding: String,
+    ) -> Result<(), ServiceError> {
+        let mut reader = BufReader::new(reader);
+        loop {
+            let mut bytes = match read_bounded_control_line(&mut reader).await {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => return Ok(()),
+                Err(_) => {
+                    let _ = control.try_send(WorkerCompletion::WorkerFailed);
+                    return Ok(());
+                }
+            };
+            let read = bytes.len();
+            if budget
+                .as_ref()
+                .is_some_and(|budget| output_budget_exceeded(budget, read))
+            {
+                let _ = control.try_send(WorkerCompletion::OutputLimit);
+                return Ok(());
+            }
+            let item = match decode_broker_browser_open_request(&bytes, &browser_open_binding) {
+                Ok(Some(url)) => OutboundItem::Frame(BrokerFrame::OpenUrl { request_id, url }),
+                Ok(None) => OutboundItem::Output(WorkerOutput {
+                    stream: OutputStream::StandardError,
+                    bytes: std::mem::take(&mut *bytes),
+                }),
+                Err(_) => {
+                    let _ = control.try_send(WorkerCompletion::WorkerFailed);
+                    return Ok(());
+                }
+            };
+            if sender.send(item).await.is_err() {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn read_bounded_control_line<R: AsyncRead + Unpin>(
+        reader: &mut BufReader<R>,
+    ) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
+        let mut line = Zeroizing::new(Vec::new());
+        loop {
+            let (chunk, complete) = {
+                let available = reader.fill_buf().await?;
+                if available.is_empty() {
+                    return if line.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(line))
+                    };
+                }
+                let count = available
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(available.len(), |index| index + 1);
+                (available[..count].to_vec(), available[count - 1] == b'\n')
+            };
+            if line.len().saturating_add(chunk.len()) > MAX_BROKER_BROWSER_CONTROL_LINE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "broker control line exceeds the fixed limit",
+                ));
+            }
+            reader.consume(chunk.len());
+            line.extend_from_slice(&chunk);
+            if complete {
+                return Ok(Some(line));
             }
         }
     }
@@ -970,6 +1095,17 @@ mod windows_service_entry {
                     .await
                     {
                         let _ = control.try_send(failure.into_completion());
+                        return;
+                    }
+                    if mcp_secret_operations(&message.bytes).is_ok_and(|operations| {
+                        operations
+                            .iter()
+                            .any(|operation| operation.operation == SecureOperation::McpPairAgent)
+                    }) && control
+                        .send(WorkerCompletion::PairingAdmitted)
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
                     message.bytes.zeroize();
@@ -1383,6 +1519,20 @@ mod windows_service_entry {
         fn secure_sessions_have_explicit_absolute_ttls() {
             assert_eq!(ONE_SHOT_SESSION_TIMEOUT.as_secs(), 30 * 60);
             assert_eq!(MCP_SESSION_TIMEOUT.as_secs(), 30 * 60);
+            assert!(super::PAIRING_SESSION_TIMEOUT.as_secs() > 31 * 60);
+        }
+
+        #[test]
+        fn an_authorized_late_pairing_gets_its_full_window_without_shortening_the_session() {
+            let start = tokio::time::Instant::now();
+            let original = start + MCP_SESSION_TIMEOUT;
+            let admitted = start + Duration::from_secs(29 * 60);
+            let extended = super::pairing_deadline(original, admitted);
+            assert_eq!(
+                extended.duration_since(admitted),
+                super::PAIRING_SESSION_TIMEOUT
+            );
+            assert_eq!(super::pairing_deadline(extended, start), extended);
         }
 
         #[test]

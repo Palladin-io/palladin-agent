@@ -1,0 +1,19 @@
+{
+  "contract": "native-cli-v2",
+  "version": "1.1.0",
+  "status": "frozen",
+  "syntheticOnly": true,
+  "compatibilityBase": "../../v1/cli.json",
+  "additionalCommands": [
+    {
+      "argv": ["--id", "codex", "pair-agent", "--type", "codex"],
+      "name": "pair-agent",
+      "secretOutput": false
+    },
+    {
+      "argv": ["--id", "codex", "mcp", "serve", "--host", "https://api.stage.palladin.io"],
+      "name": "mcp",
+      "secretOutput": false
+    }
+  ]
+}
