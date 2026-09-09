@@ -69,7 +69,7 @@ const codexManifest = {
       'Find a credential I can use through Palladin.',
       'Run this command with a granted Palladin credential.',
     ],
-    brandColor: '#D95A4E',
+    brandColor: '#E54645',
     composerIcon: './assets/icon.png',
     logo: './assets/icon.png',
   },
