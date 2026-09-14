@@ -3,6 +3,8 @@
     "palladin": {
       "command": "palladin",
       "args": [
+        "--id",
+        "codex",
         "mcp",
         "serve"
       ]

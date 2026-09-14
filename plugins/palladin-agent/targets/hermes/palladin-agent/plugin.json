@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "palladin-agent",
   "version": "0.1.0-preview.2",
-  "description": "Preview of secure Palladin credential injection into an exact browser tab.",
+  "description": "Preview of Palladin credential workflows and secure browser injection.",
   "author": {
     "name": "Palladin.io",
     "url": "https://palladin.io"
