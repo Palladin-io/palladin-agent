@@ -13,7 +13,7 @@ cryptography, exact field-set commitments, authorized methods and all scope/key/
 revision bindings. Its TOTP fields retain `kind: totp`, `mode: derived`, and contain
 exactly `source: totp`, `secret`, `algorithm`, `digits`, `period`. The source is
 encrypted to the Agent inside the grant envelope; the backend never decrypts it.
-The source requires canonical unpadded uppercase Base32 (2–1024 characters),
+The source requires canonical unpadded uppercase Base32 (26–1024 characters, at least 16 decoded bytes per RFC 4226 §4),
 SHA1/SHA256/SHA512, 6 or 8 digits and a 15–120 second period. Legacy formats keep
 their existing validation. V1 continues rejecting source-shaped values.
 

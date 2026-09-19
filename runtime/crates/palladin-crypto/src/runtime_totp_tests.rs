@@ -106,17 +106,29 @@ fn source_is_rejected_by_v1_and_invalid_v2_shapes_fail_closed() {
 fn v2_source_has_strict_bounds_and_canonical_base32_residual_bits() {
     for seed in ["MY", "MZXQ", "MZXW6", "MZXW6YQ", "MZXW6YTB"] {
         let mut value = source();
-        value["secret"] = serde_json::json!(seed);
+        value["secret"] = serde_json::json!(format!("{}{}", "A".repeat(24), seed));
         crate::validate_runtime_totp_source(&value).unwrap();
     }
-    for seed in [
-        "", "A", "AAA", "AAAAAA", "MZ", "MZXR", "MZXW7", "MZXW6YR", "MY======", "my",
-    ] {
+    for seed in ["", "A", "MY", "MZXQ", "MZXW6", "MZXW6YQ", "MZXW6YTB"] {
         let mut value = source();
         value["secret"] = serde_json::json!(seed);
         assert!(crate::validate_runtime_totp_source(&value).is_err());
     }
+    for suffix in [
+        "A", "AAA", "AAAAAA", "MZ", "MZXR", "MZXW7", "MZXW6YR", "MY======", "my",
+    ] {
+        let mut value = source();
+        value["secret"] = serde_json::json!(format!("{}{}", "A".repeat(24), suffix));
+        assert!(crate::validate_runtime_totp_source(&value).is_err());
+    }
     let mut value = source();
+    value["secret"] = serde_json::json!("A".repeat(24));
+    assert!(
+        crate::validate_runtime_totp_source(&value).is_err(),
+        "15-byte source must be rejected"
+    );
+    value["secret"] = serde_json::json!("A".repeat(26));
+    crate::validate_runtime_totp_source(&value).unwrap();
     value["secret"] = serde_json::json!("A".repeat(1024));
     crate::validate_runtime_totp_source(&value).unwrap();
     value["secret"] = serde_json::json!("A".repeat(1032));

@@ -144,9 +144,273 @@
           "expiresIn": 1
         }
       ]
+    },
+    {
+      "id": "SHA1-six-period15",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 6,
+              "period": 15
+            }
+          },
+          {
+            "id": "custom:11111111-2222-4333-8444-555555555555",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 6,
+              "period": 15
+            }
+          }
+        ]
+      },
+      "plaintextCanonical": "{\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.totp\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA1\",\"digits\":6,\"period\":15,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\",\"source\":\"totp\"}},{\"id\":\"custom:11111111-2222-4333-8444-555555555555\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA1\",\"digits\":6,\"period\":15,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\",\"source\":\"totp\"}}],\"schema\":\"palladin.grant-payload.v2\"}",
+      "plaintextHex": "7b22656e74727954797065223a2263726564656e7469616c222c226669656c6473223a5b7b226964223a2263726564656e7469616c2e746f7470222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a2253484131222c22646967697473223a362c22706572696f64223a31352c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e425647593354514f4a51222c22736f75726365223a22746f7470227d7d2c7b226964223a22637573746f6d3a31313131313131312d323232322d343333332d383434342d353535353535353535353535222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a2253484131222c22646967697473223a362c22706572696f64223a31352c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e425647593354514f4a51222c22736f75726365223a22746f7470227d7d5d2c22736368656d61223a2270616c6c6164696e2e6772616e742d7061796c6f61642e7632227d",
+      "plaintextSha256": "69d2126d3e2c6b3923d414e7c084fcf26bb5e264f07156b55612c37cc5aa580e",
+      "derivations": [
+        {
+          "unixSeconds": 15,
+          "code": "287082",
+          "expiresIn": 15
+        },
+        {
+          "unixSeconds": 16,
+          "code": "287082",
+          "expiresIn": 14
+        },
+        {
+          "unixSeconds": 29,
+          "code": "287082",
+          "expiresIn": 1
+        },
+        {
+          "unixSeconds": 30,
+          "code": "359152",
+          "expiresIn": 15
+        }
+      ]
+    },
+    {
+      "id": "SHA1-six-period60",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 6,
+              "period": 60
+            }
+          },
+          {
+            "id": "custom:11111111-2222-4333-8444-555555555555",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 6,
+              "period": 60
+            }
+          }
+        ]
+      },
+      "plaintextCanonical": "{\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.totp\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA1\",\"digits\":6,\"period\":60,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\",\"source\":\"totp\"}},{\"id\":\"custom:11111111-2222-4333-8444-555555555555\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA1\",\"digits\":6,\"period\":60,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\",\"source\":\"totp\"}}],\"schema\":\"palladin.grant-payload.v2\"}",
+      "plaintextHex": "7b22656e74727954797065223a2263726564656e7469616c222c226669656c6473223a5b7b226964223a2263726564656e7469616c2e746f7470222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a2253484131222c22646967697473223a362c22706572696f64223a36302c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e425647593354514f4a51222c22736f75726365223a22746f7470227d7d2c7b226964223a22637573746f6d3a31313131313131312d323232322d343333332d383434342d353535353535353535353535222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a2253484131222c22646967697473223a362c22706572696f64223a36302c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e425647593354514f4a51222c22736f75726365223a22746f7470227d7d5d2c22736368656d61223a2270616c6c6164696e2e6772616e742d7061796c6f61642e7632227d",
+      "plaintextSha256": "8d691623f00cb5170e12c50e94477ca805dc3d75a215b67daa9caf99affb0104",
+      "derivations": [
+        {
+          "unixSeconds": 0,
+          "code": "755224",
+          "expiresIn": 60
+        },
+        {
+          "unixSeconds": 61,
+          "code": "287082",
+          "expiresIn": 59
+        },
+        {
+          "unixSeconds": 90,
+          "code": "287082",
+          "expiresIn": 30
+        }
+      ]
+    },
+    {
+      "id": "SHA1-six-period120",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 6,
+              "period": 120
+            }
+          },
+          {
+            "id": "custom:11111111-2222-4333-8444-555555555555",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 6,
+              "period": 120
+            }
+          }
+        ]
+      },
+      "plaintextCanonical": "{\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.totp\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA1\",\"digits\":6,\"period\":120,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\",\"source\":\"totp\"}},{\"id\":\"custom:11111111-2222-4333-8444-555555555555\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA1\",\"digits\":6,\"period\":120,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\",\"source\":\"totp\"}}],\"schema\":\"palladin.grant-payload.v2\"}",
+      "plaintextHex": "7b22656e74727954797065223a2263726564656e7469616c222c226669656c6473223a5b7b226964223a2263726564656e7469616c2e746f7470222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a2253484131222c22646967697473223a362c22706572696f64223a3132302c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e425647593354514f4a51222c22736f75726365223a22746f7470227d7d2c7b226964223a22637573746f6d3a31313131313131312d323232322d343333332d383434342d353535353535353535353535222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a2253484131222c22646967697473223a362c22706572696f64223a3132302c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e425647593354514f4a51222c22736f75726365223a22746f7470227d7d5d2c22736368656d61223a2270616c6c6164696e2e6772616e742d7061796c6f61642e7632227d",
+      "plaintextSha256": "e2e1b5485e23c7f4e9279e5995d3b876eb036f816ceeafebb460b7384597a3be",
+      "derivations": [
+        {
+          "unixSeconds": 119,
+          "code": "755224",
+          "expiresIn": 1
+        },
+        {
+          "unixSeconds": 120,
+          "code": "287082",
+          "expiresIn": 120
+        },
+        {
+          "unixSeconds": 180,
+          "code": "287082",
+          "expiresIn": 60
+        }
+      ]
+    },
+    {
+      "id": "SHA1-minimum128bits",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY",
+              "algorithm": "SHA1",
+              "digits": 6,
+              "period": 60
+            }
+          },
+          {
+            "id": "custom:11111111-2222-4333-8444-555555555555",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY",
+              "algorithm": "SHA1",
+              "digits": 6,
+              "period": 60
+            }
+          }
+        ]
+      },
+      "plaintextCanonical": "{\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.totp\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA1\",\"digits\":6,\"period\":60,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY\",\"source\":\"totp\"}},{\"id\":\"custom:11111111-2222-4333-8444-555555555555\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA1\",\"digits\":6,\"period\":60,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY\",\"source\":\"totp\"}}],\"schema\":\"palladin.grant-payload.v2\"}",
+      "plaintextHex": "7b22656e74727954797065223a2263726564656e7469616c222c226669656c6473223a5b7b226964223a2263726564656e7469616c2e746f7470222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a2253484131222c22646967697473223a362c22706572696f64223a36302c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e42564759222c22736f75726365223a22746f7470227d7d2c7b226964223a22637573746f6d3a31313131313131312d323232322d343333332d383434342d353535353535353535353535222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a2253484131222c22646967697473223a362c22706572696f64223a36302c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e42564759222c22736f75726365223a22746f7470227d7d5d2c22736368656d61223a2270616c6c6164696e2e6772616e742d7061796c6f61642e7632227d",
+      "plaintextSha256": "83cc47ad34271f1315c493121f5766841ee2b7657b102b17537ff13a9d744eb0",
+      "derivations": [
+        {
+          "unixSeconds": 0,
+          "code": "504023",
+          "expiresIn": 60
+        },
+        {
+          "unixSeconds": 60,
+          "code": "970934",
+          "expiresIn": 60
+        },
+        {
+          "unixSeconds": 61,
+          "code": "970934",
+          "expiresIn": 59
+        },
+        {
+          "unixSeconds": 90,
+          "code": "970934",
+          "expiresIn": 30
+        }
+      ]
     }
   ],
   "invalidSources": [
+    {
+      "id": "one-byte-secret",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "MY",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 30
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "below128bits",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBV",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 30
+            }
+          }
+        ]
+      }
+    },
     {
       "id": "unknown-source",
       "plaintext": {

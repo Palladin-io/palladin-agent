@@ -20,7 +20,7 @@ pub fn validate_runtime_totp_source(value: &Value) -> Result<(), CryptoError> {
             .get("period")
             .and_then(Value::as_u64)
             .is_some_and(|period| (15..=120).contains(&period))
-        || !(2..=1024).contains(&secret.len())
+        || !(26..=1024).contains(&secret.len())
     {
         return Err(CryptoError::InvalidDescriptor);
     }
