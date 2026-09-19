@@ -508,7 +508,7 @@
             "mode": "derived",
             "value": {
               "source": "totp",
-              "secret": "MZ",
+              "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAB",
               "algorithm": "SHA1",
               "digits": 8,
               "period": 30
