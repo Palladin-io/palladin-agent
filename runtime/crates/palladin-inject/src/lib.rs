@@ -301,13 +301,16 @@ where
                 .field_ids()
                 .any(|id| id == "credential.username")
         {
-            discovery_username = session
-                .authenticated_inject_username(
-                    operation.vault_id,
-                    operation.entry_id,
-                    delivered.inject_discovery_revision()?,
-                )
-                .await?;
+            let discovery = session.authenticated_inject_username(
+                operation.vault_id,
+                operation.entry_id,
+                delivered.inject_discovery_revision()?,
+            );
+            discovery_username = if live_forms {
+                live::await_username_discovery(discovery, deadline, cancellation).await?
+            } else {
+                discovery.await?
+            };
         }
         let authenticated_username = delivered
             .authenticated_field("credential.username")

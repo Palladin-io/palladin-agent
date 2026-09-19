@@ -14,6 +14,21 @@ pub(crate) fn validate(form: &InjectionFormDefinition) -> Result<(), InjectServi
     palladin_browser_bridge::live_login::validate_live_form(form)
         .map_err(|_| InjectServiceError::InvalidLiveForm)
 }
+pub(crate) async fn await_username_discovery(
+    discovery: impl std::future::Future<
+        Output = Result<Option<zeroize::Zeroizing<String>>, palladin_runtime::RuntimeError>,
+    >,
+    deadline: std::time::Instant,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<Option<zeroize::Zeroizing<String>>, InjectServiceError> {
+    tokio::select! {
+        biased;
+        () = cancellation.cancelled() => Err(InjectServiceError::Cancelled),
+        () = tokio::time::sleep_until(deadline.into()) => Err(InjectServiceError::AuthorizationExpired),
+        result = discovery => Ok(result?),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -37,6 +52,46 @@ mod tests {
             }],
         }
     }
+    #[tokio::test]
+    async fn pending_discovery_stops_at_original_live_deadline() {
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            await_username_discovery(
+                std::future::pending(),
+                std::time::Instant::now() + std::time::Duration::from_millis(20),
+                &cancellation,
+            ),
+        )
+        .await
+        .expect("pending discovery must obey the live deadline");
+        assert!(matches!(
+            result,
+            Err(InjectServiceError::AuthorizationExpired)
+        ));
+    }
+
+    #[tokio::test]
+    async fn pending_discovery_stops_on_caller_cancellation() {
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let cancel = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            cancel.cancel();
+        });
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            await_username_discovery(
+                std::future::pending(),
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+                &cancellation,
+            ),
+        )
+        .await
+        .expect("pending discovery must observe caller cancellation");
+        assert!(matches!(result, Err(InjectServiceError::Cancelled)));
+    }
+
     #[test]
     fn rollout_flag_is_explicit_and_reversible() {
         assert!(!enabled(None).unwrap());
