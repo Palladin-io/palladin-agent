@@ -81,6 +81,27 @@ mod tests {
         );
     }
     #[test]
+    fn expired_forward_authorization_stops_before_resolving_totp() {
+        let parsed =
+            palladin_credential::secret::parse_secret(br#"{"password":"synthetic-only"}"#).unwrap();
+        let result = crate::acquire_then_resolve_injection::<()>(
+            || Err(palladin_runtime::RuntimeError::OperationAuthorizationExpired),
+            &parsed,
+            None,
+            &form("credential.totp", InjectionControl::Otp),
+        );
+        assert!(
+            matches!(
+                result,
+                Err(InjectServiceError::Runtime(
+                    palladin_runtime::RuntimeError::OperationAuthorizationExpired
+                ))
+            ),
+            "authorization must be checked before touching the TOTP source"
+        );
+    }
+
+    #[test]
     fn totp_is_generated_natively_and_only_current_code_enters_provider_values() {
         let parsed = palladin_credential::secret::parse_secret(br#"{"password":"synthetic-only","totp":"otpauth://totp/Fixture?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"}"#).unwrap();
         let value = crate::resolve_injection_credential(

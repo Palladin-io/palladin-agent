@@ -312,8 +312,19 @@ where
         let authenticated_username = delivered
             .authenticated_field("credential.username")
             .or_else(|| discovery_username.as_ref().map(|value| value.as_str()));
-        let credential =
-            resolve_injection_credential(parsed, authenticated_username, &current_form)?;
+        let (forward, credential) = acquire_then_resolve_injection(
+            || {
+                session.browser_inject_forward_guard_until(
+                    service,
+                    authorization.lifecycle_token(),
+                    delivered,
+                    live_forms.then_some(deadline),
+                )
+            },
+            parsed,
+            authenticated_username,
+            &current_form,
+        )?;
         let mut transaction_bytes = [0_u8; 16];
         getrandom::fill(&mut transaction_bytes).map_err(|_| InjectServiceError::Randomness)?;
         let transaction_id = hex::encode(transaction_bytes);
@@ -325,11 +336,6 @@ where
                 value,
             })
             .collect();
-        let forward = session.browser_inject_forward_guard(
-            service,
-            authorization.lifecycle_token(),
-            delivered,
-        )?;
         let monotonic_sample = monotonic_now_ns().map_err(InjectServiceError::Transport)?;
         let mut authorization_remaining = forward
             .remaining()
@@ -486,6 +492,19 @@ fn resolve_authenticated_injection_target(
         (None, Some(discovery)) => Ok(discovery),
         (None, None) => Err(InjectServiceError::MissingDomain),
     }
+}
+
+// Resolve dynamic values only inside the final authorized handoff, after any lock wait.
+#[cfg(any(target_os = "macos", test))]
+fn acquire_then_resolve_injection<G>(
+    acquire: impl FnOnce() -> Result<G, RuntimeError>,
+    parsed: &palladin_credential::secret::ParsedSecret,
+    authenticated_username: Option<&str>,
+    form: &InjectionFormDefinition,
+) -> Result<(G, InjectionCredential), InjectServiceError> {
+    let forward = acquire()?;
+    let credential = resolve_injection_credential(parsed, authenticated_username, form)?;
+    Ok((forward, credential))
 }
 
 #[cfg(any(target_os = "macos", test))]

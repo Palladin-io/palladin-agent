@@ -3978,19 +3978,41 @@ impl RuntimeSession<'_> {
         expected_lifecycle_token: &[u8; BROWSER_HOST_LIFECYCLE_TOKEN_BYTES],
         credential: &DeliveredCredential,
     ) -> Result<BrowserInjectForwardGuard, RuntimeError> {
-        let remaining = self.inject_forward_remaining(credential)?;
+        self.browser_inject_forward_guard_until(service, expected_lifecycle_token, credential, None)
+    }
+
+    /// The live-flow deadline additionally bounds synchronous lifecycle-lock acquisition.
+    pub fn browser_inject_forward_guard_until<S: SecretStore + Sync>(
+        &self,
+        service: &RuntimeService<S>,
+        expected_lifecycle_token: &[u8; BROWSER_HOST_LIFECYCLE_TOKEN_BYTES],
+        credential: &DeliveredCredential,
+        operation_deadline: Option<std::time::Instant>,
+    ) -> Result<BrowserInjectForwardGuard, RuntimeError> {
+        let remaining = || -> Result<std::time::Duration, RuntimeError> {
+            let authorized = self.inject_forward_remaining(credential)?;
+            let Some(deadline) = operation_deadline else {
+                return Ok(authorized);
+            };
+            let bounded = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .filter(|value| !value.is_zero())
+                .ok_or(RuntimeError::OperationAuthorizationExpired)?;
+            Ok(authorized.min(bounded))
+        };
         let lock = service
             .repository
-            .acquire_shared_transaction_lock_for(remaining)?;
+            .acquire_shared_transaction_lock_for(remaining()?)?;
         let Some(lock) = lock else {
-            self.inject_forward_remaining(credential)?;
+            remaining()?;
             return Err(RuntimeError::BrowserHostLifecycleBusy);
         };
         service.validate_browser_host_lifecycle_token(expected_lifecycle_token)?;
-        let remaining = self.inject_forward_remaining(credential)?;
+        // Secure-store/lifecycle checks can take time: never renew the caller's absolute bound.
+        let deadline = std::time::Instant::now() + remaining()?;
         Ok(BrowserInjectForwardGuard {
             _lifecycle: BrowserHostLifecycleGuard { _lock: lock },
-            deadline: std::time::Instant::now() + remaining,
+            deadline: operation_deadline.map_or(deadline, |bound| deadline.min(bound)),
         })
     }
 
@@ -7490,6 +7512,118 @@ mod tests {
             "an exclusive lifecycle operation must not extend a grant beyond expiry"
         );
         drop(exclusive);
+    }
+
+    #[test]
+    fn live_deadline_bounds_lock_wait_before_grant_expiry() {
+        let root = tempfile::tempdir().expect("root");
+        let state = root.path().join("state");
+        let store = MemorySecretStore::default();
+        let service =
+            RuntimeService::new(ProfileRepository::new(state).expect("repository"), store);
+        let authorization = service
+            .provision_browser_host_authorization()
+            .expect("provision authorization");
+
+        let encryption = X25519Identity::from_private_bytes(vec![61; 32]).expect("identity");
+        let expires_at =
+            OffsetDateTime::from_unix_timestamp(OffsetDateTime::now_utc().unix_timestamp() + 30)
+                .expect("whole-second expiry");
+        let body = grant_response_with_expiry(
+            &encryption,
+            TEST_ENTRY_ID,
+            r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-sensitive-value"},{"id":"credential.url","kind":"url","mode":"value","value":"https://example.test/login"}],"schema":"palladin.grant-payload.v1"}"#,
+            &["credential.password", "credential.url"],
+            4,
+            Some(expires_at),
+        );
+        let CredentialAccess::Granted {
+            grant_id,
+            approved_methods,
+            material: CredentialCiphertext::Granular(envelope),
+            ..
+        } = serde_json::from_str(&body).expect("granted response")
+        else {
+            panic!("expected granted response")
+        };
+        let credential = decrypt_credential(
+            &envelope,
+            &encryption,
+            &CredentialEnvelopeContext {
+                organization_id: TEST_ORGANIZATION_ID,
+                vault_id: TEST_VAULT_ID,
+                grant_id: &grant_id,
+                agent_id: TEST_AGENT_ID,
+                entry_id: TEST_ENTRY_ID,
+                approved_methods,
+                requested_vault_id: TEST_VAULT_ID,
+                requested_entry_id: TEST_ENTRY_ID,
+                requested_method: 4,
+            },
+        )
+        .expect("decrypt fresh grant");
+        let delivered = DeliveredCredential {
+            grant_id,
+            entry_id: TEST_ENTRY_ID.to_owned(),
+            label: "[REDACTED]".to_owned(),
+            entry_revision: 1,
+            inject_discovery_binding: None,
+            authenticated_domain: Some("example.test".to_owned()),
+            authenticated_fields: Vec::new(),
+            credential,
+        };
+        let api = ApiClient::new(
+            ApiHost::parse("https://api.stage.palladin.io").expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("API client");
+        let mut session =
+            runtime_session("https://api.stage.palladin.io".to_owned(), api, encryption);
+        session.operation = RuntimeOperation::InjectCredential;
+        session.consumed = AtomicBool::new(true);
+
+        let exclusive = service
+            .repository
+            .acquire_transaction_lock()
+            .expect("exclusive lifecycle lock");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(20);
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            drop(exclusive);
+        });
+        let result = session.browser_inject_forward_guard_until(
+            &service,
+            authorization.lifecycle_token(),
+            &delivered,
+            Some(deadline),
+        );
+        assert!(
+            matches!(result, Err(RuntimeError::OperationAuthorizationExpired)),
+            "a live timeout must stop before a later lifecycle-lock release"
+        );
+        release.join().expect("release lock");
+        assert!(
+            session.inject_forward_remaining(&delivered).is_ok(),
+            "the live bound, not grant or OS authorization expiry, stopped forwarding"
+        );
+        let bound = std::time::Instant::now() + std::time::Duration::from_millis(25);
+        let forward = session
+            .browser_inject_forward_guard_until(
+                &service,
+                authorization.lifecycle_token(),
+                &delivered,
+                Some(bound),
+            )
+            .expect("lock released while grant still valid");
+        assert!(
+            forward.deadline <= bound,
+            "the original absolute bound is never extended"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert!(forward.remaining().is_none());
     }
 
     fn test_lease() -> OperationLease {
