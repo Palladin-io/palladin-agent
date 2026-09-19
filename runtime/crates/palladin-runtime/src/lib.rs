@@ -5434,6 +5434,7 @@ impl RuntimeSession<'_> {
             delivery_policy,
             expires_at,
             material,
+            inject_discovery_binding,
         } = access
         else {
             return Ok(CredentialDelivery::NotGranted(access));
@@ -5549,6 +5550,7 @@ impl RuntimeSession<'_> {
             entry_id,
             label,
             entry_revision,
+            inject_discovery_binding,
             authenticated_domain,
             authenticated_fields,
             credential,
@@ -5629,6 +5631,7 @@ pub struct DeliveredCredential {
     pub entry_id: String,
     pub label: String,
     entry_revision: u64,
+    inject_discovery_binding: Option<Box<palladin_api::InjectDiscoveryBinding>>,
     authenticated_domain: Option<String>,
     authenticated_fields: Vec<AgentVisibleField>,
     credential: DecryptedCredential,
@@ -5648,6 +5651,23 @@ impl DeliveredCredential {
     #[must_use]
     pub fn entry_revision(&self) -> u64 {
         self.entry_revision
+    }
+
+    pub fn inject_discovery_revision(&self) -> Result<u64, RuntimeError> {
+        let binding = self
+            .inject_discovery_binding
+            .as_ref()
+            .ok_or(RuntimeError::DiscoveryBindingUnavailable)?;
+        // The authenticated API head binds the independently versioned projection to this delivery.
+        if binding.entry_revision.parse::<u64>().ok() != Some(self.entry_revision) {
+            return Err(RuntimeError::DiscoveryRevisionMismatch);
+        }
+        binding
+            .agent_discovery_revision
+            .as_deref()
+            .ok_or(RuntimeError::DiscoveryBindingUnavailable)?
+            .parse::<u64>()
+            .map_err(|_| RuntimeError::InvalidDiscoveryPayload)
     }
 
     #[must_use]
@@ -6203,6 +6223,10 @@ pub enum RuntimeError {
     InvalidDiscoveryQuery,
     #[error("local Discovery cursor is invalid or stale")]
     InvalidDiscoveryCursor,
+    #[error(
+        "the API did not supply current Inject Discovery authority; a matching backend is required and Discovery must be enabled for this Entry"
+    )]
+    DiscoveryBindingUnavailable,
     #[error("Agent Discovery does not match the granted Entry revision")]
     DiscoveryRevisionMismatch,
     #[error(
@@ -7429,6 +7453,7 @@ mod tests {
             entry_id: TEST_ENTRY_ID.to_owned(),
             label: "[REDACTED]".to_owned(),
             entry_revision: 1,
+            inject_discovery_binding: None,
             authenticated_domain: Some("example.test".to_owned()),
             authenticated_fields: Vec::new(),
             credential,
@@ -8451,8 +8476,145 @@ mod tests {
             let contains_key = request.contains("x-api-key: pl_shared_organization_fixture\r\n");
             assert!(contains_key, "request omitted the organization credential");
             assert!(request.contains(&format!(r#""method":"{method}""#)));
+            assert_eq!(
+                request.contains(r#""includeDiscoveryBinding":true"#),
+                method == "Inject"
+            );
             assert!(!request.contains("requestedMethods"));
         }
+    }
+
+    #[tokio::test]
+    async fn inject_binds_an_unchanged_discovery_projection_to_a_newer_granted_entry() {
+        let encryption = X25519Identity::from_private_bytes(vec![41; 32]).expect("test identity");
+        let payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"synthetic-password"},{"id":"credential.url","kind":"url","mode":"value","value":"https://login.example.test"}],"schema":"palladin.grant-payload.v1"}"#;
+        let mut body: serde_json::Value = serde_json::from_str(&grant_response_for_identity(
+            &encryption,
+            (TEST_ENTRY_ID, 2),
+            payload,
+            &["credential.password", "credential.url"],
+            4,
+            None,
+            (TEST_ORGANIZATION_ID, TEST_VAULT_ID, TEST_AGENT_ID),
+        ))
+        .expect("grant fixture");
+        body["injectDiscoveryBinding"] = json!({"entryRevision":"2", "agentDiscoveryRevision":"1"});
+        let (host, requests) = credential_server_owned(vec![body.to_string()]).await;
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("client");
+        let mut session = runtime_session(host, api, encryption);
+        session.operation = RuntimeOperation::InjectCredential;
+        let CredentialDelivery::Granted(mut delivered) = session
+            .deliver_for_inject(request(), &CancellationToken::new(), |_| {})
+            .await
+            .expect("delivery")
+        else {
+            panic!("expected granted delivery");
+        };
+        assert_eq!(delivered.entry_revision(), 2);
+        assert_eq!(delivered.inject_discovery_revision().expect("binding"), 1);
+        assert!(
+            delivered
+                .authenticated_field("credential.username")
+                .is_none()
+        );
+        let mut index = LocalDiscoveryIndex::new();
+        index
+            .upsert(
+                TEST_VAULT_ID,
+                TEST_ENTRY_ID,
+                1,
+                [1; 32],
+                serde_json::from_value(json!({
+                    "schema":"palladin.agent-discovery.v1", "agentLabel":"Synthetic account",
+                    "capabilities":["inject"], "entryType":"credential",
+                    "fields":[{"id":"credential.username","value":"synthetic-user"}]
+                }))
+                .expect("discovery fixture"),
+            )
+            .expect("index");
+        assert_eq!(
+            index
+                .field_at_revision(
+                    TEST_VAULT_ID,
+                    TEST_ENTRY_ID,
+                    delivered.inject_discovery_revision().expect("binding"),
+                    "credential.username"
+                )
+                .expect("current projection")
+                .as_deref(),
+            Some("synthetic-user")
+        );
+        assert!(
+            index
+                .field_at_revision(TEST_VAULT_ID, "another-entry", 1, "credential.username")
+                .expect("different Entry")
+                .is_none()
+        );
+        assert!(
+            index
+                .field_at_revision("another-vault", TEST_ENTRY_ID, 1, "credential.username")
+                .expect("different Vault")
+                .is_none()
+        );
+        delivered
+            .inject_discovery_binding
+            .as_mut()
+            .expect("binding")
+            .agent_discovery_revision = Some("2".to_owned());
+        assert!(matches!(
+            index.field_at_revision(
+                TEST_VAULT_ID,
+                TEST_ENTRY_ID,
+                delivered.inject_discovery_revision().expect("binding"),
+                "credential.username"
+            ),
+            Err(RuntimeError::DiscoveryRevisionMismatch)
+        ));
+        delivered
+            .inject_discovery_binding
+            .as_mut()
+            .expect("binding")
+            .entry_revision = "3".to_owned();
+        assert!(matches!(
+            delivered.inject_discovery_revision(),
+            Err(RuntimeError::DiscoveryRevisionMismatch)
+        ));
+        delivered
+            .inject_discovery_binding
+            .as_mut()
+            .expect("binding")
+            .entry_revision = "2".to_owned();
+        delivered
+            .inject_discovery_binding
+            .as_mut()
+            .expect("binding")
+            .agent_discovery_revision = None;
+        assert!(matches!(
+            delivered.inject_discovery_revision(),
+            Err(RuntimeError::DiscoveryBindingUnavailable)
+        ));
+        delivered.inject_discovery_binding = None;
+        assert!(matches!(
+            delivered.inject_discovery_revision(),
+            Err(RuntimeError::DiscoveryBindingUnavailable)
+        ));
+        index.remove(TEST_VAULT_ID, TEST_ENTRY_ID);
+        assert!(
+            index
+                .field_at_revision(TEST_VAULT_ID, TEST_ENTRY_ID, 1, "credential.username")
+                .expect("tombstone")
+                .is_none()
+        );
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains(r#""includeDiscoveryBinding":true"#));
     }
 
     #[tokio::test]
@@ -9157,12 +9319,32 @@ mod tests {
         approved_methods: u16,
         expires_at: Option<OffsetDateTime>,
     ) -> String {
+        grant_response_for_identity(
+            recipient,
+            (entry_id, 1),
+            plaintext,
+            field_ids,
+            approved_methods,
+            expires_at,
+            (TEST_ORGANIZATION_ID, TEST_VAULT_ID, TEST_AGENT_ID),
+        )
+    }
+
+    pub(super) fn grant_response_for_identity(
+        recipient: &X25519Identity,
+        (entry_id, entry_revision): (&str, u64),
+        plaintext: &str,
+        field_ids: &[&str],
+        approved_methods: u16,
+        expires_at: Option<OffsetDateTime>,
+        (organization_id, vault_id, agent_id): (&str, &str, &str),
+    ) -> String {
         let scope = EnvelopeScope {
-            organization_id: test_uuid(TEST_ORGANIZATION_ID),
-            vault_id: test_uuid(TEST_VAULT_ID),
+            organization_id: test_uuid(organization_id),
+            vault_id: test_uuid(vault_id),
             entry_id: Some(test_uuid(entry_id)),
             grant_or_request_id: Some(test_uuid(TEST_GRANT_ID)),
-            agent_id: Some(test_uuid(TEST_AGENT_ID)),
+            agent_id: Some(test_uuid(agent_id)),
             member_id: None,
         };
         let fingerprint =
@@ -9178,7 +9360,7 @@ mod tests {
             key_version: 1,
             member_key_generation: Some(1),
             binding: EnvelopeBinding::Grant {
-                entry_revision: 1,
+                entry_revision,
                 wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
                 recipient_agent_key_version: 1,
                 recipient_agent_key_fingerprint: fingerprint,
@@ -9220,18 +9402,18 @@ mod tests {
                 crypto_suite_id: VAULT_XCHACHA_V1.to_owned(),
                 purpose: 10,
                 scope: GrantEnvelopeScope {
-                    organization_id: TEST_ORGANIZATION_ID.to_owned(),
-                    vault_id: TEST_VAULT_ID.to_owned(),
+                    organization_id: organization_id.to_owned(),
+                    vault_id: vault_id.to_owned(),
                     entry_id: Some(entry_id.to_owned()),
                     grant_or_request_id: Some(TEST_GRANT_ID.to_owned()),
-                    agent_id: Some(TEST_AGENT_ID.to_owned()),
+                    agent_id: Some(agent_id.to_owned()),
                     member_id: None,
                 },
                 resource_revision: "1".to_owned(),
                 key_version: 1,
                 member_key_generation: Some(1),
                 binding: GrantEnvelopeBinding {
-                    entry_revision: "1".to_owned(),
+                    entry_revision: entry_revision.to_string(),
                     wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
                     recipient_key_version: 1,
                     recipient_key_fingerprint: URL_SAFE_NO_PAD.encode(fingerprint),
@@ -9249,10 +9431,10 @@ mod tests {
         };
         json!({
             "access": "granted",
-            "organizationId": TEST_ORGANIZATION_ID,
-            "vaultId": TEST_VAULT_ID,
+            "organizationId": organization_id,
+            "vaultId": vault_id,
             "grantId": TEST_GRANT_ID,
-            "agentId": TEST_AGENT_ID,
+            "agentId": agent_id,
             "agentAccessEpoch": 1,
             "approvedMethods": approved_methods,
             "entryId": entry_id,

@@ -522,6 +522,8 @@ impl ApiClient {
             encrypted_reason: options.encrypted_reason.as_ref(),
             method: options.method.map(|method| method.backend_name()),
             requested_methods,
+            include_discovery_binding: (options.method == Some(crate::CredentialMethod::Inject))
+                .then_some(true),
         })
         .map_err(|_| ApiError::InvalidInput)?;
         let path = format!(
