@@ -18,9 +18,9 @@ fn shared_v2_sources_derive_each_rfc_code_and_expiry_for_both_field_ids() {
                 let result =
                     resolve_grant_payload_field_at(bytes, field["id"].as_str().unwrap(), seconds)
                         .unwrap();
-                assert_eq!(
-                    result.value.expose_secret(),
-                    derivation["code"].as_str().unwrap()
+                assert!(
+                    result.value.expose_secret() == derivation["code"].as_str().unwrap(),
+                    "derived fixture code must match the RFC vector"
                 );
                 let params = parse_totp_json(&field["value"]).unwrap();
                 let code = crate::totp::generate_totp_at(&params, seconds).unwrap();
@@ -45,7 +45,10 @@ fn script_reference_v2_derives_at_each_operation_and_v1_stays_strict() {
         for (time, expected) in [(59, "94287082"), (1111111109, "07081804")] {
             let value = resolve_grant_payload_field_at(&bytes, id, time).unwrap();
             assert!(value.is_totp);
-            assert_eq!(value.value.expose_secret(), expected);
+            assert!(
+                value.value.expose_secret() == expected,
+                "derived fixture code must match"
+            );
             assert!(!format!("{value:?}").contains(SYNTHETIC_SEED));
         }
         payload["schema"] = serde_json::json!("palladin.grant-payload.v1");
@@ -78,7 +81,10 @@ fn normalized_source_get_outputs_and_scalar_environment_never_contain_seed() {
                 &selected,
                 ResolvedField::Totp { expires_in: 1, .. }
             ));
-            assert_eq!(selected.expose_for_authorized_operation(), expected);
+            assert!(
+                selected.expose_for_authorized_operation() == expected,
+                "derived fixture code must match"
+            );
             let redacted = redact_totp_secrets(&bytes, time).unwrap();
             assert!(!redacted.expose_secret().contains(SYNTHETIC_SEED));
             assert!(!redacted.expose_secret().contains("\"source\""));
