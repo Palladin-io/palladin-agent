@@ -11,6 +11,65 @@ use tokio_util::sync::CancellationToken;
 use palladin_api::{CredentialAccess, CredentialMethod};
 use palladin_credential::access::access_message;
 
+#[test]
+fn protected_totp_source_never_enters_mcp_get_result_or_inject_errors() {
+    use palladin_credential::{
+        fields::{FieldSelector, ResolvedField, redact_totp_secrets, resolve_field_at},
+        secret::parse_secret,
+    };
+    use secrecy::ExposeSecret;
+    const SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    let bytes = serde_json::to_vec(&json!({"fields":[{"id":"credential.totp","label":"totp","type":"totp","value":{"source":"totp","secret":SEED,"algorithm":"SHA1","digits":8,"period":30}}]})).unwrap();
+    let parsed = parse_secret(&bytes).unwrap();
+    let ResolvedField::Totp {
+        label,
+        code,
+        expires_in,
+    } = resolve_field_at(
+        &parsed,
+        &FieldSelector {
+            field: None,
+            field_id: Some("credential.totp".into()),
+        },
+        59,
+    )
+    .unwrap()
+    else {
+        panic!("protected source must derive")
+    };
+    let selected = pretty_result(&super::TotpResult {
+        access: "granted",
+        entry_id: "fixture",
+        label: "fixture",
+        field: &label,
+        code: code.expose_secret(),
+        expires_in,
+    });
+    let redacted = redact_totp_secrets(&bytes, 59).unwrap();
+    let full = pretty_result(&super::FullCredentialResult {
+        access: "granted",
+        entry_id: "fixture",
+        label: "fixture",
+        secret: redacted.expose_secret(),
+        warning: super::GET_EXPOSURE_WARNING,
+    });
+    for output in [selected, full] {
+        assert!(!output.text.contains(SEED));
+        assert!(!output.text.contains("source"));
+        assert!(output.text.contains("94287082"));
+    }
+    for error in [
+        palladin_inject::InjectServiceError::TotpNotDelivered,
+        palladin_inject::InjectServiceError::AmbiguousTotp,
+        palladin_inject::InjectServiceError::TotpRefreshRequired,
+    ] {
+        let outcome = super::inject_failure(&error);
+        assert!(outcome.is_error);
+        assert!(!outcome.text.contains(SEED));
+        assert!(!outcome.text.contains("94287082"));
+    }
+}
+
 use super::{
     AccessResult, ApplicationFuture, BoundedLineReader, ExecInput, ExecToolResult, GetInput,
     InjectInput, InjectToolResult, MAX_BATCH_ITEMS, MAX_FRAME_BYTES, McpApplication,

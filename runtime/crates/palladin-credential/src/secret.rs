@@ -11,6 +11,10 @@ use crate::totp::{TotpAlgorithm, TotpParams};
 
 const MAX_TOTP_PERIOD: u64 = i32::MAX as u64;
 
+#[cfg(test)]
+#[path = "runtime_totp_tests.rs"]
+mod runtime_totp_tests;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CustomFieldType {
     Text,
@@ -333,6 +337,18 @@ pub fn resolve_grant_payload_field(
     plaintext: &[u8],
     field_id: &str,
 ) -> Result<ResolvedMemberSecretField, SecretParseError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| SecretParseError::InvalidTotp)?
+        .as_secs();
+    resolve_grant_payload_field_at(plaintext, field_id, now)
+}
+
+fn resolve_grant_payload_field_at(
+    plaintext: &[u8],
+    field_id: &str,
+    now: u64,
+) -> Result<ResolvedMemberSecretField, SecretParseError> {
     let text = std::str::from_utf8(plaintext).map_err(|_| SecretParseError::InvalidUtf8)?;
     let payload = SensitiveJson(
         serde_json::from_str::<Value>(text).map_err(|_| SecretParseError::InvalidJson)?,
@@ -354,8 +370,11 @@ pub fn resolve_grant_payload_field(
         .get("fields")
         .and_then(Value::as_array)
         .ok_or(SecretParseError::InvalidGrantPayload)?;
+    let runtime_totp =
+        object.get("schema").and_then(Value::as_str) == Some("palladin.grant-payload.v2");
     if object.len() != 3
-        || object.get("schema").and_then(Value::as_str) != Some("palladin.grant-payload.v1")
+        || (!runtime_totp
+            && object.get("schema").and_then(Value::as_str) != Some("palladin.grant-payload.v1"))
         || !matches!(entry_type, "key" | "credential" | "script")
         || fields.is_empty()
     {
@@ -395,7 +414,14 @@ pub fn resolve_grant_payload_field(
 
     let (kind, value) = requested.ok_or(SecretParseError::UnknownMemberSecretField)?;
     let is_totp = kind == "totp";
-    let value = if is_totp {
+    let value = if is_totp && runtime_totp {
+        palladin_crypto::validate_runtime_totp_source(value)
+            .map_err(|_| SecretParseError::InvalidTotp)?;
+        let params = parse_totp_json(value).ok_or(SecretParseError::InvalidTotp)?;
+        crate::totp::generate_totp_at(&params, now)
+            .map_err(|_| SecretParseError::InvalidTotp)?
+            .code
+    } else if is_totp {
         let object = value
             .as_object()
             .filter(|object| object.len() == 2)

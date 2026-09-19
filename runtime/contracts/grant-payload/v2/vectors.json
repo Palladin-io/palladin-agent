@@ -1,0 +1,401 @@
+{
+  "contract": "palladin.grant-payload.v2",
+  "vectors": [
+    {
+      "id": "SHA1",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 30
+            }
+          },
+          {
+            "id": "custom:11111111-2222-4333-8444-555555555555",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 30
+            }
+          }
+        ]
+      },
+      "plaintextCanonical": "{\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.totp\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA1\",\"digits\":8,\"period\":30,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\",\"source\":\"totp\"}},{\"id\":\"custom:11111111-2222-4333-8444-555555555555\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA1\",\"digits\":8,\"period\":30,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\",\"source\":\"totp\"}}],\"schema\":\"palladin.grant-payload.v2\"}",
+      "plaintextHex": "7b22656e74727954797065223a2263726564656e7469616c222c226669656c6473223a5b7b226964223a2263726564656e7469616c2e746f7470222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a2253484131222c22646967697473223a382c22706572696f64223a33302c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e425647593354514f4a51222c22736f75726365223a22746f7470227d7d2c7b226964223a22637573746f6d3a31313131313131312d323232322d343333332d383434342d353535353535353535353535222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a2253484131222c22646967697473223a382c22706572696f64223a33302c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e425647593354514f4a51222c22736f75726365223a22746f7470227d7d5d2c22736368656d61223a2270616c6c6164696e2e6772616e742d7061796c6f61642e7632227d",
+      "plaintextSha256": "5d1f699adfba69ee21e54630fd113a3d75a7df499be1e240470b07caf77f9afd",
+      "derivations": [
+        {
+          "unixSeconds": 59,
+          "code": "94287082",
+          "expiresIn": 1
+        },
+        {
+          "unixSeconds": 1111111109,
+          "code": "07081804",
+          "expiresIn": 1
+        }
+      ]
+    },
+    {
+      "id": "SHA256",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA",
+              "algorithm": "SHA256",
+              "digits": 8,
+              "period": 30
+            }
+          },
+          {
+            "id": "custom:11111111-2222-4333-8444-555555555555",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA",
+              "algorithm": "SHA256",
+              "digits": 8,
+              "period": 30
+            }
+          }
+        ]
+      },
+      "plaintextCanonical": "{\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.totp\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA256\",\"digits\":8,\"period\":30,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA\",\"source\":\"totp\"}},{\"id\":\"custom:11111111-2222-4333-8444-555555555555\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA256\",\"digits\":8,\"period\":30,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA\",\"source\":\"totp\"}}],\"schema\":\"palladin.grant-payload.v2\"}",
+      "plaintextHex": "7b22656e74727954797065223a2263726564656e7469616c222c226669656c6473223a5b7b226964223a2263726564656e7469616c2e746f7470222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a22534841323536222c22646967697473223a382c22706572696f64223a33302c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a41222c22736f75726365223a22746f7470227d7d2c7b226964223a22637573746f6d3a31313131313131312d323232322d343333332d383434342d353535353535353535353535222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a22534841323536222c22646967697473223a382c22706572696f64223a33302c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a41222c22736f75726365223a22746f7470227d7d5d2c22736368656d61223a2270616c6c6164696e2e6772616e742d7061796c6f61642e7632227d",
+      "plaintextSha256": "a743d3449b5ac19f27dfbf008946e12a37f56c4cad7108825f2db6ed1e178bc6",
+      "derivations": [
+        {
+          "unixSeconds": 59,
+          "code": "46119246",
+          "expiresIn": 1
+        },
+        {
+          "unixSeconds": 1111111109,
+          "code": "68084774",
+          "expiresIn": 1
+        }
+      ]
+    },
+    {
+      "id": "SHA512",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNA",
+              "algorithm": "SHA512",
+              "digits": 8,
+              "period": 30
+            }
+          },
+          {
+            "id": "custom:11111111-2222-4333-8444-555555555555",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNA",
+              "algorithm": "SHA512",
+              "digits": 8,
+              "period": 30
+            }
+          }
+        ]
+      },
+      "plaintextCanonical": "{\"entryType\":\"credential\",\"fields\":[{\"id\":\"credential.totp\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA512\",\"digits\":8,\"period\":30,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNA\",\"source\":\"totp\"}},{\"id\":\"custom:11111111-2222-4333-8444-555555555555\",\"kind\":\"totp\",\"mode\":\"derived\",\"value\":{\"algorithm\":\"SHA512\",\"digits\":8,\"period\":30,\"secret\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNA\",\"source\":\"totp\"}}],\"schema\":\"palladin.grant-payload.v2\"}",
+      "plaintextHex": "7b22656e74727954797065223a2263726564656e7469616c222c226669656c6473223a5b7b226964223a2263726564656e7469616c2e746f7470222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a22534841353132222c22646967697473223a382c22706572696f64223a33302c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a44474e41222c22736f75726365223a22746f7470227d7d2c7b226964223a22637573746f6d3a31313131313131312d323232322d343333332d383434342d353535353535353535353535222c226b696e64223a22746f7470222c226d6f6465223a2264657269766564222c2276616c7565223a7b22616c676f726974686d223a22534841353132222c22646967697473223a382c22706572696f64223a33302c22736563726574223a2247455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a44474e425647593354514f4a5147455a44474e41222c22736f75726365223a22746f7470227d7d5d2c22736368656d61223a2270616c6c6164696e2e6772616e742d7061796c6f61642e7632227d",
+      "plaintextSha256": "c3f6dc12a807ef463df09e0250d1783abbc67c517d0551cef62a229421318e30",
+      "derivations": [
+        {
+          "unixSeconds": 59,
+          "code": "90693936",
+          "expiresIn": 1
+        },
+        {
+          "unixSeconds": 1111111109,
+          "code": "25091201",
+          "expiresIn": 1
+        }
+      ]
+    }
+  ],
+  "invalidSources": [
+    {
+      "id": "unknown-source",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "unknown",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 30
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "issuer-extra",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 30,
+              "issuer": "forbidden"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "lowercase",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "gezdgnbvgy3tqojqgezdgnbvgy3tqojq",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 30
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "padding",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "MY======",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 30
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "trailing-bits",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "MZ",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 30
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "invalid-length",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "AAA",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 30
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "too-long",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 30
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "digits-seven",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 7,
+              "period": 30
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "period-zero",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "period-too-long",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "SHA1",
+              "digits": 8,
+              "period": 121
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "algorithm-unknown",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "source": "totp",
+              "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "algorithm": "MD5",
+              "digits": 8,
+              "period": 30
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "frozen-code",
+      "plaintext": {
+        "schema": "palladin.grant-payload.v2",
+        "entryType": "credential",
+        "fields": [
+          {
+            "id": "credential.totp",
+            "kind": "totp",
+            "mode": "derived",
+            "value": {
+              "code": "123456",
+              "expiresIn": 30
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
