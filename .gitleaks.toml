@@ -25,3 +25,20 @@ paths = [
   '''^runtime/crates/palladin-windows-broker/src/windows_store\.rs$''',
   '''^tests/crypto/secret\.test\.ts$''',
 ]
+
+[[allowlists]]
+description = "Public RFC 6238 seeds in native TOTP fixtures"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''^runtime/contracts/grant-payload/v2/vectors\.json$''',
+  '''^runtime/crates/palladin-crypto/src/runtime_totp_tests\.rs$''',
+  '''^runtime/crates/palladin-inject/src/totp_tests\.rs$''',
+]
+regexes = [
+  '^GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ$',
+  '^GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA$',
+  '^GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNA$',
+  '^gezdgnbvgy3tqojqgezdgnbvgy3tqojq$',
+]
