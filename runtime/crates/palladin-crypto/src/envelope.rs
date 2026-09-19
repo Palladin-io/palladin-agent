@@ -1989,7 +1989,8 @@ fn normalize_grant_payload(
     }
     let mut payload: GrantPayload =
         serde_json::from_str(text).map_err(|_| CryptoError::InvalidEncoding)?;
-    if payload.schema != "palladin.grant-payload.v1"
+    let runtime_totp = payload.schema == "palladin.grant-payload.v2";
+    if (!runtime_totp && payload.schema != "palladin.grant-payload.v1")
         || !matches!(payload.entry_type.as_str(), "key" | "credential" | "script")
         || payload.fields.is_empty()
         || !matches!(requested_method, 1 | 2 | 4)
@@ -2053,10 +2054,20 @@ fn normalize_grant_payload(
                 insert_scalar_field(normalized_object, &mut custom_fields.0, &field, &value)?;
             }
             "totp" => {
-                let raw_value = std::mem::take(&mut field.value);
-                if raw_value.is_null() && field.id == "credential.totp" {
+                if field.value.is_null() && field.id == "credential.totp" {
                     continue;
                 }
+                if runtime_totp {
+                    crate::validate_runtime_totp_source(&field.value)?;
+                    let mut value = custom_field(&field, Value::Null);
+                    value["value"] = std::mem::take(&mut field.value);
+                    if field.id == "credential.totp" {
+                        value["label"] = Value::String("totp".to_owned());
+                    }
+                    custom_fields.0.push(value);
+                    continue;
+                }
+                let raw_value = std::mem::take(&mut field.value);
                 let mut value: DerivedTotpValue =
                     serde_json::from_value(raw_value).map_err(|_| CryptoError::InvalidEncoding)?;
                 validate_derived_totp(&value)?;
@@ -2101,6 +2112,10 @@ fn normalize_grant_payload(
     let plaintext = serde_json::to_vec(&normalized.0).map_err(|_| CryptoError::InvalidEncoding)?;
     Ok(NormalizedGrant { plaintext })
 }
+
+#[cfg(test)]
+#[path = "runtime_totp_tests.rs"]
+mod runtime_totp_tests;
 
 fn normalize_legacy_mobile_grant_payload(
     text: &str,

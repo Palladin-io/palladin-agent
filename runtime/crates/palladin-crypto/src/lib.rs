@@ -7,6 +7,7 @@ mod local_cache;
 mod manifest;
 mod pairing;
 mod reason;
+mod runtime_totp;
 mod script_execution;
 mod signing;
 mod suite;
@@ -41,6 +42,7 @@ pub use reason::{
     EncryptedReasonEnvelope, EncryptedReasonScope, ReasonWrapperDescriptor, WrappedReasonDek,
     encrypt_reason,
 };
+pub use runtime_totp::validate_runtime_totp_source;
 pub use script_execution::{
     ExpectedScriptExecutionPackageContext, OpenedScriptExecutionPackage,
     OpenedScriptExecutionReference, ScriptExecutionAuthorization, ScriptExecutionBinding,

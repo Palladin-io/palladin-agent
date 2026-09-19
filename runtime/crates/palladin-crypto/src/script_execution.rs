@@ -653,7 +653,10 @@ fn grant_payload_field_ids(encoded: &[u8]) -> Result<BTreeSet<String>, CryptoErr
         .and_then(Value::as_array)
         .ok_or(CryptoError::InvalidEncoding)?;
     if object.len() != 3
-        || object.get("schema").and_then(Value::as_str) != Some("palladin.grant-payload.v1")
+        || !matches!(
+            object.get("schema").and_then(Value::as_str),
+            Some("palladin.grant-payload.v1" | "palladin.grant-payload.v2")
+        )
         || !matches!(
             object.get("entryType").and_then(Value::as_str),
             Some("key" | "credential" | "script" | "creditCard")

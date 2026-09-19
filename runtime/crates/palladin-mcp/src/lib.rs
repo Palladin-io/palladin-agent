@@ -1829,6 +1829,15 @@ fn inject_failure(error: &InjectServiceError) -> ToolOutcome {
             "No verified Form Discovery Map or bounded fallback form is available."
         }
         InjectServiceError::InvalidCredentialPayload => "The credential payload is invalid.",
+        InjectServiceError::TotpNotDelivered => {
+            "The approved Inject delivery does not contain TOTP. Check TOTP field access and grant material for the selected Entry."
+        }
+        InjectServiceError::AmbiguousTotp => {
+            "The approved Inject delivery contains multiple TOTP sources. Select a primary login TOTP field."
+        }
+        InjectServiceError::TotpRefreshRequired => {
+            "The approved TOTP grant contains a saved code without verifiable freshness. Refresh its encrypted grant material with a current Palladin client."
+        }
         InjectServiceError::DomainMismatch
         | InjectServiceError::MissingDomain
         | InjectServiceError::InvalidPage

@@ -460,7 +460,7 @@ fn resolve_injection_field(
         "credential.url" => resolve_selected_field(parsed, "url", None)?,
         "credential.notes" | "notes" => resolve_selected_field(parsed, "notes", None)?,
         "credential.value" => resolve_selected_field(parsed, "value", None)?,
-        "credential.totp" => resolve_selected_field(parsed, "totp", None)?,
+        "credential.totp" => resolve_login_totp(parsed)?,
         custom_id => resolve_selected_field(
             parsed,
             "",
@@ -495,6 +495,52 @@ enum ResolvedKind {
     Text,
     Concealed,
     Otp,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn resolve_login_totp(
+    parsed: &palladin_credential::secret::ParsedSecret,
+) -> Result<(String, ResolvedKind), InjectServiceError> {
+    use palladin_credential::secret::CustomFieldType;
+    let primary = parsed
+        .custom_fields
+        .iter()
+        .filter(|field| field.id == "credential.totp")
+        .collect::<Vec<_>>();
+    if !primary.is_empty() {
+        if primary.len() != 1 {
+            return Err(InjectServiceError::InvalidCredentialPayload);
+        }
+        // V1 snapshots carry no absolute validity time. Do not forward one as
+        // a fresh code; only a protected typed source may be derived here.
+        if primary[0].field_type != CustomFieldType::Totp {
+            return Err(InjectServiceError::TotpRefreshRequired);
+        }
+        let (mut value, kind) = resolve_selected_field(parsed, "", Some("credential.totp"))?;
+        if matches!(kind, ResolvedKind::Otp) {
+            return Ok((value, ResolvedKind::Otp));
+        }
+        value.zeroize();
+        return Err(InjectServiceError::InvalidCredentialPayload);
+    }
+    if let Some(source) = &parsed.legacy_totp {
+        let params = palladin_credential::secret::parse_totp_value(source.expose_secret())
+            .ok_or(InjectServiceError::InvalidCredentialPayload)?;
+        let code = palladin_credential::totp::generate_totp(&params)
+            .map_err(|_| InjectServiceError::InvalidCredentialPayload)?;
+        return Ok((code.code.expose_secret().to_owned(), ResolvedKind::Otp));
+    }
+    let mut candidates = parsed
+        .custom_fields
+        .iter()
+        .filter(|field| field.field_type == CustomFieldType::Totp);
+    let candidate = candidates
+        .next()
+        .ok_or(InjectServiceError::TotpNotDelivered)?;
+    if candidates.next().is_some() {
+        return Err(InjectServiceError::AmbiguousTotp);
+    }
+    resolve_selected_field(parsed, "", Some(&candidate.id))
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -543,6 +589,18 @@ pub enum InjectServiceError {
     InvalidPage,
     #[error("the Inject credential payload is invalid")]
     InvalidCredentialPayload,
+    #[error(
+        "the approved Inject delivery does not contain TOTP; check TOTP field access and grant material for the selected Entry"
+    )]
+    TotpNotDelivered,
+    #[error(
+        "the approved Inject delivery contains multiple TOTP sources; select a primary login TOTP field"
+    )]
+    AmbiguousTotp,
+    #[error(
+        "the approved TOTP grant contains a saved code without verifiable freshness; refresh its encrypted grant material with a current Palladin client"
+    )]
+    TotpRefreshRequired,
     #[error("the grant and Discovery domains do not match")]
     DomainMismatch,
     #[error("the Inject credential has no authenticated domain")]
@@ -754,3 +812,7 @@ mod tests {
         assert_eq!(credential.username(), Some("fixture-user"));
     }
 }
+
+#[cfg(test)]
+#[path = "totp_tests.rs"]
+mod totp_tests;
