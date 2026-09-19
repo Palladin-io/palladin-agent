@@ -33,7 +33,7 @@ artifact-specific SPDX SBOM for every published native package.
 ## Apache-2.0 OR ISC OR MIT
 
 - [hyper-rustls 0.27.9](https://github.com/rustls/hyper-rustls)
-- [rustls 0.23.42](https://github.com/rustls/rustls)
+- [rustls 0.23.45](https://github.com/rustls/rustls)
 
 ## Apache-2.0 OR MIT
 
@@ -106,7 +106,7 @@ artifact-specific SPDX SBOM for every published native package.
 
 ## ISC
 
-- [rustls-webpki 0.103.13](https://github.com/rustls/webpki)
+- [rustls-webpki 0.103.15](https://github.com/rustls/webpki)
 - [untrusted 0.9.0](https://github.com/briansmith/untrusted)
 
 ## MIT
