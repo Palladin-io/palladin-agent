@@ -24,6 +24,10 @@ use zeroize::Zeroize;
 
 use crate::browser::{CHROME_EXTENSION_ORIGIN, local_socket_path};
 
+mod live_flow;
+#[cfg(test)]
+mod test_peer;
+
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -59,6 +63,8 @@ pub struct PrepareRequest<'a> {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PrepareResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_form: Option<InjectionFormDefinition>,
     pub protocol: String,
     #[serde(rename = "type")]
     pub message_type: String,
@@ -77,6 +83,8 @@ pub struct InjectFieldValue<'a> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InjectRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continue_live: Option<bool>,
     pub protocol: &'static str,
     #[serde(rename = "type")]
     pub message_type: &'static str,
@@ -101,6 +109,8 @@ struct LocalInjectCommand<'a> {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InjectResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<palladin_browser_bridge::live_login::LiveContinuation>,
     pub protocol: String,
     #[serde(rename = "type")]
     pub message_type: String,
@@ -119,6 +129,8 @@ struct OwnedPrepareRequest {
     target_tab_id: Option<u64>,
     #[serde(default)]
     target_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    live_detection: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -143,6 +155,8 @@ impl Zeroize for OwnedInjectFieldValue {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OwnedInjectRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    continue_live: Option<bool>,
     protocol: String,
     #[serde(rename = "type")]
     message_type: String,
@@ -369,7 +383,8 @@ where
         timeout(OPERATION_TIMEOUT, read_message(&mut native_input))
             .await
             .map_err(|_| NativeBrowserError::Unavailable)??;
-    let prepared: PrepareResult = extension_session.open(&extension_response)?;
+    let response: PrepareResponse = extension_session.open(&extension_response)?;
+    let prepared = decode_prepare_response(response, &prepare)?;
     validate_prepare_result(&prepared, &prepare.nonce)?;
     let local_response = local_session.seal(&prepared)?;
     timeout(
@@ -383,37 +398,15 @@ where
     }
     drop(_lifecycle);
 
-    let local_frame: LocalSecureFrame = timeout(GRANT_APPROVAL_TIMEOUT, read_message(&mut local))
-        .await
-        .map_err(|_| NativeBrowserError::Unavailable)??;
-    let injection: OwnedLocalInjectCommand = local_session.open(&local_frame)?;
-    let authorization_remaining = validate_local_inject_command(&injection)?;
-    let transaction_id = injection.request.transaction_id.clone();
-    let _lifecycle = lifecycle_guard(OPERATION_TIMEOUT.min(authorization_remaining))?;
-    authorization_remaining_until(&injection.not_after_monotonic_ns)?;
-    let extension_frame = extension_session.seal(&injection.request)?;
-    let not_after_monotonic_ns = injection.not_after_monotonic_ns.clone();
-    drop(injection);
-    let extension_deadline = write_authorized_extension_frame(
-        &mut native_output,
-        &extension_frame,
-        &not_after_monotonic_ns,
-    )
-    .await?;
-    let extension_response: SecureFrame =
-        timeout_at(extension_deadline, read_message(&mut native_input))
-            .await
-            .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
-    let result: InjectResult = extension_session.open(&extension_response)?;
-    validate_inject_result(&result, &transaction_id)?;
-    let local_response = local_session.seal(&result)?;
-    timeout(
-        OPERATION_TIMEOUT,
-        write_message(&mut local, &local_response),
+    live_flow::serve_inject_flow(
+        &mut local,
+        &mut local_session,
+        &mut extension_session,
+        (&mut native_input, &mut native_output),
+        (&prepare, &prepared),
+        &lifecycle_guard,
     )
     .await
-    .map_err(|_| NativeBrowserError::Unavailable)??;
-    Ok(())
 }
 
 fn validate_prepare(request: &OwnedPrepareRequest) -> Result<(), NativeBrowserError> {
@@ -428,6 +421,7 @@ fn validate_prepare(request: &OwnedPrepareRequest) -> Result<(), NativeBrowserEr
         || request.message_type != "prepare"
         || !valid_nonce(&request.nonce)
         || !valid_target
+        || (request.live_detection == Some(true) && request.target_tab_id.is_none())
     {
         return Err(NativeBrowserError::InvalidMessage);
     }
@@ -442,6 +436,7 @@ fn validate_prepare_result(result: &PrepareResult, nonce: &str) -> Result<(), Na
             | "target-tab-unavailable"
             | "target-url-mismatch"
             | "invalid-request"
+            | "unsupported-live-detection"
     );
     if result.protocol != INJECT_PROVIDER_PROTOCOL
         || result.message_type != "prepare.result"
@@ -674,6 +669,7 @@ fn validate_inject_result(
         || result.message_type != "inject.result"
         || result.transaction_id.as_deref() != Some(transaction_id)
         || !valid_outcome
+        || (result.outcome != "injected" && result.continuation.is_some())
     {
         return Err(NativeBrowserError::InvalidMessage);
     }
@@ -906,6 +902,7 @@ mod tests {
 
     fn owned_inject_request() -> OwnedInjectRequest {
         OwnedInjectRequest {
+            continue_live: None,
             protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
             message_type: "inject".to_owned(),
             transaction_id: "transaction-1".to_owned(),
@@ -931,8 +928,44 @@ mod tests {
     }
 
     #[test]
+    fn old_extension_prepare_rejection_reports_incompatibility_instead_of_closing_transport() {
+        let request = OwnedPrepareRequest {
+            protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
+            message_type: "prepare".to_owned(),
+            nonce: "a".repeat(64),
+            target_tab_id: Some(7),
+            target_url: Some("https://example.test/login".to_owned()),
+            live_detection: Some(true),
+        };
+        let response = serde_json::json!({"protocol": INJECT_PROVIDER_PROTOCOL,
+            "type":"inject.result", "transactionId":null, "outcome":"rejected"});
+        let result = decode_prepare_response(
+            serde_json::from_value(response).expect("response shape"),
+            &request,
+        )
+        .expect("bounded compatibility result");
+        assert_eq!(result.outcome, "unsupported-live-detection");
+        assert_eq!(result.nonce.as_deref(), Some(request.nonce.as_str()));
+        assert!(result.current_url.is_none());
+        for response in [
+            serde_json::json!({"protocol": "wrong", "type":"inject.result", "transactionId":null, "outcome":"rejected"}),
+            serde_json::json!({"protocol": INJECT_PROVIDER_PROTOCOL, "type":"inject.result", "transactionId":"another-operation", "outcome":"rejected"}),
+            serde_json::json!({"protocol": INJECT_PROVIDER_PROTOCOL, "type":"inject.result", "transactionId":null, "outcome":"injected"}),
+        ] {
+            assert!(
+                decode_prepare_response(
+                    serde_json::from_value(response).expect("response shape"),
+                    &request
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn invalid_prepare_and_inject_results_fail_closed() {
         let bad_prepare = PrepareResult {
+            live_form: None,
             protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
             message_type: "prepare.result".to_owned(),
             nonce: Some("A".repeat(32)),
@@ -942,6 +975,7 @@ mod tests {
         assert!(validate_prepare_result(&bad_prepare, &"A".repeat(32)).is_err());
 
         let missing_transaction = InjectResult {
+            continuation: None,
             protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
             message_type: "inject.result".to_owned(),
             transaction_id: None,
@@ -950,6 +984,7 @@ mod tests {
         assert!(validate_inject_result(&missing_transaction, "tx").is_err());
 
         let stale_map = InjectResult {
+            continuation: None,
             protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
             message_type: "inject.result".to_owned(),
             transaction_id: Some("tx".to_owned()),
@@ -967,6 +1002,7 @@ mod tests {
     #[test]
     fn decrypted_owned_field_value_has_explicit_zeroization() {
         let mut request = OwnedInjectRequest {
+            continue_live: None,
             protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
             message_type: "inject".to_owned(),
             transaction_id: "transaction-1".to_owned(),
@@ -1013,6 +1049,7 @@ mod tests {
                 }],
             };
             let request = InjectRequest {
+                continue_live: None,
                 protocol: INJECT_PROVIDER_PROTOCOL,
                 message_type: "inject",
                 transaction_id: "transaction-1",
@@ -1046,6 +1083,7 @@ mod tests {
         let (mut sender, mut receiver) = UnixStream::pair().expect("socket pair");
         let form = valid_form();
         let request = InjectRequest {
+            continue_live: None,
             protocol: INJECT_PROVIDER_PROTOCOL,
             message_type: "inject",
             transaction_id: "transaction-queued",
@@ -1199,6 +1237,7 @@ mod tests {
                 Some("https://example.test/login")
             );
             let result = PrepareResult {
+                live_form: None,
                 protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
                 message_type: "prepare.result".to_owned(),
                 nonce: Some(prepare.nonce),
@@ -1241,5 +1280,40 @@ mod tests {
                 .is_err()
         );
         fake_host.await.expect("fake host task");
+    }
+}
+
+// Older extensions reject unknown prepare fields using their generic Inject
+// rejection shape. Report that exact known shape without disguising it as EOF.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PrepareResponse {
+    Prepared(PrepareResult),
+    Rejected(InjectResult),
+}
+
+fn decode_prepare_response(
+    response: PrepareResponse,
+    request: &OwnedPrepareRequest,
+) -> Result<PrepareResult, NativeBrowserError> {
+    match response {
+        PrepareResponse::Prepared(prepared) => Ok(prepared),
+        PrepareResponse::Rejected(rejected)
+            if request.live_detection == Some(true)
+                && rejected.protocol == INJECT_PROVIDER_PROTOCOL
+                && rejected.message_type == "inject.result"
+                && rejected.transaction_id.is_none()
+                && rejected.outcome == "rejected" =>
+        {
+            Ok(PrepareResult {
+                protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
+                message_type: "prepare.result".to_owned(),
+                nonce: Some(request.nonce.clone()),
+                current_url: None,
+                live_form: None,
+                outcome: "unsupported-live-detection".to_owned(),
+            })
+        }
+        _ => Err(NativeBrowserError::InvalidMessage),
     }
 }
