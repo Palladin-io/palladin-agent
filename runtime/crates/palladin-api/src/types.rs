@@ -193,6 +193,7 @@ pub enum CredentialAccess {
         delivery_policy: u16,
         expires_at: Option<String>,
         material: CredentialCiphertext,
+        inject_discovery_binding: Option<Box<InjectDiscoveryBinding>>,
     },
     Pending {
         grant_id: String,
@@ -208,6 +209,13 @@ pub enum CredentialAccess {
     ScriptExecOnly,
     Unavailable,
     Blocked,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InjectDiscoveryBinding {
+    pub entry_revision: String,
+    pub agent_discovery_revision: Option<String>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -282,6 +290,7 @@ struct CredentialAccessWire {
     agent_wrapped_vault_key: Option<Box<AgentWrappedVaultKey>>,
     entry_key: Option<Box<VaultEntryKeyEnvelope>>,
     member_secret: Option<Box<MemberSecretEnvelope>>,
+    inject_discovery_binding: Option<Box<InjectDiscoveryBinding>>,
     grant_id: Option<String>,
     created: Option<bool>,
     poll_interval_ms: Option<u64>,
@@ -406,6 +415,7 @@ impl<'de> Deserialize<'de> for CredentialAccess {
                         }
                     },
                     material,
+                    inject_discovery_binding: wire.inject_discovery_binding,
                 })
             }
             "pending" if granted_fields_absent => Ok(Self::Pending {
@@ -514,6 +524,8 @@ pub(crate) struct CredentialRequestBody<'a> {
     pub method: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requested_methods: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_discovery_binding: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -970,6 +982,20 @@ mod tests {
             "pollIntervalMs": null,
             "maxWaitMs": null
         });
+
+        let mut bound = granted.clone();
+        bound["injectDiscoveryBinding"] = serde_json::json!({
+            "entryRevision": "2", "agentDiscoveryRevision": "1", "futureMetadata": true
+        });
+        let CredentialAccess::Granted {
+            inject_discovery_binding: Some(binding),
+            ..
+        } = serde_json::from_value::<CredentialAccess>(bound).expect("additive API metadata")
+        else {
+            panic!("expected bound grant")
+        };
+        assert_eq!(binding.entry_revision, "2");
+        assert_eq!(binding.agent_discovery_revision.as_deref(), Some("1"));
 
         assert!(matches!(
             serde_json::from_value::<CredentialAccess>(granted).expect("current granted response"),

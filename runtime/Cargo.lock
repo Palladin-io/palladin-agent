@@ -1644,10 +1644,12 @@ name = "palladin-cli"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chacha20poly1305",
  "clap",
  "ed25519-dalek",
  "getrandom 0.4.3",
  "hex",
+ "hkdf",
  "hostname",
  "nix 0.31.3",
  "palladin-api",
@@ -1673,6 +1675,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -1777,6 +1780,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",

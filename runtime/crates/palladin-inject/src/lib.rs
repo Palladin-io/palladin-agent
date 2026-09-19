@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+#[cfg(any(target_os = "macos", test))]
+mod live;
+
 #[cfg(target_os = "macos")]
 mod transport;
 
@@ -70,6 +73,11 @@ pub enum InjectExecution {
     Injected {
         provider: String,
         candidate_recording_failed: bool,
+    },
+    LiveFlow {
+        provider: String,
+        steps: usize,
+        outcome: &'static str,
     },
     NotGranted(CredentialAccess),
 }
@@ -143,26 +151,33 @@ where
     S: SecretStore + Sync,
     H: FnMut(HeartbeatInfo),
 {
+    let flag = std::env::var("PALLADIN_EXPERIMENTAL_LIVE_FORMS");
+    let live_forms = match flag {
+        Ok(value) => live::enabled(Some(&value))?,
+        Err(std::env::VarError::NotPresent) => live::enabled(None)?,
+        Err(_) => return Err(InjectServiceError::InvalidLiveFlag),
+    };
+    if live_forms && (operation.target.is_none() || operation.fallback_form.is_some()) {
+        return Err(InjectServiceError::LiveTargetRequired);
+    }
     let authorization = service.browser_host_authorization()?;
-    let mut extension =
-        ExtensionClient::connect(service.repository().root(), authorization.identity())
-            .await
-            .map_err(InjectServiceError::Transport)?;
     let mut operation_nonce = [0_u8; 32];
     getrandom::fill(&mut operation_nonce).map_err(|_| InjectServiceError::Randomness)?;
     let nonce = hex::encode(operation_nonce);
     let lifecycle = service
         .browser_host_lifecycle_guard_within(authorization.lifecycle_token(), OPERATION_TIMEOUT)?;
-    let prepared = tokio::select! {
+    let (mut extension, prepared) = tokio::select! {
         biased;
         () = cancellation.cancelled() => return Err(InjectServiceError::Cancelled),
-        result = extension.prepare(&nonce, operation.target) => {
+        result = ExtensionClient::connect_prepared(service.repository().root(), authorization.identity(),
+            &nonce, operation.target, live_forms) => {
             result.map_err(InjectServiceError::Transport)?
         },
     };
     drop(lifecycle);
     match prepared.outcome.as_str() {
         "ready" => {}
+        "unsupported-live-detection" => return Err(InjectServiceError::LiveDiscoveryUnsupported),
         "target-tab-unavailable" => return Err(InjectServiceError::TargetTabUnavailable),
         "target-url-mismatch" => return Err(InjectServiceError::TargetUrlMismatch),
         _ => return Err(InjectServiceError::ProviderNotReady),
@@ -172,6 +187,15 @@ where
         .as_deref()
         .ok_or(InjectServiceError::InvalidPage)?;
 
+    // DOM/provider is an independent trust boundary: no arbitrary granted fields.
+    if live_forms {
+        live::validate(
+            prepared
+                .live_form
+                .as_ref()
+                .ok_or(InjectServiceError::InvalidLiveForm)?,
+        )?;
+    }
     let descriptor = OperationDescriptor::InjectCredential {
         surface: operation.surface,
         vault_id: operation.vault_id.to_owned(),
@@ -217,113 +241,194 @@ where
     target
         .verify_url(current_url)
         .map_err(InjectServiceError::Injection)?;
-    let form_map = match session
-        .resolve_form_discovery_map(target.expected_domain(), operation.provider.as_str(), None)
-        .await
-    {
-        Ok(Some(map)) if map.applies_to_url(current_url) => Some(map),
-        Ok(_) => None,
-        Err(error) if operation.fallback_form.is_some() && map_lookup_allows_fallback(&error) => {
-            None
+    let form_map = if live_forms {
+        None
+    } else {
+        match session
+            .resolve_form_discovery_map(target.expected_domain(), operation.provider.as_str(), None)
+            .await
+        {
+            Ok(Some(map)) if map.applies_to_url(current_url) => Some(map),
+            Ok(_) => None,
+            Err(error)
+                if operation.fallback_form.is_some() && map_lookup_allows_fallback(&error) =>
+            {
+                None
+            }
+            Err(error) => return Err(InjectServiceError::Runtime(error)),
         }
-        Err(error) => return Err(InjectServiceError::Runtime(error)),
     };
     let form = form_map
         .as_ref()
         .map(|map| &map.map.form)
-        .or(operation.fallback_form)
+        .or(if live_forms {
+            prepared.live_form.as_ref()
+        } else {
+            operation.fallback_form
+        })
         .ok_or(InjectServiceError::NoForm)?;
-    let discovery_username = if delivered
-        .authenticated_field("credential.username")
-        .is_none()
-        && form
-            .field_ids()
-            .any(|field_id| field_id == "credential.username")
-    {
-        session
-            .authenticated_inject_username(
-                operation.vault_id,
-                operation.entry_id,
-                delivered.entry_revision(),
-            )
-            .await?
+    // One delivery remains native-only for this bounded operation. The browser receives only
+    // fields needed by the current stage; TOTP is generated freshly at the TOTP stage.
+    let mut flow = if live_forms {
+        Some(
+            palladin_browser_bridge::live_login::LiveLoginFlow::new(current_url, form.clone())
+                .map_err(InjectServiceError::Injection)?,
+        )
     } else {
         None
     };
-    let authenticated_username = delivered
-        .authenticated_field("credential.username")
-        .or_else(|| discovery_username.as_ref().map(|value| value.as_str()));
-    let credential = resolve_injection_credential(&parsed, authenticated_username, form)?;
-    let mut transaction_bytes = [0_u8; 16];
-    getrandom::fill(&mut transaction_bytes).map_err(|_| InjectServiceError::Randomness)?;
-    let transaction_id = hex::encode(transaction_bytes);
-    let values = credential
-        .fields()
-        .iter()
-        .map(|(entry_field_id, value)| InjectFieldValue {
-            entry_field_id,
-            value,
-        })
-        .collect();
-    let forward = session.browser_inject_forward_guard(
-        service,
-        authorization.lifecycle_token(),
-        &delivered,
-    )?;
-    let monotonic_sample = monotonic_now_ns().map_err(InjectServiceError::Transport)?;
-    let authorization_remaining = forward
-        .remaining()
-        .ok_or(InjectServiceError::AuthorizationExpired)?;
-    let not_after_monotonic_ns = monotonic_not_after_ns(monotonic_sample, authorization_remaining)
-        .map_err(InjectServiceError::Transport)?;
-    let wire = InjectRequest {
-        protocol: INJECT_PROVIDER_PROTOCOL,
-        message_type: "inject",
-        transaction_id: &transaction_id,
-        grant_id: &delivered.grant_id,
-        entry_id: &delivered.entry_id,
-        expected_domain: target.expected_domain(),
-        form,
-        values,
-    };
-    let sealed = extension
-        .seal_inject(&wire, not_after_monotonic_ns)
-        .map_err(InjectServiceError::Transport)?;
-    drop(wire);
-    drop(credential);
-    drop(discovery_username);
-    drop(parsed);
-    drop(delivered);
-    let authorization_remaining = forward
-        .remaining()
-        .ok_or(InjectServiceError::AuthorizationExpired)?;
-    if cancellation.is_cancelled() {
-        return Err(InjectServiceError::Cancelled);
-    }
-    // Cancellation is deliberately no longer observed after the sealed request is handed to the
-    // host. Once the socket write starts, the extension may complete the fill even if the caller
-    // disconnects, so we must wait for the bounded value-free result and must not invite a retry.
-    let response = extension
-        .send_inject(sealed, authorization_remaining)
-        .await
-        .map_err(InjectServiceError::Transport)?;
-    drop(forward);
-    if response.outcome != "injected" {
-        let rejection = parse_provider_rejection(&response.outcome)?;
-        if rejection == ProviderRejection::StaleFormMap
-            && let Some(rejected) = form_map.as_ref()
-        {
-            session
-                .resolve_form_discovery_map(
-                    target.expected_domain(),
-                    operation.provider.as_str(),
-                    Some(rejected),
-                )
-                .await
-                .map_err(InjectServiceError::StaleMapRefresh)?;
+    let deadline =
+        std::time::Instant::now() + palladin_browser_bridge::live_login::LIVE_FLOW_TIMEOUT;
+    let mut current_form = form.clone();
+    let mut discovery_username = None;
+    let mut retained_credential = Some(delivered);
+    let mut retained_payload = Some(parsed);
+    loop {
+        let delivered = retained_credential
+            .as_ref()
+            .ok_or(InjectServiceError::InvalidCredentialPayload)?;
+        let parsed = retained_payload
+            .as_ref()
+            .ok_or(InjectServiceError::InvalidCredentialPayload)?;
+        if cancellation.is_cancelled() {
+            return Err(InjectServiceError::Cancelled);
         }
-        return Err(InjectServiceError::ProviderRejected(rejection));
+        if delivered
+            .authenticated_field("credential.username")
+            .is_none()
+            && discovery_username.is_none()
+            && current_form
+                .field_ids()
+                .any(|id| id == "credential.username")
+        {
+            let discovery = session.authenticated_inject_username(
+                operation.vault_id,
+                operation.entry_id,
+                delivered.inject_discovery_revision()?,
+            );
+            discovery_username = if live_forms {
+                live::await_username_discovery(discovery, deadline, cancellation).await?
+            } else {
+                discovery.await?
+            };
+        }
+        let authenticated_username = delivered
+            .authenticated_field("credential.username")
+            .or_else(|| discovery_username.as_ref().map(|value| value.as_str()));
+        let (forward, credential) = acquire_then_resolve_injection(
+            || {
+                session.browser_inject_forward_guard_until(
+                    service,
+                    authorization.lifecycle_token(),
+                    delivered,
+                    live_forms.then_some(deadline),
+                )
+            },
+            parsed,
+            authenticated_username,
+            &current_form,
+        )?;
+        let mut transaction_bytes = [0_u8; 16];
+        getrandom::fill(&mut transaction_bytes).map_err(|_| InjectServiceError::Randomness)?;
+        let transaction_id = hex::encode(transaction_bytes);
+        let values = credential
+            .fields()
+            .iter()
+            .map(|(entry_field_id, value)| InjectFieldValue {
+                entry_field_id,
+                value,
+            })
+            .collect();
+        let monotonic_sample = monotonic_now_ns().map_err(InjectServiceError::Transport)?;
+        let mut authorization_remaining = forward
+            .remaining()
+            .ok_or(InjectServiceError::AuthorizationExpired)?;
+        if live_forms {
+            authorization_remaining = authorization_remaining
+                .min(deadline.saturating_duration_since(std::time::Instant::now()));
+        }
+        let not_after_monotonic_ns =
+            monotonic_not_after_ns(monotonic_sample, authorization_remaining)
+                .map_err(InjectServiceError::Transport)?;
+        let wire = InjectRequest {
+            continue_live: live_forms.then_some(true),
+            protocol: INJECT_PROVIDER_PROTOCOL,
+            message_type: "inject",
+            transaction_id: &transaction_id,
+            grant_id: &delivered.grant_id,
+            entry_id: &delivered.entry_id,
+            expected_domain: target.expected_domain(),
+            form: &current_form,
+            values,
+        };
+        let sealed = extension
+            .seal_inject(&wire, not_after_monotonic_ns)
+            .map_err(InjectServiceError::Transport)?;
+        drop(wire);
+        drop(credential);
+        if !live_forms {
+            // Preserve the original map/fallback lifetime: it has no native continuation.
+            drop(retained_payload.take());
+            drop(retained_credential.take());
+            drop(discovery_username.take());
+        }
+        if cancellation.is_cancelled() {
+            return Err(InjectServiceError::Cancelled);
+        }
+        // No reconnect or cancellation retry after handoff: a timed-out submitted step is
+        // ambiguous. Wait for its bounded value-free response, then recheck before any next step.
+        let response = extension
+            .send_inject(sealed, authorization_remaining)
+            .await
+            .map_err(InjectServiceError::Transport)?;
+        drop(forward);
+        if response.outcome != "injected" {
+            let rejection = parse_provider_rejection(&response.outcome)?;
+            if live_forms && rejection == ProviderRejection::StaleFormMap {
+                return Err(InjectServiceError::LiveFormChanged);
+            }
+            if rejection == ProviderRejection::StaleFormMap
+                && let Some(rejected) = form_map.as_ref()
+            {
+                session
+                    .resolve_form_discovery_map(
+                        target.expected_domain(),
+                        operation.provider.as_str(),
+                        Some(rejected),
+                    )
+                    .await
+                    .map_err(InjectServiceError::StaleMapRefresh)?;
+            }
+            return Err(InjectServiceError::ProviderRejected(rejection));
+        }
+        let Some(flow) = flow.as_mut() else { break };
+        flow.submitted().map_err(InjectServiceError::Injection)?;
+        let continuation = response.continuation.unwrap_or(
+            palladin_browser_bridge::live_login::LiveContinuation::ProviderUnavailable {},
+        );
+        if !flow
+            .advance(&continuation)
+            .map_err(InjectServiceError::Injection)?
+        {
+            return Ok(InjectExecution::LiveFlow {
+                provider: operation.provider.as_str().to_owned(),
+                steps: flow.steps(),
+                outcome: continuation.outcome(),
+            });
+        }
+        if let palladin_browser_bridge::live_login::LiveContinuation::Ready {
+            current_url, ..
+        } = &continuation
+        {
+            target
+                .verify_url(current_url)
+                .map_err(InjectServiceError::Injection)?;
+        }
+        current_form = flow.form().clone();
     }
+    drop(discovery_username);
+    drop(retained_payload);
+    drop(retained_credential);
     let candidate_recording_failed = if form_map.is_none()
         && let Some(fallback_form) = operation.fallback_form
     {
@@ -390,6 +495,19 @@ fn resolve_authenticated_injection_target(
         (None, Some(discovery)) => Ok(discovery),
         (None, None) => Err(InjectServiceError::MissingDomain),
     }
+}
+
+// Resolve dynamic values only inside the final authorized handoff, after any lock wait.
+#[cfg(any(target_os = "macos", test))]
+fn acquire_then_resolve_injection<G>(
+    acquire: impl FnOnce() -> Result<G, RuntimeError>,
+    parsed: &palladin_credential::secret::ParsedSecret,
+    authenticated_username: Option<&str>,
+    form: &InjectionFormDefinition,
+) -> Result<(G, InjectionCredential), InjectServiceError> {
+    let forward = acquire()?;
+    let credential = resolve_injection_credential(parsed, authenticated_username, form)?;
+    Ok((forward, credential))
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -571,6 +689,24 @@ fn resolve_selected_field(
 
 #[derive(Debug, Error)]
 pub enum InjectServiceError {
+    #[error("PALLADIN_EXPERIMENTAL_LIVE_FORMS must be 0 or 1")]
+    InvalidLiveFlag,
+    #[error(
+        "experimental live discovery requires an exact target tab and URL and cannot use --form-json"
+    )]
+    LiveTargetRequired,
+    #[error(
+        "no unambiguous live login/TOTP step is available; inspect the page before any next operation"
+    )]
+    InvalidLiveForm,
+    #[error(
+        "live form changed or could not be safely completed; no stored form map was used and Inject was not retried"
+    )]
+    LiveFormChanged,
+    #[error(
+        "the running browser extension rejected live form discovery; matching updated runtime and extension versions are required"
+    )]
+    LiveDiscoveryUnsupported,
     #[error("only the authenticated Palladin extension provider is supported")]
     UnsupportedProvider,
     #[error("the authenticated browser extension provider is unavailable on this platform")]

@@ -31,11 +31,15 @@ struct PrepareRequest<'a> {
     target_tab_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     target_url: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    live_detection: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PrepareResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_form: Option<InjectionFormDefinition>,
     pub protocol: String,
     #[serde(rename = "type")]
     pub message_type: String,
@@ -54,6 +58,8 @@ pub struct InjectFieldValue<'a> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InjectRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continue_live: Option<bool>,
     pub protocol: &'static str,
     #[serde(rename = "type")]
     pub message_type: &'static str,
@@ -78,6 +84,8 @@ struct LocalInjectCommand<'a> {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InjectResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<palladin_browser_bridge::live_login::LiveContinuation>,
     pub protocol: String,
     #[serde(rename = "type")]
     pub message_type: String,
@@ -96,6 +104,66 @@ pub struct SealedInject {
 }
 
 impl ExtensionClient {
+    /// Prepare carries no credentials and never writes to the page. Only this
+    /// phase may reconnect; send_inject must remain a single attempt.
+    pub async fn connect_prepared(
+        root: &Path,
+        identity: &BrowserHostIdentity,
+        nonce: &str,
+        target: Option<BrowserTarget<'_>>,
+        live_forms: bool,
+    ) -> Result<(Self, PrepareResult), NativeBrowserError> {
+        Self::connect_prepared_with_budget(
+            root,
+            identity,
+            nonce,
+            target,
+            live_forms,
+            Duration::from_secs(45),
+            Duration::from_millis(250),
+        )
+        .await
+    }
+
+    async fn connect_prepared_with_budget(
+        root: &Path,
+        identity: &BrowserHostIdentity,
+        nonce: &str,
+        target: Option<BrowserTarget<'_>>,
+        live_forms: bool,
+        budget: Duration,
+        mut delay: Duration,
+    ) -> Result<(Self, PrepareResult), NativeBrowserError> {
+        let deadline = Instant::now() + budget;
+        loop {
+            // A fresh authenticated channel and a fresh DOM preparation on each
+            // attempt. Never reuse a failed session or any credential-bearing frame.
+            let attempt = async {
+                let mut client = Self::connect(root, identity).await?;
+                let prepared = client.prepare(nonce, target, live_forms).await?;
+                Ok((client, prepared))
+            };
+            match timeout_at(deadline, attempt).await {
+                Ok(Ok(prepared)) => return Ok(prepared),
+                Ok(Err(
+                    NativeBrowserError::Unavailable
+                    | NativeBrowserError::Framing(
+                        palladin_browser_bridge::framing::FramingError::Transport,
+                    ),
+                )) => {}
+                Ok(Err(error)) => return Err(error),
+                Err(_) => return Err(NativeBrowserError::ReconnectTimeout),
+            }
+            if timeout_at(deadline, tokio::time::sleep(delay))
+                .await
+                .is_err()
+            {
+                return Err(NativeBrowserError::ReconnectTimeout);
+            }
+            delay = delay.saturating_mul(2).min(Duration::from_secs(2));
+        }
+    }
+
     pub async fn connect(
         root: &Path,
         identity: &BrowserHostIdentity,
@@ -122,6 +190,7 @@ impl ExtensionClient {
         &mut self,
         nonce: &str,
         target: Option<BrowserTarget<'_>>,
+        live_forms: bool,
     ) -> Result<PrepareResult, NativeBrowserError> {
         let request = PrepareRequest {
             protocol: INJECT_PROVIDER_PROTOCOL,
@@ -129,6 +198,7 @@ impl ExtensionClient {
             nonce,
             target_tab_id: target.map(|value| value.tab_id),
             target_url: target.map(|value| value.page_url),
+            live_detection: live_forms.then_some(true),
         };
         let frame = self.session.seal(&request)?;
         timeout(OPERATION_TIMEOUT, write_message(&mut self.stream, &frame))
@@ -221,6 +291,7 @@ fn validate_prepare_result(result: &PrepareResult, nonce: &str) -> Result<(), Na
             | "target-tab-unavailable"
             | "target-url-mismatch"
             | "invalid-request"
+            | "unsupported-live-detection"
     );
     if result.protocol != INJECT_PROVIDER_PROTOCOL
         || result.message_type != "prepare.result"
@@ -254,6 +325,7 @@ fn validate_inject_result(
         || result.message_type != "inject.result"
         || result.transaction_id.as_deref() != Some(transaction_id)
         || !valid_outcome
+        || (result.outcome != "injected" && result.continuation.is_some())
     {
         return Err(NativeBrowserError::InvalidMessage);
     }
@@ -286,6 +358,10 @@ fn validate_peer(stream: &UnixStream) -> Result<(), NativeBrowserError> {
 
 #[derive(Debug, Error)]
 pub enum NativeBrowserError {
+    #[error(
+        "browser connection could not be restored before preparation timed out; no credential was sent"
+    )]
+    ReconnectTimeout,
     #[error("the authenticated Palladin browser extension is unavailable")]
     Unavailable,
     #[error("the authenticated browser message is invalid")]
@@ -303,6 +379,9 @@ pub enum NativeBrowserError {
     #[error(transparent)]
     Secure(#[from] palladin_browser_bridge::secure_transport::SecureTransportError),
 }
+
+#[cfg(test)]
+mod reconnect_tests;
 
 #[cfg(test)]
 mod tests {
@@ -352,6 +431,7 @@ mod tests {
             }],
         };
         let wire = InjectRequest {
+            continue_live: None,
             protocol: INJECT_PROVIDER_PROTOCOL,
             message_type: "inject",
             transaction_id: "transaction",

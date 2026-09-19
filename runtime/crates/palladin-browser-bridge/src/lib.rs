@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod framing;
+pub mod live_login;
 pub mod local_transport;
 pub mod secure_transport;
 

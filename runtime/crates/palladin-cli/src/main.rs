@@ -1492,6 +1492,20 @@ async fn inject(
             eprintln!("Credential injected through provider {provider}.");
             ExitCode::SUCCESS
         }
+        Ok(InjectExecution::LiveFlow {
+            provider,
+            steps,
+            outcome,
+        }) => {
+            eprintln!(
+                "Login flow through {provider} submitted {steps} step(s); stopped: {outcome}. No authentication success is inferred."
+            );
+            if outcome == "no-form" {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(2)
+            }
+        }
         Ok(InjectExecution::NotGranted(access)) => {
             if let Some(message) = access_message(&access, CredentialMethod::Inject) {
                 eprintln!("Error: {}", safe_terminal_text(&message));

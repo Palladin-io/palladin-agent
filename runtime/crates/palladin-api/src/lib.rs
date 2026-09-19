@@ -14,7 +14,7 @@ pub use types::{
     BrowserPairingStatusResponse, CredentialAccess, CredentialCiphertext, CredentialGrantType,
     CredentialMethod, EntrySearchItem, EntrySearchResult, EnvelopeScopeContract,
     GetCredentialOptions, GrantStatus, GrantStatusResponse, GrantedCredential,
-    ReportCredentialStaleInput, ScriptExecutionDiscovery, ScriptExecutionPackageResponse,
-    ScriptExecutionVaultEntry, StaleReasonCode, StartBrowserPairingResponse, VaultManifest,
-    X25519WrappedKey, X25519WrapperDescriptor,
+    InjectDiscoveryBinding, ReportCredentialStaleInput, ScriptExecutionDiscovery,
+    ScriptExecutionPackageResponse, ScriptExecutionVaultEntry, StaleReasonCode,
+    StartBrowserPairingResponse, VaultManifest, X25519WrappedKey, X25519WrapperDescriptor,
 };

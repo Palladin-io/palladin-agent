@@ -493,6 +493,17 @@ where
                         "Credential injection completed. No credential value was returned to the MCP client."
                     },
                 }),
+                Ok(InjectExecution::LiveFlow {
+                    provider,
+                    steps,
+                    outcome,
+                }) => pretty_result(&serde_json::json!({
+                    "outcome": outcome,
+                    "provider": provider,
+                    "submittedSteps": steps,
+                    "credential": "withheld",
+                    "note": "One bounded login flow ended. This is not proof of authentication. Inspect the page before any further action; never retry an ambiguous submitted step."
+                })),
                 Ok(InjectExecution::NotGranted(access)) => {
                     let message = access_message(&access, CredentialMethod::Inject)
                         .unwrap_or_else(|| "Credential access is unavailable.".to_owned());
@@ -1809,6 +1820,19 @@ fn inject_failure(error: &InjectServiceError) -> ToolOutcome {
         return ToolOutcome::error("The authenticated browser authorization expired.");
     }
     let message = match error {
+        InjectServiceError::InvalidLiveFlag => "PALLADIN_EXPERIMENTAL_LIVE_FORMS must be 0 or 1.",
+        InjectServiceError::LiveTargetRequired => {
+            "Live discovery requires an exact target tab and URL, without a fallback form."
+        }
+        InjectServiceError::LiveDiscoveryUnsupported => {
+            "The running browser extension rejected live form discovery. Use matching updated runtime and extension versions."
+        }
+        InjectServiceError::InvalidLiveForm => {
+            "No unambiguous live login/TOTP step is available. Inspect the page before another operation."
+        }
+        InjectServiceError::LiveFormChanged => {
+            "The live form changed or could not be safely completed. No stored form map was used and Inject was not retried."
+        }
         InjectServiceError::UnsupportedProvider => {
             "Only the authenticated Palladin extension provider is supported."
         }
