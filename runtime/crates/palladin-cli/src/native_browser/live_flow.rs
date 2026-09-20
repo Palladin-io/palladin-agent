@@ -80,7 +80,10 @@ where
                     entry_id: injection.request.entry_id.clone(),
                     expected_domain: injection.request.expected_domain.clone(),
                     form: injection.request.form.clone(),
-                    original_url: prepared.current_url.clone().unwrap_or_default(),
+                    original_url: flow
+                        .as_ref()
+                        .map(|flow| flow.current_url().to_owned())
+                        .unwrap_or_default(),
                     not_after_monotonic_ns: injection.not_after_monotonic_ns.clone(),
                 }
             });

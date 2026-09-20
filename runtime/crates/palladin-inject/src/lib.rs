@@ -399,7 +399,12 @@ where
                 .take()
                 .ok_or(InjectServiceError::InvalidLiveForm)?;
             ready
-                .validate(current_url, &current_form)
+                .validate(
+                    flow.as_ref()
+                        .ok_or(InjectServiceError::InvalidLiveForm)?
+                        .current_url(),
+                    &current_form,
+                )
                 .map_err(InjectServiceError::Injection)?;
             let forward = match live::authorize_commit(cancellation, deadline, || {
                 session.browser_inject_forward_guard_until(

@@ -50,6 +50,7 @@ impl LiveContinuation {
 /// this boundary to prevent fresh selector handles from replaying an already submitted stage.
 pub struct LiveLoginFlow {
     origin: url::Origin,
+    current_url: String,
     form: InjectionFormDefinition,
     submitted_fields: BTreeSet<String>,
     steps: usize,
@@ -60,6 +61,7 @@ impl LiveLoginFlow {
         validate_live_form(&form)?;
         Ok(Self {
             origin: exact_origin(url)?,
+            current_url: url.to_owned(),
             form,
             submitted_fields: BTreeSet::new(),
             steps: 0,
@@ -69,6 +71,11 @@ impl LiveLoginFlow {
     #[must_use]
     pub fn form(&self) -> &InjectionFormDefinition {
         &self.form
+    }
+
+    #[must_use]
+    pub fn current_url(&self) -> &str {
+        &self.current_url
     }
 
     #[must_use]
@@ -114,12 +121,12 @@ impl LiveLoginFlow {
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
             || exact_origin(current_url)? != self.origin
             || self.repeats_submitted_stage(live_form)
-            || is_deferred(live_form)
         {
             return Err(InjectionError::InvalidFormDefinition);
         }
         validate_live_form(live_form)?;
         self.form = live_form.clone();
+        self.current_url.clone_from(current_url);
         Ok(true)
     }
 }
@@ -127,14 +134,34 @@ impl LiveLoginFlow {
 pub fn validate_live_form(form: &InjectionFormDefinition) -> Result<(), InjectionError> {
     if is_deferred(form) {
         let step = &form.steps[0];
+        // The extension freezes each field's writable/preserve mode at discovery.
+        // A carried readonly/disabled identity is comparison-only, never rewritten.
+        let shapes: Vec<_> = step
+            .fields
+            .iter()
+            .map(|field| (field.entry_field_id.as_str(), field.control))
+            .collect();
         if step.wait_for.is_some()
-            || step.fields.len() != 1
-            || step.fields[0].entry_field_id != "credential.username"
-            || step.fields[0].control != InjectionControl::Username
-            || live_snapshot(&step.fields[0].selector)? != live_snapshot(&step.submit.selector)?
-            || step.fields[0].selector == step.submit.selector
+            || !matches!(
+                shapes.as_slice(),
+                [("credential.username", InjectionControl::Username)]
+                    | [("credential.password", InjectionControl::Password)]
+                    | [
+                        ("credential.username", InjectionControl::Username),
+                        ("credential.password", InjectionControl::Password)
+                    ]
+            )
         {
             return Err(InjectionError::InvalidFormDefinition);
+        }
+        let snapshot = live_snapshot(&step.submit.selector)?;
+        let mut selectors = BTreeSet::from([step.submit.selector.as_str()]);
+        for field in &step.fields {
+            if live_snapshot(&field.selector)? != snapshot
+                || !selectors.insert(field.selector.as_str())
+            {
+                return Err(InjectionError::InvalidFormDefinition);
+            }
         }
         return Ok(());
     }
@@ -301,7 +328,7 @@ mod tests {
     #[test]
     fn deferred_identifier_rejects_scope_expansion_and_fake_clicks() {
         for (id, control) in [
-            ("credential.password", "password"),
+            ("credential.password", "username"),
             ("credential.totp", "otp"),
             ("custom:other", "username"),
         ] {
@@ -324,6 +351,100 @@ mod tests {
             .unwrap()
             .push(extra);
         assert!(validate_live_form(&serde_json::from_value(value).unwrap()).is_err());
+    }
+
+    fn deferred_password(carried_username: bool) -> InjectionFormDefinition {
+        let mut value = deferred_form();
+        let mut password = value["steps"][0]["fields"][0].clone();
+        password["entryFieldId"] = serde_json::json!("credential.password");
+        password["control"] = serde_json::json!("password");
+        password["selector"] = serde_json::json!(format!(
+            "palladin-live:{}:{}",
+            "a".repeat(32),
+            "c".repeat(32)
+        ));
+        if carried_username {
+            value["steps"][0]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .push(password);
+        } else {
+            value["steps"][0]["fields"][0] = password;
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn deferred_password_is_a_fresh_stage_with_optional_comparison_only_identity() {
+        for carried in [false, true] {
+            let password = deferred_password(carried);
+            validate_live_form(&password).unwrap();
+            assert!(
+                password.validate().is_err(),
+                "private v2 must not become a map"
+            );
+            assert!(LiveLoginFlow::new("https://example.test/password", password.clone()).is_ok());
+            let mut flow = LiveLoginFlow::new(
+                "https://example.test/login",
+                serde_json::from_value(deferred_form()).unwrap(),
+            )
+            .unwrap();
+            flow.submitted().unwrap();
+            let next = LiveContinuation::Ready {
+                current_url: "https://example.test/login#password".into(),
+                document_id: "same-document".into(),
+                live_form: password,
+            };
+            assert!(flow.advance(&next).unwrap());
+            assert_eq!(flow.current_url(), "https://example.test/login#password");
+            assert_eq!(flow.steps(), 1, "preparation does not count as a submit");
+            flow.submitted().unwrap();
+            assert_eq!(flow.steps(), 2);
+            assert!(flow.advance(&next).is_err(), "password must never replay");
+            assert!(
+                flow.advance(&ready(
+                    "https://example.test/otp",
+                    "credential.totp",
+                    "otp",
+                    "d"
+                ))
+                .unwrap()
+            );
+            flow.submitted().unwrap();
+            assert_eq!(flow.steps(), 3);
+        }
+    }
+
+    #[test]
+    fn deferred_password_rejects_reordered_duplicate_or_cross_snapshot_handles() {
+        let valid = deferred_password(true);
+        for mutation in [
+            "order",
+            "alias",
+            "scope-alias",
+            "snapshot",
+            "otp",
+            "duplicate",
+        ] {
+            let mut form = valid.clone();
+            let step = &mut form.steps[0];
+            match mutation {
+                "order" => step.fields.reverse(),
+                "alias" => step.fields[1].selector = step.fields[0].selector.clone(),
+                "scope-alias" => step.fields[1].selector = step.submit.selector.clone(),
+                "snapshot" => {
+                    step.fields[1].selector =
+                        format!("palladin-live:{}:{}", "d".repeat(32), "c".repeat(32))
+                }
+                "otp" => {
+                    step.fields[1].entry_field_id = "credential.totp".into();
+                    step.fields[1].control = InjectionControl::Otp;
+                }
+                "duplicate" => step.fields.push(step.fields[1].clone()),
+                _ => unreachable!(),
+            }
+            assert!(validate_live_form(&form).is_err(), "{mutation}");
+        }
     }
 
     #[test]
