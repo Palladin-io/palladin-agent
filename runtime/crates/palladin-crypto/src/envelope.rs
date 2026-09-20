@@ -1451,6 +1451,9 @@ fn normalize_projected_member_secret(
     if field_ids.is_empty() {
         return Err(CryptoError::InvalidDescriptor);
     }
+    // FULL grants open MemberSecret, whose TOTP value is source material rather
+    // than a precomputed code. Keep it in the existing runtime-only V2 path.
+    let runtime_totp = matches!(entry_type, "key" | "credential");
     let fields = field_ids
         .into_iter()
         .map(|(policy_id, payload_id)| {
@@ -1462,6 +1465,11 @@ fn normalize_projected_member_secret(
             };
             let (kind, value) =
                 member_secret_field(entry_type, object, content, custom_fields, &payload_id)?;
+            let value = if runtime_totp && kind == "totp" && !value.is_null() {
+                member_totp_runtime_source(value)?
+            } else {
+                value
+            };
             Ok(serde_json::json!({
                 "id": payload_id,
                 "kind": kind,
@@ -1471,7 +1479,7 @@ fn normalize_projected_member_secret(
         })
         .collect::<Result<Vec<_>, CryptoError>>()?;
     let projected = SensitiveJson(serde_json::json!({
-        "schema": "palladin.grant-payload.v1",
+        "schema": if runtime_totp { "palladin.grant-payload.v2" } else { "palladin.grant-payload.v1" },
         "entryType": entry_type,
         "fields": fields,
     }));
@@ -1482,6 +1490,39 @@ fn normalize_projected_member_secret(
         &projected_field_ids(&projected.0)?,
         requested_method,
     )
+}
+
+/// Convert the authenticated MemberSecret TOTP shape to the existing runtime
+/// source contract. Presentation metadata never enters the delivered source.
+fn member_totp_runtime_source(value: Value) -> Result<Value, CryptoError> {
+    let value = SensitiveJson(value);
+    let object = value.0.as_object().ok_or(CryptoError::InvalidEncoding)?;
+    require_allowed_keys(
+        object,
+        &["secret", "algorithm", "digits", "period"],
+        &[
+            "secret",
+            "algorithm",
+            "digits",
+            "period",
+            "issuer",
+            "account",
+        ],
+    )?;
+    if !is_optional_string_or_absent(object.get("issuer"))
+        || !is_optional_string_or_absent(object.get("account"))
+    {
+        return Err(CryptoError::InvalidEncoding);
+    }
+    let mut source = SensitiveJson(serde_json::json!({
+        "source": "totp",
+        "secret": object["secret"],
+        "algorithm": object["algorithm"],
+        "digits": object["digits"],
+        "period": object["period"],
+    }));
+    crate::validate_runtime_totp_source(&source.0)?;
+    Ok(std::mem::take(&mut source.0))
 }
 
 fn public_grant_field_id(entry_type: &str, field_id: &str) -> Option<String> {
