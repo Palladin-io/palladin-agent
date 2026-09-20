@@ -59,6 +59,8 @@ pub struct InjectFieldValue<'a> {
 #[serde(rename_all = "camelCase")]
 pub struct InjectRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub continue_live: Option<bool>,
     pub protocol: &'static str,
     #[serde(rename = "type")]
@@ -84,6 +86,8 @@ struct LocalInjectCommand<'a> {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InjectResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submit_ready: Option<palladin_browser_bridge::live_login::SubmitReady>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<palladin_browser_bridge::live_login::LiveContinuation>,
     pub protocol: String,
@@ -232,6 +236,61 @@ impl ExtensionClient {
         })
     }
 
+    pub fn seal_submit(
+        &mut self,
+        request: &palladin_browser_bridge::live_login::SubmitRequest,
+        not_after_monotonic_ns: u64,
+    ) -> Result<SealedInject, NativeBrowserError> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Command<'a> {
+            protocol: &'static str,
+            #[serde(rename = "type")]
+            message_type: &'static str,
+            not_after_monotonic_ns: String,
+            request: &'a palladin_browser_bridge::live_login::SubmitRequest,
+        }
+        let frame = self.session.seal(&Command {
+            protocol: LOCAL_TRANSPORT_PROTOCOL,
+            message_type: "submit.forward",
+            not_after_monotonic_ns: not_after_monotonic_ns.to_string(),
+            request,
+        })?;
+        Ok(SealedInject {
+            frame,
+            transaction_id: request.transaction_id.clone(),
+        })
+    }
+
+    /// Best-effort value-free cleanup. Never retries or authorizes a submit.
+    pub async fn cancel_submit(&mut self, prepared_transaction_id: &str, pending_id: &str) {
+        #[derive(Serialize)]
+        struct Command {
+            protocol: &'static str,
+            #[serde(rename = "type")]
+            message_type: &'static str,
+            request: palladin_browser_bridge::live_login::CancelSubmitRequest,
+        }
+        let request = palladin_browser_bridge::live_login::CancelSubmitRequest {
+            protocol: INJECT_PROVIDER_PROTOCOL.into(),
+            message_type: "cancel-submit".into(),
+            transaction_id: format!("cancel-{prepared_transaction_id}"),
+            prepared_transaction_id: prepared_transaction_id.into(),
+            pending_id: pending_id.into(),
+        };
+        if let Ok(frame) = self.session.seal(&Command {
+            protocol: LOCAL_TRANSPORT_PROTOCOL,
+            message_type: "submit.cancel",
+            request,
+        }) {
+            let _ = timeout(
+                Duration::from_millis(200),
+                write_message(&mut self.stream, &frame),
+            )
+            .await;
+        }
+    }
+
     pub async fn send_inject(
         &mut self,
         sealed: SealedInject,
@@ -260,6 +319,18 @@ fn inject_timeout_error(authorization_remaining: Duration) -> NativeBrowserError
     } else {
         NativeBrowserError::OperationTimeout
     }
+}
+
+pub fn epoch_expiry(remaining: Duration) -> Result<u64, NativeBrowserError> {
+    if remaining.is_zero() {
+        return Err(NativeBrowserError::AuthorizationExpired);
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| NativeBrowserError::AuthorizationClockUnavailable)?;
+    // Round down, never extend a sub-millisecond native lease.
+    u64::try_from((now + remaining).as_millis())
+        .map_err(|_| NativeBrowserError::AuthorizationExpired)
 }
 
 pub fn monotonic_now_ns() -> Result<u64, NativeBrowserError> {
@@ -312,6 +383,7 @@ fn validate_inject_result(
     let valid_outcome = matches!(
         result.outcome.as_str(),
         "injected"
+            | "submit-ready"
             | "rejected"
             | "no-password-field"
             | "no-submit-control"
@@ -326,6 +398,7 @@ fn validate_inject_result(
         || result.transaction_id.as_deref() != Some(transaction_id)
         || !valid_outcome
         || (result.outcome != "injected" && result.continuation.is_some())
+        || (result.outcome == "submit-ready") != result.submit_ready.is_some()
     {
         return Err(NativeBrowserError::InvalidMessage);
     }
@@ -431,6 +504,7 @@ mod tests {
             }],
         };
         let wire = InjectRequest {
+            expires_at: None,
             continue_live: None,
             protocol: INJECT_PROVIDER_PROTOCOL,
             message_type: "inject",

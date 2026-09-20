@@ -114,6 +114,7 @@ impl LiveLoginFlow {
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
             || exact_origin(current_url)? != self.origin
             || self.repeats_submitted_stage(live_form)
+            || is_deferred(live_form)
         {
             return Err(InjectionError::InvalidFormDefinition);
         }
@@ -124,6 +125,19 @@ impl LiveLoginFlow {
 }
 
 pub fn validate_live_form(form: &InjectionFormDefinition) -> Result<(), InjectionError> {
+    if is_deferred(form) {
+        let step = &form.steps[0];
+        if step.wait_for.is_some()
+            || step.fields.len() != 1
+            || step.fields[0].entry_field_id != "credential.username"
+            || step.fields[0].control != InjectionControl::Username
+            || live_snapshot(&step.fields[0].selector)? != live_snapshot(&step.submit.selector)?
+            || step.fields[0].selector == step.submit.selector
+        {
+            return Err(InjectionError::InvalidFormDefinition);
+        }
+        return Ok(());
+    }
     form.validate()?;
     if form.steps.len() != 1 {
         return Err(InjectionError::InvalidFormDefinition);
@@ -154,6 +168,79 @@ pub fn validate_live_form(form: &InjectionFormDefinition) -> Result<(), Injectio
         return Err(InjectionError::InvalidFormDefinition);
     }
     Ok(())
+}
+
+/// A v2 selector here names a bound credential scope, not a guessed click target.
+#[must_use]
+pub fn is_deferred(form: &InjectionFormDefinition) -> bool {
+    form.version == 2
+        && form.steps.len() == 1
+        && form.steps[0].submit.action == InjectionSubmitKind::DeferredNativeClick
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubmitReady {
+    pub pending_id: String,
+    pub current_url: String,
+    pub document_id: String,
+    pub submit_selector: String,
+}
+impl SubmitReady {
+    pub fn validate(
+        &self,
+        original_url: &str,
+        form: &InjectionFormDefinition,
+    ) -> Result<(), InjectionError> {
+        validate_live_form(form)?;
+        if !is_deferred(form)
+            || self.pending_id.len() != 32
+            || !self
+                .pending_id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || self.document_id.is_empty()
+            || self.document_id.len() > 256
+            || !self
+                .document_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            || self.current_url != original_url
+            || exact_origin(&self.current_url)? != exact_origin(original_url)?
+        {
+            return Err(InjectionError::InvalidFormDefinition);
+        }
+        if live_snapshot(&self.submit_selector)? != self.pending_id {
+            return Err(InjectionError::InvalidFormDefinition);
+        }
+        Ok(())
+    }
+}
+
+/// Value-free, one-shot second phase. Authorization is checked again before forwarding.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubmitRequest {
+    pub protocol: String,
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub transaction_id: String,
+    pub prepared_transaction_id: String,
+    pub grant_id: String,
+    pub entry_id: String,
+    pub expected_domain: String,
+    pub submit_ready: SubmitReady,
+    pub expires_at: u64,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CancelSubmitRequest {
+    pub protocol: String,
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub transaction_id: String,
+    pub prepared_transaction_id: String,
+    pub pending_id: String,
 }
 
 fn exact_origin(value: &str) -> Result<url::Origin, InjectionError> {
@@ -192,6 +279,53 @@ mod tests {
             live_form: form(field, control, snapshot),
         }
     }
+    fn deferred_form() -> serde_json::Value {
+        let mut value = serde_json::to_value(form("credential.username", "username", "a")).unwrap();
+        value["version"] = serde_json::json!(2);
+        value["steps"][0]["submit"]["action"] = serde_json::json!("deferred-native-click");
+        value
+    }
+    #[test]
+    fn deferred_identifier_has_explicit_scope_and_cannot_be_a_map() {
+        let form: InjectionFormDefinition = serde_json::from_value(deferred_form()).unwrap();
+        validate_live_form(&form).unwrap();
+        assert!(
+            form.validate().is_err(),
+            "v2 live plan must not become a stored v1 map"
+        );
+        let mut flow = LiveLoginFlow::new("https://example.test/login", form).unwrap();
+        assert_eq!(flow.steps(), 0, "filling alone does not commit a stage");
+        flow.submitted().unwrap();
+        assert_eq!(flow.steps(), 1);
+    }
+    #[test]
+    fn deferred_identifier_rejects_scope_expansion_and_fake_clicks() {
+        for (id, control) in [
+            ("credential.password", "password"),
+            ("credential.totp", "otp"),
+            ("custom:other", "username"),
+        ] {
+            let mut value = deferred_form();
+            value["steps"][0]["fields"][0]["entryFieldId"] = serde_json::json!(id);
+            value["steps"][0]["fields"][0]["control"] = serde_json::json!(control);
+            let form: InjectionFormDefinition = serde_json::from_value(value).unwrap();
+            assert!(validate_live_form(&form).is_err());
+        }
+        let mut value = deferred_form();
+        value["steps"][0]["submit"]["action"] = serde_json::json!("click");
+        assert!(validate_live_form(&serde_json::from_value(value).unwrap()).is_err());
+        let mut value = deferred_form();
+        let extra =
+            serde_json::to_value(form("credential.password", "password", "a")).unwrap()["steps"][0]
+                ["fields"][0]
+                .clone();
+        value["steps"][0]["fields"]
+            .as_array_mut()
+            .unwrap()
+            .push(extra);
+        assert!(validate_live_form(&serde_json::from_value(value).unwrap()).is_err());
+    }
+
     #[test]
     fn one_flow_advances_username_password_totp() {
         let mut flow = LiveLoginFlow::new(

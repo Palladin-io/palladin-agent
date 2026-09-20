@@ -126,6 +126,7 @@ async fn one_authenticated_host_session_advances_three_steps_and_rechecks_every_
             }
             let transaction = format!("transaction-{index}");
             let request = InjectRequest {
+                expires_at: None,
                 continue_live: Some(true),
                 protocol: INJECT_PROVIDER_PROTOCOL,
                 message_type: "inject",

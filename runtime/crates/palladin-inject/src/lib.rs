@@ -351,6 +351,14 @@ where
             monotonic_not_after_ns(monotonic_sample, authorization_remaining)
                 .map_err(InjectServiceError::Transport)?;
         let wire = InjectRequest {
+            expires_at: if palladin_browser_bridge::live_login::is_deferred(&current_form) {
+                Some(
+                    transport::epoch_expiry(authorization_remaining)
+                        .map_err(InjectServiceError::Transport)?,
+                )
+            } else {
+                None
+            },
             continue_live: live_forms.then_some(true),
             protocol: INJECT_PROVIDER_PROTOCOL,
             message_type: "inject",
@@ -377,11 +385,83 @@ where
         }
         // No reconnect or cancellation retry after handoff: a timed-out submitted step is
         // ambiguous. Wait for its bounded value-free response, then recheck before any next step.
-        let response = extension
+        let mut response = extension
             .send_inject(sealed, authorization_remaining)
             .await
             .map_err(InjectServiceError::Transport)?;
         drop(forward);
+        if response.outcome == "submit-ready" {
+            let delivered = retained_credential
+                .as_ref()
+                .ok_or(InjectServiceError::InvalidLiveForm)?;
+            let ready = response
+                .submit_ready
+                .take()
+                .ok_or(InjectServiceError::InvalidLiveForm)?;
+            ready
+                .validate(current_url, &current_form)
+                .map_err(InjectServiceError::Injection)?;
+            let forward = match live::authorize_commit(cancellation, deadline, || {
+                session.browser_inject_forward_guard_until(
+                    service,
+                    authorization.lifecycle_token(),
+                    delivered,
+                    Some(deadline),
+                )
+            }) {
+                Ok(guard) => guard,
+                Err(error) => {
+                    extension
+                        .cancel_submit(&transaction_id, &ready.pending_id)
+                        .await;
+                    return Err(error);
+                }
+            };
+            let remaining = forward
+                .remaining()
+                .ok_or(InjectServiceError::AuthorizationExpired)?
+                .min(deadline.saturating_duration_since(std::time::Instant::now()));
+            let not_after = monotonic_not_after_ns(
+                monotonic_now_ns().map_err(InjectServiceError::Transport)?,
+                remaining,
+            )
+            .map_err(InjectServiceError::Transport)?;
+            let mut nonce = [0u8; 16];
+            getrandom::fill(&mut nonce).map_err(|_| InjectServiceError::Randomness)?;
+            let commit = palladin_browser_bridge::live_login::SubmitRequest {
+                protocol: INJECT_PROVIDER_PROTOCOL.into(),
+                message_type: "submit".into(),
+                transaction_id: hex::encode(nonce),
+                prepared_transaction_id: transaction_id.clone(),
+                grant_id: delivered.grant_id.clone(),
+                entry_id: delivered.entry_id.clone(),
+                expected_domain: target.expected_domain().into(),
+                submit_ready: ready,
+                expires_at: transport::epoch_expiry(remaining)
+                    .map_err(InjectServiceError::Transport)?,
+            };
+            if cancellation.is_cancelled() {
+                extension
+                    .cancel_submit(&transaction_id, &commit.submit_ready.pending_id)
+                    .await;
+                return Err(InjectServiceError::Cancelled);
+            }
+            let sealed = extension
+                .seal_submit(&commit, not_after)
+                .map_err(InjectServiceError::Transport)?;
+            response = extension
+                .send_inject(sealed, remaining)
+                .await
+                .map_err(InjectServiceError::Transport)?;
+            drop(forward);
+            if response.submit_ready.is_some() {
+                return Err(InjectServiceError::InvalidLiveForm);
+            }
+        } else if palladin_browser_bridge::live_login::is_deferred(&current_form)
+            && response.outcome == "injected"
+        {
+            return Err(InjectServiceError::InvalidLiveForm);
+        }
         if response.outcome != "injected" {
             let rejection = parse_provider_rejection(&response.outcome)?;
             if live_forms && rejection == ProviderRejection::StaleFormMap {
@@ -516,7 +596,11 @@ fn resolve_injection_credential(
     authenticated_username: Option<&str>,
     form: &InjectionFormDefinition,
 ) -> Result<InjectionCredential, InjectServiceError> {
-    form.validate().map_err(InjectServiceError::Injection)?;
+    if palladin_browser_bridge::live_login::is_deferred(form) {
+        live::validate(form)?;
+    } else {
+        form.validate().map_err(InjectServiceError::Injection)?;
+    }
     let mut values = SensitiveFieldMap::default();
     for step in &form.steps {
         for field in &step.fields {

@@ -14,6 +14,29 @@ pub(crate) fn validate(form: &InjectionFormDefinition) -> Result<(), InjectServi
     palladin_browser_bridge::live_login::validate_live_form(form)
         .map_err(|_| InjectServiceError::InvalidLiveForm)
 }
+/// The pending DOM identifier never gives authority to submit. Cancellation and
+/// the original deadline are checked again after potentially blocking authorization.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn authorize_commit<G>(
+    cancellation: &tokio_util::sync::CancellationToken,
+    deadline: std::time::Instant,
+    authorize: impl FnOnce() -> Result<G, palladin_runtime::RuntimeError>,
+) -> Result<G, InjectServiceError> {
+    let check = || {
+        if cancellation.is_cancelled() {
+            return Err(InjectServiceError::Cancelled);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(InjectServiceError::AuthorizationExpired);
+        }
+        Ok(())
+    };
+    check()?;
+    let guard = authorize()?;
+    check()?;
+    Ok(guard)
+}
+
 pub(crate) async fn await_username_discovery(
     discovery: impl std::future::Future<
         Output = Result<Option<zeroize::Zeroizing<String>>, palladin_runtime::RuntimeError>,
@@ -90,6 +113,46 @@ mod tests {
         .await
         .expect("pending discovery must observe caller cancellation");
         assert!(matches!(result, Err(InjectServiceError::Cancelled)));
+    }
+
+    #[test]
+    fn deferred_commit_rechecks_cancellation_and_original_deadline_after_guard() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        cancellation.cancel();
+        let result = authorize_commit(
+            &cancellation,
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        );
+        assert!(matches!(result, Err(InjectServiceError::Cancelled)));
+        assert_eq!(calls.get(), 0);
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let result = authorize_commit(
+            &cancellation,
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            || {
+                cancellation.cancel();
+                Ok(())
+            },
+        );
+        assert!(matches!(result, Err(InjectServiceError::Cancelled)));
+        let result = authorize_commit(
+            &tokio_util::sync::CancellationToken::new(),
+            std::time::Instant::now() + std::time::Duration::from_millis(5),
+            || {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(InjectServiceError::AuthorizationExpired)
+        ));
     }
 
     #[test]
