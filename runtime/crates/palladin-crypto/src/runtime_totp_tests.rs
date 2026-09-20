@@ -253,3 +253,14 @@ fn full_member_totp_rejects_invalid_sources_without_bypassing_the_v2_validator()
     member["agentFieldAccess"]["credential.totp"] = serde_json::json!("onGrantValue");
     assert!(normalize_full_member_secret(&serde_json::to_vec(&member).unwrap(), 4, 0).is_err());
 }
+
+#[test]
+fn invalid_full_totp_wipes_previously_projected_password() {
+    let mut member = full_member_secret_with_totp();
+    member["content"]["totp"]["algorithm"] = serde_json::json!("MD5");
+    // The selected password sorts before TOTP; its clone must already belong
+    // to the wiping accumulator when source conversion fails.
+    WIPED_SENSITIVE_VALUES.with(|count| count.set(0));
+    assert!(normalize_full_member_secret(&serde_json::to_vec(&member).unwrap(), 4, 0).is_err());
+    WIPED_SENSITIVE_VALUES.with(|count| assert_eq!(count.get(), 1));
+}

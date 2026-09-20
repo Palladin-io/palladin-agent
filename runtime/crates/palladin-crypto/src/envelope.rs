@@ -1454,35 +1454,38 @@ fn normalize_projected_member_secret(
     // FULL grants open MemberSecret, whose TOTP value is source material rather
     // than a precomputed code. Keep it in the existing runtime-only V2 path.
     let runtime_totp = matches!(entry_type, "key" | "credential");
-    let fields = field_ids
-        .into_iter()
-        .map(|(policy_id, payload_id)| {
-            let mode = match access.get(policy_id).and_then(Value::as_str) {
-                Some("onGrantValue") => "value",
-                Some("onGrantDerived") => "derived",
-                Some("onGrantRuntime") => "runtime",
-                _ => return Err(CryptoError::InvalidDescriptor),
-            };
-            let (kind, value) =
-                member_secret_field(entry_type, object, content, custom_fields, &payload_id)?;
-            let value = if runtime_totp && kind == "totp" && !value.is_null() {
-                member_totp_runtime_source(value)?
-            } else {
-                value
-            };
-            Ok(serde_json::json!({
-                "id": payload_id,
-                "kind": kind,
-                "mode": mode,
-                "value": value,
-            }))
-        })
-        .collect::<Result<Vec<_>, CryptoError>>()?;
-    let projected = SensitiveJson(serde_json::json!({
+    // Install the wiping owner before any fallible field conversion: a later
+    // invalid TOTP source must also wipe earlier password/value clones.
+    let mut fields = SensitiveValues(Vec::new());
+    for (policy_id, payload_id) in field_ids {
+        let mode = match access.get(policy_id).and_then(Value::as_str) {
+            Some("onGrantValue") => "value",
+            Some("onGrantDerived") => "derived",
+            Some("onGrantRuntime") => "runtime",
+            _ => return Err(CryptoError::InvalidDescriptor),
+        };
+        let (kind, value) =
+            member_secret_field(entry_type, object, content, custom_fields, &payload_id)?;
+        let value = if runtime_totp && kind == "totp" && !value.is_null() {
+            member_totp_runtime_source(value)?
+        } else {
+            value
+        };
+        let mut field = serde_json::json!({
+            "id": payload_id,
+            "kind": kind,
+            "mode": mode,
+            "value": null,
+        });
+        field["value"] = value;
+        fields.0.push(field);
+    }
+    let mut projected = SensitiveJson(serde_json::json!({
         "schema": if runtime_totp { "palladin.grant-payload.v2" } else { "palladin.grant-payload.v1" },
         "entryType": entry_type,
-        "fields": fields,
+        "fields": [],
     }));
+    projected.0["fields"] = Value::Array(std::mem::take(&mut fields.0));
     let projected_bytes =
         Zeroizing::new(serde_json::to_vec(&projected.0).map_err(|_| CryptoError::InvalidEncoding)?);
     normalize_grant_payload(
@@ -2001,9 +2004,16 @@ impl Drop for SensitiveJson {
 
 struct SensitiveValues(Vec<Value>);
 
+#[cfg(test)]
+thread_local! {
+    static WIPED_SENSITIVE_VALUES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl Drop for SensitiveValues {
     fn drop(&mut self) {
         self.0.iter_mut().for_each(zeroize_json);
+        #[cfg(test)]
+        WIPED_SENSITIVE_VALUES.with(|count| count.set(count.get() + self.0.len()));
     }
 }
 
