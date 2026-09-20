@@ -125,3 +125,78 @@ Regression tests cover the live primary/custom path, ambiguous sources, and
 v1 refresh-required. Deploy a compatible consumer before enabling the v2 writer;
 existing grants need newly encrypted source material, not merely a field-scope
 change. Passing these fixture tests does not establish real-site MFA acceptance.
+
+## Deferred identifier submission — 2026-09-20
+
+Some sites expose a native username control before exposing an enabled native
+submit. The private live protocol adds an explicit form version 2 and
+`deferred-native-click`, whose opaque selector names the credential scope, not a
+guessed button. Supported ordered field shapes are username, password, or username
+then password, with their corresponding controls. All handles must be distinct
+and belong to the same discovery snapshot. V1 maps and their validator remain
+unchanged. An old consumer rejects v2; a new consumer never silently falls back
+after filling. TOTP remains on v1; arbitrary DIV clicks, new-password fields and
+additional verification data remain unsupported.
+
+The same CLI/MCP call delivers credentials once. It fills the approved controls
+once per fresh stage, receives a typed, value-free `submit-ready` containing a fresh pending ID,
+URL, document and actual native submit handle, then rechecks cancellation, the
+original monotonic deadline, lease and browser lifecycle. It sends a new,
+value-free `submit` transaction bound to the original fill transaction, grant,
+Entry, exact domain and the complete pending tuple. Only the successful commit
+increments the stage counter. The host independently rejects an immediate
+`injected` reply to deferred fill, altered bindings, another `submit-ready` after
+commit, reused fill transaction IDs and any expired authorization.
+
+Both fill and commit carry a native-derived `expiresAt` epoch-millisecond bound.
+The host clamps it to the original monotonic lease before forwarding. The matching
+extension must cap pending lifetime at ten seconds using its own monotonic timer,
+wait at most five seconds for an enabled native action, observe native disconnect,
+and revalidate the exact document, origin, scope, controls, approved identifier
+and submit destination synchronously immediately before click. No asynchronous
+wait is allowed between final commit validation and click. Timers do not replace
+native reauthorization. A queued expired commit must be rejected by the extension.
+
+Failed reauthorization or cancellation before commit sends best-effort,
+value-free `cancel-submit`; no acknowledgement is required. Pending state also
+expires without a cancel message. Neither secret-bearing fill nor value-free
+commit is retried following timeout, transport loss or lost acknowledgement.
+After commit handoff, cancellation cannot undo a potentially completed click;
+the call waits for the bounded result and never claims remote login success.
+
+`runtime/contracts/inject-provider/live-v2/deferred-submit.json` contains the same
+synthetic bytes as the matching extension fixture. Native tests cover envelope
+parsing, strict value-free commit, cross-binding rejection and encrypted host
+fill/commit exchanges. The runtime/API test verifies one backend credential
+request across repeated authorization guards and rejects a second delivery before
+another HTTP request. Synthetic deferred transitions do not establish that a
+particular production site converts its inactive UI into a native submit control.
+
+
+### Deferred password continuation and framework settling
+
+A committed identifier stage may continue to a fresh deferred password stage
+within the same call and credential delivery. The shared native flow retains the
+validated current stage URL; both the CLI service and native host bind the pending
+commit to that URL, rather than the initial login URL. Same-origin validation and
+submitted-field replay protection still apply, including password replay when a
+site returns fresh selector handles.
+
+The extension adapts an already recognized ordinary credential plan into this
+same fill/ready/commit executor. After filling, it yields one event-loop task before
+preparing the native submit handle, allowing framework input handlers to settle.
+This happens before native reauthorization, never between final commit validation
+and click. Discovery fixes each control's writable or preserved mode; carried
+identities must match the approved username and may not be overwritten.
+
+The additional `live-v2/deferred-password.json` fixture is byte-identical to the
+extension's `deferred-password-v2.json`. It covers password-only and carried-identity
+wire shapes with synthetic values. Encrypted native-host tests cover a complete
+identifier fill/commit followed by password fill/commit in one flow. Public-site
+acceptance remains separate from those fixture and protocol assertions.
+
+The ten-second pending-submit lifetime limits when the extension may accept the
+commit. After that commit, waiting for the click result and next-page discovery
+uses the original native authorization deadline, without renewing it. Expiring
+the pending window must not discard a valid result from an already accepted
+click. Losing that result still stops the operation without replaying the commit.

@@ -51,6 +51,8 @@ pub struct InjectionFormField {
 pub enum InjectionSubmitKind {
     Click,
     PressEnter,
+    /// Private live v2 scope binding; never a stored map action.
+    DeferredNativeClick,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -93,6 +95,7 @@ impl InjectionFormDefinition {
         for (step_index, step) in self.steps.iter().enumerate() {
             if step.fields.is_empty()
                 || (step_index + 1 < self.steps.len() && step.wait_for.is_none())
+                || step.submit.action == InjectionSubmitKind::DeferredNativeClick
                 || !valid_selector(&step.submit.selector)
             {
                 return Err(InjectionError::InvalidFormDefinition);

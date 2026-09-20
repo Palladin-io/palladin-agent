@@ -8811,6 +8811,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deferred_submit_reauthorization_reuses_exactly_one_api_delivery() {
+        let root = tempfile::tempdir().expect("root");
+        let service = RuntimeService::new(
+            ProfileRepository::new(root.path().join("state")).expect("repository"),
+            MemorySecretStore::default(),
+        );
+        let browser = service
+            .provision_browser_host_authorization()
+            .expect("authorization");
+        let encryption = X25519Identity::from_private_bytes(vec![41; 32]).expect("identity");
+        let payload = r#"{"entryType":"credential","fields":[{"id":"credential.url","kind":"url","mode":"value","value":"https://login.example.test/"},{"id":"credential.username","kind":"text","mode":"value","value":"synthetic-user"}],"schema":"palladin.grant-payload.v1"}"#;
+        let body = grant_response_for_identity(
+            &encryption,
+            (TEST_ENTRY_ID, 1),
+            payload,
+            &["credential.url", "credential.username"],
+            4,
+            None,
+            (TEST_ORGANIZATION_ID, TEST_VAULT_ID, TEST_AGENT_ID),
+        );
+        let (host, requests) = credential_server_owned(vec![body]).await;
+        let api = ApiClient::new(
+            ApiHost::parse(&host).expect("host"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".into()),
+            &encryption,
+            "fixture-host",
+            None,
+        )
+        .expect("api");
+        let mut session = runtime_session(host, api, encryption);
+        session.operation = RuntimeOperation::InjectCredential;
+        let CredentialDelivery::Granted(delivered) = session
+            .deliver_for_inject(request(), &CancellationToken::new(), |_| {})
+            .await
+            .expect("delivery")
+        else {
+            panic!("grant expected")
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        // The production flow uses this same guard for fill, commit and later stages.
+        for _ in 0..4 {
+            let guard = session
+                .browser_inject_forward_guard_until(
+                    &service,
+                    browser.lifecycle_token(),
+                    &delivered,
+                    Some(deadline),
+                )
+                .expect("reauthorize existing delivery");
+            assert!(guard.remaining().is_some());
+            drop(guard);
+        }
+        // Even an accidental second delivery call cannot spend another backend grant use.
+        let duplicate = session
+            .deliver_for_inject(request(), &CancellationToken::new(), |_| {})
+            .await;
+        assert!(matches!(
+            duplicate,
+            Err(RuntimeError::OperationAuthorizationConsumed)
+        ));
+        assert_eq!(requests.lock().expect("requests").len(), 1);
+    }
+
+    #[tokio::test]
     async fn native_exec_consumes_the_canonical_credential_envelope() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../contracts/v1/encrypted-envelope.json"

@@ -72,7 +72,31 @@ where
                     .to_string();
         }
         let transaction_id = injection.request.transaction_id.clone();
-        let _lifecycle = lifecycle_guard(OPERATION_TIMEOUT.min(authorization_remaining))?;
+        let pending_binding =
+            palladin_browser_bridge::live_login::is_deferred(&injection.request.form).then(|| {
+                super::deferred::PendingBinding {
+                    prepared_transaction_id: transaction_id.clone(),
+                    grant_id: injection.request.grant_id.clone(),
+                    entry_id: injection.request.entry_id.clone(),
+                    expected_domain: injection.request.expected_domain.clone(),
+                    form: injection.request.form.clone(),
+                    original_url: flow
+                        .as_ref()
+                        .map(|flow| flow.current_url().to_owned())
+                        .unwrap_or_default(),
+                    not_after_monotonic_ns: injection.not_after_monotonic_ns.clone(),
+                }
+            });
+        let mut lifecycle = Some(lifecycle_guard(
+            OPERATION_TIMEOUT.min(authorization_remaining),
+        )?);
+        if let Some(expiry) = injection.request.expires_at.as_mut() {
+            let remaining = authorization_remaining_until(&injection.not_after_monotonic_ns)?;
+            *expiry = (*expiry).min(
+                super::deferred::epoch_ms()?
+                    .saturating_add(u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX)),
+            );
+        }
         authorization_remaining_until(&injection.not_after_monotonic_ns)?;
         let extension_frame = extension_session.seal(&injection.request)?;
         let not_after_monotonic_ns = injection.not_after_monotonic_ns.clone();
@@ -87,8 +111,27 @@ where
             timeout_at(extension_deadline, read_message(native_input))
                 .await
                 .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
-        let result: InjectResult = extension_session.open(&extension_response)?;
+        let mut result: InjectResult = extension_session.open(&extension_response)?;
         validate_inject_result(&result, &transaction_id)?;
+        if result.outcome == "submit-ready" {
+            let binding = pending_binding
+                .as_ref()
+                .ok_or(NativeBrowserError::InvalidMessage)?;
+            // Release the initial lifecycle guard before the caller reacquires authorization.
+            drop(lifecycle.take());
+            result = super::deferred::finish(
+                local,
+                local_session,
+                extension_session,
+                (native_input, native_output),
+                (binding, &result),
+                lifecycle_guard,
+            )
+            .await?;
+        } else if pending_binding.is_some() && result.outcome == "injected" {
+            // A deferred fill cannot bypass its explicit commit phase.
+            return Err(NativeBrowserError::InvalidMessage);
+        }
         let continue_ready = if result.outcome == "injected" {
             if let Some(flow) = flow.as_mut() {
                 flow.submitted()
@@ -112,7 +155,7 @@ where
         timeout(OPERATION_TIMEOUT, write_message(local, &local_response))
             .await
             .map_err(|_| NativeBrowserError::Unavailable)??;
-        drop(_lifecycle);
+        drop(lifecycle);
         if !continue_ready {
             break;
         }

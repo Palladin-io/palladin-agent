@@ -24,6 +24,7 @@ use zeroize::Zeroize;
 
 use crate::browser::{CHROME_EXTENSION_ORIGIN, local_socket_path};
 
+mod deferred;
 mod live_flow;
 #[cfg(test)]
 mod test_peer;
@@ -84,6 +85,8 @@ pub struct InjectFieldValue<'a> {
 #[serde(rename_all = "camelCase")]
 pub struct InjectRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub continue_live: Option<bool>,
     pub protocol: &'static str,
     #[serde(rename = "type")]
@@ -109,6 +112,8 @@ struct LocalInjectCommand<'a> {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InjectResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submit_ready: Option<palladin_browser_bridge::live_login::SubmitReady>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<palladin_browser_bridge::live_login::LiveContinuation>,
     pub protocol: String,
@@ -155,6 +160,8 @@ impl Zeroize for OwnedInjectFieldValue {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OwnedInjectRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     continue_live: Option<bool>,
     protocol: String,
@@ -458,7 +465,17 @@ fn validate_inject_request(request: &OwnedInjectRequest) -> Result<(), NativeBro
         || !valid_identifier(&request.entry_id)
         || request.expected_domain.is_empty()
         || request.expected_domain.len() > 253
-        || request.form.validate().is_err()
+        || (if request.continue_live == Some(true) {
+            palladin_browser_bridge::live_login::validate_live_form(&request.form)
+        } else {
+            request.form.validate()
+        })
+        .is_err()
+        || palladin_browser_bridge::live_login::is_deferred(&request.form)
+            != request.expires_at.is_some()
+        || request
+            .expires_at
+            .is_some_and(|expiry| deferred::epoch_ms().map_or(true, |now| expiry <= now))
         || request.values.is_empty()
         || request.values.len() > 16
     {
@@ -656,6 +673,7 @@ fn validate_inject_result(
     let valid_outcome = matches!(
         result.outcome.as_str(),
         "injected"
+            | "submit-ready"
             | "rejected"
             | "no-password-field"
             | "no-submit-control"
@@ -670,6 +688,7 @@ fn validate_inject_result(
         || result.transaction_id.as_deref() != Some(transaction_id)
         || !valid_outcome
         || (result.outcome != "injected" && result.continuation.is_some())
+        || (result.outcome == "submit-ready") != result.submit_ready.is_some()
     {
         return Err(NativeBrowserError::InvalidMessage);
     }
@@ -902,6 +921,7 @@ mod tests {
 
     fn owned_inject_request() -> OwnedInjectRequest {
         OwnedInjectRequest {
+            expires_at: None,
             continue_live: None,
             protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
             message_type: "inject".to_owned(),
@@ -975,6 +995,7 @@ mod tests {
         assert!(validate_prepare_result(&bad_prepare, &"A".repeat(32)).is_err());
 
         let missing_transaction = InjectResult {
+            submit_ready: None,
             continuation: None,
             protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
             message_type: "inject.result".to_owned(),
@@ -984,6 +1005,7 @@ mod tests {
         assert!(validate_inject_result(&missing_transaction, "tx").is_err());
 
         let stale_map = InjectResult {
+            submit_ready: None,
             continuation: None,
             protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
             message_type: "inject.result".to_owned(),
@@ -1002,6 +1024,7 @@ mod tests {
     #[test]
     fn decrypted_owned_field_value_has_explicit_zeroization() {
         let mut request = OwnedInjectRequest {
+            expires_at: None,
             continue_live: None,
             protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
             message_type: "inject".to_owned(),
@@ -1049,6 +1072,7 @@ mod tests {
                 }],
             };
             let request = InjectRequest {
+                expires_at: None,
                 continue_live: None,
                 protocol: INJECT_PROVIDER_PROTOCOL,
                 message_type: "inject",
@@ -1083,6 +1107,7 @@ mod tests {
         let (mut sender, mut receiver) = UnixStream::pair().expect("socket pair");
         let form = valid_form();
         let request = InjectRequest {
+            expires_at: None,
             continue_live: None,
             protocol: INJECT_PROVIDER_PROTOCOL,
             message_type: "inject",

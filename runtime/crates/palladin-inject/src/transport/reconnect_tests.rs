@@ -194,6 +194,7 @@ async fn dropped_inject_response_is_never_replayed() {
         steps: vec![],
     };
     let request = InjectRequest {
+        expires_at: None,
         continue_live: None,
         protocol: INJECT_PROVIDER_PROTOCOL,
         message_type: "inject",
