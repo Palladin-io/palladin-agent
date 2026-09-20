@@ -24,6 +24,13 @@ enter default environment variables. Inject derives a code before provider
 forwarding; the extension receives no source descriptor. No new key persistence,
 seed logging, or public seed output is introduced.
 
+FULL Key/Credential delivery opens the current authenticated MemberSecret rather
+than a GrantPayload. Its local projection applies the existing `onGrantDerived`
+policy and converts approved primary/custom TOTP parameters to the same v2 runtime
+source. Member-only issuer/account metadata is omitted; `never` fields remain
+excluded. This does not change the encrypted MemberSecret contract, grant scope,
+Script delivery, or the strict rejection of source values in external v1 payloads.
+
 An OTP destination uses the authenticated primary `credential.totp` if present,
 otherwise legacy primary TOTP, otherwise exactly one approved typed custom TOTP.
 Multiple custom candidates fail closed. Labels cannot designate the source. The
