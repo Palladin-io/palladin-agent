@@ -145,10 +145,11 @@ where
     let frame = extension_session.seal(&command.request)?;
     let response_deadline =
         write_authorized_extension_frame(native_output, &frame, &not_after.to_string()).await?;
-    let response: SecureFrame =
-        timeout_at(response_deadline.min(deadline), read_message(native_input))
-            .await
-            .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
+    // Pending TTL bounds permission to commit, not discovery after an accepted click.
+    // The original native authorization still bounds the reply; no commit is replayed.
+    let response: SecureFrame = timeout_at(response_deadline, read_message(native_input))
+        .await
+        .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
     let result: InjectResult = extension_session.open(&response)?;
     validate_inject_result(&result, &command.request.transaction_id)?;
     if result.submit_ready.is_some() {

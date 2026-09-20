@@ -170,3 +170,9 @@ fill/commit exchanges. The runtime/API test verifies one backend credential
 request across repeated authorization guards and rejects a second delivery before
 another HTTP request. Synthetic deferred transitions do not establish that a
 particular production site converts its inactive UI into a native submit control.
+
+The ten-second pending-submit lifetime limits when the extension may accept the
+commit. After that commit, waiting for the click result and next-page discovery
+uses the original native authorization deadline, without renewing it. Expiring
+the pending window must not discard a valid result from an already accepted
+click. Losing that result still stops the operation without replaying the commit.

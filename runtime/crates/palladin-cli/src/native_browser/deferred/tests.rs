@@ -25,7 +25,7 @@ fn ready() -> SubmitReady {
 
 #[tokio::test]
 async fn deferred_flow_fills_once_and_requires_bound_reauthorized_commit() {
-    for case in [
+    run_deferred_cases(&[
         "completed",
         "continued",
         "revoked",
@@ -42,7 +42,29 @@ async fn deferred_flow_fills_once_and_requires_bound_reauthorized_commit() {
         "lost-commit-ack",
         "premature-injected",
         "repeated-ready",
-    ] {
+    ])
+    .await;
+}
+
+#[tokio::test]
+async fn committed_submit_waits_for_continuation_beyond_pending_ttl() {
+    run_deferred_cases(&["slow-continuation"]).await;
+}
+
+#[tokio::test]
+async fn committed_submit_reply_cannot_extend_original_authorization() {
+    run_deferred_cases(&["reply-after-authorization"]).await;
+}
+
+async fn run_deferred_cases(cases: &[&'static str]) {
+    for &case in cases {
+        let operation_budget = if case == "slow-continuation" {
+            Duration::from_secs(20)
+        } else {
+            Duration::from_secs(5)
+        };
+        let continued = matches!(case, "continued" | "slow-continuation");
+        let succeeds = case == "completed" || continued;
         let identity = BrowserHostIdentity::from_secret_bytes([59; 32]);
         let (open, pending) = LocalClientHandshake::start(&identity).unwrap();
         let (session_ready, mut local_session) = accept_local_client(&identity, &open).unwrap();
@@ -107,7 +129,13 @@ async fn deferred_flow_fills_once_and_requires_bound_reauthorized_commit() {
             let second = read_message::<SecureFrame>(&mut extension).await;
             if !matches!(
                 case,
-                "completed" | "continued" | "lost-commit-ack" | "repeated-ready" | "cancel"
+                "completed"
+                    | "continued"
+                    | "slow-continuation"
+                    | "reply-after-authorization"
+                    | "lost-commit-ack"
+                    | "repeated-ready"
+                    | "cancel"
             ) {
                 assert!(
                     second.is_err(),
@@ -134,9 +162,23 @@ async fn deferred_flow_fills_once_and_requires_bound_reauthorized_commit() {
             if case == "lost-commit-ack" {
                 return;
             }
+            if case == "slow-continuation" {
+                // The click already committed while pending; only next-page discovery is slow.
+                tokio::time::sleep(Duration::from_millis(9_950)).await;
+            }
+            if case == "reply-after-authorization" {
+                // A later caller deadline must not renew the original native authorization.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let next = read_message::<SecureFrame>(&mut extension).await;
+                assert!(
+                    next.is_err(),
+                    "an expired committed operation must close without retry"
+                );
+                return;
+            }
             let reply = if case == "repeated-ready" {
                 json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"inject.result","transactionId":"commit-1","outcome":"submit-ready","submitReady":ready()})
-            } else if case == "continued" {
+            } else if continued {
                 json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"inject.result","transactionId":"commit-1","outcome":"injected","continuation":{"outcome":"ready","currentUrl":"https://example.test/password","documentId":"document-2","liveForm":password_form()}})
             } else {
                 json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"inject.result","transactionId":"commit-1","outcome":"injected","continuation":{"outcome":"no-form"}})
@@ -144,7 +186,7 @@ async fn deferred_flow_fills_once_and_requires_bound_reauthorized_commit() {
             write_message(&mut extension, &peer.seal(reply, 1))
                 .await
                 .unwrap();
-            if case == "continued" {
+            if continued {
                 let frame = read_message::<SecureFrame>(&mut extension).await.unwrap();
                 let password = peer.open(&frame, 2);
                 assert_eq!(password["values"].as_array().unwrap().len(), 1);
@@ -177,7 +219,11 @@ async fn deferred_flow_fills_once_and_requires_bound_reauthorized_commit() {
         };
         let original_deadline = monotonic_not_after_ns(
             monotonic_now_ns().unwrap(),
-            Duration::from_millis(if case == "expired" { 100 } else { 5000 }),
+            if matches!(case, "expired" | "reply-after-authorization") {
+                Duration::from_millis(100)
+            } else {
+                operation_budget
+            },
         )
         .unwrap();
         let sealed = client.seal_inject(&request, original_deadline).unwrap();
@@ -188,6 +234,10 @@ async fn deferred_flow_fills_once_and_requires_bound_reauthorized_commit() {
             assert_eq!(response.unwrap().outcome, "submit-ready");
             if case == "expired" {
                 tokio::time::sleep(Duration::from_millis(120)).await;
+            }
+            if case == "slow-continuation" {
+                // Reauthorization consumes part of the pending window before commit.
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
             let mut request = SubmitRequest {
                 protocol: INJECT_PROVIDER_PROTOCOL.into(),
@@ -216,7 +266,7 @@ async fn deferred_flow_fills_once_and_requires_bound_reauthorized_commit() {
             let command = if case == "cancel" {
                 json!({"protocol":LOCAL_TRANSPORT_PROTOCOL,"type":"submit.cancel","request":{"protocol":INJECT_PROVIDER_PROTOCOL,"type":"cancel-submit","transactionId":"cancel-1","preparedTransactionId":"fill-1","pendingId":ready().pending_id}})
             } else {
-                json!({"protocol":LOCAL_TRANSPORT_PROTOCOL,"type":"submit.forward","notAfterMonotonicNs":monotonic_not_after_ns(monotonic_now_ns().unwrap(),Duration::from_secs(5)).unwrap().to_string(),"request":request})
+                json!({"protocol":LOCAL_TRANSPORT_PROTOCOL,"type":"submit.forward","notAfterMonotonicNs":monotonic_not_after_ns(monotonic_now_ns().unwrap(),operation_budget).unwrap().to_string(),"request":request})
             };
             let frame = client.session.seal(&command).unwrap();
             // An expired host may already have closed: even then nothing is retried.
@@ -226,15 +276,11 @@ async fn deferred_flow_fills_once_and_requires_bound_reauthorized_commit() {
                         frame,
                         transaction_id: "commit-1".into(),
                     },
-                    Duration::from_secs(5),
+                    operation_budget,
                 )
                 .await;
-            assert_eq!(
-                result.is_ok(),
-                matches!(case, "completed" | "continued"),
-                "{case}"
-            );
-            if case == "continued" {
+            assert_eq!(result.is_ok(), succeeds, "{case}");
+            if continued {
                 let plan = password_form();
                 let request = InjectRequest {
                     expires_at: None,
@@ -263,16 +309,12 @@ async fn deferred_flow_fills_once_and_requires_bound_reauthorized_commit() {
             }
         }
         drop(client);
-        assert_eq!(
-            host.await.unwrap().is_ok(),
-            matches!(case, "completed" | "continued"),
-            "{case}"
-        );
+        assert_eq!(host.await.unwrap().is_ok(), succeeds, "{case}");
         peer_task.await.unwrap();
-        if matches!(case, "completed" | "continued") {
+        if succeeds {
             assert_eq!(
                 checks.load(std::sync::atomic::Ordering::SeqCst),
-                if case == "continued" { 3 } else { 2 }
+                if continued { 3 } else { 2 }
             );
         }
     }
