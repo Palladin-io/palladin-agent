@@ -200,3 +200,43 @@ commit. After that commit, waiting for the click result and next-page discovery
 uses the original native authorization deadline, without renewing it. Expiring
 the pending window must not discard a valid result from an already accepted
 click. Losing that result still stops the operation without replaying the commit.
+
+## Explicit deferred credential controls — 2026-09-21
+
+Private live form version 2 also accepts `deferred-control-click`. This is an
+explicit action for a credential submit control recognized and revalidated by a
+matching extension, including supported anchor or DIV buttons. Existing
+`deferred-native-click` remains restricted to native submit controls. The new
+action does not reinterpret old forms or authorize arbitrary selector execution.
+
+Both actions name the same expiring credential scope through opaque live handles
+and enter the existing fill / submit-ready / reauthorized one-use commit path.
+Only the ordered username, password, or username-plus-password field shapes are
+supported. Stored maps, registration/new-password fields, OTP, custom fields,
+CSS selectors, duplicate handles and mixed snapshots remain rejected. Grant,
+Entry, exact origin/document, expiry, cancellation, no-replay and single credential
+delivery boundaries are unchanged. No async wait is added before physical commit.
+
+Older runtimes reject the unknown action during deserialization without fallback.
+Deploy a compatible runtime before enabling its producer in the extension. The
+new `runtime/contracts/inject-provider/live-v2/deferred-control-click.json` is
+shared byte-for-byte with the matching extension; existing fixtures are unchanged.
+The encrypted host regressions exercise both actions with the same successful
+continuations and rejected authorization, binding, replay and lost-response cases.
+
+## Terminal origin change reporting — 2026-09-21
+
+After a confirmed submit, a terminal `origin-mismatch` continuation means the
+bounded flow stopped at its original origin boundary. The shared CLI/MCP result
+reports this as neutral `origin-changed` with the confirmed submitted-step count.
+CLI exit 0 indicates that those browser submissions completed and control was
+returned, as for `no-form`; it does not establish authentication or trust in the
+destination. The caller must inspect the page before further action and must not
+replay a submitted step. No destination URL or site-specific allowlist is needed.
+
+This reporting applies only after at least one confirmed submit. An origin
+rejection before submit remains an error. A `ready` plan on another origin is
+still rejected; no fields, approval, grant, lease, or continuation authority pass
+to that origin. Challenge, timeout, insecure-origin and unavailable-provider
+outcomes retain their nonzero CLI status. The private continuation wire contract
+is unchanged, and no credential-bearing operation is retried.
