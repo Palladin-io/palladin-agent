@@ -2,11 +2,11 @@ use super::*;
 use crate::native_browser::test_peer::ExtensionPeer;
 use serde_json::json;
 
-fn form() -> InjectionFormDefinition {
-    serde_json::from_value(json!({"version":2,"steps":[{"fields":[{"entryFieldId":"credential.username","control":"username","selector":format!("palladin-live:{}:{}","a".repeat(32),"b".repeat(32))}],"submit":{"action":"deferred-native-click","selector":format!("palladin-live:{}:{}","a".repeat(32),"c".repeat(32))}}]})).unwrap()
+fn form(action: &str) -> InjectionFormDefinition {
+    serde_json::from_value(json!({"version":2,"steps":[{"fields":[{"entryFieldId":"credential.username","control":"username","selector":format!("palladin-live:{}:{}","a".repeat(32),"b".repeat(32))}],"submit":{"action":action,"selector":format!("palladin-live:{}:{}","a".repeat(32),"c".repeat(32))}}]})).unwrap()
 }
-fn password_form(deferred: bool) -> InjectionFormDefinition {
-    let mut plan = form();
+fn password_form(deferred: bool, action: &str) -> InjectionFormDefinition {
+    let mut plan = form(action);
     if !deferred {
         plan.version = 1;
         plan.steps[0].submit.action = palladin_browser_bridge::InjectionSubmitKind::Click;
@@ -36,39 +36,44 @@ fn password_ready() -> SubmitReady {
 
 #[tokio::test]
 async fn deferred_flow_fills_once_and_requires_bound_reauthorized_commit() {
-    run_deferred_cases(&[
-        "completed",
-        "continued",
-        "continued-deferred",
-        "revoked",
-        "expired",
-        "cancel",
-        "changed-grant",
-        "changed-entry",
-        "changed-domain",
-        "changed-document",
-        "changed-url",
-        "changed-selector",
-        "changed-pending",
-        "reused-transaction",
-        "lost-commit-ack",
-        "premature-injected",
-        "repeated-ready",
-    ])
-    .await;
+    for action in ["deferred-native-click", "deferred-control-click"] {
+        run_deferred_cases(
+            &[
+                "completed",
+                "continued",
+                "continued-deferred",
+                "revoked",
+                "expired",
+                "cancel",
+                "changed-grant",
+                "changed-entry",
+                "changed-domain",
+                "changed-document",
+                "changed-url",
+                "changed-selector",
+                "changed-pending",
+                "reused-transaction",
+                "lost-commit-ack",
+                "premature-injected",
+                "repeated-ready",
+            ],
+            action,
+        )
+        .await;
+    }
 }
 
 #[tokio::test]
 async fn committed_submit_waits_for_continuation_beyond_pending_ttl() {
-    run_deferred_cases(&["slow-continuation"]).await;
+    run_deferred_cases(&["slow-continuation"], "deferred-native-click").await;
 }
 
 #[tokio::test]
 async fn committed_submit_reply_cannot_extend_original_authorization() {
-    run_deferred_cases(&["reply-after-authorization"]).await;
+    run_deferred_cases(&["reply-after-authorization"], "deferred-native-click").await;
 }
 
-async fn run_deferred_cases(cases: &[&'static str]) {
+async fn run_deferred_cases(cases: &[&'static str], action: &'static str) {
     for &case in cases {
         let operation_budget = if case == "slow-continuation" {
             Duration::from_secs(20)
@@ -108,7 +113,7 @@ async fn run_deferred_cases(cases: &[&'static str]) {
                 message_type: "prepare.result".into(),
                 nonce: Some(prepare.nonce.clone()),
                 current_url: prepare.target_url.clone(),
-                live_form: Some(form()),
+                live_form: Some(form(action)),
                 outcome: "ready".into(),
             };
             super::super::live_flow::serve_inject_flow(
@@ -133,6 +138,7 @@ async fn run_deferred_cases(cases: &[&'static str]) {
             let initial = peer.open(&frame, 0);
             assert_eq!(initial["values"].as_array().unwrap().len(), 1);
             assert_eq!(initial["type"], "inject");
+            assert_eq!(initial["form"]["steps"][0]["submit"]["action"], action);
             assert!(initial["expiresAt"].as_u64().unwrap() > epoch_ms().unwrap());
             let reply = if case == "premature-injected" {
                 json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"inject.result","transactionId":"fill-1","outcome":"injected"})
@@ -196,7 +202,7 @@ async fn run_deferred_cases(cases: &[&'static str]) {
             let reply = if case == "repeated-ready" {
                 json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"inject.result","transactionId":"commit-1","outcome":"submit-ready","submitReady":ready()})
             } else if continues {
-                json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"inject.result","transactionId":"commit-1","outcome":"injected","continuation":{"outcome":"ready","currentUrl":"https://example.test/password","documentId":"document-2","liveForm":password_form(deferred_password)}})
+                json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"inject.result","transactionId":"commit-1","outcome":"injected","continuation":{"outcome":"ready","currentUrl":"https://example.test/password","documentId":"document-2","liveForm":password_form(deferred_password, action)}})
             } else {
                 json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"inject.result","transactionId":"commit-1","outcome":"injected","continuation":{"outcome":"no-form"}})
             };
@@ -210,7 +216,7 @@ async fn run_deferred_cases(cases: &[&'static str]) {
                 assert_eq!(password["values"][0]["entryFieldId"], "credential.password");
                 assert_eq!(
                     password["form"],
-                    serde_json::to_value(password_form(deferred_password)).unwrap()
+                    serde_json::to_value(password_form(deferred_password, action)).unwrap()
                 );
                 if deferred_password {
                     let result = json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"inject.result","transactionId":"password-1","outcome":"submit-ready","submitReady":password_ready()});
@@ -235,7 +241,7 @@ async fn run_deferred_cases(cases: &[&'static str]) {
                 .unwrap();
             }
         });
-        let plan = form();
+        let plan = form(action);
         let request = InjectRequest {
             expires_at: Some(epoch_ms().unwrap() + 5000),
             continue_live: Some(true),
@@ -315,7 +321,7 @@ async fn run_deferred_cases(cases: &[&'static str]) {
                 .await;
             assert_eq!(result.is_ok(), succeeds, "{case}");
             if continues {
-                let plan = password_form(deferred_password);
+                let plan = password_form(deferred_password, action);
                 let request = InjectRequest {
                     expires_at: deferred_password.then(|| epoch_ms().unwrap() + 5000),
                     continue_live: Some(true),
@@ -395,31 +401,36 @@ fn submit_contract_rejects_values_and_unknown_keys() {
 
 #[test]
 fn extension_fixture_bytes_match_native_deferred_contract() {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../contracts/inject-provider/live-v2/deferred-submit.json"
-    ))
-    .unwrap();
-    let inject: OwnedInjectRequest = serde_json::from_value(fixture["inject"].clone()).unwrap();
-    validate_inject_request(&inject).unwrap();
-    let result: InjectResult = serde_json::from_value(fixture["submitReady"].clone()).unwrap();
-    validate_inject_result(&result, &inject.transaction_id).unwrap();
-    let ready = result.submit_ready.unwrap();
-    ready
-        .validate("https://login.example.test/", &inject.form)
-        .unwrap();
-    let request: SubmitRequest = serde_json::from_value(fixture["submit"].clone()).unwrap();
-    let binding = PendingBinding {
-        prepared_transaction_id: inject.transaction_id.clone(),
-        grant_id: inject.grant_id.clone(),
-        entry_id: inject.entry_id.clone(),
-        expected_domain: inject.expected_domain.clone(),
-        form: inject.form.clone(),
-        original_url: ready.current_url.clone(),
-        not_after_monotonic_ns: "1".into(),
-    };
-    validate_commit(&request, &binding, &ready).unwrap();
-    let cancel: CancelSubmitRequest = serde_json::from_value(fixture["cancel"].clone()).unwrap();
-    assert_eq!(cancel.pending_id, ready.pending_id);
+    for bytes in [
+        include_str!("../../../../../contracts/inject-provider/live-v2/deferred-submit.json"),
+        include_str!(
+            "../../../../../contracts/inject-provider/live-v2/deferred-control-click.json"
+        ),
+    ] {
+        let fixture: serde_json::Value = serde_json::from_str(bytes).unwrap();
+        let inject: OwnedInjectRequest = serde_json::from_value(fixture["inject"].clone()).unwrap();
+        validate_inject_request(&inject).unwrap();
+        let result: InjectResult = serde_json::from_value(fixture["submitReady"].clone()).unwrap();
+        validate_inject_result(&result, &inject.transaction_id).unwrap();
+        let ready = result.submit_ready.unwrap();
+        ready
+            .validate("https://login.example.test/", &inject.form)
+            .unwrap();
+        let request: SubmitRequest = serde_json::from_value(fixture["submit"].clone()).unwrap();
+        let binding = PendingBinding {
+            prepared_transaction_id: inject.transaction_id.clone(),
+            grant_id: inject.grant_id.clone(),
+            entry_id: inject.entry_id.clone(),
+            expected_domain: inject.expected_domain.clone(),
+            form: inject.form.clone(),
+            original_url: ready.current_url.clone(),
+            not_after_monotonic_ns: "1".into(),
+        };
+        validate_commit(&request, &binding, &ready).unwrap();
+        let cancel: CancelSubmitRequest =
+            serde_json::from_value(fixture["cancel"].clone()).unwrap();
+        assert_eq!(cancel.pending_id, ready.pending_id);
+    }
 }
 
 #[test]

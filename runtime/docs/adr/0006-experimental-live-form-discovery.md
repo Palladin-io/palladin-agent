@@ -200,3 +200,26 @@ commit. After that commit, waiting for the click result and next-page discovery
 uses the original native authorization deadline, without renewing it. Expiring
 the pending window must not discard a valid result from an already accepted
 click. Losing that result still stops the operation without replaying the commit.
+
+## Explicit deferred credential controls — 2026-09-21
+
+Private live form version 2 also accepts `deferred-control-click`. This is an
+explicit action for a credential submit control recognized and revalidated by a
+matching extension, including supported anchor or DIV buttons. Existing
+`deferred-native-click` remains restricted to native submit controls. The new
+action does not reinterpret old forms or authorize arbitrary selector execution.
+
+Both actions name the same expiring credential scope through opaque live handles
+and enter the existing fill / submit-ready / reauthorized one-use commit path.
+Only the ordered username, password, or username-plus-password field shapes are
+supported. Stored maps, registration/new-password fields, OTP, custom fields,
+CSS selectors, duplicate handles and mixed snapshots remain rejected. Grant,
+Entry, exact origin/document, expiry, cancellation, no-replay and single credential
+delivery boundaries are unchanged. No async wait is added before physical commit.
+
+Older runtimes reject the unknown action during deserialization without fallback.
+Deploy a compatible runtime before enabling its producer in the extension. The
+new `runtime/contracts/inject-provider/live-v2/deferred-control-click.json` is
+shared byte-for-byte with the matching extension; existing fixtures are unchanged.
+The encrypted host regressions exercise both actions with the same successful
+continuations and rejected authorization, binding, replay and lost-response cases.

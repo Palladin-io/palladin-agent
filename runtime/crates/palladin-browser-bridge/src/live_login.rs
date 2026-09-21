@@ -202,7 +202,10 @@ pub fn validate_live_form(form: &InjectionFormDefinition) -> Result<(), Injectio
 pub fn is_deferred(form: &InjectionFormDefinition) -> bool {
     form.version == 2
         && form.steps.len() == 1
-        && form.steps[0].submit.action == InjectionSubmitKind::DeferredNativeClick
+        && matches!(
+            form.steps[0].submit.action,
+            InjectionSubmitKind::DeferredNativeClick | InjectionSubmitKind::DeferredControlClick
+        )
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -312,6 +315,79 @@ mod tests {
         value["steps"][0]["submit"]["action"] = serde_json::json!("deferred-native-click");
         value
     }
+    #[test]
+    fn deferred_control_click_accepts_only_bound_credential_shapes() {
+        for action in ["deferred-native-click", "deferred-control-click"] {
+            for carried in [false, true] {
+                let mut value = serde_json::to_value(deferred_password(carried)).unwrap();
+                value["steps"][0]["submit"]["action"] = serde_json::json!(action);
+                let plan: InjectionFormDefinition = serde_json::from_value(value.clone()).unwrap();
+                validate_live_form(&plan).unwrap();
+                assert!(is_deferred(&plan));
+                assert!(
+                    plan.validate().is_err(),
+                    "private action cannot be a stored map"
+                );
+                value["version"] = serde_json::json!(1);
+                let v1: InjectionFormDefinition = serde_json::from_value(value).unwrap();
+                assert!(v1.validate().is_err());
+                assert!(validate_live_form(&v1).is_err());
+            }
+            let mut value = deferred_form();
+            value["steps"][0]["submit"]["action"] = serde_json::json!(action);
+            let plan: InjectionFormDefinition = serde_json::from_value(value.clone()).unwrap();
+            validate_live_form(&plan).unwrap();
+            for mutation in [
+                "otp",
+                "registration",
+                "custom",
+                "duplicate",
+                "selector",
+                "scope-alias",
+                "snapshot",
+                "unknown",
+            ] {
+                let mut invalid = value.clone();
+                let step = &mut invalid["steps"][0];
+                match mutation {
+                    "otp" => {
+                        step["fields"][0]["entryFieldId"] = serde_json::json!("credential.totp");
+                        step["fields"][0]["control"] = serde_json::json!("otp");
+                    }
+                    "registration" => {
+                        step["fields"][0]["entryFieldId"] =
+                            serde_json::json!("credential.new-password")
+                    }
+                    "custom" => {
+                        step["fields"][0]["entryFieldId"] = serde_json::json!("custom:arbitrary")
+                    }
+                    "duplicate" => {
+                        let copy = step["fields"][0].clone();
+                        step["fields"].as_array_mut().unwrap().push(copy);
+                    }
+                    "selector" => step["submit"]["selector"] = serde_json::json!("div.btn_primary"),
+                    "scope-alias" => {
+                        step["submit"]["selector"] = step["fields"][0]["selector"].clone()
+                    }
+                    "snapshot" => {
+                        step["submit"]["selector"] = serde_json::json!(format!(
+                            "palladin-live:{}:{}",
+                            "f".repeat(32),
+                            "c".repeat(32)
+                        ))
+                    }
+                    "unknown" => step["submit"]["target"] = serde_json::json!("arbitrary"),
+                    _ => unreachable!(),
+                }
+                let result = serde_json::from_value::<InjectionFormDefinition>(invalid);
+                assert!(
+                    result.is_err() || validate_live_form(&result.unwrap()).is_err(),
+                    "{action}: {mutation}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn deferred_identifier_has_explicit_scope_and_cannot_be_a_map() {
         let form: InjectionFormDefinition = serde_json::from_value(deferred_form()).unwrap();
