@@ -274,6 +274,21 @@ pub fn render_search_human(result: &EntrySearchResult) -> RenderedOutput {
     output
 }
 
+/// Reports submitted browser actions, never remote authentication success.
+#[must_use]
+pub fn render_live_flow(provider: &str, steps: usize, outcome: &str) -> RenderedOutput {
+    let mut output = RenderedOutput::default();
+    output.stderr_line(format_args!(
+        "Login flow through {provider} submitted {steps} step(s); stopped: {outcome}. No authentication success is inferred. Inspect the page before any further action; do not replay a submitted step."
+    ));
+    output.exit_code = if steps > 0 && matches!(outcome, "no-form" | "origin-changed") {
+        0
+    } else {
+        2
+    };
+    output
+}
+
 #[must_use]
 pub fn render_report_stale() -> RenderedOutput {
     let mut output = RenderedOutput::default();

@@ -20,8 +20,8 @@ use palladin_cli::browser::{
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
     render_agent_list, render_connect, render_init, render_legacy_cleanup, render_legacy_cutover,
-    render_profile_created, render_report_stale, render_search_human, render_security_upgrade,
-    render_status,
+    render_live_flow, render_profile_created, render_report_stale, render_search_human,
+    render_security_upgrade, render_status,
 };
 use palladin_cli::{
     CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
@@ -1496,16 +1496,7 @@ async fn inject(
             provider,
             steps,
             outcome,
-        }) => {
-            eprintln!(
-                "Login flow through {provider} submitted {steps} step(s); stopped: {outcome}. No authentication success is inferred."
-            );
-            if outcome == "no-form" {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(2)
-            }
-        }
+        }) => emit_output(render_live_flow(&provider, steps, outcome)),
         Ok(InjectExecution::NotGranted(access)) => {
             if let Some(message) = access_message(&access, CredentialMethod::Inject) {
                 eprintln!("Error: {}", safe_terminal_text(&message));

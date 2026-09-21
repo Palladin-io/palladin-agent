@@ -14,6 +14,22 @@ pub(crate) fn validate(form: &InjectionFormDefinition) -> Result<(), InjectServi
     palladin_browser_bridge::live_login::validate_live_form(form)
         .map_err(|_| InjectServiceError::InvalidLiveForm)
 }
+/// Classifies only the terminal continuation of confirmed browser submissions.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn terminal_outcome(
+    flow: &palladin_browser_bridge::live_login::LiveLoginFlow,
+    continuation: &palladin_browser_bridge::live_login::LiveContinuation,
+) -> Result<&'static str, InjectServiceError> {
+    use palladin_browser_bridge::live_login::LiveContinuation;
+    if flow.steps() == 0 || matches!(continuation, LiveContinuation::Ready { .. }) {
+        return Err(InjectServiceError::InvalidLiveForm);
+    }
+    Ok(match continuation {
+        LiveContinuation::OriginMismatch {} => "origin-changed",
+        _ => continuation.outcome(),
+    })
+}
+
 /// The pending DOM identifier never gives authority to submit. Cancellation and
 /// the original deadline are checked again after potentially blocking authorization.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -75,6 +91,74 @@ mod tests {
             }],
         }
     }
+    #[test]
+    fn three_submitted_stages_end_neutrally_at_the_origin_boundary() {
+        use palladin_browser_bridge::live_login::{LiveContinuation, LiveLoginFlow};
+        let mut flow = LiveLoginFlow::new(
+            "https://login.example.test/identifier",
+            form("credential.username", InjectionControl::Username),
+        )
+        .unwrap();
+        let stop = LiveContinuation::OriginMismatch {};
+        assert!(terminal_outcome(&flow, &stop).is_err());
+        for (path, id, control) in [
+            (
+                "password",
+                "credential.password",
+                InjectionControl::Password,
+            ),
+            ("mfa", "credential.totp", InjectionControl::Otp),
+        ] {
+            flow.submitted().unwrap();
+            let next = LiveContinuation::Ready {
+                current_url: format!("https://login.example.test/{path}"),
+                document_id: format!("document-{path}"),
+                live_form: form(id, control),
+            };
+            assert!(flow.advance(&next).unwrap());
+        }
+        flow.submitted().unwrap();
+        assert_eq!(flow.steps(), 3);
+        assert!(!flow.advance(&stop).unwrap());
+        assert_eq!(terminal_outcome(&flow, &stop).unwrap(), "origin-changed");
+        assert_eq!(flow.current_url(), "https://login.example.test/mfa");
+        let foreign = LiveContinuation::Ready {
+            current_url: "https://console.example.test/home".into(),
+            document_id: "document-console".into(),
+            live_form: form("credential.password", InjectionControl::Password),
+        };
+        assert!(terminal_outcome(&flow, &foreign).is_err());
+        for other in [
+            LiveContinuation::NoForm {},
+            LiveContinuation::Challenge {},
+            LiveContinuation::Timeout {},
+            LiveContinuation::InsecureOrigin {},
+            LiveContinuation::ProviderUnavailable {},
+        ] {
+            assert_eq!(terminal_outcome(&flow, &other).unwrap(), other.outcome());
+        }
+    }
+
+    #[test]
+    fn origin_boundary_still_rejects_an_unsubmitted_password_plan() {
+        use palladin_browser_bridge::live_login::{LiveContinuation, LiveLoginFlow};
+        let mut flow = LiveLoginFlow::new(
+            "https://login.example.test/identifier",
+            form("credential.username", InjectionControl::Username),
+        )
+        .unwrap();
+        flow.submitted().unwrap();
+        let foreign = LiveContinuation::Ready {
+            current_url: "https://console.example.test/password".into(),
+            document_id: "document-foreign".into(),
+            live_form: form("credential.password", InjectionControl::Password),
+        };
+        assert!(flow.advance(&foreign).is_err());
+        assert_eq!(flow.steps(), 1);
+        assert_eq!(flow.current_url(), "https://login.example.test/identifier");
+        assert!(terminal_outcome(&flow, &foreign).is_err());
+    }
+
     #[tokio::test]
     async fn pending_discovery_stops_at_original_live_deadline() {
         let cancellation = tokio_util::sync::CancellationToken::new();

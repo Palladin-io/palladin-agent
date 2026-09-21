@@ -498,7 +498,7 @@ where
             return Ok(InjectExecution::LiveFlow {
                 provider: operation.provider.as_str().to_owned(),
                 steps: flow.steps(),
-                outcome: continuation.outcome(),
+                outcome: live::terminal_outcome(flow, &continuation)?,
             });
         }
         if let palladin_browser_bridge::live_login::LiveContinuation::Ready {
@@ -905,6 +905,15 @@ mod tests {
                     .is_authorization_expired()
             );
         }
+    }
+
+    #[test]
+    fn origin_rejection_before_confirmed_submit_remains_an_error() {
+        let rejection = parse_provider_rejection("origin-mismatch").unwrap();
+        assert_eq!(rejection, ProviderRejection::OriginMismatch);
+        let error = InjectServiceError::ProviderRejected(rejection);
+        assert!(error.to_string().contains("origin-mismatch"));
+        assert!(parse_provider_rejection("origin-changed").is_err());
     }
 
     #[test]
