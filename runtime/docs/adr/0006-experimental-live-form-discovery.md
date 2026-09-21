@@ -200,3 +200,20 @@ commit. After that commit, waiting for the click result and next-page discovery
 uses the original native authorization deadline, without renewing it. Expiring
 the pending window must not discard a valid result from an already accepted
 click. Losing that result still stops the operation without replaying the commit.
+
+## Terminal origin change reporting — 2026-09-21
+
+After a confirmed submit, a terminal `origin-mismatch` continuation means the
+bounded flow stopped at its original origin boundary. The shared CLI/MCP result
+reports this as neutral `origin-changed` with the confirmed submitted-step count.
+CLI exit 0 indicates that those browser submissions completed and control was
+returned, as for `no-form`; it does not establish authentication or trust in the
+destination. The caller must inspect the page before further action and must not
+replay a submitted step. No destination URL or site-specific allowlist is needed.
+
+This reporting applies only after at least one confirmed submit. An origin
+rejection before submit remains an error. A `ready` plan on another origin is
+still rejected; no fields, approval, grant, lease, or continuation authority pass
+to that origin. Challenge, timeout, insecure-origin and unavailable-provider
+outcomes retain their nonzero CLI status. The private continuation wire contract
+is unchanged, and no credential-bearing operation is retried.

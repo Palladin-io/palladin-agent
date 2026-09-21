@@ -650,3 +650,41 @@ fn connect_word_inside_another_command_does_not_trigger_the_id_deprecation() {
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
     assert!(!stderr.contains("connect --id no longer"));
 }
+
+#[test]
+fn submitted_flow_origin_change_has_neutral_success_exit_without_auth_claim() {
+    use palladin_cli::output::render_live_flow;
+    let report = render_live_flow("browser-extension", 3, "origin-changed");
+    assert_eq!(report.exit_code, 0);
+    assert!(report.stdout.is_empty());
+    assert!(
+        report
+            .stderr
+            .contains("submitted 3 step(s); stopped: origin-changed")
+    );
+    assert!(
+        report
+            .stderr
+            .contains("No authentication success is inferred.")
+    );
+    for reason in [
+        "origin-mismatch",
+        "challenge",
+        "timeout",
+        "insecure-origin",
+        "provider-unavailable",
+    ] {
+        assert_eq!(
+            render_live_flow("browser-extension", 3, reason).exit_code,
+            2
+        );
+    }
+    assert_eq!(
+        render_live_flow("browser-extension", 0, "origin-changed").exit_code,
+        2
+    );
+    assert_eq!(
+        render_live_flow("browser-extension", 1, "no-form").exit_code,
+        0
+    );
+}
