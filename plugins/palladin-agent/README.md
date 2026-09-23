@@ -1,5 +1,8 @@
 # Palladin plugin for Codex
 
+The plugin uses the `palladin` executable provided by `@palladin/cli`. It is a
+repository-local Codex integration, not a separate npm package.
+
 The repository exposes two Codex artifacts from one generated source:
 
 - `targets/codex/palladin-agent/` is the executable local plugin. It registers the full frozen MCP contract through `palladin --id codex mcp serve`.
