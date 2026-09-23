@@ -10,8 +10,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@palladin/agent/inject-contract': resolve(__dirname, 'src/inject-contract.ts'),
-      '@palladin/agent/form-map': resolve(__dirname, 'src/form-map.ts'),
+      '@palladin/cli/inject-contract': resolve(__dirname, 'src/inject-contract.ts'),
+      '@palladin/cli/form-map': resolve(__dirname, 'src/form-map.ts'),
     },
     // strip .js extensions so Vitest finds the TS source files
     extensionAlias: {

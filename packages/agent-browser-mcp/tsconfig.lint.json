@@ -4,8 +4,8 @@
     "noEmit": true,
     "rootDir": "../..",
     "paths": {
-      "@palladin/agent/inject-contract": ["../../src/inject-contract.ts"],
-      "@palladin/agent/form-map": ["../../src/form-map.ts"]
+      "@palladin/cli/inject-contract": ["../../src/inject-contract.ts"],
+      "@palladin/cli/form-map": ["../../src/form-map.ts"]
     }
   }
 }

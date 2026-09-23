@@ -44,13 +44,13 @@ const canonical = canonicalizeVersionPolicyPayload(payload);
 mkdirSync(resolve(output), { recursive: false, mode: 0o700 });
 writeFileSync(resolve(output, 'version-policy-unsigned.json'), canonical, { mode: 0o600 });
 
-const packages = ['@palladin/agent', ...[...new Set(payload.artifacts.map((artifact) => artifact.packageName))].sort()];
+const packages = ['@palladin/cli', ...[...new Set(payload.artifacts.map((artifact) => artifact.packageName))].sort()];
 const reason = 'This release is blocked by Palladin signed security policy. Install the latest safe version.';
 const commands = [
   '# REVIEW ONLY - this file is never executed by Palladin tooling.',
   '# Run manually as the npm owner with interactive 2FA after the signed policy is published.',
   ...packages.map((name) => `npm deprecate ${shell(name)}@${shell(blocked)} ${shell(reason)}`),
-  `npm dist-tag add ${shell('@palladin/agent')}@${shell(safe)} latest`,
+  `npm dist-tag add ${shell('@palladin/cli')}@${shell(safe)} latest`,
   '',
 ];
 writeFileSync(resolve(output, 'npm-incident-plan.txt'), commands.join('\n'), { mode: 0o600 });

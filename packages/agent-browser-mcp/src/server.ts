@@ -20,8 +20,8 @@ import {
   parseInjectValues,
   type InjectFieldValue,
   type InjectFormDefinition,
-} from '@palladin/agent/inject-contract';
-import { parseFormDiscoveryMap, type FormDiscoveryMap } from '@palladin/agent/form-map';
+} from '@palladin/cli/inject-contract';
+import { parseFormDiscoveryMap, type FormDiscoveryMap } from '@palladin/cli/form-map';
 
 import { AgentBrowserSession } from './agent-browser.js';
 import { spawnAgentRuntime } from './agent-runtime.js';

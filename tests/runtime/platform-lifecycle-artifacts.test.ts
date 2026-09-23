@@ -23,7 +23,7 @@ const platformArtifacts = [
   artifact('palladin-runtime-1.2.3-1.aarch64.rpm', digest('e')),
   artifact('palladin-runtime-1.2.3-1.x86_64.rpm', digest('f')),
 ];
-const agent = artifact('palladin-agent-1.2.3.tgz', digest('0'));
+const agent = artifact('palladin-cli-1.2.3.tgz', digest('0'));
 const artifacts = new Map([...platformArtifacts, agent].map((item) => [item.filename, item.sha256]));
 const target = (targetId: string, roles: Array<[string, string]>) => ({
   targetId,

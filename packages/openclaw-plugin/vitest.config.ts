@@ -4,10 +4,10 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   resolve: {
     alias: {
-      "@palladin/agent/form-map": fileURLToPath(
+      "@palladin/cli/form-map": fileURLToPath(
         new URL("../../src/form-map.ts", import.meta.url),
       ),
-      "@palladin/agent/inject-contract": fileURLToPath(
+      "@palladin/cli/inject-contract": fileURLToPath(
         new URL("../../src/inject-contract.ts", import.meta.url),
       ),
       "openclaw/plugin-sdk/tool-plugin": fileURLToPath(

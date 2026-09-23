@@ -69,7 +69,7 @@ function signedPolicyFixture() {
 
 function metaManifest(overrides = {}) {
   return {
-    name: '@palladin/agent',
+    name: '@palladin/cli',
     version: '1.2.3',
     description: 'fixture',
     private: true,
@@ -311,7 +311,7 @@ test('release workflows pin actions and isolate the one-time npm token exception
   assert.doesNotMatch(platformRelease, /secrets:\s+inherit/);
   assert.match(platformRelease, /npm stage publish "\$package" --tag candidate/);
   assert.match(metaRelease, /INPUTS_VERSION: \$\{\{ inputs\.version \}\}/);
-  assert.match(metaRelease, /npm stage publish "\$RUNNER_TEMP\/stage-assets\/palladin-agent-\$\{INPUTS_VERSION\}\.tgz" --tag latest/);
+  assert.match(metaRelease, /npm stage publish "\$RUNNER_TEMP\/stage-assets\/palladin-cli-\$\{INPUTS_VERSION\}\.tgz" --tag latest/);
   for (const contents of [platformRelease, metaRelease, finalRelease]) {
     assert.match(contents, /github\.actor == 'patryk-roguszewski'/);
     assert.match(contents, /test "\$GITHUB_REF" = "refs\/tags\/\$RELEASE_TAG"/);
@@ -369,7 +369,7 @@ test('meta-package staging is blocked by the exact adversarial and physical life
   const lifecycleArtifactValidations = [
     ...workflow.matchAll(/node security\/lifecycle\/verify-release-artifacts\.mjs/g),
   ];
-  const stageOffset = workflow.indexOf('npm stage publish "$RUNNER_TEMP/stage-assets/palladin-agent-${INPUTS_VERSION}.tgz" --tag latest');
+  const stageOffset = workflow.indexOf('npm stage publish "$RUNNER_TEMP/stage-assets/palladin-cli-${INPUTS_VERSION}.tgz" --tag latest');
 
   assert.equal(reportValidations.length, 3);
   assert.equal(artifactValidations.length, 3);
@@ -386,9 +386,9 @@ test('meta-package staging is blocked by the exact adversarial and physical life
   assert.match(workflow, /for filename in adversarial-report\.json adversarial-report\.md/);
   assert.match(workflow, /for filename in lifecycle-report\.json lifecycle-report\.md/);
   assert.match(workflow, /mv "\$assets\/\$filename" "\$evidence\/\$filename"/);
-  assert.match(workflow, /"palladin-agent-\$VERSION\.tgz" release-manifest-agent\.json/);
+  assert.match(workflow, /"palladin-cli-\$VERSION\.tgz" release-manifest-agent\.json/);
   assert.match(workflow, /\[\[ \$meta_count -eq 0 \|\| \$meta_count -eq 4 \]\]/);
-  assert.doesNotMatch(workflow, /rm -f "\$assets"\/palladin-agent-\*\.tgz/);
+  assert.doesNotMatch(workflow, /rm -f "\$assets"\/palladin-cli-\*\.tgz/);
   assert.ok(
     workflow.indexOf('mv "$assets/$filename" "$evidence/$filename"')
       < workflow.indexOf('node packaging/npm/verify-release-manifest.mjs'),
@@ -412,7 +412,7 @@ test('meta-package staging is blocked by the exact adversarial and physical life
   const prepareOffset = workflow.indexOf('\n  prepare-meta:');
   const approveLifecycleOffset = workflow.indexOf('\n  approve-lifecycle:');
   assert.ok(prepareOffset > 0 && approveLifecycleOffset > 0);
-  assert.match(workflow.slice(prepareOffset, workflow.indexOf('\n  stage-meta:')), /The exact `@palladin\/agent` candidate was attached to the draft release but was not published to npm/);
+  assert.match(workflow.slice(prepareOffset, workflow.indexOf('\n  stage-meta:')), /The exact `@palladin\/cli` candidate was attached to the draft release but was not published to npm/);
   assert.doesNotMatch(workflow.slice(prepareOffset, workflow.indexOf('\n  stage-meta:')), /npm stage publish/);
   assert.doesNotMatch(workflow, /adversarial\/report\.mjs validate[^]*\|\| true/);
   assert.doesNotMatch(workflow, /lifecycle\/report\.mjs validate[^]*\|\| true/);
@@ -488,10 +488,10 @@ test('signed policy object names are immutable and incident latest moves only th
         .toISOString().replace('.000Z', 'Z'),
     ]);
     const plan = readFileSync(join(output, 'npm-incident-plan.txt'), 'utf8');
-    assert.match(plan, /npm deprecate '@palladin\/agent'@'1\.2\.3'/);
+    assert.match(plan, /npm deprecate '@palladin\/cli'@'1\.2\.3'/);
     assert.match(plan, /npm deprecate '@palladin\/runtime-linux-x64-gnu'@'1\.2\.3'/);
     assert.equal((plan.match(/npm dist-tag add/g) ?? []).length, 1);
-    assert.match(plan, /npm dist-tag add '@palladin\/agent'@'1\.2\.2' latest/);
+    assert.match(plan, /npm dist-tag add '@palladin\/cli'@'1\.2\.2' latest/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

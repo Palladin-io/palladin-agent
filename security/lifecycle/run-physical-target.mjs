@@ -142,22 +142,22 @@ function artifactMap(manifest, directory, sourceSha, version, label) {
 function expectedNames(target, version) {
   const arch = target.arch;
   if (target.os === 'macos') return {
-    agent: `palladin-agent-${version}.tgz`, platform: `palladin-runtime-darwin-${arch}-${version}.tgz`,
+    agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-darwin-${arch}-${version}.tgz`,
     extraRole: 'signed-runtime', extra: 'palladin-runtime-darwin-universal.zip',
   };
   if (target.os === 'windows') return {
-    agent: `palladin-agent-${version}.tgz`, platform: `palladin-runtime-win32-${arch}-${version}.tgz`,
+    agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-win32-${arch}-${version}.tgz`,
     extraRole: 'signed-installer', extra: `palladin-runtime-setup-${arch}-${version}.zip`,
   };
   if (target.distribution === 'alpine-3.22') return {
-    agent: `palladin-agent-${version}.tgz`, platform: `palladin-runtime-linux-${arch}-musl-${version}.tgz`,
+    agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-linux-${arch}-musl-${version}.tgz`,
   };
   if (target.distribution === 'fedora-42') return {
-    agent: `palladin-agent-${version}.tgz`, platform: `palladin-runtime-linux-${arch}-gnu-${version}.tgz`,
+    agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-linux-${arch}-gnu-${version}.tgz`,
     extraRole: 'rpm', extra: `palladin-runtime-${version}-1.${arch === 'arm64' ? 'aarch64' : 'x86_64'}.rpm`,
   };
   return {
-    agent: `palladin-agent-${version}.tgz`, platform: `palladin-runtime-linux-${arch}-gnu-${version}.tgz`,
+    agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-linux-${arch}-gnu-${version}.tgz`,
     extraRole: 'deb', extra: `palladin-runtime_${version}_${arch === 'arm64' ? 'arm64' : 'amd64'}.deb`,
   };
 }
@@ -246,7 +246,7 @@ function npmInstall(phase, prefix, env) {
 }
 function npmUninstall(phase, prefix, env) {
   bounded(npmExecutable(), ['uninstall', '--global', '--ignore-scripts', '--prefix', prefix,
-    '@palladin/agent', platformPackageName(phase)], { env, timeout: 300_000 });
+    '@palladin/cli', platformPackageName(phase)], { env, timeout: 300_000 });
 }
 function globalRoot(prefix, env) {
   const capture = bounded(npmExecutable(), ['root', '--global', '--prefix', prefix], { env });

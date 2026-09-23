@@ -22,8 +22,8 @@ import {
   type InjectControl,
   type InjectFieldValue,
   type InjectFormDefinition,
-} from '@palladin/agent/inject-contract';
-import { parseFormDiscoveryMap, type FormDiscoveryMap } from '@palladin/agent/form-map';
+} from '@palladin/cli/inject-contract';
+import { parseFormDiscoveryMap, type FormDiscoveryMap } from '@palladin/cli/form-map';
 
 import { captureRuntimeStderr, spawnAgentRuntime } from './agent-runtime.js';
 

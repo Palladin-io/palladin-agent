@@ -30,7 +30,7 @@ const platformManifest = {
 const agentManifest = {
   sourceSha,
   version: '1.2.3',
-  artifacts: [artifact('palladin-agent-1.2.3.tgz', digest('5'))],
+  artifacts: [artifact('palladin-cli-1.2.3.tgz', digest('5'))],
 };
 
 describe('adversarial release artifact binding', () => {

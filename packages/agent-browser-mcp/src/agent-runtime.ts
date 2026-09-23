@@ -3,7 +3,7 @@ import { accessSync, constants as fsConstants, readFileSync, realpathSync } from
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 
-const AGENT_PACKAGE = '@palladin/agent';
+const AGENT_PACKAGE = '@palladin/cli';
 const AGENT_VERSION = '0.1.0';
 
 export function spawnAgentRuntime(args: readonly string[]): ChildProcess {

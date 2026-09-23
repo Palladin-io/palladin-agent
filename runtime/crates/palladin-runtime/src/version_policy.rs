@@ -892,7 +892,7 @@ fn decode_base64_exact<const N: usize>(value: &str) -> Result<[u8; N], RuntimeEr
 }
 
 fn valid_package_name(value: &str) -> bool {
-    value == "@palladin/agent"
+    value == "@palladin/cli"
         || value
             .strip_prefix("@palladin/runtime-")
             .is_some_and(|suffix| {

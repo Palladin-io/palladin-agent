@@ -1,7 +1,7 @@
 {
-  "name": "@palladin/agent",
+  "name": "@palladin/cli",
   "version": "0.1.0",
-  "description": "Script-free launcher for the Palladin native Agent CLI and MCP runtime",
+  "description": "Script-free launcher for Palladin CLI and its native MCP runtime",
   "author": "Patryk Roguszewski <patryk.roguszewski@palladin.io>",
   "private": true,
   "license": "Apache-2.0",
