@@ -284,7 +284,7 @@ test('accepts only one exact, inert tarball for every supported platform package
   }
 });
 
-test('release workflows pin actions and isolate the one-time npm token exception', () => {
+test('release workflows pin actions and do not permit direct or token-based npm publishing', () => {
   const workflowDirectory = resolve('.github/workflows');
   const workflows = readdirSync(workflowDirectory)
     .filter((name) => name.endsWith('.yml') || name.endsWith('.yaml'));
@@ -303,8 +303,8 @@ test('release workflows pin actions and isolate the one-time npm token exception
     if (/NODE_AUTH_TOKEN|NPM_TOKEN/.test(contents)) tokenConsumers.push(workflow);
   }
 
-  assert.deepEqual(directPublishes, ['npm-bootstrap.yml']);
-  assert.deepEqual(tokenConsumers, ['npm-bootstrap.yml']);
+  assert.deepEqual(directPublishes, []);
+  assert.deepEqual(tokenConsumers, []);
   const platformRelease = readFileSync(join(workflowDirectory, 'release-platforms.yml'), 'utf8');
   const metaRelease = readFileSync(join(workflowDirectory, 'release-meta.yml'), 'utf8');
   const finalRelease = readFileSync(join(workflowDirectory, 'release-finalize.yml'), 'utf8');

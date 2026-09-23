@@ -37,7 +37,7 @@ For each package:
 1. Patryk enables npm account 2FA and confirms ownership of the `@palladin` scope.
 2. Patryk creates a granular npm access token with the minimum package-creation scope and the shortest available expiry. The token exists only for this bootstrap window.
 3. Store it only in the protected `npm-bootstrap` GitHub environment. That environment must require Patryk's approval and must not expose the secret to pull requests.
-4. Run the owner-dispatched bootstrap workflow from a reviewed commit on `main`. It publishes a generated, inert `0.0.0-bootstrap` package under the non-default `bootstrap` dist-tag with `--access public` and provenance. The tarball may contain only `package.json` plus the canonical `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. It must contain no binary, launcher, lifecycle script, `bin` entry, optional dependency, or production source.
+4. Run the owner-dispatched bootstrap workflow from a reviewed commit on `main`. It publishes a generated, inert `0.0.0-bootstrap` package with the `bootstrap` dist-tag, `--access public`, and provenance. The tarball may contain only `package.json` plus the canonical `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. It must contain no binary, launcher, lifecycle script, `bin` entry, optional dependency, or production source. npm also assigned `latest` to these first versions, so a default install remains inert until the functional release promotes its version.
 5. Verify the package name, scope, bootstrap tag, tarball contents, source repository, and provenance on npm.
 6. Configure the exact trusted publisher described below.
 7. Set Publishing access to **Require two-factor authentication and disallow tokens**.
@@ -62,7 +62,7 @@ Use these settings:
 
 The publishing job must use Node `22.14.0` or newer and npm `11.15.0` or newer, request `id-token: write`, and run on a GitHub-hosted runner. Pin an exact npm 11 version in the workflow so CLI behavior does not change during a release.
 
-After configuring trust, verify a staged dry run through the protected workflow before disallowing tokens. `npm whoami` is not an OIDC verification and must not be used as one. A successful `npm stage publish`, visible source provenance, and a rejected direct `npm publish` are the verification.
+Before the first functional release, verify a staged publish through the protected workflow. `npm whoami` is not an OIDC verification and must not be used as one. A successful `npm stage publish`, visible source provenance, and a rejected direct `npm publish` are the verification. The bootstrap versions and npm UI settings alone do not prove that release OIDC works end-to-end.
 
 ## Protected GitHub configuration
 
