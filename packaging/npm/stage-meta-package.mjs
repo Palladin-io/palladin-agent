@@ -42,7 +42,7 @@ function stage(argv) {
   assertVersion(version);
   if (source === output) fail('source and output directories must differ');
   const manifest = readJsonObject(join(source, 'package.json'), 'source package manifest');
-  if (manifest.name !== '@palladin/agent') fail('unexpected meta package name');
+  if (manifest.name !== '@palladin/cli') fail('unexpected meta package name');
   if (manifest.private !== true) fail('source meta package must remain private');
   if (manifest.version !== version) fail('source meta package version does not match --version');
   assertNoLifecycleScripts(manifest, 'source meta package');

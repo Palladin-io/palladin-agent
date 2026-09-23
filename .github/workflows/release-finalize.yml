@@ -59,9 +59,9 @@ jobs:
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$source_sha" origin/main
 
-          test "$(npm view "@palladin/agent@$VERSION" version --json)" = "\"$VERSION\""
-          test "$(npm view @palladin/agent dist-tags.latest --json)" = "\"$VERSION\""
-          npm view "@palladin/agent@$VERSION" optionalDependencies --json \
+          test "$(npm view "@palladin/cli@$VERSION" version --json)" = "\"$VERSION\""
+          test "$(npm view @palladin/cli dist-tags.latest --json)" = "\"$VERSION\""
+          npm view "@palladin/cli@$VERSION" optionalDependencies --json \
             >"$RUNNER_TEMP/optional-dependencies.json"
           node - "$RUNNER_TEMP/optional-dependencies.json" "$VERSION" <<'NODE'
           const fs = require('node:fs');
@@ -136,10 +136,10 @@ jobs:
           smoke="$RUNNER_TEMP/final-registry-smoke"
           mkdir -p "$smoke"
           npm install --prefix "$smoke" --ignore-scripts --package-lock \
-            "@palladin/agent@$VERSION"
+            "@palladin/cli@$VERSION"
           test -f "$smoke/node_modules/@palladin/$RUNTIME_PACKAGE/package.json"
           npm audit signatures --prefix "$smoke"
-          node "$smoke/node_modules/@palladin/agent/dist/bin/palladin.js" --version
+          node "$smoke/node_modules/@palladin/cli/dist/bin/palladin.js" --version
 
   smoke-musl:
     name: Public meta smoke - Linux musl ${{ matrix.architecture }}
@@ -165,10 +165,10 @@ jobs:
           docker run --rm --platform "linux/${{ matrix.docker_architecture }}" \
             --tmpfs /smoke node:24-alpine3.22 sh -euc "
               npm install --global npm@11.18.0 >/dev/null
-              npm install --prefix /smoke --ignore-scripts --package-lock @palladin/agent@$VERSION
+              npm install --prefix /smoke --ignore-scripts --package-lock @palladin/cli@$VERSION
               test -f /smoke/node_modules/@palladin/runtime-linux-${{ matrix.architecture }}-musl/package.json
               npm audit signatures --prefix /smoke
-              node /smoke/node_modules/@palladin/agent/dist/bin/palladin.js --version
+              node /smoke/node_modules/@palladin/cli/dist/bin/palladin.js --version
             "
 
   finalize:
@@ -231,7 +231,7 @@ jobs:
           test -f "$assets/lifecycle-report.json"
           test -f "$assets/lifecycle-report.md"
           test -f "$assets/lifecycle-approval.json"
-          test "$(find "$assets" -maxdepth 1 -name 'palladin-agent-*.tgz' | wc -l | tr -d ' ')" = 1
+          test "$(find "$assets" -maxdepth 1 -name 'palladin-cli-*.tgz' | wc -l | tr -d ' ')" = 1
           platform_packages="$RUNNER_TEMP/platform-packages"
           mkdir -p "$platform_packages"
           find "$assets" -maxdepth 1 -type f -name 'palladin-runtime-*.tgz' \

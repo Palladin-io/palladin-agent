@@ -18,7 +18,7 @@ const configSchema = Type.Object(
       Type.String({
         minLength: 1,
         maxLength: 4096,
-        description: "Absolute @palladin/agent package root for local development.",
+        description: "Absolute @palladin/cli package root for local development.",
       }),
     ),
     agentLauncher: Type.Optional(

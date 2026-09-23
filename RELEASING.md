@@ -1,4 +1,4 @@
-# Palladin Agent release runbook
+# Palladin CLI release runbook
 
 Palladin Agent is a public repository and a security-sensitive credential runtime. Releases are built, signed, staged, approved, and published by protected GitHub Actions workflows. Publishing from a laptop or with a long-lived npm token is forbidden.
 
@@ -22,7 +22,7 @@ The product owner and only release approver is `@patryk-roguszewski`. A release 
 
 npm staged publishing and trusted publishing both require the package to exist first. Bootstrap is therefore a one-time exception for each of these packages:
 
-- `@palladin/agent`
+- `@palladin/cli`
 - `@palladin/runtime-darwin-arm64`
 - `@palladin/runtime-darwin-x64`
 - `@palladin/runtime-linux-arm64-gnu`
@@ -120,7 +120,7 @@ For a compromised immutable version, run the maintenance workflow in `incident` 
 
 ## Release order
 
-npm does not provide a multi-package transaction. Palladin uses the `@palladin/agent` meta package as the atomic consumer boundary: all eight native packages become verified candidates first, and the meta package is published last.
+npm does not provide a multi-package transaction. Palladin uses the `@palladin/cli` meta package as the atomic consumer boundary: all eight native packages become verified candidates first, and the meta package is published last.
 
 ### 1. Prepare the release
 
@@ -170,7 +170,7 @@ After platform staging and registry smoke tests pass, but before the public meta
 7. Patryk alone uploads `adversarial-report.json` and `adversarial-report.md` to the existing draft release after reviewing that both files contain no secrets. Do not replace either file after approval.
 8. The protected `version-policy-signing` job derives every manual-required cell from that exact report and KMS-signs `adversarial-approval.json` as Patryk. The signed payload binds the operator, approval time, source SHA, report digest, target, attack, result, observation time, evidence reference, and exact artifact SHA-256. Never create or upload this approval by hand.
 
-An unresolved or accepted Critical/High finding, incomplete target, stale observation, artifact mismatch, overdue residual-risk review, missing manual attestation, forged operator, or invalid KMS signature stops the workflow before `@palladin/agent` is staged. Linux Hardened DEB and RPM are separate evidence targets with separate artifact digests. The protected meta workflow validates the report before build, KMS-signs the manual approval after native smoke tests, and verifies both again immediately before `npm stage publish`.
+An unresolved or accepted Critical/High finding, incomplete target, stale observation, artifact mismatch, overdue residual-risk review, missing manual attestation, forged operator, or invalid KMS signature stops the workflow before `@palladin/cli` is staged. Linux Hardened DEB and RPM are separate evidence targets with separate artifact digests. The protected meta workflow validates the report before build, KMS-signs the manual approval after native smoke tests, and verifies both again immediately before `npm stage publish`.
 
 ### 5. Stage and approve the meta package
 
@@ -183,7 +183,7 @@ Only after all eight registry smoke tests and the adversarial gate pass:
 5. Re-download and revalidate the approved adversarial reports and KMS-signed operator approval against the tagged source and exact platform release manifest.
 6. Stage the meta package through the protected OIDC workflow with `npm stage publish --tag latest`.
 7. Patryk downloads and inspects the staged tarball, verifies the digest, provenance, and recorded adversarial gate, then approves it with npm 2FA.
-8. Install `@palladin/agent@X.Y.Z` and `@palladin/agent@latest` from npm in clean macOS, Windows, and Linux runners and repeat the end-to-end smoke checks.
+8. Install `@palladin/cli@X.Y.Z` and `@palladin/cli@latest` from npm in clean macOS, Windows, and Linux runners and repeat the end-to-end smoke checks.
 
 Publishing the meta package is the consumer-visible commit point. Never approve it while a platform package, registry smoke test, attestation, required adversarial cell, or Critical/High release blocker is missing.
 

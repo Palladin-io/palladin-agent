@@ -14,8 +14,8 @@
     "sourceMap": true,
     "baseUrl": ".",
     "paths": {
-      "@palladin/agent/inject-contract": ["../../dist/inject-contract.d.ts"]
-      ,"@palladin/agent/form-map": ["../../dist/form-map.d.ts"]
+      "@palladin/cli/inject-contract": ["../../dist/inject-contract.d.ts"]
+      ,"@palladin/cli/form-map": ["../../dist/form-map.d.ts"]
     }
   },
   "include": ["src/**/*"],

@@ -103,7 +103,7 @@ jobs:
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$assets"
           meta_count=0
           for filename in \
-            "palladin-agent-$VERSION.tgz" release-manifest-agent.json \
+            "palladin-cli-$VERSION.tgz" release-manifest-agent.json \
             SHA256SUMS-agent sbom-agent.spdx.json; do
             if [[ -e "$assets/$filename" || -L "$assets/$filename" ]]; then
               test -f "$assets/$filename"
@@ -393,13 +393,13 @@ jobs:
           RUNTIME_PACKAGE: ${{ matrix.runtime_package }}
         run: |
           set -euo pipefail
-          meta=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'palladin-agent-*.tgz' -print -quit)
+          meta=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'palladin-cli-*.tgz' -print -quit)
           test -n "$meta"
           smoke="$RUNNER_TEMP/registry-smoke"
           mkdir -p "$smoke"
           npm install --prefix "$smoke" --ignore-scripts --package-lock "$meta"
           test -f "$smoke/node_modules/@palladin/$RUNTIME_PACKAGE/package.json"
-          node "$smoke/node_modules/@palladin/agent/dist/bin/palladin.js" --version
+          node "$smoke/node_modules/@palladin/cli/dist/bin/palladin.js" --version
           npm audit signatures --prefix "$smoke"
 
       - name: Verify the candidate policy in the exact packaged native worker
@@ -513,7 +513,7 @@ jobs:
       - name: Resolve through npm on native Alpine
         run: |
           set -euo pipefail
-          meta=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'palladin-agent-*.tgz' -print -quit)
+          meta=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'palladin-cli-*.tgz' -print -quit)
           test -n "$meta"
           mkdir -p "$RUNNER_TEMP/musl-smoke"
           cp "$meta" "$RUNNER_TEMP/musl-smoke/palladin-agent.tgz"
@@ -527,7 +527,7 @@ jobs:
               test -f /smoke/node_modules/@palladin/runtime-linux-${{ matrix.architecture }}-musl/package.json
               /smoke/node_modules/@palladin/runtime-linux-${{ matrix.architecture }}-musl/bin/palladin-worker \
                 verify-release-policy --policy /release/version-policy.json
-              node /smoke/node_modules/@palladin/agent/dist/bin/palladin.js --version
+              node /smoke/node_modules/@palladin/cli/dist/bin/palladin.js --version
               npm audit signatures --prefix /smoke
             '
 
@@ -632,7 +632,7 @@ jobs:
             --version "${INPUTS_VERSION}"
           npm pack "$RUNNER_TEMP/live-policy-meta" \
             --pack-destination "$RUNNER_TEMP" >/dev/null
-          meta=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'palladin-agent-*.tgz' -print -quit)
+          meta=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'palladin-cli-*.tgz' -print -quit)
           test -n "$meta"
           smoke="$RUNNER_TEMP/live-policy-smoke"
           home="$RUNNER_TEMP/live-policy-home"
@@ -640,7 +640,7 @@ jobs:
           npm install --prefix "$smoke" --ignore-scripts --package-lock "$meta"
           set +e
           HOME="$home" XDG_CONFIG_HOME="$home/config" \
-            node "$smoke/node_modules/@palladin/agent/dist/bin/palladin.js" status \
+            node "$smoke/node_modules/@palladin/cli/dist/bin/palladin.js" status \
             >"$RUNNER_TEMP/live-policy.stdout" 2>"$RUNNER_TEMP/live-policy.stderr"
           status=$?
           set -e
@@ -841,7 +841,7 @@ jobs:
           fi
 
   prepare-meta:
-    name: Build and attest the exact @palladin/agent candidate
+    name: Build and attest the exact @palladin/cli candidate
     needs: [authorize, compatibility, smoke-native, smoke-musl, approve-adversarial]
     runs-on: ubuntu-latest
     environment: version-policy-signing
@@ -958,7 +958,7 @@ jobs:
           set -euo pipefail
           existing="$RUNNER_TEMP/existing-meta-release"
           mkdir -m 700 "$existing"
-          names=("palladin-agent-${INPUTS_VERSION}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json)
+          names=("palladin-cli-${INPUTS_VERSION}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json)
           present=$(gh release view "${INPUTS_RELEASE_TAG}" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '[.assets[].name]')
           count=0
@@ -989,13 +989,13 @@ jobs:
       - name: Record the physical lifecycle boundary
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          The exact `@palladin/agent` candidate was attached to the draft release but was not published to npm.
+          The exact `@palladin/cli` candidate was attached to the draft release but was not published to npm.
 
           Patryk must now run the owner-only physical lifecycle workflow. Re-run this workflow after all twelve fresh shards are attached; the byte-identical candidate will be reused.
           SUMMARY
 
   stage-meta:
-    name: Stage the approved @palladin/agent candidate
+    name: Stage the approved @palladin/cli candidate
     needs: [authorize, prepare-meta, publish-policy, approve-adversarial, approve-lifecycle]
     runs-on: ubuntu-latest
     environment: npm-release
@@ -1036,7 +1036,7 @@ jobs:
           assets="$RUNNER_TEMP/stage-assets"
           mkdir -m 700 "$assets"
           for pattern in \
-            "palladin-agent-${INPUTS_VERSION}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json \
+            "palladin-cli-${INPUTS_VERSION}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json \
             release-manifest.json adversarial-report.json adversarial-report.md adversarial-approval.json \
             lifecycle-report.json lifecycle-report.md lifecycle-approval.json; do
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
@@ -1053,7 +1053,7 @@ jobs:
           assets="$RUNNER_TEMP/stage-assets"
           meta="$RUNNER_TEMP/meta-verification"
           mkdir -m 700 "$meta"
-          cp "$assets/palladin-agent-$VERSION.tgz" "$assets/release-manifest-agent.json" \
+          cp "$assets/palladin-cli-$VERSION.tgz" "$assets/release-manifest-agent.json" \
             "$assets/SHA256SUMS-agent" "$assets/sbom-agent.spdx.json" "$meta/"
           node packaging/npm/verify-release-manifest.mjs \
             --artifacts "$meta" --version "$VERSION" --source-sha "$SOURCE_SHA" \
@@ -1081,17 +1081,17 @@ jobs:
             --report "$assets/lifecycle-report.json" --markdown "$assets/lifecycle-report.md" \
             --source-sha "$SOURCE_SHA" --operator "$OPERATOR" --approval "$assets/lifecycle-approval.json" \
             --public-key "$RUNNER_TEMP/operator-public-key.txt"
-          for filename in palladin-agent-$VERSION.tgz release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json; do
+          for filename in palladin-cli-$VERSION.tgz release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json; do
             gh attestation verify "$assets/$filename" --repo "$GITHUB_REPOSITORY"
           done
       - name: Stage the byte-identical meta-package under latest
-        run: npm stage publish "$RUNNER_TEMP/stage-assets/palladin-agent-${INPUTS_VERSION}.tgz" --tag latest --provenance --ignore-scripts
+        run: npm stage publish "$RUNNER_TEMP/stage-assets/palladin-cli-${INPUTS_VERSION}.tgz" --tag latest --provenance --ignore-scripts
         env:
           INPUTS_VERSION: ${{ inputs.version }}
       - name: Record the final manual npm approval boundary
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          `@palladin/agent` was staged only after the owner-signed adversarial and twelve-target physical lifecycle gates passed.
+          `@palladin/cli` was staged only after the owner-signed adversarial and twelve-target physical lifecycle gates passed.
 
           Patryk must inspect and approve this single npm stage with 2FA. Run `release-finalize.yml` only after the exact meta-package is public.
           SUMMARY

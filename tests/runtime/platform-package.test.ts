@@ -65,9 +65,9 @@ describe('public npm package boundary', () => {
 
   it('documents the supported global, local, exact-version npx, omit, and offline policies', () => {
     const readme = readFileSync('README.md', 'utf8');
-    expect(readme).toContain('npm install --global @palladin/agent@<exact-version>');
+    expect(readme).toContain('npm install --global @palladin/cli@<exact-version>');
     expect(readme).toContain('npm exec -- palladin doctor');
-    expect(readme).toContain('npx --yes @palladin/agent@<exact-version> -- doctor');
+    expect(readme).toContain('npx --yes @palladin/cli@<exact-version> -- doctor');
     expect(readme).toContain('`--omit=optional` is unsupported');
     expect(readme).toContain('npm cache or proxy');
   });

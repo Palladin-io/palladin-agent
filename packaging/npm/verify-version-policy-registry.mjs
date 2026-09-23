@@ -17,13 +17,13 @@ const envelope = parseAndVerifyVersionPolicy(policyBytes, {
   source,
 });
 if (Date.parse(envelope.signed.expiresAt) - Date.now() < 9 * 24 * 60 * 60 * 1000) fail();
-const packages = ['@palladin/agent', ...[...new Set(envelope.signed.artifacts.map((artifact) => artifact.packageName))].sort()];
+const packages = ['@palladin/cli', ...[...new Set(envelope.signed.artifacts.map((artifact) => artifact.packageName))].sort()];
 for (const name of packages) {
   const url = `https://registry.npmjs.org/${encodeURIComponent(name)}`;
   const response = await fetch(url, { redirect: 'error', headers: { accept: 'application/json' } });
   if (!response.ok || response.url !== url) fail();
   const metadata = JSON.parse((await readBounded(response, 16 * 1024 * 1024)).toString('utf8'));
-  if ((name === '@palladin/agent'
+  if ((name === '@palladin/cli'
       && metadata?.['dist-tags']?.latest !== envelope.signed.recommendedVersion)
     || metadata?.versions?.[envelope.signed.recommendedVersion] === undefined
     || metadata.versions[envelope.signed.recommendedVersion].deprecated !== undefined) fail();

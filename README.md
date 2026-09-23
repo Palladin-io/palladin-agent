@@ -1,6 +1,7 @@
-# @palladin/agent
+# @palladin/cli
 
-Public npm launcher and native CLI/MCP runtime for Palladin Agent.
+Palladin CLI provides the `palladin` command and the local MCP server through
+`palladin mcp serve`. Both use the same native runtime and npm installation.
 
 > [!WARNING]
 > Palladin Agent is pre-production software and has not been published to npm. Do not use development builds with production credentials.
@@ -37,7 +38,7 @@ Linux Secret Service is always Convenience because it cannot distinguish two pro
 Once the release packages are available:
 
 ```bash
-npm install --global @palladin/agent
+npm install --global @palladin/cli
 palladin doctor
 ```
 
@@ -49,9 +50,9 @@ No package uses `preinstall`, `install`, `postinstall`, `preprepare`, `prepare`,
 
 ### npm installation policy
 
-- A global install is the recommended stable CLI setup: `npm install --global @palladin/agent@<exact-version>`.
+- A global install is the recommended stable CLI setup: `npm install --global @palladin/cli@<exact-version>`.
 - A project-local exact dependency is supported; invoke it with `npm exec -- palladin doctor` or the project script runner.
-- `npx` is supported only with an explicit immutable version, for example `npx --yes @palladin/agent@<exact-version> -- doctor`. Do not use an unpinned tag for a credential-handling tool.
+- `npx` is supported only with an explicit immutable version, for example `npx --yes @palladin/cli@<exact-version> -- doctor`. Do not use an unpinned tag for a credential-handling tool.
 - `--omit=optional` is unsupported because the native runtime is an optional platform dependency. Offline installs require the launcher and its matching platform tarball to exist in the configured npm cache or proxy.
 
 All three modes run the same script-free launcher and exact platform package. They do not change where native public state or OS-protected secrets live.

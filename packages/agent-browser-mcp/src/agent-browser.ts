@@ -12,8 +12,8 @@ import type {
   InjectControl,
   InjectFieldValue,
   InjectFormDefinition,
-} from '@palladin/agent/inject-contract';
-import type { FormDiscoveryMap } from '@palladin/agent/form-map';
+} from '@palladin/cli/inject-contract';
+import type { FormDiscoveryMap } from '@palladin/cli/form-map';
 
 const AGENT_BROWSER_VERSION = '0.33.2';
 const MAX_RESPONSE_BYTES = 1024 * 1024;

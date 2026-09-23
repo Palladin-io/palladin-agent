@@ -13,7 +13,7 @@ export const PLATFORM_PACKAGE_NAMES = Object.freeze([
 ]);
 
 export const PUBLIC_PACKAGE_NAMES = Object.freeze([
-  '@palladin/agent',
+  '@palladin/cli',
   ...PLATFORM_PACKAGE_NAMES,
 ]);
 

@@ -18,7 +18,7 @@
     "openclaw": ">=2026.5.17"
   },
   "dependencies": {
-    "@palladin/agent": "file:../..",
+    "@palladin/cli": "file:../..",
     "@palladin/playwright-mcp": "file:../playwright-mcp",
     "playwright": "1.63.0-alpha-2026-08-05",
     "typebox": "^1.1.38"

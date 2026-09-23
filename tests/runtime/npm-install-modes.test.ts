@@ -123,7 +123,7 @@ describe('npm installation modes', () => {
         });
       }
 
-      const launcherName = '@palladin/agent';
+      const launcherName = '@palladin/cli';
       const launcher = join(sources, 'agent');
       mkdirSync(launcher);
       const launcherManifest = {
@@ -159,7 +159,7 @@ describe('npm installation modes', () => {
         '--no-fund',
         '--prefix', prefix,
         '--registry', origin,
-        '@palladin/agent@0.1.0',
+        '@palladin/cli@0.1.0',
       ], { env: { ...process.env, npm_config_cache: globalCache } });
       const globalRoot = (await run(process.execPath, [
         npmCli,
@@ -187,7 +187,7 @@ describe('npm installation modes', () => {
         '--no-fund',
         '--prefix', local,
         '--registry', origin,
-        '@palladin/agent@0.1.0',
+        '@palladin/cli@0.1.0',
       ], { env: { ...process.env, npm_config_cache: join(fixture, 'local-cache') } });
       const localRun = await run(process.execPath, [
         npmCli,
@@ -203,7 +203,7 @@ describe('npm installation modes', () => {
         npmCli,
         'exec',
         '--yes',
-        '--package=@palladin/agent@0.1.0',
+        '--package=@palladin/cli@0.1.0',
         '--call',
         'palladin',
       ], {
@@ -229,9 +229,9 @@ describe('npm installation modes', () => {
         '--no-fund',
         '--prefix', offline,
         '--registry', origin,
-        '@palladin/agent@0.1.0',
+        '@palladin/cli@0.1.0',
       ], { env: { ...process.env, npm_config_cache: globalCache } });
-      expect(installedPackageNames(join(offline, 'node_modules'))).toContain('@palladin/agent');
+      expect(installedPackageNames(join(offline, 'node_modules'))).toContain('@palladin/cli');
     } finally {
       if (server.listening) {
         server.closeAllConnections?.();

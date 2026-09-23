@@ -37,10 +37,10 @@
     "playwright": "1.63.0-alpha-2026-08-05"
   },
   "peerDependencies": {
-    "@palladin/agent": "0.1.0"
+    "@palladin/cli": "0.1.0"
   },
   "peerDependenciesMeta": {
-    "@palladin/agent": {
+    "@palladin/cli": {
       "optional": true
     }
   },

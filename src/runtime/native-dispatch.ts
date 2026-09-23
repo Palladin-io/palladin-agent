@@ -147,7 +147,7 @@ function resolvePackageExecutable(
     resolvedPackageJson = host.resolvePackageJson(`${packageName}/package.json`);
   } catch {
     throw new Error(
-      `Palladin native runtime package ${packageName}@${NATIVE_RUNTIME_VERSION} is unavailable; reinstall @palladin/agent@${NATIVE_RUNTIME_VERSION} without --omit=optional. For an offline install, prefill the npm cache or registry proxy with both exact tarballs`,
+      `Palladin native runtime package ${packageName}@${NATIVE_RUNTIME_VERSION} is unavailable; reinstall @palladin/cli@${NATIVE_RUNTIME_VERSION} without --omit=optional. For an offline install, prefill the npm cache or registry proxy with both exact tarballs`,
     );
   }
   const packageJson = host.realpath(resolvedPackageJson);
@@ -556,5 +556,5 @@ function boundedNumber(value: bigint, maximum: number): number | undefined {
 function safeError(error: unknown): string {
   if (!(error instanceof Error)) return 'Palladin native runtime is unavailable';
   if (error.message.startsWith('Palladin native runtime')) return error.message;
-  return 'Palladin native runtime package is missing or invalid; reinstall @palladin/agent without --omit=optional and ensure npm has online proxy/cache access to @palladin packages';
+  return 'Palladin native runtime package is missing or invalid; reinstall @palladin/cli without --omit=optional and ensure npm has online proxy/cache access to @palladin packages';
 }

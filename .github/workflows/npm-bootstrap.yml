@@ -88,7 +88,7 @@ jobs:
 
           1. Revoke the short-lived bootstrap token and remove `NPM_BOOTSTRAP_TOKEN` from the environment.
           2. Configure stage-only Trusted Publishing for all eight runtime packages with `release-platforms.yml` and `npm-release`.
-          3. Configure stage-only Trusted Publishing for `@palladin/agent` with `release-meta.yml` and `npm-release`.
+          3. Configure stage-only Trusted Publishing for `@palladin/cli` with `release-meta.yml` and `npm-release`.
           4. Set every package to require 2FA and disallow traditional publish tokens.
 
           Do not run this bootstrap workflow again after those controls are enabled.

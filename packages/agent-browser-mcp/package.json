@@ -23,10 +23,10 @@
     "agent-browser": "0.33.2"
   },
   "peerDependencies": {
-    "@palladin/agent": "0.1.0"
+    "@palladin/cli": "0.1.0"
   },
   "peerDependenciesMeta": {
-    "@palladin/agent": { "optional": true }
+    "@palladin/cli": { "optional": true }
   },
   "engines": {
     "node": ">=24.0.0",

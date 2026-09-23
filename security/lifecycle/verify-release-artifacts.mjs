@@ -38,7 +38,7 @@ function manifestArtifacts(manifestInput, label, sourceSha, version) {
   });
 }
 function roleMatches(targetId, role, filename, version) {
-  if (role === 'agent-npm') return filename === `palladin-agent-${version}.tgz`;
+  if (role === 'agent-npm') return filename === `palladin-cli-${version}.tgz`;
   let match = /^macos-(arm64|x64)$/.exec(targetId);
   if (match) {
     if (role === 'platform-npm') return filename === `palladin-runtime-darwin-${match[1]}-${version}.tgz`;
