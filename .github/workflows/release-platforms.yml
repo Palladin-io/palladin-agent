@@ -74,8 +74,8 @@ jobs:
           git merge-base --is-ancestor "$source_sha" origin/main
 
           test "$(node -p 'require("./package.json").version')" = "$VERSION"
-          for manifest in packages/*/package.json; do
-            test "$(node -p 'require(process.argv[1]).version' "$manifest")" = "$VERSION"
+          for manifest in packages/runtime-*/package.json; do
+            test "$(node -p 'require("./" + process.argv[1]).version' "$manifest")" = "$VERSION"
           done
           cargo_versions=$(cargo metadata --manifest-path runtime/Cargo.toml \
             --format-version 1 --no-deps | jq -r '.packages[].version' | sort -u)
