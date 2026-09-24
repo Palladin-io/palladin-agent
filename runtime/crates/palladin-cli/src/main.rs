@@ -74,8 +74,11 @@ const LINUX_HARDENED_TIER: &str = "Hardened - dedicated Agent UID, authenticated
 #[tokio::main]
 async fn main() -> ExitCode {
     install_redacted_panic_hook();
-    if is_chrome_native_host_invocation() {
-        return chrome_native_host_main().await;
+    #[cfg(target_os = "macos")]
+    if let Some(origin) = palladin_cli::browser::ChromeExtensionOrigin::from_native_arguments(
+        std::env::args_os().skip(1),
+    ) {
+        return chrome_native_host_main(origin).await;
     }
     let hardened_worker_root = match hardened_worker_root() {
         Ok(root) => root,
@@ -205,77 +208,60 @@ async fn main() -> ExitCode {
     }
 }
 
-fn is_chrome_native_host_invocation() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        let mut arguments = std::env::args_os();
-        let _executable = arguments.next();
-        arguments.next().is_some_and(|argument| {
-            argument == palladin_cli::browser::CHROME_EXTENSION_ORIGIN && arguments.next().is_none()
-        })
+#[cfg(target_os = "macos")]
+async fn chrome_native_host_main(
+    extension_origin: palladin_cli::browser::ChromeExtensionOrigin,
+) -> ExitCode {
+    if !palladin_cli::browser::extension_provenance_supported() {
+        return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
+    if palladin_platform::authenticate_chrome_native_messaging_parent().is_err() {
+        return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
     }
-}
-
-async fn chrome_native_host_main() -> ExitCode {
-    #[cfg(target_os = "macos")]
-    {
-        if !palladin_cli::browser::extension_provenance_supported() {
-            return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
-        }
-        if palladin_platform::authenticate_chrome_native_messaging_parent().is_err() {
-            return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
-        }
-        let secret_store = match runtime_secret_store(None) {
-            Ok(store) => store,
-            Err(_) => return ExitCode::from(EXIT_FAILURE),
-        };
-        let root = match palladin_platform::palladin_root() {
-            Ok(root) => root,
-            Err(_) => return ExitCode::from(EXIT_FAILURE),
-        };
-        let repository = match ProfileRepository::new(root.clone()) {
-            Ok(repository) => repository,
-            Err(_) => return ExitCode::from(EXIT_FAILURE),
-        };
-        let service = RuntimeService::new(repository, secret_store);
-        if palladin_runtime::version_policy::system_version_policy_configured() {
-            if service.prepare_empty_state_for_version_policy().is_err()
-                || service
-                    .enforce_system_version_policy(env!("CARGO_PKG_VERSION"))
-                    .await
-                    .is_err()
-            {
-                return ExitCode::from(EXIT_FAILURE);
-            }
-        } else if !cfg!(debug_assertions) {
+    let secret_store = match runtime_secret_store(None) {
+        Ok(store) => store,
+        Err(_) => return ExitCode::from(EXIT_FAILURE),
+    };
+    let root = match palladin_platform::palladin_root() {
+        Ok(root) => root,
+        Err(_) => return ExitCode::from(EXIT_FAILURE),
+    };
+    let repository = match ProfileRepository::new(root.clone()) {
+        Ok(repository) => repository,
+        Err(_) => return ExitCode::from(EXIT_FAILURE),
+    };
+    let service = RuntimeService::new(repository, secret_store);
+    if palladin_runtime::version_policy::system_version_policy_configured() {
+        if service.prepare_empty_state_for_version_policy().is_err()
+            || service
+                .enforce_system_version_policy(env!("CARGO_PKG_VERSION"))
+                .await
+                .is_err()
+        {
             return ExitCode::from(EXIT_FAILURE);
         }
-        let authorization = match service.browser_host_authorization() {
-            Ok(authorization) => authorization,
-            Err(_) => return ExitCode::from(EXIT_FAILURE),
-        };
-        return match palladin_cli::native_browser::serve_native_host(
-            &root,
-            authorization.identity(),
-            |max_wait| {
-                service
-                    .browser_host_lifecycle_guard_within(authorization.lifecycle_token(), max_wait)
-                    .map_err(|_| palladin_cli::native_browser::NativeBrowserError::Revoked)
-            },
-        )
-        .await
-        {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(_) => ExitCode::from(EXIT_FAILURE),
-        };
+    } else if !cfg!(debug_assertions) {
+        return ExitCode::from(EXIT_FAILURE);
     }
-    #[cfg(not(target_os = "macos"))]
+    let authorization = match service.browser_host_authorization() {
+        Ok(authorization) => authorization,
+        Err(_) => return ExitCode::from(EXIT_FAILURE),
+    };
+    match palladin_cli::native_browser::serve_native_host(
+        &root,
+        authorization.identity(),
+        extension_origin,
+        (tokio::io::stdin(), tokio::io::stdout()),
+        |max_wait| {
+            service
+                .browser_host_lifecycle_guard_within(authorization.lifecycle_token(), max_wait)
+                .map_err(|_| palladin_cli::native_browser::NativeBrowserError::Revoked)
+        },
+    )
+    .await
     {
-        ExitCode::from(EXIT_UNSAFE_ENVIRONMENT)
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::from(EXIT_FAILURE),
     }
 }
 

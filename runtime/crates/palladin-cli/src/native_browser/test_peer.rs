@@ -13,6 +13,8 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use super::*;
 use palladin_browser_bridge::secure_transport::HostSecureSession;
 
+const FIXTURE_EXTENSION_ORIGIN: &str = "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/";
+
 pub(super) struct ExtensionPeer {
     material: [u8; 112],
     session_id: String,
@@ -29,14 +31,14 @@ impl ExtensionPeer {
             extension_ephemeral_public_key: URL_SAFE_NO_PAD.encode(public.as_bytes()),
         };
         let (ready, session) = identity
-            .accept(CHROME_EXTENSION_ORIGIN, &open)
+            .accept(FIXTURE_EXTENSION_ORIGIN, &open)
             .expect("test handshake");
         let mut transcript = b"palladin.inject-provider.v1\0extension-session-v1\0".to_vec();
         let mut append = |bytes: &[u8]| {
             transcript.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
             transcript.extend_from_slice(bytes);
         };
-        append(CHROME_EXTENSION_ORIGIN.as_bytes());
+        append(FIXTURE_EXTENSION_ORIGIN.as_bytes());
         for encoded in [
             &open.extension_nonce,
             &open.extension_ephemeral_public_key,

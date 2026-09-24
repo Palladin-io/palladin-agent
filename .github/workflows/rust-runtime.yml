@@ -112,6 +112,8 @@ jobs:
             packaging/npm/legacy-keyring-interop.mjs assert-missing \
             "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
       - run: cargo build --release --locked --target ${{ matrix.target }} -p palladin-cli
+      - name: Verify release extension-origin policy and handshake
+        run: cargo test --release --locked --target ${{ matrix.target }} -p palladin-cli --lib browser
       - run: ./target/${{ matrix.target }}/release/palladin --version
       - name: Hardened build fails closed without Developer ID provisioning
         shell: bash
