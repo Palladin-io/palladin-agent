@@ -305,7 +305,7 @@ extension identifiers are compiled platform trust configuration: the host must i
 constrain the caller rather than accept an ID from an extension payload. No beta origin is
 allowed until a separate store item exists and its assigned ID is reviewed. Existing debug host
 manifests need `palladin browser install` again to install the updated list. This list does not
-change extension host-name routing or enable production Agent Inject.
+change extension host-name routing. Release builds admit only the assigned store origin.
 
 The local socket is only a rendezvous point. The CLI signs a fresh ephemeral handshake with the
 OS-secured host identity, the host signs its response, and both derive independent directional
@@ -316,9 +316,16 @@ cannot verify the same session. The existing single-host rendezvous remains unch
 strict value-free `session.offer` announces the public host key only for the current port; the
 extension keeps it in memory to verify the signed transcript. Windows, Linux, other Chromium browsers, Firefox, and Safari fail
 closed until their platform-specific launch attestation and installation paths are implemented.
+The reviewed Chrome/macOS trust boundary, accepted by the product owner on 2026-09-24,
+is Google-signed Chrome plus its exact compiled extension origin, in both debug and release.
 Chrome does not attest Web Store installation versus an unpacked extension that reuses the public
-manifest key, so production builds also fail closed today. This automatic path is development-only
-until artifact provenance can be bound independently to the invoking extension.
+manifest key. Local installation/replacement of an extension with that same ID is outside this
+boundary: such an extension can receive values from an approved Inject grant and can remove its
+own page checks. Users must trust their local Chrome profile and installed extensions. Independent
+store-artifact attestation remains future hardening, not a guarantee of this release. Runtime grant,
+approval, secure-storage, version-policy and encrypted-transport checks remain mandatory. This
+decision enables the macOS adapter; it is not evidence that a particular packaged build passed
+installed-browser acceptance.
 
 Codex, Claude, and other MCP clients are callers, not browser providers. They never receive a
 dedicated extension or the credential value. The unshipped Node/Playwright adapters are disabled
