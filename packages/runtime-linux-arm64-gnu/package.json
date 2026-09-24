@@ -1,6 +1,6 @@
 {
   "name": "@palladin/runtime-linux-arm64-gnu",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Native glibc Linux arm64 client and runtime for Palladin Agent",
   "private": true,
   "license": "Apache-2.0",

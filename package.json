@@ -1,6 +1,6 @@
 {
   "name": "@palladin/cli",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Script-free launcher for Palladin CLI and its native MCP runtime",
   "author": "Patryk Roguszewski <patryk.roguszewski@palladin.io>",
   "private": true,
@@ -91,13 +91,13 @@
     "postcss": "8.5.26"
   },
   "optionalDependencies": {
-    "@palladin/runtime-darwin-arm64": "0.1.0",
-    "@palladin/runtime-darwin-x64": "0.1.0",
-    "@palladin/runtime-linux-arm64-gnu": "0.1.0",
-    "@palladin/runtime-linux-arm64-musl": "0.1.0",
-    "@palladin/runtime-linux-x64-gnu": "0.1.0",
-    "@palladin/runtime-linux-x64-musl": "0.1.0",
-    "@palladin/runtime-win32-arm64": "0.1.0",
-    "@palladin/runtime-win32-x64": "0.1.0"
+    "@palladin/runtime-darwin-arm64": "0.0.1",
+    "@palladin/runtime-darwin-x64": "0.0.1",
+    "@palladin/runtime-linux-arm64-gnu": "0.0.1",
+    "@palladin/runtime-linux-arm64-musl": "0.0.1",
+    "@palladin/runtime-linux-x64-gnu": "0.0.1",
+    "@palladin/runtime-linux-x64-musl": "0.0.1",
+    "@palladin/runtime-win32-arm64": "0.0.1",
+    "@palladin/runtime-win32-x64": "0.0.1"
   }
 }
