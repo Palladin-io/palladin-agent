@@ -49,8 +49,6 @@ describe('public npm package boundary', () => {
       '@palladin/runtime-linux-arm64-musl': root.version,
       '@palladin/runtime-linux-x64-gnu': root.version,
       '@palladin/runtime-linux-x64-musl': root.version,
-      '@palladin/runtime-win32-arm64': root.version,
-      '@palladin/runtime-win32-x64': root.version,
     });
     for (const lifecycle of [
       'preinstall', 'install', 'postinstall', 'preprepare', 'prepare', 'postprepare',
