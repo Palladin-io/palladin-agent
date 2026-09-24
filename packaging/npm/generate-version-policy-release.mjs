@@ -10,14 +10,13 @@ import {
 } from '../../dist/runtime/version-policy.js';
 
 const values = argumentsOf([
-  'node-modules', 'version', 'source-sha', 'current', 'public-key', 'issued-at',
-  'windows-publisher', 'windows-thumbprint', 'output',
+  'node-modules', 'version', 'source-sha', 'current', 'public-key', 'issued-at', 'output',
 ]);
 const version = required('version');
 const sourceSha = required('source-sha');
 const issuedAt = required('issued-at');
 if (!exactVersion(version) || !/^[0-9a-f]{40}$/.test(sourceSha)
-  || !exactTimestamp(issuedAt) || !/^(?:[0-9A-F]{40}|[0-9A-F]{64})$/.test(required('windows-thumbprint'))) fail();
+  || !exactTimestamp(issuedAt)) fail();
 const issued = new Date(issuedAt);
 const modules = resolve(required('node-modules'));
 const canonicalModules = realpathSync(modules);
@@ -28,8 +27,6 @@ const packages = [
   ['@palladin/runtime-linux-arm64-musl', 'bin/palladin-linux-client', 'bin/palladin-worker'],
   ['@palladin/runtime-linux-x64-gnu', 'bin/palladin-linux-client', 'bin/palladin-worker'],
   ['@palladin/runtime-linux-x64-musl', 'bin/palladin-linux-client', 'bin/palladin-worker'],
-  ['@palladin/runtime-win32-arm64', 'bin/palladin-client.exe', null],
-  ['@palladin/runtime-win32-x64', 'bin/palladin-client.exe', null],
 ];
 const releaseArtifacts = packages.map(([name, executable, worker]) => {
   const root = join(modules, ...name.split('/'));
@@ -47,18 +44,12 @@ const releaseArtifacts = packages.map(([name, executable, worker]) => {
   const executableBytes = readVerifiedFile(
     executablePath, canonicalRoot, 256 * 1024 * 1024,
   );
-  let workerExecutableSha256;
-  if (worker === null) {
-    workerExecutableSha256 = manifest.palladinRuntime?.workerExecutableSha256;
-    if (!/^[0-9a-f]{64}$/.test(workerExecutableSha256 ?? '')) fail();
-  } else {
-    const workerPath = join(canonicalRoot, worker);
-    const canonicalWorker = realpathSync(workerPath);
-    assertInside(canonicalRoot, canonicalWorker);
-    workerExecutableSha256 = createHash('sha256').update(readVerifiedFile(
-      workerPath, canonicalRoot, 256 * 1024 * 1024,
-    )).digest('hex');
-  }
+  const workerPath = join(canonicalRoot, worker);
+  const canonicalWorker = realpathSync(workerPath);
+  assertInside(canonicalRoot, canonicalWorker);
+  const workerExecutableSha256 = createHash('sha256').update(readVerifiedFile(
+    workerPath, canonicalRoot, 256 * 1024 * 1024,
+  )).digest('hex');
   const artifact = {
     executableSha256: createHash('sha256').update(executableBytes).digest('hex'),
     packageName: name,
@@ -66,11 +57,7 @@ const releaseArtifacts = packages.map(([name, executable, worker]) => {
     version,
     workerExecutableSha256,
   };
-  return name.includes('/runtime-win32-') ? {
-    authenticodePublisher: required('windows-publisher'),
-    authenticodeThumbprint: required('windows-thumbprint'),
-    ...artifact,
-  } : artifact;
+  return artifact;
 });
 
 let current;

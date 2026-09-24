@@ -74,8 +74,6 @@ jobs:
             '@palladin/runtime-linux-arm64-musl',
             '@palladin/runtime-linux-x64-gnu',
             '@palladin/runtime-linux-x64-musl',
-            '@palladin/runtime-win32-arm64',
-            '@palladin/runtime-win32-x64',
           ];
           if (Object.keys(dependencies).sort().join('\n') !== expected.sort().join('\n')) process.exit(1);
           if (Object.values(dependencies).some((value) => value !== version)) process.exit(1);
@@ -105,12 +103,6 @@ jobs:
           - runner: macos-15-intel
             platform: macOS-x64
             runtime_package: runtime-darwin-x64
-          - runner: windows-11-arm
-            platform: Windows-arm64
-            runtime_package: runtime-win32-arm64
-          - runner: windows-2025
-            platform: Windows-x64
-            runtime_package: runtime-win32-x64
           - runner: ubuntu-24.04-arm
             platform: Linux-GNU-arm64
             runtime_package: runtime-linux-arm64-gnu

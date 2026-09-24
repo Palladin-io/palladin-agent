@@ -24,14 +24,14 @@ A small trust state in OS secure storage commits the complete public registry. E
 
 The macOS Hardened build uses a provisioned Data Protection Keychain access group. Items are non-synchronizable and `WhenUnlockedThisDeviceOnly`; access to the shared organization credential requires user presence. Homebrew Node, an unsigned clone, and a differently signed fork do not have the entitlement. An unsigned development binary fails closed and does not fall back to Login Keychain, a file, or an environment variable.
 
-The Windows Hardened tier is installed separately with the owner-signed one-UAC bootstrapper. It registers `PalladinRuntime` as packaged `LocalService`, sets a restricted service SID, and protects `C:\ProgramData\Palladin\Runtime\v1` so only SYSTEM, Administrators, and `NT SERVICE\PalladinRuntime` have access. The npm package never performs privileged installation. A source build using Windows Credential Manager outside this broker boundary reports `Convenience`, never `Hardened`.
+The Windows Hardened tier is under development and is not part of the first public release. It requires a separately signed system bootstrapper; the npm package never performs privileged installation. A source build using Windows Credential Manager outside the broker boundary reports `Convenience`, never `Hardened`.
 
-Linux Secret Service is always Convenience because it cannot distinguish two processes under the same UID. Linux Hardened is an optional DEB/RPM system package: a dedicated Agent account is bound by root-owned configuration to a random immutable principal namespace, fixed profile, and approved origin. The broker owns context-bound encrypted state under a separate UID, and each credential execution uses a broker-only socket plus a one-shot systemd `DynamicUser` executor. PolKit authorizes only management of this record; it is not presented as process isolation. See [the Linux runbook](packaging/linux/README.md).
+Linux Secret Service is always Convenience because it cannot distinguish two processes under the same UID. The first release installs through npm alone and requires a compatible Secret Service for secret operations. The separate Linux Hardened DEB/RPM broker is under development and is not distributed in `0.0.1`. See [the Linux runbook](packaging/linux/README.md).
 
 | Linux target | npm Convenience | Hardened |
 |---|---|---|
-| glibc x64/arm64 + systemd 252+ | Supported | Supported through the separate DEB/RPM |
-| musl x64/arm64, including Alpine 3.22 | Supported when a compatible Secret Service is available; otherwise secret operations fail closed | Unsupported in the MVP; no APK is published |
+| glibc x64/arm64 | Supported when a compatible Secret Service is available | Not published in `0.0.1` |
+| musl x64/arm64, including Alpine 3.22 | Supported when a compatible Secret Service is available | Not published in `0.0.1` |
 
 ## Installation
 
@@ -42,9 +42,9 @@ npm install --global @palladin/cli
 palladin doctor
 ```
 
-On Windows, install the matching signed Palladin Runtime bootstrapper once before using Hardened mode. npm installation remains script-free and does not prompt for elevation. If the service or companion is unavailable or invalid, the client fails closed instead of falling back to the current-user credential store.
+Windows runtime packages are not part of `0.0.1`; the CLI cannot run there yet.
 
-On glibc Linux with systemd 252 or newer, npm alone installs the Convenience tier. Install the matching signed `palladin-runtime` DEB or RPM only for a dedicated headless Agent UID. An authorized UID fails closed when the broker, executor socket, root-owned mapping, or permissions are invalid; it never falls back to the npm worker or Secret Service. Workload purge is blocked; permanent deletion requires the root-owned `palladin-manage-agent-uid revoke-purge USER --confirm-purge` operation, which retains the UID-reuse tombstone. Alpine/OpenRC has no Hardened package in the MVP because it lacks an equivalent fresh per-request UID and executor sandbox.
+On Linux, npm alone installs the Convenience tier. It does not need administrator access or install a system service. The runtime fails closed if a compatible Secret Service is unavailable; another process running under the same user ID remains inside the trust boundary. The separate Hardened broker requires administrator installation and is deferred beyond `0.0.1`.
 
 No package uses `preinstall`, `install`, `postinstall`, `preprepare`, `prepare`, or `postprepare`. npm installs the matching prebuilt platform package; it does not download or compile a binary during installation.
 

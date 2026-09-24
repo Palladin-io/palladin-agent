@@ -262,13 +262,15 @@ test('accepts only one exact, inert tarball for every supported platform package
       writePackageArchive(join(root, filename), {
         name,
         version: '1.2.3',
-        ...(name.includes('/runtime-win32-') ? {
-          palladinRuntime: { workerExecutableSha256: '33'.repeat(32) },
-        } : {}),
       });
     }
     writeFileSync(join(root, 'palladin-runtime-setup-x64-1.2.3.zip'), 'signed ancillary installer');
     run('verify-platform-release-set.mjs', ['--directory', root, '--version', '1.2.3']);
+    writeFileSync(join(root, 'palladin-runtime_1.2.3_amd64.deb'), 'deferred system package');
+    const systemPackage = failing('verify-platform-release-set.mjs', ['--directory', root, '--version', '1.2.3']);
+    assert.notEqual(systemPackage.status, 0);
+    assert.match(systemPackage.stderr, /outside the npm platform release/);
+    rmSync(join(root, 'palladin-runtime_1.2.3_amd64.deb'));
 
     const first = PLATFORM_PACKAGE_NAMES[0];
     writePackageArchive(join(root, `${first.slice('@palladin/'.length)}-1.2.3.tgz`), {
@@ -593,8 +595,6 @@ test('release policy generator binds all exact executables and rejects a symlink
       ['@palladin/runtime-linux-arm64-musl', 'bin/palladin-linux-client'],
       ['@palladin/runtime-linux-x64-gnu', 'bin/palladin-linux-client'],
       ['@palladin/runtime-linux-x64-musl', 'bin/palladin-linux-client'],
-      ['@palladin/runtime-win32-arm64', 'bin/palladin-client.exe'],
-      ['@palladin/runtime-win32-x64', 'bin/palladin-client.exe'],
     ]);
     for (const [name, executable] of executables) {
       const packageRoot = join(modules, ...name.split('/'));
@@ -602,9 +602,6 @@ test('release policy generator binds all exact executables and rejects a symlink
       writeJson(join(packageRoot, 'package.json'), {
         name,
         version: '1.2.3',
-        ...(name.includes('/runtime-win32-') ? {
-          palladinRuntime: { workerExecutableSha256: '33'.repeat(32) },
-        } : {}),
       });
       writeFileSync(join(packageRoot, executable), `signed fixture: ${name}`);
       if (name.includes('/runtime-linux-')) {
@@ -618,8 +615,6 @@ test('release policy generator binds all exact executables and rejects a symlink
       '--current', current,
       '--public-key', policyPublicKey,
       '--issued-at', '2026-07-14T12:00:00Z',
-      '--windows-publisher', 'CN=Palladin Test',
-      '--windows-thumbprint', 'A'.repeat(40),
       '--output', output,
     ];
     run('generate-version-policy-release.mjs', args);
@@ -628,7 +623,7 @@ test('release policy generator binds all exact executables and rejects a symlink
     assert.equal(payload.minimumVersion, '1.2.3');
     assert.equal(payload.recommendedVersion, '1.2.3');
     assert.equal(payload.expiresAt, '2026-08-13T12:00:00Z');
-    assert.equal(payload.artifacts.length, 8);
+    assert.equal(payload.artifacts.length, 6);
     assert.ok(payload.artifacts.every((artifact) => /^[0-9a-f]{64}$/.test(
       artifact.workerExecutableSha256,
     )));

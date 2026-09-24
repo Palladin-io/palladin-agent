@@ -59,7 +59,8 @@ describe('cross-platform CI gates', () => {
     ];
 
     expect(Object.keys(rootPackage.optionalDependencies).sort()).toEqual(
-      supported.map(({ packageName }) => packageName).sort(),
+      supported.filter(({ packageName }) => !packageName.includes('/runtime-win32-'))
+        .map(({ packageName }) => packageName).sort(),
     );
     for (const { packageName, target, runner } of supported) {
       expect(native, target).toContain(target);

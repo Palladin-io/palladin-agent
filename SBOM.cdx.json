@@ -8999,34 +8999,6 @@
           }
         }
       ]
-    },
-    {
-      "bom-ref": "pkg:npm/%40palladin%2Fruntime-win32-arm64@0.0.1",
-      "type": "application",
-      "name": "@palladin/runtime-win32-arm64",
-      "version": "0.0.1",
-      "purl": "pkg:npm/%40palladin%2Fruntime-win32-arm64@0.0.1",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "pkg:npm/%40palladin%2Fruntime-win32-x64@0.0.1",
-      "type": "application",
-      "name": "@palladin/runtime-win32-x64",
-      "version": "0.0.1",
-      "purl": "pkg:npm/%40palladin%2Fruntime-win32-x64@0.0.1",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ]
     }
   ]
 }
