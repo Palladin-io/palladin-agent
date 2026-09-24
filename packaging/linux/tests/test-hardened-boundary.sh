@@ -113,7 +113,7 @@ import json, os, socket, struct, subprocess, sys
 uid = int(sys.argv[1])
 payload = json.dumps({
     "type": "start", "version": 3,
-    "release_version": "0.1.0", "source_sha": "development",
+    "release_version": "0.0.1", "source_sha": "development",
     "request_id": [1] * 16,
     "arguments": ["doctor"], "interactive": False,
 }, separators=(",", ":")).encode()

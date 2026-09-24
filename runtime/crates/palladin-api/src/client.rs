@@ -1788,11 +1788,25 @@ mod tests {
                 } else {
                     "Service Unavailable"
                 };
-                let response = format!(
-                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nX-Palladin-Vault-Protocol: 2\r\nX-Palladin-Sync-Policy: 1\r\nContent-Encoding: identity\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                let headers = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nX-Palladin-Vault-Protocol: 2\r\nX-Palladin-Sync-Policy: 1\r\nContent-Encoding: identity\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
-                stream.write_all(response.as_bytes()).await.expect("write");
+                stream
+                    .write_all(headers.as_bytes())
+                    .await
+                    .expect("write headers");
+                match stream.write_all(body.as_bytes()).await {
+                    Ok(()) => {}
+                    Err(error)
+                        if body.len() > MAX_BOUNDED_RESPONSE_BYTES
+                            && matches!(
+                                error.kind(),
+                                std::io::ErrorKind::BrokenPipe
+                                    | std::io::ErrorKind::ConnectionReset
+                            ) => {}
+                    Err(error) => panic!("write body: {error}"),
+                }
             }
         });
         (format!("http://{address}"), requests)

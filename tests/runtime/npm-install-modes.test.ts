@@ -90,8 +90,8 @@ describe('npm installation modes', () => {
       };
       response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
         name,
-        'dist-tags': { latest: '0.1.0' },
-        versions: { '0.1.0': manifest },
+        'dist-tags': { latest: '0.0.1' },
+        versions: { '0.0.1': manifest },
       }));
     });
 
@@ -107,7 +107,7 @@ describe('npm installation modes', () => {
         mkdirSync(directory);
         const manifest = {
           name,
-          version: '0.1.0',
+          version: '0.0.1',
           os: [os],
           cpu: [cpu],
           ...(libc === undefined ? {} : { libc: [libc] }),
@@ -115,7 +115,7 @@ describe('npm installation modes', () => {
         };
         writeJson(join(directory, 'package.json'), manifest);
         writeFileSync(join(directory, 'README.md'), `${name}\n`);
-        optionalDependencies[name] = '0.1.0';
+        optionalDependencies[name] = '0.0.1';
         packages.set(name, {
           manifest,
           tarball: pack(npmCli, directory, tarballs),
@@ -128,7 +128,7 @@ describe('npm installation modes', () => {
       mkdirSync(launcher);
       const launcherManifest = {
         name: launcherName,
-        version: '0.1.0',
+        version: '0.0.1',
         bin: { palladin: 'palladin.js' },
         files: ['palladin.js'],
         optionalDependencies,
@@ -159,7 +159,7 @@ describe('npm installation modes', () => {
         '--no-fund',
         '--prefix', prefix,
         '--registry', origin,
-        '@palladin/cli@0.1.0',
+        '@palladin/cli@0.0.1',
       ], { env: { ...process.env, npm_config_cache: globalCache } });
       const globalRoot = (await run(process.execPath, [
         npmCli,
@@ -187,7 +187,7 @@ describe('npm installation modes', () => {
         '--no-fund',
         '--prefix', local,
         '--registry', origin,
-        '@palladin/cli@0.1.0',
+        '@palladin/cli@0.0.1',
       ], { env: { ...process.env, npm_config_cache: join(fixture, 'local-cache') } });
       const localRun = await run(process.execPath, [
         npmCli,
@@ -203,7 +203,7 @@ describe('npm installation modes', () => {
         npmCli,
         'exec',
         '--yes',
-        '--package=@palladin/cli@0.1.0',
+        '--package=@palladin/cli@0.0.1',
         '--call',
         'palladin',
       ], {
@@ -229,7 +229,7 @@ describe('npm installation modes', () => {
         '--no-fund',
         '--prefix', offline,
         '--registry', origin,
-        '@palladin/cli@0.1.0',
+        '@palladin/cli@0.0.1',
       ], { env: { ...process.env, npm_config_cache: globalCache } });
       expect(installedPackageNames(join(offline, 'node_modules'))).toContain('@palladin/cli');
     } finally {

@@ -1,6 +1,6 @@
 {
   "name": "@palladin/runtime-win32-x64",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Signed Windows x64 client for Palladin Agent",
   "private": true,
   "license": "Apache-2.0",
