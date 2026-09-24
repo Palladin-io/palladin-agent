@@ -688,3 +688,20 @@ fn submitted_flow_origin_change_has_neutral_success_exit_without_auth_claim() {
         0
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn browser_native_host_rejects_a_non_chrome_parent() {
+    for origin in palladin_cli::browser::CHROME_EXTENSION_ORIGINS {
+        let output = Command::new(env!("CARGO_BIN_EXE_palladin"))
+            .arg(origin)
+            .output()
+            .expect("native host process");
+        assert_eq!(output.status.code(), Some(78));
+        assert!(
+            output.stdout.is_empty(),
+            "unauthenticated process must not offer a session"
+        );
+        assert!(output.stderr.is_empty());
+    }
+}

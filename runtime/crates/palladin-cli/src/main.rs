@@ -100,8 +100,8 @@ async fn main() -> ExitCode {
     let environment = EnvironmentReport::inspect_current();
     let cli = Cli::parse();
 
-    if browser_command_blocked_by_provenance(&cli.command) {
-        return fail(&BrowserInstallError::ExtensionProvenanceUnavailable.to_string());
+    if browser_command_unsupported_on_platform(&cli.command) {
+        return fail(&BrowserInstallError::UnsupportedPlatform.to_string());
     }
 
     if let Commands::Inject(args) = &cli.command
@@ -212,9 +212,6 @@ async fn main() -> ExitCode {
 async fn chrome_native_host_main(
     extension_origin: palladin_cli::browser::ChromeExtensionOrigin,
 ) -> ExitCode {
-    if !palladin_cli::browser::extension_provenance_supported() {
-        return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
-    }
     if palladin_platform::authenticate_chrome_native_messaging_parent().is_err() {
         return ExitCode::from(EXIT_UNSAFE_ENVIRONMENT);
     }
@@ -268,11 +265,6 @@ async fn chrome_native_host_main(
 fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand) -> ExitCode {
     match command {
         BrowserCommand::Install => {
-            if !palladin_cli::browser::extension_provenance_supported() {
-                return fail(
-                    "production Chrome extension provenance cannot yet be attested; Agent Inject is available only in development builds",
-                );
-            }
             let provisioning = match service.provision_browser_host_authorization_locked() {
                 Ok(authorization) => authorization,
                 Err(error) => return fail(&error.to_string()),
@@ -282,18 +274,13 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
                 Err(error) => return fail(&error.to_string()),
             };
             println!(
-                "Palladin Chrome host installed at {}.\nA Chrome extension with the compiled Palladin development origin can now receive Agent Inject requests automatically; artifact provenance is not attested.",
+                "Palladin Chrome host installed at {}.\nA Chrome extension with the compiled Palladin origin allowlist can now receive Agent Inject requests automatically; artifact provenance is not attested.",
                 safe_terminal_text(&path.to_string_lossy())
             );
             drop(provisioning);
             ExitCode::SUCCESS
         }
         BrowserCommand::Status => {
-            if !palladin_cli::browser::extension_provenance_supported() {
-                return fail(
-                    "production Chrome extension provenance cannot yet be attested; Agent Inject is available only in development builds",
-                );
-            }
             let installed = match manifest_status(service.repository().root()) {
                 Ok(installed) => installed,
                 Err(error) => return fail(&error.to_string()),
@@ -301,7 +288,7 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
             let authorized = match service.browser_host_identity() {
                 Ok(_identity) => {
                     println!(
-                        "Chrome native host manifest: {}\nHost authorization: provisioned\nExtension access: restricted to the compiled Chrome development origin; artifact provenance is not attested\nAuthenticated channel: verified when Inject begins",
+                        "Chrome native host manifest: {}\nHost authorization: provisioned\nExtension access: restricted to the compiled Chrome origin allowlist; artifact provenance is not attested\nAuthenticated channel: verified when Inject begins",
                         if installed {
                             "installed"
                         } else {
@@ -347,8 +334,8 @@ fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand
     }
 }
 
-const fn browser_command_blocked_by_provenance(command: &Commands) -> bool {
-    !palladin_cli::browser::extension_provenance_supported()
+const fn browser_command_unsupported_on_platform(command: &Commands) -> bool {
+    !cfg!(target_os = "macos")
         && matches!(
             command,
             Commands::Browser {
@@ -2074,7 +2061,7 @@ fn print_unsafe_environment(environment: &EnvironmentReport, protocol_stdout: bo
 mod version_policy_gate_tests {
     use clap::Parser;
 
-    use super::{Cli, browser_command_blocked_by_provenance, requires_version_policy};
+    use super::{Cli, browser_command_unsupported_on_platform, requires_version_policy};
 
     fn command(arguments: &[&str]) -> Cli {
         Cli::try_parse_from(arguments).expect("valid command")
@@ -2123,17 +2110,17 @@ mod version_policy_gate_tests {
     }
 
     #[test]
-    fn release_blocks_browser_install_and_status_before_runtime_setup() {
+    fn unsupported_platform_blocks_browser_install_and_status_before_runtime_setup() {
         for arguments in [
             &["palladin", "browser", "install"][..],
             &["palladin", "browser", "status"][..],
         ] {
             assert_eq!(
-                browser_command_blocked_by_provenance(&command(arguments).command),
-                !cfg!(debug_assertions),
+                browser_command_unsupported_on_platform(&command(arguments).command),
+                !cfg!(target_os = "macos"),
             );
         }
-        assert!(!browser_command_blocked_by_provenance(
+        assert!(!browser_command_unsupported_on_platform(
             &command(&["palladin", "browser", "uninstall", "--confirm"]).command
         ));
     }

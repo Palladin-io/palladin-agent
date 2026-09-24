@@ -46,14 +46,6 @@ impl ChromeExtensionOrigin {
     }
 }
 
-/// Chrome Native Messaging authenticates the extension ID but does not attest Web Store
-/// installation versus an unpacked extension carrying the same public manifest key. Until a
-/// reviewed provenance mechanism exists, only debug builds may enable this development path.
-#[must_use]
-pub const fn extension_provenance_supported() -> bool {
-    cfg!(debug_assertions)
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct NativeHostManifest {
@@ -67,9 +59,6 @@ struct NativeHostManifest {
 
 pub fn install_manifest(palladin_root: &Path) -> Result<PathBuf, BrowserInstallError> {
     require_macos()?;
-    if !extension_provenance_supported() {
-        return Err(BrowserInstallError::ExtensionProvenanceUnavailable);
-    }
     let executable =
         fs::canonicalize(std::env::current_exe().map_err(|_| BrowserInstallError::Executable)?)
             .map_err(|_| BrowserInstallError::Executable)?;
@@ -220,10 +209,6 @@ pub enum BrowserInstallError {
         "the authenticated browser host is currently supported only for Google Chrome on macOS"
     )]
     UnsupportedPlatform,
-    #[error(
-        "production Chrome extension provenance cannot yet be attested; Agent Inject is available only in development builds"
-    )]
-    ExtensionProvenanceUnavailable,
     #[error("the Palladin native executable path is invalid")]
     Executable,
     #[error("the Chrome Native Messaging directory is not owner-controlled")]
@@ -267,11 +252,6 @@ mod tests {
     }
 
     #[test]
-    fn provenance_gate_matches_the_build_security_mode() {
-        assert_eq!(extension_provenance_supported(), cfg!(debug_assertions));
-    }
-
-    #[test]
     fn native_host_name_matches_the_build_security_mode() {
         assert_eq!(
             NATIVE_HOST_NAME,
@@ -284,7 +264,7 @@ mod tests {
         assert_ne!(PRODUCTION_NATIVE_HOST_NAME, DEVELOPMENT_NATIVE_HOST_NAME);
     }
 
-    #[cfg(all(target_os = "macos", debug_assertions))]
+    #[cfg(target_os = "macos")]
     #[test]
     fn manifest_lifecycle_is_exact_and_tampering_fails_status() {
         let temporary = tempfile::tempdir().expect("temporary home");
@@ -299,7 +279,7 @@ mod tests {
         assert!(!legacy_manifest.exists());
         assert_eq!(
             manifest.file_name().and_then(std::ffi::OsStr::to_str),
-            Some("io.palladin.debug.json")
+            Some(format!("{NATIVE_HOST_NAME}.json").as_str())
         );
         assert!(manifest_status(&root).expect("status"));
 
@@ -318,15 +298,18 @@ mod tests {
                 "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
             ]),
         ] {
-            value["allowed_origins"] = origins;
+            value["allowed_origins"] = origins.clone();
             std::fs::write(&manifest, serde_json::to_vec(&value).expect("encode")).expect("tamper");
-            assert!(!manifest_status(&root).expect("tampered status"));
+            assert_eq!(
+                manifest_status(&root).expect("tampered status"),
+                origins == serde_json::json!(CHROME_EXTENSION_ORIGINS)
+            );
         }
         assert!(remove_manifest(&root).expect("remove"));
         assert!(!manifest.exists());
     }
 
-    #[cfg(all(target_os = "macos", debug_assertions))]
+    #[cfg(target_os = "macos")]
     #[test]
     fn symlinked_manifest_directory_is_rejected() {
         use std::os::unix::fs::symlink;
