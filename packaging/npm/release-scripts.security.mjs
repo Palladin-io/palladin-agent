@@ -262,9 +262,6 @@ test('accepts only one exact, inert tarball for every supported platform package
       writePackageArchive(join(root, filename), {
         name,
         version: '1.2.3',
-        ...(name.includes('/runtime-win32-') ? {
-          palladinRuntime: { workerExecutableSha256: '33'.repeat(32) },
-        } : {}),
       });
     }
     writeFileSync(join(root, 'palladin-runtime-setup-x64-1.2.3.zip'), 'signed ancillary installer');

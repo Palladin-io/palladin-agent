@@ -104,16 +104,7 @@ try {
     if (manifest.version !== version) fail(`platform package version does not match ${version}: ${manifest.name}`);
     if (Object.hasOwn(manifest, 'private')) fail(`staged platform package must be public: ${manifest.name}`);
     assertNoLifecycleScripts(manifest, manifest.name);
-    const windows = manifest.name.startsWith('@palladin/runtime-win32-');
-    const workerBinding = manifest.palladinRuntime;
-    if (windows) {
-      if (workerBinding === null || typeof workerBinding !== 'object'
-        || Array.isArray(workerBinding)
-        || Object.keys(workerBinding).join('\0') !== 'workerExecutableSha256'
-        || !/^[0-9a-f]{64}$/.test(workerBinding.workerExecutableSha256)) {
-        fail(`Windows platform package has no exact worker binding: ${manifest.name}`);
-      }
-    } else if (workerBinding !== undefined) {
+    if (manifest.palladinRuntime !== undefined) {
       fail(`non-Windows platform package contains a Windows worker binding: ${manifest.name}`);
     }
   }

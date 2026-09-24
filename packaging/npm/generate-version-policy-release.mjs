@@ -44,18 +44,12 @@ const releaseArtifacts = packages.map(([name, executable, worker]) => {
   const executableBytes = readVerifiedFile(
     executablePath, canonicalRoot, 256 * 1024 * 1024,
   );
-  let workerExecutableSha256;
-  if (worker === null) {
-    workerExecutableSha256 = manifest.palladinRuntime?.workerExecutableSha256;
-    if (!/^[0-9a-f]{64}$/.test(workerExecutableSha256 ?? '')) fail();
-  } else {
-    const workerPath = join(canonicalRoot, worker);
-    const canonicalWorker = realpathSync(workerPath);
-    assertInside(canonicalRoot, canonicalWorker);
-    workerExecutableSha256 = createHash('sha256').update(readVerifiedFile(
-      workerPath, canonicalRoot, 256 * 1024 * 1024,
-    )).digest('hex');
-  }
+  const workerPath = join(canonicalRoot, worker);
+  const canonicalWorker = realpathSync(workerPath);
+  assertInside(canonicalRoot, canonicalWorker);
+  const workerExecutableSha256 = createHash('sha256').update(readVerifiedFile(
+    workerPath, canonicalRoot, 256 * 1024 * 1024,
+  )).digest('hex');
   const artifact = {
     executableSha256: createHash('sha256').update(executableBytes).digest('hex'),
     packageName: name,
