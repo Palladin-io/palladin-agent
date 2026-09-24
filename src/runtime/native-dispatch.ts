@@ -146,6 +146,9 @@ function resolvePackageExecutable(
   try {
     resolvedPackageJson = host.resolvePackageJson(`${packageName}/package.json`);
   } catch {
+    if (host.platform === 'win32') {
+      throw new Error(`Palladin native runtime does not support Windows in @palladin/cli@${NATIVE_RUNTIME_VERSION}; the Windows release is deferred`);
+    }
     throw new Error(
       `Palladin native runtime package ${packageName}@${NATIVE_RUNTIME_VERSION} is unavailable; reinstall @palladin/cli@${NATIVE_RUNTIME_VERSION} without --omit=optional. For an offline install, prefill the npm cache or registry proxy with both exact tarballs`,
     );

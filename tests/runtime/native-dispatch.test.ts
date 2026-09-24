@@ -166,6 +166,20 @@ describe('native runtime dispatcher', () => {
     write.mockRestore();
   });
 
+  it('reports the deferred Windows release when its runtime package is unavailable', async () => {
+    const fixture = host({
+      platform: 'win32',
+      architecture: 'x64',
+      resolvePackageJson: vi.fn(() => { throw new Error('missing'); }),
+    });
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await expect(launchNativeRuntime([], fixture)).resolves.toBe(1);
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('does not support Windows in @palladin/cli@0.0.1'));
+    expect(write).not.toHaveBeenCalledWith(expect.stringContaining('--omit=optional'));
+    expect(fixture.spawnRuntime).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+
   it.each([
     ['x64', '@palladin/runtime-linux-x64-gnu/package.json', linuxPackageJson, linuxExecutable],
     [
