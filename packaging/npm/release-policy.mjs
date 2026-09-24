@@ -8,13 +8,13 @@ export const PLATFORM_PACKAGE_NAMES = Object.freeze([
   '@palladin/runtime-linux-arm64-musl',
   '@palladin/runtime-linux-x64-gnu',
   '@palladin/runtime-linux-x64-musl',
-  '@palladin/runtime-win32-arm64',
-  '@palladin/runtime-win32-x64',
 ]);
 
 export const PUBLIC_PACKAGE_NAMES = Object.freeze([
   '@palladin/cli',
   ...PLATFORM_PACKAGE_NAMES,
+  '@palladin/runtime-win32-arm64',
+  '@palladin/runtime-win32-x64',
 ]);
 
 export const LIFECYCLE_SCRIPT_NAMES = Object.freeze([

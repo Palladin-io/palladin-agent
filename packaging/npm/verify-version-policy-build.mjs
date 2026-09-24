@@ -28,8 +28,6 @@ const expected = [
   '@palladin/runtime-linux-arm64-musl',
   '@palladin/runtime-linux-x64-gnu',
   '@palladin/runtime-linux-x64-musl',
-  '@palladin/runtime-win32-arm64',
-  '@palladin/runtime-win32-x64',
 ];
 const actual = envelope.signed.artifacts
   .filter((artifact) => artifact.version === version && artifact.sourceSha === sourceSha)

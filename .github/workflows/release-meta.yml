@@ -53,7 +53,7 @@ jobs:
       - run: npm install --global npm@11.18.0
 
       - id: source
-        name: Verify tag and all eight public platform versions
+        name: Verify tag and all six public platform versions
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           VERSION: ${{ inputs.version }}
@@ -76,8 +76,6 @@ jobs:
             @palladin/runtime-linux-arm64-musl
             @palladin/runtime-linux-x64-gnu
             @palladin/runtime-linux-x64-musl
-            @palladin/runtime-win32-arm64
-            @palladin/runtime-win32-x64
           )
           for package in "${packages[@]}"; do
             test "$(npm view "$package@$VERSION" version --json)" = "\"$VERSION\""
@@ -163,8 +161,6 @@ jobs:
             @palladin/runtime-linux-arm64-musl
             @palladin/runtime-linux-x64-gnu
             @palladin/runtime-linux-x64-musl
-            @palladin/runtime-win32-arm64
-            @palladin/runtime-win32-x64
           )
           for package in "${packages[@]}"; do
             npm pack "$package@$VERSION" --pack-destination "$registry" --ignore-scripts >/dev/null
@@ -173,8 +169,8 @@ jobs:
             -name 'palladin-runtime-*.tgz' -print | sort)
           mapfile -t registry_tarballs < <(find "$registry" -maxdepth 1 -type f \
             -name 'palladin-runtime-*.tgz' -print | sort)
-          test "${#release_tarballs[@]}" -eq 8
-          test "${#registry_tarballs[@]}" -eq 8
+          test "${#release_tarballs[@]}" -eq 6
+          test "${#registry_tarballs[@]}" -eq 6
           for asset in "${release_tarballs[@]}"; do
             registry_tarball="$registry/$(basename "$asset")"
             test -f "$registry_tarball"
@@ -200,8 +196,6 @@ jobs:
             @palladin/runtime-linux-arm64-musl
             @palladin/runtime-linux-x64-gnu
             @palladin/runtime-linux-x64-musl
-            @palladin/runtime-win32-arm64
-            @palladin/runtime-win32-x64
           )
           exact=()
           for package in "${packages[@]}"; do exact+=("$package@$VERSION"); done
@@ -237,8 +231,6 @@ jobs:
           PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
           VERSION: ${{ inputs.version }}
-          WINDOWS_PUBLISHER: ${{ vars.PALLADIN_WINDOWS_PUBLISHER }}
-          WINDOWS_THUMBPRINT: ${{ vars.PALLADIN_WINDOWS_SIGNER_THUMBPRINT }}
           RELEASE_BUCKET: ${{ vars.PALLADIN_RELEASE_BUCKET }}
           BOOTSTRAP_POLICY: ${{ inputs.bootstrap_policy }}
         run: |
@@ -276,8 +268,7 @@ jobs:
             --node-modules "$RUNNER_TEMP/policy-install/node_modules" \
             --version "$VERSION" --source-sha "$SOURCE_SHA" \
             --current "$policy/current.json" --public-key "$PUBLIC_KEY" \
-            --issued-at "$issued_at" --windows-publisher "$WINDOWS_PUBLISHER" \
-            --windows-thumbprint "$WINDOWS_THUMBPRINT" --output "$policy/payload.json"
+            --issued-at "$issued_at" --output "$policy/payload.json"
           gcloud kms asymmetric-sign \
             --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
             --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
@@ -315,12 +306,6 @@ jobs:
           - runner: macos-15-intel
             platform: macOS-x64
             runtime_package: runtime-darwin-x64
-          - runner: windows-11-arm
-            platform: Windows-arm64
-            runtime_package: runtime-win32-arm64
-          - runner: windows-2025
-            platform: Windows-x64
-            runtime_package: runtime-win32-x64
           - runner: ubuntu-24.04-arm
             platform: Linux-GNU-arm64
             runtime_package: runtime-linux-arm64-gnu
@@ -419,24 +404,6 @@ jobs:
               ;;
             runtime-linux-*)
               worker="$smoke/node_modules/@palladin/$RUNTIME_PACKAGE/bin/palladin-worker"
-              ;;
-            runtime-win32-*)
-              architecture=${RUNTIME_PACKAGE#runtime-win32-}
-              windows="$RUNNER_TEMP/windows-worker"
-              mkdir -p "$windows/bundle" "$windows/msix"
-              gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-                --pattern "Palladin.Runtime.Broker-$VERSION.0.msixbundle" \
-                --dir "$windows"
-              bundle=$(find "$windows" -maxdepth 1 -name '*.msixbundle' -print -quit)
-              test -n "$bundle"
-              tar.exe -xf "$bundle" -C "$windows/bundle"
-              mapfile -t packages < <(find "$windows/bundle" -maxdepth 1 -type f \
-                -iname "*-$architecture-*.msix" -print)
-              test "${#packages[@]}" -eq 1
-              tar.exe -xf "${packages[0]}" -C "$windows/msix"
-              cp "$windows/msix/bin/palladin-worker.exe" \
-                "$windows/palladin-release-verifier.exe"
-              worker="$windows/palladin-release-verifier.exe"
               ;;
           esac
           test -f "$worker"

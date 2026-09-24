@@ -84,6 +84,9 @@ try {
     const path = join(directory, entry);
     const stat = lstatSync(path);
     if (stat.isSymbolicLink()) fail(`platform release set contains a symbolic link: ${entry}`);
+    if (entry.endsWith('.deb') || entry.endsWith('.rpm')) {
+      fail(`system package is outside the npm platform release: ${entry}`);
+    }
     if (entry.endsWith('.tgz')) {
       if (!stat.isFile()) fail(`unexpected package artifact: ${entry}`);
       archivePaths.push(path);

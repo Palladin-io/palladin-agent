@@ -1,14 +1,15 @@
 # Linux runtime tiers
 
-Palladin publishes separate Linux glibc and musl npm artifacts on x64 and arm64.
-The Hardened system package is glibc-only and requires systemd 252 or newer:
+The first public release provides Linux glibc and musl npm artifacts on x64 and arm64.
+The Hardened DEB/RPM package below is a source-build development path; it is
+not included in the `0.0.1` release. It requires systemd 252 or newer:
 Debian 12+, Ubuntu 24.04+, Fedora, and RHEL/Rocky/AlmaLinux 9+. RHEL 8,
 Ubuntu 22.04, and Alpine/OpenRC are not supported by this boundary.
 
 | Tier | Installation | Trust boundary |
 |---|---|---|
 | Convenience | `npm install -g @palladin/cli` | Linux Secret Service protects data at rest. Another process under the same UID is inside the trust domain. PolKit does not turn this into process isolation. |
-| Hardened headless | Install the signed `palladin-runtime` DEB or RPM, then authorize one dedicated OS account per Agent | A dedicated Agent UID reaches a broker under `palladin-runtime` through `SO_PEERCRED`. A root-owned record binds the UID and account to one immutable random principal namespace, fixed profile, and approved API origin. Secret-bearing state is broker-only. Credential execution runs through a broker-only socket and a one-shot systemd service with a fresh `DynamicUser` UID. |
+| Hardened headless (not published in `0.0.1`) | Build and install the `palladin-runtime` DEB or RPM, then authorize one dedicated OS account per Agent | A dedicated Agent UID reaches a broker under `palladin-runtime` through `SO_PEERCRED`. A root-owned record binds the UID and account to one immutable random principal namespace, fixed profile, and approved API origin. Secret-bearing state is broker-only. Credential execution runs through a broker-only socket and a one-shot systemd service with a fresh `DynamicUser` UID. |
 
 Alpine 3.22 receives only the musl npm Convenience runtime. Secret operations
 require a compatible D-Bus Secret Service and fail closed when it is absent.
