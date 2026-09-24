@@ -1796,15 +1796,16 @@ mod tests {
                     .write_all(headers.as_bytes())
                     .await
                     .expect("write headers");
-                if let Err(error) = stream.write_all(body.as_bytes()).await {
-                    if body.len() <= MAX_BOUNDED_RESPONSE_BYTES
-                        || !matches!(
-                            error.kind(),
-                            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
-                        )
-                    {
-                        panic!("write body: {error}");
-                    }
+                match stream.write_all(body.as_bytes()).await {
+                    Ok(()) => {}
+                    Err(error)
+                        if body.len() > MAX_BOUNDED_RESPONSE_BYTES
+                            && matches!(
+                                error.kind(),
+                                std::io::ErrorKind::BrokenPipe
+                                    | std::io::ErrorKind::ConnectionReset
+                            ) => {}
+                    Err(error) => panic!("write body: {error}"),
                 }
             }
         });
