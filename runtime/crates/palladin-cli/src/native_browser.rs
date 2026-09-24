@@ -22,7 +22,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::time::{Instant, timeout, timeout_at};
 use zeroize::Zeroize;
 
-use crate::browser::{CHROME_EXTENSION_ORIGIN, local_socket_path};
+use crate::browser::{ChromeExtensionOrigin, local_socket_path};
 
 mod deferred;
 mod live_flow;
@@ -324,16 +324,18 @@ impl ExtensionClient {
     }
 }
 
-pub async fn serve_native_host<F, G>(
+pub async fn serve_native_host<R, W, F, G>(
     root: &Path,
     identity: &BrowserHostIdentity,
+    extension_origin: ChromeExtensionOrigin,
+    (mut native_input, mut native_output): (R, W),
     lifecycle_guard: F,
 ) -> Result<(), NativeBrowserError>
 where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
     F: Fn(Duration) -> Result<G, NativeBrowserError>,
 {
-    let mut native_input = tokio::io::stdin();
-    let mut native_output = tokio::io::stdout();
     let offer = SessionOffer {
         protocol: INJECT_PROVIDER_PROTOCOL,
         message_type: "session.offer",
@@ -347,7 +349,7 @@ where
     let open: ExtensionSessionOpen = timeout(HANDSHAKE_TIMEOUT, read_message(&mut native_input))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
-    let (ready, mut extension_session) = identity.accept(CHROME_EXTENSION_ORIGIN, &open)?;
+    let (ready, mut extension_session) = identity.accept(extension_origin.as_str(), &open)?;
     let _lifecycle = lifecycle_guard(HANDSHAKE_TIMEOUT)?;
     timeout(
         HANDSHAKE_TIMEOUT,
@@ -836,6 +838,63 @@ mod tests {
             vector["offer"]["hostSigningPublicKey"],
             vector["ready"]["hostSigningPublicKey"]
         );
+    }
+
+    #[tokio::test]
+    async fn native_handshake_is_bound_to_the_selected_browser_argument() {
+        use palladin_browser_bridge::secure_transport::verify_host_ready;
+
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/inject-provider/v1/secure-session.json"
+        ))
+        .expect("session fixture");
+        let open: ExtensionSessionOpen =
+            serde_json::from_value(vector["open"].clone()).expect("extension open");
+        for selected in crate::browser::CHROME_EXTENSION_ORIGINS {
+            let root = tempfile::tempdir().expect("temporary root");
+            let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+            let origin = ChromeExtensionOrigin::from_native_arguments(
+                [std::ffi::OsString::from(selected)].into_iter(),
+            )
+            .expect("allowlisted Chrome argument");
+            let (host_io, mut extension_io) = tokio::io::duplex(8192);
+            let host = serve_native_host(
+                root.path(),
+                &identity,
+                origin,
+                tokio::io::split(host_io),
+                |_| Ok(()),
+            );
+            let extension = async {
+                let offer: serde_json::Value =
+                    read_message(&mut extension_io).await.expect("offer");
+                assert_eq!(offer["hostSigningPublicKey"], identity.public_key());
+                write_message(&mut extension_io, &open).await.expect("open");
+                let ready: HostSessionReady = read_message(&mut extension_io).await.expect("ready");
+                verify_host_ready(selected, &open, &ready, &identity.public_key())
+                    .expect("signature for invoking extension");
+                for other in [
+                    "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/",
+                    "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/",
+                    "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+                ] {
+                    if other != *selected {
+                        assert!(
+                            verify_host_ready(other, &open, &ready, &identity.public_key())
+                                .is_err()
+                        );
+                    }
+                }
+            };
+            timeout(Duration::from_secs(2), async {
+                tokio::select! {
+                    result = host => panic!("host ended before handshake verification: {result:?}"),
+                    () = extension => {},
+                }
+            })
+            .await
+            .expect("bounded handshake");
+        }
     }
 
     #[derive(Default)]

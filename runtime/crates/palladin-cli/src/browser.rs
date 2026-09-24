@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,9 +14,37 @@ pub const NATIVE_HOST_NAME: &str = if cfg!(debug_assertions) {
     PRODUCTION_NATIVE_HOST_NAME
 };
 const LEGACY_NATIVE_HOST_NAME: &str = "io.palladin.browser_bridge";
-pub const CHROME_EXTENSION_ID: &str = "hmljnknogdeonphikmeofcbkikmpokba";
-pub const CHROME_EXTENSION_ORIGIN: &str = "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/";
+const STORE_CHROME_EXTENSION_ORIGIN: &str = "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/";
+pub const CHROME_EXTENSION_ORIGINS: &[&str] = &[
+    STORE_CHROME_EXTENSION_ORIGIN,
+    #[cfg(debug_assertions)]
+    "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/",
+];
+
 const NATIVE_HOST_DESCRIPTION: &str = "Palladin authenticated Chrome Inject host";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChromeExtensionOrigin(&'static str);
+
+impl ChromeExtensionOrigin {
+    // The caller must authenticate Chrome's parent process before trusting this argv binding.
+    pub fn from_native_arguments(mut arguments: impl Iterator<Item = OsString>) -> Option<Self> {
+        let argument = arguments.next()?;
+        if arguments.next().is_some() {
+            return None;
+        }
+        CHROME_EXTENSION_ORIGINS
+            .iter()
+            .copied()
+            .find(|origin| argument == *origin)
+            .map(Self)
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
 
 /// Chrome Native Messaging authenticates the extension ID but does not attest Web Store
 /// installation versus an unpacked extension carrying the same public manifest key. Until a
@@ -68,7 +97,10 @@ pub fn install_manifest(palladin_root: &Path) -> Result<PathBuf, BrowserInstallE
             .ok_or(BrowserInstallError::Executable)?
             .to_owned(),
         host_type: "stdio".to_owned(),
-        allowed_origins: vec![CHROME_EXTENSION_ORIGIN.to_owned()],
+        allowed_origins: CHROME_EXTENSION_ORIGINS
+            .iter()
+            .map(|origin| (*origin).to_owned())
+            .collect(),
     };
     let bytes = serde_json::to_vec_pretty(&manifest).map_err(|_| BrowserInstallError::Manifest)?;
     let temporary = directory.join(format!(".{NATIVE_HOST_NAME}.{}.tmp", std::process::id()));
@@ -114,7 +146,7 @@ pub fn manifest_status(palladin_root: &Path) -> Result<bool, BrowserInstallError
     Ok(manifest.name == NATIVE_HOST_NAME
         && manifest.description == NATIVE_HOST_DESCRIPTION
         && manifest.host_type == "stdio"
-        && manifest.allowed_origins == [CHROME_EXTENSION_ORIGIN]
+        && manifest.allowed_origins == CHROME_EXTENSION_ORIGINS
         && Path::new(&manifest.path) == executable)
 }
 
@@ -205,12 +237,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn chrome_identity_is_compiled_and_exact() {
-        assert_eq!(CHROME_EXTENSION_ID.len(), 32);
+    fn native_arguments_select_one_exact_origin_for_the_build() {
+        let parse = |arguments: &[&str]| {
+            ChromeExtensionOrigin::from_native_arguments(arguments.iter().map(OsString::from))
+        };
         assert_eq!(
-            CHROME_EXTENSION_ORIGIN,
-            format!("chrome-extension://{CHROME_EXTENSION_ID}/")
+            parse(&["chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/"])
+                .expect("store origin")
+                .as_str(),
+            "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/"
         );
+        let development = "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/";
+        assert_eq!(parse(&[development]).is_some(), cfg!(debug_assertions));
+        for origin in CHROME_EXTENSION_ORIGINS {
+            assert_eq!(parse(&[origin]).expect("allowed origin").as_str(), *origin);
+            assert!(parse(&[origin, "extra"]).is_none());
+        }
+        assert!(parse(&[]).is_none());
+        for invalid in [
+            "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+            "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf",
+            "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf.evil/",
+            "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/popup.html",
+            "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/?source=store",
+            "https://ecejlpkceehnckgenjafoppffmbmmagf/",
+        ] {
+            assert!(parse(&[invalid]).is_none(), "must reject {invalid}");
+        }
     }
 
     #[test]
@@ -253,10 +306,22 @@ mod tests {
         let mut value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&manifest).expect("manifest"))
                 .expect("manifest json");
-        value["allowed_origins"] =
-            serde_json::json!(["chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"]);
-        std::fs::write(&manifest, serde_json::to_vec(&value).expect("encode")).expect("tamper");
-        assert!(!manifest_status(&root).expect("tampered status"));
+        assert_eq!(
+            value["allowed_origins"],
+            serde_json::json!(CHROME_EXTENSION_ORIGINS)
+        );
+        for origins in [
+            serde_json::json!(["chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/"]),
+            serde_json::json!([STORE_CHROME_EXTENSION_ORIGIN]),
+            serde_json::json!([
+                STORE_CHROME_EXTENSION_ORIGIN,
+                "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
+            ]),
+        ] {
+            value["allowed_origins"] = origins;
+            std::fs::write(&manifest, serde_json::to_vec(&value).expect("encode")).expect("tamper");
+            assert!(!manifest_status(&root).expect("tampered status"));
+        }
         assert!(remove_manifest(&root).expect("remove"));
         assert!(!manifest.exists());
     }

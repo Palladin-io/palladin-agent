@@ -281,8 +281,9 @@ outcome. Adding another agent browser does not change the grant, crypto, CLI, or
 The extension provider uses the same Palladin extension rather than a provider-specific extension.
 On macOS, `palladin browser install` provisions the host identity in OS secure storage and installs
 the build-bound Google Chrome host: `io.palladin.debug` for source-development builds and
-`io.palladin` for release builds. Both allowlist only the exact compiled Palladin extension origin;
-there is no runtime flag, backend value, or extension payload that can switch the host identity.
+`io.palladin` for release builds. The build selects an exact extension-origin allowlist;
+there is no runtime flag, backend value, or extension payload that can switch the host identity
+or add an allowed origin.
 Installation and uninstallation also remove the retired `io.palladin.browser_bridge` manifest.
 The extension connects automatically and stores no host key, fingerprint, or pairing state.
 `palladin browser status` reports the manifest and OS-secured host authorization.
@@ -297,13 +298,21 @@ canonical five-minute grant window plus a 30-second margin; secret-bearing brows
 bounded to 60 seconds. The local AEAD payload also binds the minimum operation-lease/grant expiry as
 a canonical `CLOCK_MONOTONIC` not-after; the host rechecks it under the shared lifecycle lease
 immediately before writing to the extension, so queued socket ciphertext cannot outlive its grant.
-The host allowlist contains only the compiled extension origin
-`chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/`.
+The host allowlist includes the assigned Chrome Web Store origin
+`chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/`. Development builds additionally allow
+`chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/`; release builds exclude it. These public
+extension identifiers are compiled platform trust configuration: the host must independently
+constrain the caller rather than accept an ID from an extension payload. No beta origin is
+allowed until a separate store item exists and its assigned ID is reviewed. Existing debug host
+manifests need `palladin browser install` again to install the updated list. This list does not
+change extension host-name routing or enable production Agent Inject.
 
 The local socket is only a rendezvous point. The CLI signs a fresh ephemeral handshake with the
 OS-secured host identity, the host signs its response, and both derive independent directional
 XChaCha20-Poly1305 keys. The host also dynamically validates that Google-signed Chrome launched it
-and that Chrome supplied exactly the compiled extension origin before loading the identity. A
+and that Chrome supplied exactly one allowlisted origin before loading the identity. That
+specific browser-supplied origin binds the session handshake; another allowed extension's origin
+cannot verify the same session. The existing single-host rendezvous remains unchanged. A
 strict value-free `session.offer` announces the public host key only for the current port; the
 extension keeps it in memory to verify the signed transcript. Windows, Linux, other Chromium browsers, Firefox, and Safari fail
 closed until their platform-specific launch attestation and installation paths are implemented.
