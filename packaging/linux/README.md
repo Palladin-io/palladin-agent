@@ -32,9 +32,9 @@ cargo build --release --locked \
 cp target/release/palladin target/release/palladin-worker
 cd ..
 packaging/linux/deb/build-deb.sh \
-  --version 0.1.0 --architecture x64 --binaries runtime/target/release --output artifacts
+  --version 0.0.1 --architecture x64 --binaries runtime/target/release --output artifacts
 packaging/linux/rpm/build-rpm.sh \
-  --version 0.1.0 --architecture x64 --binaries runtime/target/release --output artifacts
+  --version 0.0.1 --architecture x64 --binaries runtime/target/release --output artifacts
 ```
 
 Use `arm64` on a native arm64 builder. QEMU user-mode is sufficient for a build smoke test, but is not accepted as proof for UID, systemd, `/proc`, or ptrace isolation.
@@ -50,8 +50,8 @@ The protected production build accepts only the exact Palladin production and st
 ## Install and authorize a headless Agent
 
 ```bash
-sudo apt install ./artifacts/palladin-runtime_0.1.0_amd64.deb
-# or: sudo dnf install ./artifacts/palladin-runtime-0.1.0-1.x86_64.rpm
+sudo apt install ./artifacts/palladin-runtime_0.0.1_amd64.deb
+# or: sudo dnf install ./artifacts/palladin-runtime-0.0.1-1.x86_64.rpm
 
 sudo useradd --system --create-home --shell /usr/sbin/nologin palladin-agent-prod
 pkexec /usr/lib/palladin/runtime/palladin-manage-agent-uid \

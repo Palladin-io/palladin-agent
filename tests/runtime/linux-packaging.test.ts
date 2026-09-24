@@ -45,7 +45,7 @@ describe('Linux hardened package boundary', () => {
         optionalDependencies?: unknown;
       };
       expect(manifest.name).toBe(`@palladin/runtime-linux-${architecture}-${suffix}`);
-      expect(manifest.version).toBe('0.1.0');
+      expect(manifest.version).toBe('0.0.1');
       expect(manifest.private).toBeUndefined();
       expect(manifest.os).toEqual(['linux']);
       expect(manifest.cpu).toEqual([architecture]);
@@ -204,7 +204,7 @@ describe('Linux hardened package boundary', () => {
       ]) {
         const rejected = spawnSync('bash', [
           builder,
-          '--version', '0.1.0',
+          '--version', '0.0.1',
           '--architecture', 'x64',
           '--binaries', binaries,
           '--output', join(temporary, 'output'),

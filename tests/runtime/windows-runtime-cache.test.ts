@@ -167,10 +167,17 @@ describe('Windows content-addressed runtime cache', () => {
               `verified launcher exited before native child startup (code ${child.exitCode}, signal ${child.signalCode})`,
             );
           }
-          return existsSync(pidPath);
+          try {
+            const pid = Number.parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
+            if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+            nativePid = pid;
+            return true;
+          } catch (error) {
+            if (['ENOENT', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) return false;
+            throw error;
+          }
         }, 60_000, 'native child startup');
-        nativePid = Number.parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
-        expect(Number.isSafeInteger(nativePid) && nativePid > 0).toBe(true);
+        if (nativePid === undefined) throw new Error('native child PID is unavailable');
         expect(processIsAlive(nativePid)).toBe(true);
         expect(child.kill()).toBe(true);
         await waitUntil(() => childHasExited(child), 15_000, 'launcher termination');

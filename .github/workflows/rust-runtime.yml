@@ -444,10 +444,11 @@ jobs:
             if (manifest.scripts !== undefined) process.exit(1);
           ' "$stage/package.json" "$ARCHITECTURE"
           output="$RUNNER_TEMP/linux-packages/base"
+          version=$(node -p 'require("./package.json").version')
           packaging/linux/deb/build-deb.sh \
-            --version 0.1.0 --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
+            --version "$version" --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
           packaging/linux/rpm/build-rpm.sh \
-            --version 0.1.0 --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
+            --version "$version" --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
           test "$(find "$output" -name '*.deb' | wc -l)" -eq 1
           test "$(find "$output" -name '*.rpm' | wc -l)" -eq 1
           output="$RUNNER_TEMP/linux-packages/upgrade"
@@ -488,10 +489,11 @@ jobs:
           npm ci --ignore-scripts --workspaces=false
           npm run build
           source_sha=${{ steps.ci_policy_key.outputs.source_sha }}
+          version=$(node -p 'require("./package.json").version')
           policy="$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
           node packaging/npm/generate-version-policy-ci-fixture.mjs \
             --package-root "$RUNNER_TEMP/npm-linux-$ARCHITECTURE" \
-            --package-root "$stage" --version 0.1.0 --source-sha "$source_sha" \
+            --package-root "$stage" --version "$version" --source-sha "$source_sha" \
             --private-key "${{ steps.ci_policy_key.outputs.private_key }}" \
             --public-key "${{ steps.ci_policy_key.outputs.public_key_file }}" \
             --output-bundle "$policy"

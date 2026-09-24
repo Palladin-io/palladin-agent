@@ -56,7 +56,7 @@ beforeAll(() => {
     mkdirSync(directory, { recursive: true });
     writeJson(join(directory, 'package.json'), {
       name: target.name,
-      version: '0.1.0',
+      version: '0.0.1',
       os: [target.os],
       cpu: [target.cpu],
       ...(target.libc === undefined ? {} : { libc: [target.libc] }),
@@ -153,7 +153,7 @@ describe('npm platform selection', () => {
       mkdirSync(packageDirectory, { recursive: true });
       writeJson(join(packageDirectory, 'package.json'), {
         name: nativeTarget.name,
-        version: '0.1.0',
+        version: '0.0.1',
         os: [nativeTarget.os],
         cpu: [nativeTarget.cpu],
         ...(nativeTarget.libc === undefined ? {} : { libc: [nativeTarget.libc] }),

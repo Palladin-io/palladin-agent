@@ -50,7 +50,7 @@ function host(overrides: Partial<NativeDispatchHost> = {}): NativeDispatchHost {
     assertExecutable: vi.fn(),
     readPackageManifest: vi.fn((path: string) => ({
       name: packageNameFromPath(path),
-      version: '0.1.0',
+      version: '0.0.1',
       os: [platform],
       cpu: [architecture],
       ...(platform === 'linux' ? { libc: [linuxLibc] } : {}),
@@ -160,7 +160,7 @@ describe('native runtime dispatcher', () => {
     const fixture = host({ resolvePackageJson: vi.fn(() => { throw new Error('missing'); }) });
     const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     await expect(launchNativeRuntime([], fixture)).resolves.toBe(1);
-    expect(write).toHaveBeenCalledWith(expect.stringContaining('@palladin/runtime-darwin-arm64@0.1.0'));
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('@palladin/runtime-darwin-arm64@0.0.1'));
     expect(write).toHaveBeenCalledWith(expect.stringContaining('--omit=optional'));
     expect(write).toHaveBeenCalledWith(expect.stringContaining('npm cache or registry proxy'));
     write.mockRestore();
@@ -313,7 +313,7 @@ describe('native runtime dispatcher', () => {
     { name: '@palladin/runtime-darwin-arm64', version: '0.2.0', os: ['darwin'], cpu: ['arm64'] },
     {
       name: '@palladin/runtime-darwin-arm64',
-      version: '0.1.0',
+      version: '0.0.1',
       os: ['darwin'],
       cpu: ['arm64'],
       scripts: { postinstall: 'attacker' },
@@ -425,7 +425,7 @@ describe('native runtime dispatcher', () => {
   it('spawns Windows MCP from the verified cache and retains its lease until exit', async () => {
     const child = childProcess();
     Object.assign(child, { pid: 4321 });
-    const lease = fakeWindowsLease('C:\\cache\\v1\\win32-x64\\0.1.0\\hash\\palladin-client.exe');
+    const lease = fakeWindowsLease('C:\\cache\\v1\\win32-x64\\0.0.1\\hash\\palladin-client.exe');
     vi.mocked(lease.spawnLocked).mockReturnValue(child);
     const fixture = host({
       platform: 'win32',

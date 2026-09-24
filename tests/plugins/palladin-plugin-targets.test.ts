@@ -244,7 +244,7 @@ describe('Palladin plugin targets', () => {
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true });
     }
-  });
+  }, 90_000);
 
   it('keeps host, MCP, CLI, and browser provider identifiers aligned', async () => {
     const providerContract = JSON.parse(

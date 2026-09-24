@@ -51,7 +51,7 @@ const FORWARDED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 const ELF_PREFIX_LIMIT = 1024 * 1024;
 const ELF64_PROGRAM_HEADER_BYTES = 56;
 const PT_INTERP = 3;
-const NATIVE_RUNTIME_VERSION = '0.1.0';
+const NATIVE_RUNTIME_VERSION = '0.0.1';
 
 class NativeRuntimeVersionBlockedError extends Error {}
 

@@ -79,6 +79,9 @@ const platformComponents = Object.keys(manifest.optionalDependencies).sort().map
   };
 });
 
+const [scope, packageName] = manifest.name.split('/');
+const packagePurl = `pkg:npm/${encodeURIComponent(scope)}/${encodeURIComponent(packageName)}@${manifest.version}`;
+
 const sbom = {
   '$schema': 'https://cyclonedx.org/schema/bom-1.6.schema.json',
   bomFormat: 'CycloneDX',
@@ -87,12 +90,12 @@ const sbom = {
   metadata: {
     lifecycles: [{ phase: 'pre-build' }],
     component: {
-      'bom-ref': `pkg:npm/%40palladin/agent@${manifest.version}`,
+      'bom-ref': packagePurl,
       type: 'application',
-      group: '@palladin',
-      name: 'agent',
+      group: scope,
+      name: packageName,
       version: manifest.version,
-      purl: `pkg:npm/%40palladin/agent@${manifest.version}`,
+      purl: packagePurl,
       licenses: [{ license: { id: 'Apache-2.0' } }],
     },
     properties: [{
