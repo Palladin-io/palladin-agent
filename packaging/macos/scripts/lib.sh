@@ -119,8 +119,11 @@ validate_profile_contract() {
     die "provisioning profile application prefix does not match the application identifier"
   plist_array_contains "$profile_plist" 'Platform' 'OSX' ||
     die "provisioning profile is not a macOS profile"
-  plist_array_contains "$profile_plist" 'Entitlements:keychain-access-groups' "$access_group" ||
-    die "provisioning profile does not authorize the exact Keychain access group"
+  # Apple profiles may allowlist TEAMID.*; the signed app entitlement remains exact.
+  if ! plist_array_contains "$profile_plist" 'Entitlements:keychain-access-groups' "$access_group"; then
+    plist_array_contains "$profile_plist" 'Entitlements:keychain-access-groups' "$expected_team.*" ||
+      die "provisioning profile does not authorize the Keychain access group"
+  fi
 
   expiration="$(plist_read "$profile_plist" 'ExpirationDate')" ||
     die "provisioning profile lacks an expiration date"
