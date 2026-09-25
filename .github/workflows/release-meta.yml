@@ -24,6 +24,10 @@ concurrency:
   group: palladin-npm-release
   cancel-in-progress: false
 
+env:
+  PALLADIN_ADVERSARIAL_MANIFEST: ${{ inputs.version == '0.0.1' && 'security/adversarial/first-release-manifest.json' || 'security/adversarial/coverage-manifest.json' }}
+  PALLADIN_LIFECYCLE_MANIFEST: ${{ inputs.version == '0.0.1' && 'security/lifecycle/first-release-manifest.json' || 'security/lifecycle/coverage-manifest.json' }}
+
 jobs:
   authorize:
     name: Verify approved platform candidates
@@ -38,6 +42,7 @@ jobs:
       source_sha: ${{ steps.source.outputs.source_sha }}
       policy_generation: ${{ steps.policy_input.outputs.policy_generation }}
       lifecycle_ready: ${{ steps.release_set.outputs.lifecycle_ready }}
+      policy_ready: ${{ steps.release_set.outputs.policy_ready }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -98,21 +103,35 @@ jobs:
           assets="$RUNNER_TEMP/release-assets"
           registry="$RUNNER_TEMP/registry-tarballs"
           mkdir -p "$assets" "$registry"
+          evidence="$RUNNER_TEMP/release-evidence"
+          mkdir -m 700 "$evidence"
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$assets"
           meta_count=0
           for filename in \
             "palladin-cli-$VERSION.tgz" release-manifest-agent.json \
-            SHA256SUMS-agent sbom-agent.spdx.json; do
+            SHA256SUMS-agent sbom-agent.spdx.json version-policy-candidate.json; do
             if [[ -e "$assets/$filename" || -L "$assets/$filename" ]]; then
               test -f "$assets/$filename"
               test ! -L "$assets/$filename"
-              rm "$assets/$filename"
+              if [[ "$filename" == version-policy-candidate.json ]]; then
+                mv "$assets/$filename" "$evidence/$filename"
+              else
+                rm "$assets/$filename"
+              fi
               meta_count=$((meta_count + 1))
             fi
           done
-          [[ $meta_count -eq 0 || $meta_count -eq 4 ]]
-          evidence="$RUNNER_TEMP/release-evidence"
-          mkdir -m 700 "$evidence"
+          [[ $meta_count -eq 0 || $meta_count -eq 5 ]]
+          if [[ $meta_count -eq 5 ]]; then
+            gh attestation verify "$evidence/version-policy-candidate.json" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
+              --source-digest "$SOURCE_SHA" --source-ref "refs/tags/$RELEASE_TAG" \
+              --deny-self-hosted-runners
+            echo 'policy_ready=true' >>"$GITHUB_OUTPUT"
+          else
+            echo 'policy_ready=false' >>"$GITHUB_OUTPUT"
+          fi
           for filename in adversarial-report.json adversarial-report.md; do
             test -f "$assets/$filename"
             test ! -L "$assets/$filename"
@@ -148,6 +167,7 @@ jobs:
             --sbom "$assets/sbom-release.spdx.json" \
             --manifest "$assets/release-manifest.json" --checksums "$assets/SHA256SUMS"
           node security/adversarial/report.mjs validate \
+            --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
             --source-sha "$SOURCE_SHA" \
             --json "$evidence/adversarial-report.json" \
             --markdown "$evidence/adversarial-report.md"
@@ -233,6 +253,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           RELEASE_BUCKET: ${{ vars.PALLADIN_RELEASE_BUCKET }}
           BOOTSTRAP_POLICY: ${{ inputs.bootstrap_policy }}
+          POLICY_READY: ${{ steps.release_set.outputs.policy_ready }}
         run: |
           set -euo pipefail
           policy="$RUNNER_TEMP/version-policy"
@@ -263,21 +284,36 @@ jobs:
             cmp --silent "$policy/current.json" "$policy/current-endpoint.json"
           fi
           echo "policy_generation=$current_generation" >>"$GITHUB_OUTPUT"
-          issued_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          node packaging/npm/generate-version-policy-release.mjs \
-            --node-modules "$RUNNER_TEMP/policy-install/node_modules" \
-            --version "$VERSION" --source-sha "$SOURCE_SHA" \
-            --current "$policy/current.json" --public-key "$PUBLIC_KEY" \
-            --issued-at "$issued_at" --output "$policy/payload.json"
-          gcloud kms asymmetric-sign \
-            --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
-            --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
-            --location "${{ vars.GCP_VERSION_POLICY_LOCATION }}" \
-            --version "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
-            --input-file "$policy/payload.json" --signature-file "$policy/signature.txt"
-          node packaging/npm/assemble-version-policy-envelope.mjs \
-            --payload "$policy/payload.json" --signature "$policy/signature.txt" \
-            --public-key "$PUBLIC_KEY" --output "$policy/version-policy.json"
+          if [[ "$POLICY_READY" == true ]]; then
+            cp "$RUNNER_TEMP/release-evidence/version-policy-candidate.json" \
+              "$policy/version-policy.json"
+            issued_at=$(jq -er '.signed.issuedAt' "$policy/version-policy.json")
+            node packaging/npm/generate-version-policy-release.mjs \
+              --node-modules "$RUNNER_TEMP/policy-install/node_modules" \
+              --version "$VERSION" --source-sha "$SOURCE_SHA" \
+              --current "$policy/current.json" --public-key "$PUBLIC_KEY" \
+              --issued-at "$issued_at" --output "$policy/expected-payload.json"
+            node packaging/npm/verify-version-policy-build.mjs \
+              --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
+              --bundle "$policy/version-policy.json" --version "$VERSION" \
+              --expected-payload "$policy/expected-payload.json"
+          else
+            issued_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            node packaging/npm/generate-version-policy-release.mjs \
+              --node-modules "$RUNNER_TEMP/policy-install/node_modules" \
+              --version "$VERSION" --source-sha "$SOURCE_SHA" \
+              --current "$policy/current.json" --public-key "$PUBLIC_KEY" \
+              --issued-at "$issued_at" --output "$policy/payload.json"
+            gcloud kms asymmetric-sign \
+              --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
+              --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
+              --location "${{ vars.GCP_VERSION_POLICY_LOCATION }}" \
+              --version "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
+              --input-file "$policy/payload.json" --signature-file "$policy/signature.txt"
+            node packaging/npm/assemble-version-policy-envelope.mjs \
+              --payload "$policy/payload.json" --signature "$policy/signature.txt" \
+              --public-key "$PUBLIC_KEY" --output "$policy/version-policy.json"
+          fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -671,6 +707,7 @@ jobs:
             --pattern adversarial-report.md \
             --pattern release-manifest.json
           node security/adversarial/report.mjs validate \
+            --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
             --source-sha "$SOURCE_SHA" \
             --json "$approval/adversarial-report.json" \
             --markdown "$approval/adversarial-report.md"
@@ -690,12 +727,14 @@ jobs:
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
               --pattern adversarial-approval.json --dir "$approval"
             node security/adversarial/operator-approval.mjs verify \
+              --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
               --report "$approval/adversarial-report.json" --markdown "$approval/adversarial-report.md" \
               --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
               --approval "$approval/adversarial-approval.json" --public-key "$approval/public-key.txt"
           else
             approved_at=$(node -p 'new Date().toISOString()')
             node security/adversarial/operator-approval.mjs payload \
+              --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
               --report "$approval/adversarial-report.json" --markdown "$approval/adversarial-report.md" \
               --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
               --approved-at "$approved_at" --output "$approval/payload.json"
@@ -704,6 +743,7 @@ jobs:
               --location "${{ vars.GCP_VERSION_POLICY_LOCATION }}" --version "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
               --input-file "$approval/payload.json" --signature-file "$approval/signature.txt"
             node security/adversarial/operator-approval.mjs assemble \
+              --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
               --report "$approval/adversarial-report.json" --markdown "$approval/adversarial-report.md" \
               --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
               --payload "$approval/payload.json" --signature "$approval/signature.txt" \
@@ -766,6 +806,7 @@ jobs:
             --pattern release-manifest.json \
             --pattern release-manifest-agent.json
           node security/lifecycle/report.mjs validate \
+            --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
             --source-sha "$SOURCE_SHA" \
             --json "$approval/lifecycle-report.json" \
             --markdown "$approval/lifecycle-report.md"
@@ -786,12 +827,14 @@ jobs:
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
               --pattern lifecycle-approval.json --dir "$approval"
             node security/lifecycle/operator-approval.mjs verify \
+              --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
               --report "$approval/lifecycle-report.json" --markdown "$approval/lifecycle-report.md" \
               --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
               --approval "$approval/lifecycle-approval.json" --public-key "$approval/public-key.txt"
           else
             approved_at=$(node -p 'new Date().toISOString()')
             node security/lifecycle/operator-approval.mjs payload \
+              --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
               --report "$approval/lifecycle-report.json" --markdown "$approval/lifecycle-report.md" \
               --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
               --approved-at "$approved_at" --output "$approval/payload.json"
@@ -800,6 +843,7 @@ jobs:
               --location "${{ vars.GCP_VERSION_POLICY_LOCATION }}" --version "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
               --input-file "$approval/payload.json" --signature-file "$approval/signature.txt"
             node security/lifecycle/operator-approval.mjs assemble \
+              --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
               --report "$approval/lifecycle-report.json" --markdown "$approval/lifecycle-report.md" \
               --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
               --payload "$approval/payload.json" --signature "$approval/signature.txt" \
@@ -865,7 +909,36 @@ jobs:
             --bundle "$bundle" --version "${INPUTS_VERSION}"
       - run: npm test
 
+      - name: Reuse and verify the first-pass meta assets
+        if: needs.authorize.outputs.policy_ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/meta-release"
+          mkdir -m 700 "$release"
+          for filename in "palladin-cli-$VERSION.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json; do
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$filename" --dir "$release"
+          done
+          node packaging/npm/verify-release-manifest.mjs \
+            --artifacts "$release" --version "$VERSION" --source-sha "$SOURCE_SHA" \
+            --sbom "$release/sbom-agent.spdx.json" \
+            --manifest "$release/release-manifest-agent.json" \
+            --checksums "$release/SHA256SUMS-agent"
+          (cd "$release" && sha256sum --check SHA256SUMS-agent)
+          for filename in "palladin-cli-$VERSION.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json; do
+            gh attestation verify "$release/$filename" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
+              --source-digest "$SOURCE_SHA" --source-ref "refs/tags/$RELEASE_TAG" \
+              --deny-self-hosted-runners
+          done
+
       - name: Stage the public meta-package directory
+        if: needs.authorize.outputs.policy_ready != 'true'
         run: >-
           node packaging/npm/stage-meta-package.mjs
           --source . --output-dir "$RUNNER_TEMP/meta" --version "${INPUTS_VERSION}"
@@ -873,12 +946,14 @@ jobs:
           INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Pack the meta-package
+        if: needs.authorize.outputs.policy_ready != 'true'
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/meta-release"
           npm pack "$RUNNER_TEMP/meta" --pack-destination "$RUNNER_TEMP/meta-release" >/dev/null
 
       - name: Generate the meta-package SBOM
+        if: needs.authorize.outputs.policy_ready != 'true'
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           path: ${{ runner.temp }}/meta
@@ -889,6 +964,7 @@ jobs:
           dependency-snapshot: false
 
       - name: Generate the meta release manifest
+        if: needs.authorize.outputs.policy_ready != 'true'
         run: |
           set -euo pipefail
           release="$RUNNER_TEMP/meta-release"
@@ -908,13 +984,27 @@ jobs:
           INPUTS_VERSION: ${{ inputs.version }}
 
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        if: needs.authorize.outputs.policy_ready != 'true'
         with:
           subject-path: ${{ runner.temp }}/meta-release/*
 
       - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        if: needs.authorize.outputs.policy_ready != 'true'
         with:
           subject-path: ${{ runner.temp }}/meta-release/*
           sbom-path: ${{ runner.temp }}/meta-release/sbom-agent.spdx.json
+
+      - name: Preserve the exact signed policy candidate for the evidence rerun
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/policy-release"
+          cp "$RUNNER_TEMP/version-policy-artifact/version-policy.json" \
+            "$RUNNER_TEMP/policy-release/version-policy-candidate.json"
+
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        if: needs.authorize.outputs.policy_ready != 'true'
+        with:
+          subject-path: ${{ runner.temp }}/policy-release/version-policy-candidate.json
 
       - name: Add or verify the byte-identical attested meta assets
         env:
@@ -925,7 +1015,7 @@ jobs:
           set -euo pipefail
           existing="$RUNNER_TEMP/existing-meta-release"
           mkdir -m 700 "$existing"
-          names=("palladin-cli-${INPUTS_VERSION}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json)
+          names=("palladin-cli-${INPUTS_VERSION}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json version-policy-candidate.json)
           present=$(gh release view "${INPUTS_RELEASE_TAG}" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '[.assets[].name]')
           count=0
@@ -936,13 +1026,18 @@ jobs:
           done
           if [[ $count -eq 0 ]]; then
             mapfile -t assets < <(find "$RUNNER_TEMP/meta-release" -type f -print | sort)
-            gh release upload "${INPUTS_RELEASE_TAG}" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
+            gh release upload "${INPUTS_RELEASE_TAG}" "${assets[@]}" \
+              "$RUNNER_TEMP/policy-release/version-policy-candidate.json" --repo "$GITHUB_REPOSITORY"
           else
             test "$count" -eq "${#names[@]}"
             for name in "${names[@]}"; do
               gh release download "${INPUTS_RELEASE_TAG}" --repo "$GITHUB_REPOSITORY" \
                 --pattern "$name" --dir "$existing"
-              cmp --silent "$RUNNER_TEMP/meta-release/$name" "$existing/$name"
+              if [[ "$name" == version-policy-candidate.json ]]; then
+                cmp --silent "$RUNNER_TEMP/policy-release/$name" "$existing/$name"
+              else
+                cmp --silent "$RUNNER_TEMP/meta-release/$name" "$existing/$name"
+              fi
             done
           fi
 
@@ -958,7 +1053,7 @@ jobs:
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
           The exact `@palladin/cli` candidate was attached to the draft release but was not published to npm.
 
-          Patryk must now run the owner-only physical lifecycle workflow. Re-run this workflow after all twelve fresh shards are attached; the byte-identical candidate will be reused.
+          Patryk must now run the owner-only physical lifecycle workflow. Re-run this workflow after all required fresh lifecycle shards are attached; the byte-identical candidate will be reused.
           SUMMARY
 
   stage-meta:
@@ -1005,7 +1100,7 @@ jobs:
           for pattern in \
             "palladin-cli-${INPUTS_VERSION}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json \
             release-manifest.json adversarial-report.json adversarial-report.md adversarial-approval.json \
-            lifecycle-report.json lifecycle-report.md lifecycle-approval.json; do
+            lifecycle-report.json lifecycle-report.md lifecycle-approval.json version-policy-candidate.json; do
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
           done
       - name: Revalidate the exact candidate and release gates
@@ -1027,7 +1122,15 @@ jobs:
             --sbom "$meta/sbom-agent.spdx.json" --manifest "$meta/release-manifest-agent.json" \
             --checksums "$meta/SHA256SUMS-agent"
           (cd "$meta" && sha256sum --check SHA256SUMS-agent)
+          node packaging/npm/verify-version-policy-build.mjs \
+            --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
+            --bundle "$assets/version-policy-candidate.json" --version "$VERSION"
+          curl --fail --silent --show-error \
+            https://releases.palladin.io/agent/version-policy.json \
+            --output "$RUNNER_TEMP/live-version-policy.json"
+          cmp --silent "$assets/version-policy-candidate.json" "$RUNNER_TEMP/live-version-policy.json"
           node security/adversarial/report.mjs validate \
+            --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
             --source-sha "$SOURCE_SHA" --json "$assets/adversarial-report.json" \
             --markdown "$assets/adversarial-report.md"
           node security/adversarial/verify-release-artifacts.mjs \
@@ -1035,20 +1138,23 @@ jobs:
             --agent-manifest "$assets/release-manifest-agent.json"
           printf '%s' "$PUBLIC_KEY" >"$RUNNER_TEMP/operator-public-key.txt"
           node security/adversarial/operator-approval.mjs verify \
+            --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
             --report "$assets/adversarial-report.json" --markdown "$assets/adversarial-report.md" \
             --source-sha "$SOURCE_SHA" --operator "$OPERATOR" --approval "$assets/adversarial-approval.json" \
             --public-key "$RUNNER_TEMP/operator-public-key.txt"
           node security/lifecycle/report.mjs validate \
+            --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
             --source-sha "$SOURCE_SHA" --json "$assets/lifecycle-report.json" \
             --markdown "$assets/lifecycle-report.md"
           node security/lifecycle/verify-release-artifacts.mjs \
             --report "$assets/lifecycle-report.json" --platform-manifest "$assets/release-manifest.json" \
             --agent-manifest "$assets/release-manifest-agent.json"
           node security/lifecycle/operator-approval.mjs verify \
+            --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
             --report "$assets/lifecycle-report.json" --markdown "$assets/lifecycle-report.md" \
             --source-sha "$SOURCE_SHA" --operator "$OPERATOR" --approval "$assets/lifecycle-approval.json" \
             --public-key "$RUNNER_TEMP/operator-public-key.txt"
-          for filename in palladin-cli-$VERSION.tgz release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json; do
+          for filename in palladin-cli-$VERSION.tgz release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json version-policy-candidate.json; do
             gh attestation verify "$assets/$filename" --repo "$GITHUB_REPOSITORY"
           done
       - name: Stage the byte-identical meta-package under latest
@@ -1058,7 +1164,7 @@ jobs:
       - name: Record the final manual npm approval boundary
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          `@palladin/cli` was staged only after the owner-signed adversarial and twelve-target physical lifecycle gates passed.
+          `@palladin/cli` was staged only after the owner-signed adversarial and version-selected physical lifecycle gates passed.
 
           Patryk must inspect and approve this single npm stage with 2FA. Run `release-finalize.yml` only after the exact meta-package is public.
           SUMMARY

@@ -64,11 +64,12 @@ function writeAtomic(path, value) {
     renameSync(temporary, absolute);
   } finally { rmSync(temporary, { force: true }); }
 }
-function safeEnvironment(home, prefix) {
+function safeEnvironment(home, prefix, firstRelease = false) {
   const source = process.env;
   const allowed = process.platform === 'win32'
     ? ['SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP']
     : ['LANG', 'LC_ALL', 'TERM', 'TMPDIR',
+      ...(firstRelease && process.platform === 'linux' ? ['DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR'] : []),
       ...(process.platform === 'darwin' ? ['PALLADIN_APPLICATION_IDENTIFIER', 'PALLADIN_KEYCHAIN_ACCESS_GROUP'] : [])];
   const environment = Object.fromEntries(allowed.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
   environment.HOME = home;
@@ -139,7 +140,7 @@ function artifactMap(manifest, directory, sourceSha, version, label) {
   }
   return result;
 }
-function expectedNames(target, version) {
+function expectedNames(target, version, firstRelease = false) {
   const arch = target.arch;
   if (target.os === 'macos') return {
     agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-darwin-${arch}-${version}.tgz`,
@@ -148,6 +149,9 @@ function expectedNames(target, version) {
   if (target.os === 'windows') return {
     agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-win32-${arch}-${version}.tgz`,
     extraRole: 'signed-installer', extra: `palladin-runtime-setup-${arch}-${version}.zip`,
+  };
+  if (firstRelease) return {
+    agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-linux-${arch}-${target.libc}-${version}.tgz`,
   };
   if (target.distribution === 'alpine-3.22') return {
     agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-linux-${arch}-musl-${version}.tgz`,
@@ -161,14 +165,14 @@ function expectedNames(target, version) {
     extraRole: 'deb', extra: `palladin-runtime_${version}_${arch === 'arm64' ? 'arm64' : 'amd64'}.deb`,
   };
 }
-function loadPhase(contract, target, phase) {
+function loadPhase(contract, target, phase, firstRelease = false) {
   const entry = record(contract.phases[phase], `contract.phases.${phase}`);
   exactKeys(entry, ['version', 'sourceSha', 'directory'], `contract.phases.${phase}`);
   if (!VERSION.test(entry.version) || !SOURCE_SHA.test(entry.sourceSha)) fail(`contract.phases.${phase} is invalid`);
   const directory = resolve(entry.directory);
   const platform = artifactMap(readJson(join(directory, 'release-manifest.json'), `${phase} platform manifest`), directory, entry.sourceSha, entry.version, `${phase} platform`);
   const agent = artifactMap(readJson(join(directory, 'release-manifest-agent.json'), `${phase} agent manifest`), directory, entry.sourceSha, entry.version, `${phase} agent`);
-  const names = expectedNames(target, entry.version);
+  const names = expectedNames(target, entry.version, firstRelease);
   const required = [
     ['agent-npm', names.agent, agent], ['platform-npm', names.platform, platform],
     ...(names.extra ? [[names.extraRole, names.extra, platform]] : []),
@@ -473,8 +477,10 @@ function step(run, id, versionBefore, versionAfter, identityBefore, identityAfte
 }
 export async function runPhysicalTarget({ contract, manifest: manifestInput = loadManifest() }) {
   const manifest = validateManifest(manifestInput);
+  const firstRelease = manifest.schemaVersion === 2;
   exactKeys(contract, ['schemaVersion', 'sourceSha', 'runId', 'runAttempt', 'targetId', 'apiHost', 'vaultId', 'entryId', 'phases', 'output'], 'contract');
-  if (contract.schemaVersion !== 1 || !SOURCE_SHA.test(contract.sourceSha) || !/^[1-9][0-9]*$/.test(contract.runId)
+  exactKeys(contract.phases, manifest.artifactPhases, 'contract.phases');
+  if (contract.schemaVersion !== manifest.schemaVersion || !SOURCE_SHA.test(contract.sourceSha) || !/^[1-9][0-9]*$/.test(contract.runId)
     || !Number.isSafeInteger(contract.runAttempt) || contract.runAttempt < 1
     || contract.apiHost !== 'https://api.stage.palladin.io'
     || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(contract.vaultId)
@@ -483,10 +489,13 @@ export async function runPhysicalTarget({ contract, manifest: manifestInput = lo
   const nativeArch = process.arch === 'x64' ? 'x64' : process.arch === 'arm64' ? 'arm64' : 'unsupported';
   if ((target.os === 'macos' && process.platform !== 'darwin') || (target.os === 'windows' && process.platform !== 'win32')
     || (target.os === 'linux' && process.platform !== 'linux') || target.arch !== nativeArch) fail('physical runner does not match the target');
-  const baseline = loadPhase(contract, target, 'baseline');
-  const candidate = loadPhase(contract, target, 'candidate');
-  const rollback = loadPhase(contract, target, 'forward-rollback');
-  if (candidate.sourceSha !== contract.sourceSha) fail('candidate source is invalid');
+  const baseline = firstRelease ? null : loadPhase(contract, target, 'baseline');
+  const candidate = loadPhase(contract, target, 'candidate', firstRelease);
+  const rollback = firstRelease ? null : loadPhase(contract, target, 'forward-rollback');
+  if (candidate.sourceSha !== contract.sourceSha
+    || (firstRelease && candidate.version !== manifest.releaseVersion)) fail('candidate source or version is invalid');
+  const initial = baseline ?? candidate;
+  const final = rollback ?? candidate;
   const scratch = mkdtempSync(join(SCRIPT_DIRECTORY, '.palladin-physical-'));
   try {
     if (process.platform !== 'win32') chmodSync(scratch, 0o700);
@@ -494,23 +503,25 @@ export async function runPhysicalTarget({ contract, manifest: manifestInput = lo
     const home = join(root, 'home'); const prefix = join(root, 'global prefix');
     mkdirSync(home, { recursive: true, mode: 0o700 }); mkdirSync(prefix, { recursive: true, mode: 0o700 });
     if (process.platform !== 'win32') { chmodSync(home, 0o700); chmodSync(prefix, 0o700); }
-    const env = safeEnvironment(home, prefix);
+    const env = safeEnvironment(home, prefix, firstRelease);
     const run = { targetId: target.id, runId: contract.runId, runAttempt: contract.runAttempt, steps: [] };
     requirePinnedNpm(env);
     assertNativeExtraAbsent(target, env);
-    installPhase(target, baseline, prefix, env, root); versionCheck(prefix, env, baseline.version);
-    shellCompatibilityCheck(prefix, env, baseline.version);
-    run.steps.push(step(run, 'install', null, baseline.version, null, null, null, null));
+    installPhase(target, initial, prefix, env, root); versionCheck(prefix, env, initial.version);
+    shellCompatibilityCheck(prefix, env, initial.version);
+    run.steps.push(step(run, 'install', null, initial.version, null, null, null, null));
     runCli(prefix, env, ['init']);
     const connect = boundedInheritedInput(launcher(prefix), ['connect', '--api-key-stdin', '--host', contract.apiHost], { env });
     assertNoApiKeyEmission([connect.stdout, connect.stderr]); connect.stdout.fill(0); connect.stderr.fill(0);
     const identity = identityDigest(prefix, env, home);
-    run.steps.push(step(run, 'enroll', baseline.version, baseline.version, null, identity, null, null));
+    run.steps.push(step(run, 'enroll', initial.version, initial.version, null, identity, null, null));
     const grants = await mcpCall(prefix, env, contract.vaultId, contract.entryId);
-    run.steps.push(step(run, 'mcp', baseline.version, baseline.version, identity, identity, null, grants));
-    installPhase(target, candidate, prefix, env, root); versionCheck(prefix, env, candidate.version);
+    run.steps.push(step(run, 'mcp', initial.version, initial.version, identity, identity, null, grants));
+    if (!firstRelease) {
+      installPhase(target, candidate, prefix, env, root); versionCheck(prefix, env, candidate.version);
+    }
     const afterUpdate = identityDigest(prefix, env, home);
-    run.steps.push(step(run, 'update', baseline.version, candidate.version, identity, afterUpdate, grants, grants));
+    if (!firstRelease) run.steps.push(step(run, 'update', baseline.version, candidate.version, identity, afterUpdate, grants, grants));
     const concurrent = await Promise.all([mcpCall(prefix, env, contract.vaultId, contract.entryId), mcpCall(prefix, env, contract.vaultId, contract.entryId)]);
     if (concurrent.some((digest) => digest !== grants)) fail('concurrent MCP grant binding changed');
     run.steps.push(step(run, 'concurrent-mcp', candidate.version, candidate.version, afterUpdate, afterUpdate, grants, grants, { concurrentMcpVerified: true }));
@@ -520,7 +531,7 @@ export async function runPhysicalTarget({ contract, manifest: manifestInput = lo
     renameSync(candidatePlatformDirectory, hidden);
     try {
       const missing = spawnSync(launcher(prefix), ['status'], { env, encoding: 'utf8', shell: false, timeout: 30_000 });
-      if (missing.status === 0 || !/reinstall @palladin\/agent@/.test(`${missing.stdout}\n${missing.stderr}`)) fail('missing runtime repair guidance is invalid');
+      if (missing.status === 0 || !/reinstall @palladin\/cli@/.test(`${missing.stdout}\n${missing.stderr}`)) fail('missing runtime repair guidance is invalid');
       npmInstall(candidate, prefix, env);
       if (!existsSync(candidatePlatformDirectory)) fail('npm reinstall did not repair the missing runtime');
     } finally {
@@ -530,21 +541,24 @@ export async function runPhysicalTarget({ contract, manifest: manifestInput = lo
     const afterRepair = identityDigest(prefix, env, home);
     if (await mcpCall(prefix, env, contract.vaultId, contract.entryId) !== grants) fail('repaired MCP grant binding changed');
     run.steps.push(step(run, 'repair', candidate.version, candidate.version, afterUpdate, afterRepair, grants, grants, { repairVerified: true }));
-    npmInstall(baseline, prefix, env); const rejected = spawnSync(launcher(prefix), ['status'], { env, encoding: 'utf8', shell: false, timeout: 60_000 });
-    if (rejected.error || rejected.signal !== null || rejected.status !== 1
-      || rejected.stdout !== ''
-      || rejected.stderr !== 'Error: Palladin native runtime version is blocked by signed version policy\n') {
-      fail('literal downgrade did not produce the exact signed-policy rejection');
+    let afterRollback = afterRepair;
+    if (!firstRelease) {
+      npmInstall(baseline, prefix, env); const rejected = spawnSync(launcher(prefix), ['status'], { env, encoding: 'utf8', shell: false, timeout: 60_000 });
+      if (rejected.error || rejected.signal !== null || rejected.status !== 1
+        || rejected.stdout !== ''
+        || rejected.stderr !== 'Error: Palladin native runtime version is blocked by signed version policy\n') {
+        fail('literal downgrade did not produce the exact signed-policy rejection');
+      }
+      npmInstall(candidate, prefix, env); const afterRejected = identityDigest(prefix, env, home);
+      run.steps.push(step(run, 'downgrade-rejected', candidate.version, candidate.version, afterRepair, afterRejected, grants, grants, { downgradeRejected: true }));
+      installPhase(target, rollback, prefix, env, root); versionCheck(prefix, env, rollback.version);
+      afterRollback = identityDigest(prefix, env, home);
+      if (await mcpCall(prefix, env, contract.vaultId, contract.entryId) !== grants) fail('rollback MCP grant binding changed');
+      run.steps.push(step(run, 'rollback', candidate.version, rollback.version, afterRejected, afterRollback, grants, grants, { rollbackMode: 'forward-rebuild' }));
     }
-    npmInstall(candidate, prefix, env); const afterRejected = identityDigest(prefix, env, home);
-    run.steps.push(step(run, 'downgrade-rejected', candidate.version, candidate.version, afterRepair, afterRejected, grants, grants, { downgradeRejected: true }));
-    installPhase(target, rollback, prefix, env, root); versionCheck(prefix, env, rollback.version);
-    const afterRollback = identityDigest(prefix, env, home);
-    if (await mcpCall(prefix, env, contract.vaultId, contract.entryId) !== grants) fail('rollback MCP grant binding changed');
-    run.steps.push(step(run, 'rollback', candidate.version, rollback.version, afterRejected, afterRollback, grants, grants, { rollbackMode: 'forward-rebuild' }));
-    npmUninstall(rollback, prefix, env); npmInstall(rollback, prefix, env); const afterReinstall = identityDigest(prefix, env, home);
+    npmUninstall(final, prefix, env); npmInstall(final, prefix, env); const afterReinstall = identityDigest(prefix, env, home);
     if (await mcpCall(prefix, env, contract.vaultId, contract.entryId) !== grants) fail('reinstalled MCP grant binding changed');
-    run.steps.push(step(run, 'reinstall', rollback.version, rollback.version, afterRollback, afterReinstall, grants, grants));
+    run.steps.push(step(run, 'reinstall', final.version, final.version, afterRollback, afterReinstall, grants, grants));
     const purged = runCli(prefix, env, ['purge', '--confirm']);
     const purgeStdout = purged.stdout.toString('utf8');
     const purgeStderr = purged.stderr.toString('utf8');
@@ -553,18 +567,19 @@ export async function runPhysicalTarget({ contract, manifest: manifestInput = lo
       || purgeStderr !== '' || existsSync(join(home, '.palladin'))) {
       fail('purge did not confirm exact secret-slot deletion and remove the public Agent root');
     }
-    run.steps.push(step(run, 'purge', rollback.version, rollback.version, afterReinstall, null, grants, null, { purgeVerified: true }));
-    npmUninstall(rollback, prefix, env);
+    run.steps.push(step(run, 'purge', final.version, final.version, afterReinstall, null, grants, null, { purgeVerified: true }));
+    npmUninstall(final, prefix, env);
     if (existsSync(launcher(prefix))) fail('npm uninstall left the Agent launcher installed');
     const npmRoot = globalRoot(prefix, env);
-    if (existsSync(join(npmRoot, '@palladin', 'agent')) || existsSync(platformDirectory(rollback, prefix, env))) {
+    if (existsSync(join(npmRoot, '@palladin', 'cli')) || existsSync(platformDirectory(final, prefix, env))) {
       fail('npm uninstall left an Agent package installed');
     }
-    uninstallNativeExtra(target, rollback, env);
-    run.steps.push(step(run, 'uninstall', rollback.version, null, null, null, null, null));
-    const artifacts = [baseline, candidate, rollback].flatMap((phase) => phase.artifacts.map(({ path: _, ...artifact }) => artifact));
+    uninstallNativeExtra(target, final, env);
+    run.steps.push(step(run, 'uninstall', final.version, null, null, null, null, null));
+    const artifacts = (firstRelease ? [candidate] : [baseline, candidate, rollback])
+      .flatMap((phase) => phase.artifacts.map(({ path: _, ...artifact }) => artifact));
     return {
-      schemaVersion: 1, sourceSha: contract.sourceSha, manifestSha256: canonicalSha256(manifest),
+      schemaVersion: manifest.schemaVersion, sourceSha: contract.sourceSha, manifestSha256: canonicalSha256(manifest),
       runId: contract.runId, runAttempt: contract.runAttempt, target: { targetId: target.id, artifacts, steps: run.steps },
     };
   } finally {
@@ -582,7 +597,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       || basename(outputPath) !== `lifecycle-${contract.targetId}.json`) {
       fail('contract output must be the target evidence file beside the contract');
     }
-    const output = await runPhysicalTarget({ contract });
+    const manifest = contract.schemaVersion === 2
+      ? loadManifest(resolve(SCRIPT_DIRECTORY, 'first-release-manifest.json')) : loadManifest();
+    const output = await runPhysicalTarget({ contract, manifest });
     writeAtomic(outputPath, output);
     process.stdout.write(`lifecycle-target=${contract.targetId} result=passed\n`);
   } catch (error) {

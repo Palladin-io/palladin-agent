@@ -389,7 +389,7 @@ test('meta-package staging is blocked by the exact adversarial and physical life
   assert.match(workflow, /for filename in lifecycle-report\.json lifecycle-report\.md/);
   assert.match(workflow, /mv "\$assets\/\$filename" "\$evidence\/\$filename"/);
   assert.match(workflow, /"palladin-cli-\$VERSION\.tgz" release-manifest-agent\.json/);
-  assert.match(workflow, /\[\[ \$meta_count -eq 0 \|\| \$meta_count -eq 4 \]\]/);
+  assert.match(workflow, /\[\[ \$meta_count -eq 0 \|\| \$meta_count -eq 5 \]\]/);
   assert.doesNotMatch(workflow, /rm -f "\$assets"\/palladin-cli-\*\.tgz/);
   assert.ok(
     workflow.indexOf('mv "$assets/$filename" "$evidence/$filename"')
@@ -573,6 +573,47 @@ test('configured policy constants stay typed as strings for production compilati
     ]) {
       assert.match(generated, new RegExp(`export const ${name}: string =`));
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('saved signed policy must match the current release payload exactly', () => {
+  const root = fixture();
+  try {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const issued = new Date(Math.floor(Date.now() / 1000) * 1000);
+    const payload = {
+      artifacts: PLATFORM_PACKAGE_NAMES.map((packageName) => ({
+        executableSha256: '11'.repeat(32),
+        packageName,
+        sourceSha: sha,
+        version: '1.2.3',
+        workerExecutableSha256: '22'.repeat(32),
+      })),
+      blockedVersions: [],
+      expiresAt: new Date(issued.getTime() + 24 * 60 * 60 * 1000).toISOString().replace('.000Z', 'Z'),
+      issuedAt: issued.toISOString().replace('.000Z', 'Z'),
+      minimumVersion: '1.2.3',
+      recommendedVersion: '1.2.3',
+      schemaVersion: 1,
+      sequence: 1,
+      source: 'https://releases.palladin.io/agent/version-policy.json',
+    };
+    const canonical = canonicalizeVersionPolicyPayload(payload);
+    const signature = sign(null, Buffer.from(canonical), privateKey).toString('base64');
+    const bundle = join(root, 'candidate.json');
+    const expected = join(root, 'expected.json');
+    writeFileSync(bundle, canonicalizeVersionPolicyEnvelope({ signed: payload, signature }));
+    writeFileSync(expected, canonical);
+    const args = [
+      '--public-key', publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64'),
+      '--source-sha', sha, '--bundle', bundle, '--version', '1.2.3',
+      '--expected-payload', expected,
+    ];
+    run('verify-version-policy-build.mjs', args);
+    writeFileSync(expected, canonicalizeVersionPolicyPayload({ ...payload, sequence: 2 }));
+    assert.notEqual(failing('verify-version-policy-build.mjs', args).status, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

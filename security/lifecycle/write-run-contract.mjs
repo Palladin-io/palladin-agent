@@ -12,7 +12,7 @@ function parse(argv) {
   const values = new Map();
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index]; const value = argv[index + 1];
-    if (!['--target', '--release-sets', '--source-sha', '--run-id', '--run-attempt', '--vault-id', '--entry-id', '--output', '--contract'].includes(flag)
+    if (!['--manifest', '--target', '--release-sets', '--source-sha', '--run-id', '--run-attempt', '--vault-id', '--entry-id', '--output', '--contract'].includes(flag)
       || value === undefined || values.has(flag)) fail('invalid arguments');
     values.set(flag, value);
   }
@@ -33,7 +33,7 @@ function writeAtomic(path, value) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const values = parse(process.argv.slice(2));
-    const manifest = validateManifest(loadManifest());
+    const manifest = validateManifest(loadManifest(values.get('--manifest')));
     const target = values.get('--target');
     const sourceSha = values.get('--source-sha');
     const runId = values.get('--run-id');
@@ -47,14 +47,17 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       fail('contract context is invalid');
     }
     const root = resolve(values.get('--release-sets'));
-    const phases = Object.fromEntries(['baseline', 'candidate', 'forward-rollback'].map((phase) => {
+    const phases = Object.fromEntries(manifest.artifactPhases.map((phase) => {
       const directory = join(root, phase);
       const releaseManifest = JSON.parse(readFileSync(join(directory, 'release-manifest.json'), 'utf8'));
       return [phase, { version: releaseManifest.version, sourceSha: releaseManifest.sourceSha, directory }];
     }));
-    if (phases.candidate.sourceSha !== sourceSha) fail('candidate release set does not match the contract source');
+    if (phases.candidate.sourceSha !== sourceSha
+      || (manifest.releaseVersion && phases.candidate.version !== manifest.releaseVersion)) {
+      fail('candidate release set does not match the contract source and version');
+    }
     writeAtomic(values.get('--contract'), {
-      schemaVersion: 1,
+      schemaVersion: manifest.schemaVersion,
       sourceSha,
       runId,
       runAttempt,

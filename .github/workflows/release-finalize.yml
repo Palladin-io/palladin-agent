@@ -19,6 +19,10 @@ concurrency:
   group: palladin-npm-release
   cancel-in-progress: false
 
+env:
+  PALLADIN_ADVERSARIAL_MANIFEST: ${{ inputs.version == '0.0.1' && 'security/adversarial/first-release-manifest.json' || 'security/adversarial/coverage-manifest.json' }}
+  PALLADIN_LIFECYCLE_MANIFEST: ${{ inputs.version == '0.0.1' && 'security/lifecycle/first-release-manifest.json' || 'security/lifecycle/coverage-manifest.json' }}
+
 jobs:
   authorize:
     name: Resolve the public npm release
@@ -194,6 +198,9 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - run: npm ci --ignore-scripts --workspaces=false
+      - run: npm run build
+
       - name: Download and verify every draft release asset
         env:
           GH_TOKEN: ${{ github.token }}
@@ -223,6 +230,7 @@ jobs:
           test -f "$assets/lifecycle-report.json"
           test -f "$assets/lifecycle-report.md"
           test -f "$assets/lifecycle-approval.json"
+          test -f "$assets/version-policy-candidate.json"
           test "$(find "$assets" -maxdepth 1 -name 'palladin-cli-*.tgz' | wc -l | tr -d ' ')" = 1
           platform_packages="$RUNNER_TEMP/platform-packages"
           mkdir -p "$platform_packages"
@@ -258,6 +266,7 @@ jobs:
             'lifecycle-report.json',
             'lifecycle-report.md',
             'lifecycle-approval.json',
+            'version-policy-candidate.json',
           ]);
           for (const manifestPath of manifestPaths) {
             const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -276,7 +285,12 @@ jobs:
           cmp --silent "$RUNNER_TEMP/expected-release-assets.txt" \
             "$RUNNER_TEMP/actual-release-assets.txt"
 
+          node packaging/npm/verify-version-policy-build.mjs \
+            --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
+            --bundle "$assets/version-policy-candidate.json" --version "$VERSION"
+
           node security/adversarial/report.mjs validate \
+            --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
             --source-sha "$SOURCE_SHA" \
             --json "$assets/adversarial-report.json" \
             --markdown "$assets/adversarial-report.md"
@@ -287,6 +301,7 @@ jobs:
           printf '%s' "$PUBLIC_KEY" \
             > "$RUNNER_TEMP/adversarial-public-key.txt"
           node security/adversarial/operator-approval.mjs verify \
+            --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
             --report "$assets/adversarial-report.json" \
             --markdown "$assets/adversarial-report.md" \
             --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
@@ -294,6 +309,7 @@ jobs:
             --public-key "$RUNNER_TEMP/adversarial-public-key.txt"
 
           node security/lifecycle/report.mjs validate \
+            --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
             --source-sha "$SOURCE_SHA" \
             --json "$assets/lifecycle-report.json" \
             --markdown "$assets/lifecycle-report.md"
@@ -304,6 +320,7 @@ jobs:
           printf '%s' "$PUBLIC_KEY" \
             > "$RUNNER_TEMP/lifecycle-public-key.txt"
           node security/lifecycle/operator-approval.mjs verify \
+            --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
             --report "$assets/lifecycle-report.json" \
             --markdown "$assets/lifecycle-report.md" \
             --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
