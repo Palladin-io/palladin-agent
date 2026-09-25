@@ -11,7 +11,6 @@ const LEGACY_NATIVE_HOST_NAMES: &[&str] = &["io.palladin.browser_bridge", "io.pa
 const STORE_CHROME_EXTENSION_ORIGIN: &str = "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/";
 pub const CHROME_EXTENSION_ORIGINS: &[&str] = &[
     STORE_CHROME_EXTENSION_ORIGIN,
-    #[cfg(debug_assertions)]
     "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/",
 ];
 
@@ -221,7 +220,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_arguments_select_one_exact_origin_for_the_build() {
+    fn native_arguments_accept_both_exact_palladin_origins() {
         let parse = |arguments: &[&str]| {
             ChromeExtensionOrigin::from_native_arguments(arguments.iter().map(OsString::from))
         };
@@ -232,7 +231,10 @@ mod tests {
             "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/"
         );
         let development = "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/";
-        assert_eq!(parse(&[development]).is_some(), cfg!(debug_assertions));
+        assert_eq!(
+            parse(&[development]).expect("development origin").as_str(),
+            development
+        );
         for origin in CHROME_EXTENSION_ORIGINS {
             assert_eq!(parse(&[origin]).expect("allowed origin").as_str(), *origin);
             assert!(parse(&[origin, "extra"]).is_none());
@@ -245,6 +247,11 @@ mod tests {
             "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/popup.html",
             "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/?source=store",
             "https://ecejlpkceehnckgenjafoppffmbmmagf/",
+            "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba",
+            "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba.evil/",
+            "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/popup.html",
+            "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/?source=development",
+            "https://hmljnknogdeonphikmeofcbkikmpokba/",
         ] {
             assert!(parse(&[invalid]).is_none(), "must reject {invalid}");
         }
@@ -279,7 +286,10 @@ mod tests {
                 .expect("manifest json");
         assert_eq!(
             value["allowed_origins"],
-            serde_json::json!(CHROME_EXTENSION_ORIGINS)
+            serde_json::json!([
+                "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/",
+                "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/"
+            ])
         );
         for origins in [
             serde_json::json!(["chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/"]),
@@ -291,10 +301,7 @@ mod tests {
         ] {
             value["allowed_origins"] = origins.clone();
             std::fs::write(&manifest, serde_json::to_vec(&value).expect("encode")).expect("tamper");
-            assert_eq!(
-                manifest_status(&root).expect("tampered status"),
-                origins == serde_json::json!(CHROME_EXTENSION_ORIGINS)
-            );
+            assert!(!manifest_status(&root).expect("tampered status"));
         }
         assert!(remove_manifest(&root).expect("remove"));
         assert!(!manifest.exists());

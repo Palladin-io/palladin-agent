@@ -285,10 +285,10 @@ outcome. Adding another agent browser does not change the grant, crypto, CLI, or
 The extension provider uses the same Palladin extension rather than a provider-specific extension.
 On macOS, `palladin browser install` provisions the host identity in OS secure storage and installs
 the shared Google Chrome host `io.palladin` for both source-development and release builds.
-The store extension can intentionally use either runtime. Running `browser install` selects
-that executable for subsequent Chrome connections; installing another build replaces this selection.
+Both the store and development extensions can intentionally use either runtime. Running
+`browser install` selects that executable for subsequent Chrome connections; installing another build replaces this selection.
 The host name does not attest the runtime build or upgrade its secure-storage guarantees.
-The build selects an exact extension-origin allowlist;
+Both build modes compile the same exact extension-origin allowlist;
 there is no runtime flag, backend value, or extension payload that can switch the host identity
 or add an allowed origin.
 Installation and uninstallation also remove the retired `io.palladin.browser_bridge` and
@@ -308,13 +308,14 @@ bounded to 60 seconds. The local AEAD payload also binds the minimum operation-l
 a canonical `CLOCK_MONOTONIC` not-after; the host rechecks it under the shared lifecycle lease
 immediately before writing to the extension, so queued socket ciphertext cannot outlive its grant.
 The host allowlist includes the assigned Chrome Web Store origin
-`chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/`. Development builds additionally allow
-`chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/`; release builds exclude it. These public
-extension identifiers are compiled platform trust configuration: the host must independently
+`chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/` and the development origin
+`chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/` in both debug and release builds
+(product-owner decision 2026-09-25). These public extension identifiers are compiled platform trust configuration: the host must independently
 constrain the caller rather than accept an ID from an extension payload. No beta origin is
-allowed until a separate store item exists and its assigned ID is reviewed. Existing debug host
-manifests need `palladin browser install` again to install the updated list. This list does not
-change extension host-name routing. Release builds admit only the assigned store origin.
+allowed until a separate store item exists and its assigned ID is reviewed. Existing host
+manifests need `palladin browser install` from the updated CLI again to install the list. The user explicitly trusts both Palladin identities; the development identity does not
+attest store review or a signed extension artifact. All other origins remain rejected. This list
+does not change extension host-name routing or the selected runtime secure-storage mode.
 
 The local socket is only a rendezvous point. The CLI signs a fresh ephemeral handshake with the
 OS-secured host identity, the host signs its response, and both derive independent directional
