@@ -389,7 +389,7 @@ test('meta-package staging is blocked by the exact adversarial and physical life
   assert.match(workflow, /for filename in lifecycle-report\.json lifecycle-report\.md/);
   assert.match(workflow, /mv "\$assets\/\$filename" "\$evidence\/\$filename"/);
   assert.match(workflow, /"palladin-cli-\$VERSION\.tgz" release-manifest-agent\.json/);
-  assert.match(workflow, /\[\[ \$meta_count -eq 0 \|\| \$meta_count -eq 4 \]\]/);
+  assert.match(workflow, /\[\[ \$meta_count -eq 0 \|\| \$meta_count -eq 5 \]\]/);
   assert.doesNotMatch(workflow, /rm -f "\$assets"\/palladin-cli-\*\.tgz/);
   assert.ok(
     workflow.indexOf('mv "$assets/$filename" "$evidence/$filename"')

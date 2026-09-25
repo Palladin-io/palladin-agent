@@ -198,6 +198,9 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - run: npm ci --ignore-scripts --workspaces=false
+      - run: npm run build
+
       - name: Download and verify every draft release asset
         env:
           GH_TOKEN: ${{ github.token }}
@@ -227,6 +230,7 @@ jobs:
           test -f "$assets/lifecycle-report.json"
           test -f "$assets/lifecycle-report.md"
           test -f "$assets/lifecycle-approval.json"
+          test -f "$assets/version-policy-candidate.json"
           test "$(find "$assets" -maxdepth 1 -name 'palladin-cli-*.tgz' | wc -l | tr -d ' ')" = 1
           platform_packages="$RUNNER_TEMP/platform-packages"
           mkdir -p "$platform_packages"
@@ -262,6 +266,7 @@ jobs:
             'lifecycle-report.json',
             'lifecycle-report.md',
             'lifecycle-approval.json',
+            'version-policy-candidate.json',
           ]);
           for (const manifestPath of manifestPaths) {
             const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -279,6 +284,10 @@ jobs:
             >"$RUNNER_TEMP/actual-release-assets.txt"
           cmp --silent "$RUNNER_TEMP/expected-release-assets.txt" \
             "$RUNNER_TEMP/actual-release-assets.txt"
+
+          node packaging/npm/verify-version-policy-build.mjs \
+            --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
+            --bundle "$assets/version-policy-candidate.json" --version "$VERSION"
 
           node security/adversarial/report.mjs validate \
             --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
