@@ -287,9 +287,16 @@ jobs:
           if [[ "$POLICY_READY" == true ]]; then
             cp "$RUNNER_TEMP/release-evidence/version-policy-candidate.json" \
               "$policy/version-policy.json"
+            issued_at=$(jq -er '.signed.issuedAt' "$policy/version-policy.json")
+            node packaging/npm/generate-version-policy-release.mjs \
+              --node-modules "$RUNNER_TEMP/policy-install/node_modules" \
+              --version "$VERSION" --source-sha "$SOURCE_SHA" \
+              --current "$policy/current.json" --public-key "$PUBLIC_KEY" \
+              --issued-at "$issued_at" --output "$policy/expected-payload.json"
             node packaging/npm/verify-version-policy-build.mjs \
               --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
-              --bundle "$policy/version-policy.json" --version "$VERSION"
+              --bundle "$policy/version-policy.json" --version "$VERSION" \
+              --expected-payload "$policy/expected-payload.json"
           else
             issued_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
             node packaging/npm/generate-version-policy-release.mjs \

@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { parseAndVerifyVersionPolicy } from '../../dist/runtime/version-policy.js';
+import {
+  canonicalizeVersionPolicyPayload,
+  parseAndVerifyVersionPolicy,
+} from '../../dist/runtime/version-policy.js';
 
 const values = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
@@ -10,7 +13,7 @@ for (let index = 2; index < process.argv.length; index += 2) {
   if (!key?.startsWith('--') || value === undefined || values.has(key.slice(2))) fail();
   values.set(key.slice(2), value);
 }
-if ([...values.keys()].some((key) => !['public-key', 'source-sha', 'bundle', 'version'].includes(key))) fail();
+if ([...values.keys()].some((key) => !['public-key', 'source-sha', 'bundle', 'version', 'expected-payload'].includes(key))) fail();
 const publicKey = values.get('public-key');
 const sourceSha = values.get('source-sha');
 const bundle = values.get('bundle');
@@ -34,6 +37,9 @@ const actual = envelope.signed.artifacts
   .map((artifact) => artifact.packageName)
   .sort();
 if (JSON.stringify(actual) !== JSON.stringify(expected)) fail();
+const expectedPayload = values.get('expected-payload');
+if (expectedPayload !== undefined
+  && canonicalizeVersionPolicyPayload(envelope.signed) !== readFileSync(resolve(expectedPayload), 'utf8')) fail();
 
 function fail() {
   process.stderr.write('configured version-policy bundle does not bind the exact release set\n');
