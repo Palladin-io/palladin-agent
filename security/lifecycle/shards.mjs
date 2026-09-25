@@ -27,7 +27,7 @@ export function aggregateShards({ manifest: manifestInput, shards, expectedSourc
     const label = `shards[${index}]`;
     const shard = record(shardInput, label);
     exactKeys(shard, ['schemaVersion', 'sourceSha', 'manifestSha256', 'runId', 'runAttempt', 'target'], label);
-    if (shard.schemaVersion !== 1 || shard.sourceSha !== expectedSourceSha
+    if (shard.schemaVersion !== manifest.schemaVersion || shard.sourceSha !== expectedSourceSha
       || shard.manifestSha256 !== expectedManifestSha || shard.runId !== expectedRunId
       || shard.runAttempt !== expectedRunAttempt) fail(`${label} binding is invalid`);
     const target = record(shard.target, `${label}.target`);
@@ -39,7 +39,7 @@ export function aggregateShards({ manifest: manifestInput, shards, expectedSourc
   }
   if (targets.length !== manifest.targets.length) fail('required physical target shard is missing');
   return {
-    schemaVersion: 1,
+    schemaVersion: manifest.schemaVersion,
     sourceSha: expectedSourceSha,
     manifestSha256: expectedManifestSha,
     runId: expectedRunId,

@@ -189,9 +189,11 @@ export function validateManifest(input) {
     'attacks',
     'residualRisks',
     'targetTiers',
+    ...(manifest.releaseVersion === undefined ? [] : ['releaseVersion']),
   ], 'manifest');
   if (integer(manifest.schemaVersion, 'manifest.schemaVersion') !== 1) fail('unsupported manifest schemaVersion');
   if (integer(manifest.reportSchemaVersion, 'manifest.reportSchemaVersion') !== 1) fail('unsupported report schemaVersion');
+  if (manifest.releaseVersion !== undefined && manifest.releaseVersion !== '0.0.1') fail('first-release version is invalid');
   const freshness = integer(manifest.evidenceFreshnessHours, 'manifest.evidenceFreshnessHours');
   if (freshness < 1 || freshness > 720) fail('manifest.evidenceFreshnessHours must be between 1 and 720');
 
@@ -265,6 +267,37 @@ export function validateManifest(input) {
       string(item.rationale, `${label}.rationale`);
     } else if ('adrRefs' in item || 'rationale' in item) {
       fail(`${label} may include rationale only when not applicable`);
+    }
+  }
+  if (manifest.releaseVersion === '0.0.1') {
+    const expected = [
+      'macos-arm64-hardened', 'macos-x64-hardened',
+      'linux-gnu-arm64-convenience', 'linux-gnu-x64-convenience',
+      'linux-musl-arm64-convenience', 'linux-musl-x64-convenience',
+    ];
+    if (canonicalJson(targetTiers.map((target) => target.id)) !== canonicalJson(expected)) {
+      fail('first-release adversarial targets are invalid');
+    }
+    for (const target of targetTiers) {
+      const macos = target.id.startsWith('macos-');
+      const [, libc, arch] = macos ? [null, 'none', target.id.split('-')[1]]
+        : /^linux-(gnu|musl)-(arm64|x64)-convenience$/.exec(target.id);
+      if (target.os !== (macos ? 'macos' : 'linux') || target.arch !== arch || target.libc !== libc
+        || target.disposition !== 'evidence-required'
+        || target.tier !== (macos ? 'Hardened' : 'Convenience')
+        || target.channel !== (macos ? 'public-signed' : 'public-npm')
+        || (macos && canonicalJson(target.manualRequiredAttacks) !== canonicalJson([
+          'node-key-enumeration-read', 'node-runtime-spawn', 'core-dump-debugger-ptrace', 'operation-replay',
+        ]))) {
+        fail('first-release adversarial tier is invalid');
+      }
+    }
+    const full = JSON.parse(readFileSync(DEFAULT_MANIFEST_PATH, 'utf8'));
+    const selected = full.targetTiers.filter((target) => expected.includes(target.id));
+    if (canonicalJson(targetTiers) !== canonicalJson(selected)
+      || canonicalJson(manifest.attacks) !== canonicalJson(full.attacks)
+      || canonicalJson(manifest.residualRisks) !== canonicalJson(full.residualRisks)) {
+      fail('first-release adversarial coverage differs from the reviewed full matrix');
     }
   }
   assertNoSecretMaterial(manifest, 'manifest');

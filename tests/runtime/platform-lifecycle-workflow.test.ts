@@ -88,10 +88,10 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(runner).toContain("['--query', '--quiet', 'palladin-runtime']");
     expect(runner).toContain("result.stdout.trim() !== 'not-found'");
     expect(runner).toContain("'/run/palladin-runtime/broker.sock'");
-    expect(runner).toContain('uninstallNativeExtra(target, rollback, env)');
-    expect(runner.indexOf('uninstallNativeExtra(target, rollback, env)'))
+    expect(runner).toContain('uninstallNativeExtra(target, final, env)');
+    expect(runner.indexOf('uninstallNativeExtra(target, final, env)'))
       .toBeLessThan(runner.indexOf("run.steps.push(step(run, 'uninstall'"));
-    expect(runner).toContain('shellCompatibilityCheck(prefix, env, baseline.version)');
+    expect(runner).toContain('shellCompatibilityCheck(prefix, env, initial.version)');
     expect(runner).not.toMatch(/readFileSync\(0\)|secretBundle|environment\.apiKey|env\.apiKey|--api-key',/);
   });
 

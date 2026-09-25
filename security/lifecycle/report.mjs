@@ -11,6 +11,19 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const SECRET_FIELD = /^(?:secret|password|apiKey|privateKey|accessToken|authorization|cookie|mnemonic)$/i;
 const SECRET_VALUE = /(?:-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+\S+|\b(?:pl|sk|ghp|npm)_[A-Za-z0-9_-]{8,})/i;
+const FIRST_RELEASE_STEPS = [
+  'install', 'enroll', 'mcp', 'concurrent-mcp', 'repair', 'reinstall', 'purge', 'uninstall',
+];
+const FIRST_RELEASE_TARGETS = [
+  ['macos-arm64', 'macos', 'arm64', 'macos', 'none', ['agent-npm', 'platform-npm', 'signed-runtime']],
+  ['macos-x64', 'macos', 'x64', 'macos', 'none', ['agent-npm', 'platform-npm', 'signed-runtime']],
+  ['ubuntu-24.04-arm64', 'linux', 'arm64', 'ubuntu-24.04', 'gnu', ['agent-npm', 'platform-npm']],
+  ['ubuntu-24.04-x64', 'linux', 'x64', 'ubuntu-24.04', 'gnu', ['agent-npm', 'platform-npm']],
+  ['alpine-3.22-arm64', 'linux', 'arm64', 'alpine-3.22', 'musl', ['agent-npm', 'platform-npm']],
+  ['alpine-3.22-x64', 'linux', 'x64', 'alpine-3.22', 'musl', ['agent-npm', 'platform-npm']],
+].map(([id, os, arch, distribution, libc, requiredArtifactRoles]) => ({
+  id, os, arch, distribution, libc, requiredArtifactRoles,
+}));
 
 function fail(message) { throw new Error(message); }
 function isRecord(value) { return typeof value === 'object' && value !== null && !Array.isArray(value); }
@@ -85,24 +98,29 @@ export function loadManifest(path = DEFAULT_MANIFEST_PATH) { return JSON.parse(r
 
 export function validateManifest(input) {
   const manifest = record(input, 'manifest');
-  exactKeys(manifest, ['schemaVersion', 'reportSchemaVersion', 'evidenceFreshnessHours', 'steps', 'artifactPhases', 'targets'], 'manifest');
-  if (integer(manifest.schemaVersion, 'manifest.schemaVersion') !== 1
-    || integer(manifest.reportSchemaVersion, 'manifest.reportSchemaVersion') !== 1) fail('unsupported lifecycle schema');
+  const firstRelease = manifest.schemaVersion === 2;
+  exactKeys(manifest, [
+    'schemaVersion', 'reportSchemaVersion', 'evidenceFreshnessHours', 'steps', 'artifactPhases', 'targets',
+    ...(firstRelease ? ['releaseVersion'] : []),
+  ], 'manifest');
+  if (integer(manifest.schemaVersion, 'manifest.schemaVersion') !== (firstRelease ? 2 : 1)
+    || integer(manifest.reportSchemaVersion, 'manifest.reportSchemaVersion') !== (firstRelease ? 2 : 1)) fail('unsupported lifecycle schema');
+  if (firstRelease && manifest.releaseVersion !== '0.0.1') fail('first-release manifest version is invalid');
   const freshness = integer(manifest.evidenceFreshnessHours, 'manifest.evidenceFreshnessHours');
   if (freshness < 1 || freshness > 720) fail('manifest.evidenceFreshnessHours is invalid');
   const steps = array(manifest.steps, 'manifest.steps');
   unique(steps, 'id', 'manifest.steps');
-  const requiredSteps = [
+  const upgradeSteps = [
     'install', 'enroll', 'mcp', 'update', 'concurrent-mcp', 'repair',
     'downgrade-rejected', 'rollback', 'reinstall', 'purge', 'uninstall',
   ];
-  if (canonicalJson(steps.map((step) => step.id)) !== canonicalJson(requiredSteps)) fail('manifest.steps has an invalid lifecycle');
+  if (canonicalJson(steps.map((step) => step.id)) !== canonicalJson(firstRelease ? FIRST_RELEASE_STEPS : upgradeSteps)) fail('manifest.steps has an invalid lifecycle');
   steps.forEach((step, index) => {
     exactKeys(step, ['id', 'order'], `manifest.steps[${index}]`);
     if (integer(step.order, `manifest.steps[${index}].order`) !== index + 1) fail('manifest.steps order is invalid');
   });
   const phases = array(manifest.artifactPhases, 'manifest.artifactPhases');
-  if (canonicalJson(phases) !== canonicalJson(['baseline', 'candidate', 'forward-rollback'])) {
+  if (canonicalJson(phases) !== canonicalJson(firstRelease ? ['candidate'] : ['baseline', 'candidate', 'forward-rollback'])) {
     fail('manifest.artifactPhases is invalid');
   }
   const targets = array(manifest.targets, 'manifest.targets');
@@ -122,8 +140,12 @@ export function validateManifest(input) {
     });
     matrix.add(`${target.distribution}:${target.arch}`);
   }
-  for (const distribution of ['macos', 'windows-11', 'ubuntu-24.04', 'debian-13', 'fedora-42', 'alpine-3.22']) {
-    for (const arch of ['arm64', 'x64']) if (!matrix.has(`${distribution}:${arch}`)) fail(`manifest misses ${distribution}/${arch}`);
+  if (firstRelease) {
+    if (canonicalJson(targets) !== canonicalJson(FIRST_RELEASE_TARGETS)) fail('first-release target matrix is invalid');
+  } else {
+    for (const distribution of ['macos', 'windows-11', 'ubuntu-24.04', 'debian-13', 'fedora-42', 'alpine-3.22']) {
+      for (const arch of ['arm64', 'x64']) if (!matrix.has(`${distribution}:${arch}`)) fail(`manifest misses ${distribution}/${arch}`);
+    }
   }
   noSecrets(manifest, 'manifest');
   return manifest;
@@ -139,7 +161,7 @@ function evidenceRef(value, runId, runAttempt, targetId, stepId, label) {
   return ref;
 }
 
-function normalizeArtifacts(input, target, phases, candidateSourceSha, label) {
+function normalizeArtifacts(input, target, phases, candidateSourceSha, releaseVersion, label) {
   const artifacts = array(input, label);
   if (artifacts.length !== target.requiredArtifactRoles.length * phases.length) fail(`${label} has an invalid artifact count`);
   const byPhaseRole = new Map();
@@ -168,11 +190,12 @@ function normalizeArtifacts(input, target, phases, candidateSourceSha, label) {
     });
   }
   if (phaseSources.get('candidate') !== candidateSourceSha) fail(`${label} candidate source does not match the release source`);
+  if (releaseVersion !== undefined && phaseVersions.get('candidate') !== releaseVersion) fail(`${label} candidate version does not match the first release`);
   const baseline = phaseVersions.get('baseline');
   const candidate = phaseVersions.get('candidate');
   const rollback = phaseVersions.get('forward-rollback');
-  if (!baseline || !candidate || !rollback
-    || compareVersion(baseline, candidate) >= 0 || compareVersion(candidate, rollback) >= 0) {
+  if (!candidate || (releaseVersion === undefined && (!baseline || !rollback
+    || compareVersion(baseline, candidate) >= 0 || compareVersion(candidate, rollback) >= 0))) {
     fail(`${label} must bind strictly increasing baseline, candidate and forward-rollback versions`);
   }
   return {
@@ -226,6 +249,8 @@ function normalizeStep(input, runId, runAttempt, targetId, expected, previous, v
   }
   const noFlags = () => !normalized.concurrentMcpVerified && !normalized.repairVerified
     && !normalized.downgradeRejected && !normalized.purgeVerified;
+  const initialVersion = versions.baseline ?? versions.candidate;
+  const finalVersion = versions.rollback ?? versions.candidate;
   const sameState = () => {
     if (!normalized.identityFingerprintBefore || normalized.identityFingerprintBefore !== normalized.identityFingerprintAfter
       || !normalized.grantSetDigestBefore || normalized.grantSetDigestBefore !== normalized.grantSetDigestAfter) {
@@ -233,17 +258,17 @@ function normalizeStep(input, runId, runAttempt, targetId, expected, previous, v
     }
   };
   if (step.stepId === 'install') {
-    if (normalized.versionBefore !== null || normalized.versionAfter !== versions.baseline
+    if (normalized.versionBefore !== null || normalized.versionAfter !== initialVersion
       || normalized.identityFingerprintBefore !== null || normalized.identityFingerprintAfter !== null
       || normalized.grantSetDigestBefore !== null || normalized.grantSetDigestAfter !== null
       || normalized.rollbackMode !== null || !noFlags()) fail(`${label} install state is invalid`);
   } else if (step.stepId === 'enroll') {
-    if (normalized.versionAfter !== versions.baseline
+    if (normalized.versionAfter !== initialVersion
       || normalized.identityFingerprintBefore !== null || normalized.identityFingerprintAfter === null
       || normalized.grantSetDigestBefore !== null || normalized.grantSetDigestAfter !== null
       || normalized.rollbackMode !== null || !noFlags()) fail(`${label} enroll state is invalid`);
   } else if (step.stepId === 'mcp') {
-    if (normalized.versionAfter !== versions.baseline
+    if (normalized.versionAfter !== initialVersion
       || normalized.identityFingerprintBefore === null
       || normalized.identityFingerprintAfter !== normalized.identityFingerprintBefore
       || normalized.grantSetDigestBefore !== null || normalized.grantSetDigestAfter === null
@@ -272,17 +297,17 @@ function normalizeStep(input, runId, runAttempt, targetId, expected, previous, v
       || normalized.rollbackMode !== 'forward-rebuild' || !noFlags()) fail(`${label} rollback must be an increasing-version forward rebuild`);
     sameState();
   } else if (step.stepId === 'reinstall') {
-    if (normalized.versionAfter !== versions.rollback || normalized.rollbackMode !== null || !noFlags()) {
+    if (normalized.versionAfter !== finalVersion || normalized.rollbackMode !== null || !noFlags()) {
       fail(`${label} reinstall state is invalid`);
     }
     sameState();
   } else if (step.stepId === 'purge') {
-    if (normalized.versionAfter !== versions.rollback
+    if (normalized.versionAfter !== finalVersion
       || normalized.identityFingerprintAfter !== null || normalized.grantSetDigestAfter !== null
       || normalized.rollbackMode !== null || normalized.concurrentMcpVerified || normalized.repairVerified
       || normalized.downgradeRejected || !normalized.purgeVerified) fail(`${label} purge state is invalid`);
   } else if (step.stepId === 'uninstall') {
-    if (normalized.versionBefore !== versions.rollback || normalized.versionAfter !== null
+    if (normalized.versionBefore !== finalVersion || normalized.versionAfter !== null
       || normalized.identityFingerprintBefore !== null || normalized.identityFingerprintAfter !== null
       || normalized.grantSetDigestBefore !== null || normalized.grantSetDigestAfter !== null
       || normalized.rollbackMode !== null || !noFlags()) fail(`${label} uninstall state is invalid`);
@@ -293,7 +318,7 @@ function normalizeStep(input, runId, runAttempt, targetId, expected, previous, v
 function normalizeEvidence(manifest, input, sourceSha, now) {
   const evidence = record(input, 'evidence');
   exactKeys(evidence, ['schemaVersion', 'sourceSha', 'manifestSha256', 'runId', 'runAttempt', 'targets'], 'evidence');
-  if (evidence.schemaVersion !== 1 || evidence.sourceSha !== sourceSha
+  if (evidence.schemaVersion !== manifest.schemaVersion || evidence.sourceSha !== sourceSha
     || evidence.manifestSha256 !== canonicalSha256(manifest)) fail('evidence binding is stale');
   const runId = string(evidence.runId, 'evidence.runId');
   if (!/^[1-9][0-9]*$/.test(runId)) fail('evidence.runId is invalid');
@@ -308,7 +333,7 @@ function normalizeEvidence(manifest, input, sourceSha, now) {
     if (!target || seen.has(run.targetId)) fail(`${label}.targetId is unknown or duplicate`);
     seen.add(run.targetId);
     const normalizedArtifacts = normalizeArtifacts(
-      run.artifacts, target, manifest.artifactPhases, sourceSha, `${label}.artifacts`,
+      run.artifacts, target, manifest.artifactPhases, sourceSha, manifest.releaseVersion, `${label}.artifacts`,
     );
     const steps = array(run.steps, `${label}.steps`);
     if (steps.length !== manifest.steps.length) fail(`${label}.steps is incomplete`);
@@ -385,12 +410,12 @@ export function renderMarkdown(report) {
     `- Generated at: ${report.generatedAt}`,
     `- Physical workflow run: ${report.runId} (attempt ${report.runAttempt})`,
     `- Release decision: **${report.releaseDecision.toUpperCase()}**`, '',
-    '| Target | Platform | Install | Enroll | MCP | Update | Concurrent MCP | Repair | Downgrade rejected | Forward rollback | Reinstall | Purge | Uninstall |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    `| Target | Platform | ${report.targets[0].steps.map((step) => step.stepId).join(' | ')} |`,
+    `| --- | --- | ${report.targets[0].steps.map(() => '---').join(' | ')} |`,
   ];
   for (const target of report.targets) {
     const result = Object.fromEntries(target.steps.map((step) => [step.stepId, step.result]));
-    lines.push(`| ${target.targetId} | ${target.distribution}/${target.arch} | ${result.install} | ${result.enroll} | ${result.mcp} | ${result.update} | ${result['concurrent-mcp']} | ${result.repair} | ${result['downgrade-rejected']} | ${result.rollback} | ${result.reinstall} | ${result.purge} | ${result.uninstall} |`);
+    lines.push(`| ${target.targetId} | ${target.distribution}/${target.arch} | ${target.steps.map((step) => result[step.stepId]).join(' | ')} |`);
   }
   lines.push('', '## Release blockers', '');
   if (report.blockers.length === 0) lines.push('None.');
@@ -407,7 +432,7 @@ function inspectReport(manifestInput, reportInput, expectedSourceSha, now, markd
     || report.contentSha256 !== canonicalSha256(withoutDigest(report))) fail('report binding is stale or invalid');
   timestamp(report.generatedAt, 'report.generatedAt');
   const evidence = {
-    schemaVersion: 1,
+    schemaVersion: manifest.schemaVersion,
     sourceSha: report.sourceSha,
     manifestSha256: report.manifestSha256,
     runId: report.runId,

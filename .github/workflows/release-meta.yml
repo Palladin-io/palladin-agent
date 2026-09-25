@@ -62,6 +62,7 @@ jobs:
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "$RELEASE_TAG" = "v$VERSION"
+          test "$VERSION" = 0.0.1
           source_sha=$(git rev-parse HEAD)
           test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
           test "$GITHUB_SHA" = "$source_sha"
@@ -148,6 +149,7 @@ jobs:
             --sbom "$assets/sbom-release.spdx.json" \
             --manifest "$assets/release-manifest.json" --checksums "$assets/SHA256SUMS"
           node security/adversarial/report.mjs validate \
+            --manifest security/adversarial/first-release-manifest.json \
             --source-sha "$SOURCE_SHA" \
             --json "$evidence/adversarial-report.json" \
             --markdown "$evidence/adversarial-report.md"
@@ -671,6 +673,7 @@ jobs:
             --pattern adversarial-report.md \
             --pattern release-manifest.json
           node security/adversarial/report.mjs validate \
+            --manifest security/adversarial/first-release-manifest.json \
             --source-sha "$SOURCE_SHA" \
             --json "$approval/adversarial-report.json" \
             --markdown "$approval/adversarial-report.md"
@@ -690,12 +693,14 @@ jobs:
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
               --pattern adversarial-approval.json --dir "$approval"
             node security/adversarial/operator-approval.mjs verify \
+              --manifest security/adversarial/first-release-manifest.json \
               --report "$approval/adversarial-report.json" --markdown "$approval/adversarial-report.md" \
               --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
               --approval "$approval/adversarial-approval.json" --public-key "$approval/public-key.txt"
           else
             approved_at=$(node -p 'new Date().toISOString()')
             node security/adversarial/operator-approval.mjs payload \
+              --manifest security/adversarial/first-release-manifest.json \
               --report "$approval/adversarial-report.json" --markdown "$approval/adversarial-report.md" \
               --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
               --approved-at "$approved_at" --output "$approval/payload.json"
@@ -704,6 +709,7 @@ jobs:
               --location "${{ vars.GCP_VERSION_POLICY_LOCATION }}" --version "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
               --input-file "$approval/payload.json" --signature-file "$approval/signature.txt"
             node security/adversarial/operator-approval.mjs assemble \
+              --manifest security/adversarial/first-release-manifest.json \
               --report "$approval/adversarial-report.json" --markdown "$approval/adversarial-report.md" \
               --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
               --payload "$approval/payload.json" --signature "$approval/signature.txt" \
@@ -766,6 +772,7 @@ jobs:
             --pattern release-manifest.json \
             --pattern release-manifest-agent.json
           node security/lifecycle/report.mjs validate \
+            --manifest security/lifecycle/first-release-manifest.json \
             --source-sha "$SOURCE_SHA" \
             --json "$approval/lifecycle-report.json" \
             --markdown "$approval/lifecycle-report.md"
@@ -786,12 +793,14 @@ jobs:
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
               --pattern lifecycle-approval.json --dir "$approval"
             node security/lifecycle/operator-approval.mjs verify \
+              --manifest security/lifecycle/first-release-manifest.json \
               --report "$approval/lifecycle-report.json" --markdown "$approval/lifecycle-report.md" \
               --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
               --approval "$approval/lifecycle-approval.json" --public-key "$approval/public-key.txt"
           else
             approved_at=$(node -p 'new Date().toISOString()')
             node security/lifecycle/operator-approval.mjs payload \
+              --manifest security/lifecycle/first-release-manifest.json \
               --report "$approval/lifecycle-report.json" --markdown "$approval/lifecycle-report.md" \
               --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
               --approved-at "$approved_at" --output "$approval/payload.json"
@@ -800,6 +809,7 @@ jobs:
               --location "${{ vars.GCP_VERSION_POLICY_LOCATION }}" --version "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
               --input-file "$approval/payload.json" --signature-file "$approval/signature.txt"
             node security/lifecycle/operator-approval.mjs assemble \
+              --manifest security/lifecycle/first-release-manifest.json \
               --report "$approval/lifecycle-report.json" --markdown "$approval/lifecycle-report.md" \
               --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
               --payload "$approval/payload.json" --signature "$approval/signature.txt" \
@@ -958,7 +968,7 @@ jobs:
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
           The exact `@palladin/cli` candidate was attached to the draft release but was not published to npm.
 
-          Patryk must now run the owner-only physical lifecycle workflow. Re-run this workflow after all twelve fresh shards are attached; the byte-identical candidate will be reused.
+          Patryk must now run the owner-only physical lifecycle workflow. Re-run this workflow after all six fresh first-release shards are attached; the byte-identical candidate will be reused.
           SUMMARY
 
   stage-meta:
@@ -1028,6 +1038,7 @@ jobs:
             --checksums "$meta/SHA256SUMS-agent"
           (cd "$meta" && sha256sum --check SHA256SUMS-agent)
           node security/adversarial/report.mjs validate \
+            --manifest security/adversarial/first-release-manifest.json \
             --source-sha "$SOURCE_SHA" --json "$assets/adversarial-report.json" \
             --markdown "$assets/adversarial-report.md"
           node security/adversarial/verify-release-artifacts.mjs \
@@ -1035,16 +1046,19 @@ jobs:
             --agent-manifest "$assets/release-manifest-agent.json"
           printf '%s' "$PUBLIC_KEY" >"$RUNNER_TEMP/operator-public-key.txt"
           node security/adversarial/operator-approval.mjs verify \
+              --manifest security/adversarial/first-release-manifest.json \
             --report "$assets/adversarial-report.json" --markdown "$assets/adversarial-report.md" \
             --source-sha "$SOURCE_SHA" --operator "$OPERATOR" --approval "$assets/adversarial-approval.json" \
             --public-key "$RUNNER_TEMP/operator-public-key.txt"
           node security/lifecycle/report.mjs validate \
+            --manifest security/lifecycle/first-release-manifest.json \
             --source-sha "$SOURCE_SHA" --json "$assets/lifecycle-report.json" \
             --markdown "$assets/lifecycle-report.md"
           node security/lifecycle/verify-release-artifacts.mjs \
             --report "$assets/lifecycle-report.json" --platform-manifest "$assets/release-manifest.json" \
             --agent-manifest "$assets/release-manifest-agent.json"
           node security/lifecycle/operator-approval.mjs verify \
+              --manifest security/lifecycle/first-release-manifest.json \
             --report "$assets/lifecycle-report.json" --markdown "$assets/lifecycle-report.md" \
             --source-sha "$SOURCE_SHA" --operator "$OPERATOR" --approval "$assets/lifecycle-approval.json" \
             --public-key "$RUNNER_TEMP/operator-public-key.txt"
@@ -1058,7 +1072,7 @@ jobs:
       - name: Record the final manual npm approval boundary
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          `@palladin/cli` was staged only after the owner-signed adversarial and twelve-target physical lifecycle gates passed.
+          `@palladin/cli` was staged only after the owner-signed adversarial and six-target first-release physical lifecycle gates passed.
 
           Patryk must inspect and approve this single npm stage with 2FA. Run `release-finalize.yml` only after the exact meta-package is public.
           SUMMARY

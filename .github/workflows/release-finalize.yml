@@ -51,6 +51,7 @@ jobs:
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "$RELEASE_TAG" = "v$VERSION"
+          test "$VERSION" = 0.0.1
           source_sha=$(git rev-parse HEAD)
           test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
           test "$GITHUB_SHA" = "$source_sha"
@@ -277,6 +278,7 @@ jobs:
             "$RUNNER_TEMP/actual-release-assets.txt"
 
           node security/adversarial/report.mjs validate \
+            --manifest security/adversarial/first-release-manifest.json \
             --source-sha "$SOURCE_SHA" \
             --json "$assets/adversarial-report.json" \
             --markdown "$assets/adversarial-report.md"
@@ -287,6 +289,7 @@ jobs:
           printf '%s' "$PUBLIC_KEY" \
             > "$RUNNER_TEMP/adversarial-public-key.txt"
           node security/adversarial/operator-approval.mjs verify \
+              --manifest security/adversarial/first-release-manifest.json \
             --report "$assets/adversarial-report.json" \
             --markdown "$assets/adversarial-report.md" \
             --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \
@@ -294,6 +297,7 @@ jobs:
             --public-key "$RUNNER_TEMP/adversarial-public-key.txt"
 
           node security/lifecycle/report.mjs validate \
+            --manifest security/lifecycle/first-release-manifest.json \
             --source-sha "$SOURCE_SHA" \
             --json "$assets/lifecycle-report.json" \
             --markdown "$assets/lifecycle-report.md"
@@ -304,6 +308,7 @@ jobs:
           printf '%s' "$PUBLIC_KEY" \
             > "$RUNNER_TEMP/lifecycle-public-key.txt"
           node security/lifecycle/operator-approval.mjs verify \
+              --manifest security/lifecycle/first-release-manifest.json \
             --report "$assets/lifecycle-report.json" \
             --markdown "$assets/lifecycle-report.md" \
             --source-sha "$SOURCE_SHA" --operator "$OPERATOR" \

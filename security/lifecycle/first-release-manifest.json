@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 2,
+  "reportSchemaVersion": 2,
+  "releaseVersion": "0.0.1",
+  "evidenceFreshnessHours": 168,
+  "steps": [
+    { "id": "install", "order": 1 },
+    { "id": "enroll", "order": 2 },
+    { "id": "mcp", "order": 3 },
+    { "id": "concurrent-mcp", "order": 4 },
+    { "id": "repair", "order": 5 },
+    { "id": "reinstall", "order": 6 },
+    { "id": "purge", "order": 7 },
+    { "id": "uninstall", "order": 8 }
+  ],
+  "artifactPhases": ["candidate"],
+  "targets": [
+    { "id": "macos-arm64", "os": "macos", "arch": "arm64", "distribution": "macos", "libc": "none", "requiredArtifactRoles": ["agent-npm", "platform-npm", "signed-runtime"] },
+    { "id": "macos-x64", "os": "macos", "arch": "x64", "distribution": "macos", "libc": "none", "requiredArtifactRoles": ["agent-npm", "platform-npm", "signed-runtime"] },
+    { "id": "ubuntu-24.04-arm64", "os": "linux", "arch": "arm64", "distribution": "ubuntu-24.04", "libc": "gnu", "requiredArtifactRoles": ["agent-npm", "platform-npm"] },
+    { "id": "ubuntu-24.04-x64", "os": "linux", "arch": "x64", "distribution": "ubuntu-24.04", "libc": "gnu", "requiredArtifactRoles": ["agent-npm", "platform-npm"] },
+    { "id": "alpine-3.22-arm64", "os": "linux", "arch": "arm64", "distribution": "alpine-3.22", "libc": "musl", "requiredArtifactRoles": ["agent-npm", "platform-npm"] },
+    { "id": "alpine-3.22-x64", "os": "linux", "arch": "x64", "distribution": "alpine-3.22", "libc": "musl", "requiredArtifactRoles": ["agent-npm", "platform-npm"] }
+  ]
+}
