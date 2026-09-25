@@ -6,14 +6,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const PRODUCTION_NATIVE_HOST_NAME: &str = "io.palladin";
-pub const DEVELOPMENT_NATIVE_HOST_NAME: &str = "io.palladin.debug";
-pub const NATIVE_HOST_NAME: &str = if cfg!(debug_assertions) {
-    DEVELOPMENT_NATIVE_HOST_NAME
-} else {
-    PRODUCTION_NATIVE_HOST_NAME
-};
-const LEGACY_NATIVE_HOST_NAME: &str = "io.palladin.browser_bridge";
+pub const NATIVE_HOST_NAME: &str = "io.palladin";
+const LEGACY_NATIVE_HOST_NAMES: &[&str] = &["io.palladin.browser_bridge", "io.palladin.debug"];
 const STORE_CHROME_EXTENSION_ORIGIN: &str = "chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/";
 pub const CHROME_EXTENSION_ORIGINS: &[&str] = &[
     STORE_CHROME_EXTENSION_ORIGIN,
@@ -76,7 +70,9 @@ pub fn install_manifest(palladin_root: &Path) -> Result<PathBuf, BrowserInstallE
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
             .map_err(|_| BrowserInstallError::Directory)?;
     }
-    remove_manifest_file(&directory.join(format!("{LEGACY_NATIVE_HOST_NAME}.json")))?;
+    for name in LEGACY_NATIVE_HOST_NAMES {
+        remove_manifest_file(&directory.join(format!("{name}.json")))?;
+    }
     let destination = directory.join(format!("{NATIVE_HOST_NAME}.json"));
     let manifest = NativeHostManifest {
         name: NATIVE_HOST_NAME.to_owned(),
@@ -143,8 +139,11 @@ pub fn remove_manifest(palladin_root: &Path) -> Result<bool, BrowserInstallError
     require_macos()?;
     let directory = manifest_directory(palladin_root)?;
     let current = remove_manifest_file(&directory.join(format!("{NATIVE_HOST_NAME}.json")))?;
-    let legacy = remove_manifest_file(&directory.join(format!("{LEGACY_NATIVE_HOST_NAME}.json")))?;
-    Ok(current || legacy)
+    let mut removed = current;
+    for name in LEGACY_NATIVE_HOST_NAMES {
+        removed |= remove_manifest_file(&directory.join(format!("{name}.json")))?;
+    }
+    Ok(removed)
 }
 
 fn remove_manifest_file(path: &Path) -> Result<bool, BrowserInstallError> {
@@ -251,19 +250,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn native_host_name_matches_the_build_security_mode() {
-        assert_eq!(
-            NATIVE_HOST_NAME,
-            if cfg!(debug_assertions) {
-                DEVELOPMENT_NATIVE_HOST_NAME
-            } else {
-                PRODUCTION_NATIVE_HOST_NAME
-            }
-        );
-        assert_ne!(PRODUCTION_NATIVE_HOST_NAME, DEVELOPMENT_NATIVE_HOST_NAME);
-    }
-
     #[cfg(target_os = "macos")]
     #[test]
     fn manifest_lifecycle_is_exact_and_tampering_fails_status() {
@@ -273,13 +259,18 @@ mod tests {
         std::fs::create_dir(&root).expect("root");
         let manifest_directory = manifest_directory(&root).expect("manifest directory");
         std::fs::create_dir_all(&manifest_directory).expect("create manifest directory");
-        let legacy_manifest = manifest_directory.join(format!("{LEGACY_NATIVE_HOST_NAME}.json"));
-        std::fs::write(&legacy_manifest, b"legacy").expect("legacy manifest");
+        let legacy_manifests: Vec<_> = LEGACY_NATIVE_HOST_NAMES
+            .iter()
+            .map(|name| manifest_directory.join(format!("{name}.json")))
+            .collect();
+        for path in &legacy_manifests {
+            std::fs::write(path, b"legacy").expect("legacy manifest");
+        }
         let manifest = install_manifest(&root).expect("install");
-        assert!(!legacy_manifest.exists());
+        assert!(legacy_manifests.iter().all(|path| !path.exists()));
         assert_eq!(
             manifest.file_name().and_then(std::ffi::OsStr::to_str),
-            Some(format!("{NATIVE_HOST_NAME}.json").as_str())
+            Some("io.palladin.json")
         );
         assert!(manifest_status(&root).expect("status"));
 
@@ -307,6 +298,12 @@ mod tests {
         }
         assert!(remove_manifest(&root).expect("remove"));
         assert!(!manifest.exists());
+        for path in &legacy_manifests {
+            std::fs::write(path, b"legacy").expect("legacy manifest");
+        }
+        assert!(remove_manifest(&root).expect("remove legacy-only installation"));
+        assert!(legacy_manifests.iter().all(|path| !path.exists()));
+        assert!(!remove_manifest(&root).expect("already removed"));
     }
 
     #[cfg(target_os = "macos")]

@@ -284,11 +284,16 @@ outcome. Adding another agent browser does not change the grant, crypto, CLI, or
 
 The extension provider uses the same Palladin extension rather than a provider-specific extension.
 On macOS, `palladin browser install` provisions the host identity in OS secure storage and installs
-the build-bound Google Chrome host: `io.palladin.debug` for source-development builds and
-`io.palladin` for release builds. The build selects an exact extension-origin allowlist;
+the shared Google Chrome host `io.palladin` for both source-development and release builds.
+The store extension can intentionally use either runtime. Running `browser install` selects
+that executable for subsequent Chrome connections; installing another build replaces this selection.
+The host name does not attest the runtime build or upgrade its secure-storage guarantees.
+The build selects an exact extension-origin allowlist;
 there is no runtime flag, backend value, or extension payload that can switch the host identity
 or add an allowed origin.
-Installation and uninstallation also remove the retired `io.palladin.browser_bridge` manifest.
+Installation and uninstallation also remove the retired `io.palladin.browser_bridge` and
+`io.palladin.debug` manifests. Older debug extension artifacts must be rebuilt to use
+`io.palladin`; there is no automatic fallback to a second host.
 The extension connects automatically and stores no host key, fingerprint, or pairing state.
 `palladin browser status` reports the manifest and OS-secured host authorization.
 The authenticated channel is verified when Inject begins; no Palladin account or profile in the
