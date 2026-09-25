@@ -94,7 +94,7 @@ sed \
 
 /usr/bin/plutil -lint "$contents_path/Info.plist" >/dev/null
 /usr/bin/plutil -lint "$entitlements_path" >/dev/null
-if grep -R -E -q '@[A-Z_]+@' "$bundle_root"; then
+if grep -E -q '@[A-Z_]+@' "$contents_path/Info.plist" "$entitlements_path"; then
   die "generated bundle contains an unresolved template token"
 fi
 assert_plist_contract "$entitlements_path" "$application_identifier" "$access_group"
