@@ -42,6 +42,7 @@ jobs:
       source_sha: ${{ steps.source.outputs.source_sha }}
       policy_generation: ${{ steps.policy_input.outputs.policy_generation }}
       lifecycle_ready: ${{ steps.release_set.outputs.lifecycle_ready }}
+      policy_ready: ${{ steps.release_set.outputs.policy_ready }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -901,7 +902,36 @@ jobs:
             --bundle "$bundle" --version "${INPUTS_VERSION}"
       - run: npm test
 
+      - name: Reuse and verify the first-pass meta assets
+        if: needs.authorize.outputs.policy_ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/meta-release"
+          mkdir -m 700 "$release"
+          for filename in "palladin-cli-$VERSION.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json; do
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$filename" --dir "$release"
+          done
+          node packaging/npm/verify-release-manifest.mjs \
+            --artifacts "$release" --version "$VERSION" --source-sha "$SOURCE_SHA" \
+            --sbom "$release/sbom-agent.spdx.json" \
+            --manifest "$release/release-manifest-agent.json" \
+            --checksums "$release/SHA256SUMS-agent"
+          (cd "$release" && sha256sum --check SHA256SUMS-agent)
+          for filename in "palladin-cli-$VERSION.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json; do
+            gh attestation verify "$release/$filename" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
+              --source-digest "$SOURCE_SHA" --source-ref "refs/tags/$RELEASE_TAG" \
+              --deny-self-hosted-runners
+          done
+
       - name: Stage the public meta-package directory
+        if: needs.authorize.outputs.policy_ready != 'true'
         run: >-
           node packaging/npm/stage-meta-package.mjs
           --source . --output-dir "$RUNNER_TEMP/meta" --version "${INPUTS_VERSION}"
@@ -909,12 +939,14 @@ jobs:
           INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Pack the meta-package
+        if: needs.authorize.outputs.policy_ready != 'true'
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/meta-release"
           npm pack "$RUNNER_TEMP/meta" --pack-destination "$RUNNER_TEMP/meta-release" >/dev/null
 
       - name: Generate the meta-package SBOM
+        if: needs.authorize.outputs.policy_ready != 'true'
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           path: ${{ runner.temp }}/meta
@@ -925,6 +957,7 @@ jobs:
           dependency-snapshot: false
 
       - name: Generate the meta release manifest
+        if: needs.authorize.outputs.policy_ready != 'true'
         run: |
           set -euo pipefail
           release="$RUNNER_TEMP/meta-release"
@@ -944,10 +977,12 @@ jobs:
           INPUTS_VERSION: ${{ inputs.version }}
 
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        if: needs.authorize.outputs.policy_ready != 'true'
         with:
           subject-path: ${{ runner.temp }}/meta-release/*
 
       - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        if: needs.authorize.outputs.policy_ready != 'true'
         with:
           subject-path: ${{ runner.temp }}/meta-release/*
           sbom-path: ${{ runner.temp }}/meta-release/sbom-agent.spdx.json
@@ -960,6 +995,7 @@ jobs:
             "$RUNNER_TEMP/policy-release/version-policy-candidate.json"
 
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        if: needs.authorize.outputs.policy_ready != 'true'
         with:
           subject-path: ${{ runner.temp }}/policy-release/version-policy-candidate.json
 
