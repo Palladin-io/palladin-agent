@@ -82,7 +82,7 @@ grep -F -x -q "Identifier=$PALLADIN_BUNDLE_IDENTIFIER" <<<"$signature_details" |
   die "bundle signature identifier does not match the bundle identifier"
 
 signed_entitlements="$work_dir/signed-entitlements.plist"
-codesign -d --entitlements "$signed_entitlements" "$app_path" >/dev/null 2>&1 ||
+codesign -d --entitlements :- "$app_path" >"$signed_entitlements" 2>/dev/null ||
   die "signed entitlements cannot be extracted"
 /usr/bin/plutil -lint "$signed_entitlements" >/dev/null ||
   die "signed entitlements are not a valid plist"

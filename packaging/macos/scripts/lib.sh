@@ -119,8 +119,11 @@ validate_profile_contract() {
     die "provisioning profile application prefix does not match the application identifier"
   plist_array_contains "$profile_plist" 'Platform' 'OSX' ||
     die "provisioning profile is not a macOS profile"
-  plist_array_contains "$profile_plist" 'Entitlements:keychain-access-groups' "$access_group" ||
-    die "provisioning profile does not authorize the exact Keychain access group"
+  # Apple profiles may allowlist TEAMID.*; the signed app entitlement remains exact.
+  if ! plist_array_contains "$profile_plist" 'Entitlements:keychain-access-groups' "$access_group"; then
+    plist_array_contains "$profile_plist" 'Entitlements:keychain-access-groups' "$expected_team.*" ||
+      die "provisioning profile does not authorize the Keychain access group"
+  fi
 
   expiration="$(plist_read "$profile_plist" 'ExpirationDate')" ||
     die "provisioning profile lacks an expiration date"
@@ -172,8 +175,11 @@ assert_plist_contract() {
     die "signed entitlements contain a different application identifier"
   [[ "$(plist_read "$plist" 'com.apple.developer.team-identifier')" == "$team_identifier" ]] ||
     die "signed entitlements contain a different Team ID"
-  plist_array_contains "$plist" 'keychain-access-groups' "$access_group" ||
+  [[ "$(plist_read "$plist" 'keychain-access-groups:0')" == "$access_group" ]] ||
     die "signed entitlements do not contain the exact Keychain access group"
+  if plist_read "$plist" 'keychain-access-groups:1' >/dev/null; then
+    die "signed entitlements contain an additional Keychain access group"
+  fi
 
   local get_task_allow
   get_task_allow="$(plist_read "$plist" 'com.apple.security.get-task-allow')" ||
