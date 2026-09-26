@@ -2,7 +2,7 @@ use hmac::{Hmac, Mac};
 use secrecy::{ExposeSecret, SecretSlice};
 use security_framework::access_control::{ProtectionMode, SecAccessControl};
 use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
-use security_framework::os::macos::code_signing::{Flags, SecCode, SecRequirement};
+use security_framework::os::macos::code_signing::{Flags, SecCode, SecRequirement, SecStaticCode};
 use security_framework::passwords::{
     AccessControlOptions, PasswordOptions, delete_generic_password_options, generic_password,
     set_generic_password_options,
@@ -312,11 +312,23 @@ pub(crate) fn runtime_is_hardened() -> bool {
     let Ok(code) = SecCode::for_self(Flags::NONE) else {
         return false;
     };
-    code.check_validity(
-        Flags::STRICT_VALIDATE | Flags::CHECK_NESTED_CODE,
-        &requirement,
-    )
-    .is_ok()
+    if code.check_validity(Flags::NONE, &requirement).is_err() {
+        return false;
+    }
+    // Nested-code validation is a static-only flag. Keep the running-process
+    // requirement check and validate its kernel-reported bundle separately.
+    let Ok(path) = code.path(Flags::NONE) else {
+        return false;
+    };
+    let Ok(static_code) = SecStaticCode::from_path(&path, Flags::NONE) else {
+        return false;
+    };
+    static_code
+        .check_validity(
+            Flags::STRICT_VALIDATE | Flags::CHECK_NESTED_CODE | Flags::CHECK_ALL_ARCHITECTURES,
+            &requirement,
+        )
+        .is_ok()
 }
 
 fn hardened_requirement(access_group: &str) -> String {
@@ -324,7 +336,7 @@ fn hardened_requirement(access_group: &str) -> String {
     let team_id = &access_group[..10];
     let application_identifier = format!("{team_id}.io.palladin.runtime");
     format!(
-        "identifier \"io.palladin.runtime\" and anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\" and entitlement[\"com.apple.application-identifier\"] = \"{application_identifier}\" and entitlement[\"keychain-access-groups\"] = \"{access_group}\" and not entitlement[\"com.apple.security.get-task-allow\"] exists"
+        "identifier \"io.palladin.runtime\" and anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\" and entitlement[\"com.apple.application-identifier\"] = \"{application_identifier}\" and entitlement[\"keychain-access-groups\"] = \"{access_group}\" and ! entitlement[\"com.apple.security.get-task-allow\"] exists"
     )
 }
 
@@ -375,6 +387,20 @@ mod tests {
             SecretSlot::OrganizationApiKey.keychain_label(),
             "Palladin organization credential"
         );
+    }
+
+    #[test]
+    fn test_process_cannot_claim_hardened_without_release_identity() {
+        assert!(!super::runtime_is_hardened());
+    }
+
+    #[test]
+    fn signing_requirement_is_accepted_by_apple_parser() {
+        let access_group = format!("A1B2C3D4E5{ACCESS_GROUP_SUFFIX}");
+        let requirement = hardened_requirement(&access_group);
+        requirement
+            .parse::<security_framework::os::macos::code_signing::SecRequirement>()
+            .expect("Apple must accept the Hardened signing requirement");
     }
 
     #[test]
