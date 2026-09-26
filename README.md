@@ -1,7 +1,10 @@
-# @palladin/cli
+# Palladin Agent — CLI and MCP server
 
-Palladin CLI provides the `palladin` command and the local MCP server through
-`palladin mcp serve`. Both use the same native runtime and npm installation.
+Connect AI agents to Palladin-managed credentials with explicit access grants and local credential handling. Palladin is a password manager for people and their AI agents.
+
+The `@palladin/cli` package provides the `palladin` command and the local MCP server through `palladin mcp serve`. Both use the same native runtime and npm installation.
+
+[Website and waitlist](https://palladin.io) · [MCP configuration](#mcp-configuration) · [Credential delivery methods](#credential-delivery-methods) · [Security reporting](SECURITY.md)
 
 > [!WARNING]
 > Palladin Agent is pre-production software and has not been published to npm. Do not use development builds with production credentials.
@@ -9,6 +12,18 @@ Palladin CLI provides the `palladin` command and the local MCP server through
 The repository contains the current native runtime and release engineering,
 but no public npm release is available yet. Installation commands below describe
 the intended signed release and will not work until the packages are published.
+
+## How agents use credentials
+
+The approving user chooses which delivery methods a grant allows. Each method has a different output boundary:
+
+| Method | What it does | Credential exposure |
+| --- | --- | --- |
+| `get` | Returns an approved credential value. | The caller receives plaintext; an MCP result may enter the model context or transcript. |
+| `exec` | Uses approved fields in a child process. | The child receives the values; MCP withholds child stdout and stderr from the model. |
+| `inject` | Sends approved fields to the authenticated browser integration. | The target page receives the values; the tool returns a value-free outcome to the model. |
+
+Prefer `exec` or `inject` when an agent needs to use a credential without receiving its value. Browser injection is currently implemented for macOS Google Chrome; signed release acceptance remains gated. See [credential delivery methods](#credential-delivery-methods) and [browser providers](#browser-providers) for the complete boundaries and limitations.
 
 ## Security boundary
 
