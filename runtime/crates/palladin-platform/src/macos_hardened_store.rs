@@ -325,7 +325,7 @@ pub(crate) fn runtime_is_hardened() -> bool {
     };
     static_code
         .check_validity(
-            Flags::STRICT_VALIDATE | Flags::CHECK_NESTED_CODE,
+            Flags::STRICT_VALIDATE | Flags::CHECK_NESTED_CODE | Flags::CHECK_ALL_ARCHITECTURES,
             &requirement,
         )
         .is_ok()

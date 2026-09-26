@@ -149,6 +149,26 @@ if "$modified_app/Contents/MacOS/palladin" --id default security upgrade \
   die "modified bundle unexpectedly opened the identity"
 fi
 
+inactive_app="$work_dir/PalladinInactiveSlice.app"
+ditto "$app_path" "$inactive_app"
+inactive_architecture=arm64
+[[ "$architecture" != "arm64" ]] || inactive_architecture=x86_64
+inactive_binary="$work_dir/inactive-slice"
+lipo "$binary" -thin "$inactive_architecture" -output "$inactive_binary"
+codesign --remove-signature "$inactive_binary"
+lipo "$binary" -replace "$inactive_architecture" "$inactive_binary" \
+  -output "$inactive_app/Contents/MacOS/palladin"
+chmod 0755 "$inactive_app/Contents/MacOS/palladin"
+if codesign --verify --strict --all-architectures "$inactive_app" >/dev/null 2>&1; then
+  die "bundle with unsigned inactive slice unexpectedly retained a valid signature"
+fi
+if "$inactive_app/Contents/MacOS/palladin" doctor >"$work_dir/inactive.out" 2>&1; then
+  grep -Fx 'standalone-security-tier: Unavailable' "$work_dir/inactive.out" >/dev/null ||
+    die "bundle with unsigned inactive slice unexpectedly reported Hardened"
+  grep -Fx 'identity-opened: no' "$work_dir/inactive.out" >/dev/null ||
+    die "bundle with unsigned inactive slice unexpectedly opened identity"
+fi
+
 injection_library="$work_dir/palladin-dyld-probe.dylib"
 injection_marker="$work_dir/dyld-injection-succeeded"
 xcrun clang -dynamiclib -Wall -Wextra -Werror \
