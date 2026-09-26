@@ -324,7 +324,7 @@ fn hardened_requirement(access_group: &str) -> String {
     let team_id = &access_group[..10];
     let application_identifier = format!("{team_id}.io.palladin.runtime");
     format!(
-        "identifier \"io.palladin.runtime\" and anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\" and entitlement[\"com.apple.application-identifier\"] = \"{application_identifier}\" and entitlement[\"keychain-access-groups\"] = \"{access_group}\" and not entitlement[\"com.apple.security.get-task-allow\"] exists"
+        "identifier \"io.palladin.runtime\" and anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\" and entitlement[\"com.apple.application-identifier\"] = \"{application_identifier}\" and entitlement[\"keychain-access-groups\"] = \"{access_group}\" and ! entitlement[\"com.apple.security.get-task-allow\"] exists"
     )
 }
 
@@ -375,6 +375,15 @@ mod tests {
             SecretSlot::OrganizationApiKey.keychain_label(),
             "Palladin organization credential"
         );
+    }
+
+    #[test]
+    fn signing_requirement_is_accepted_by_apple_parser() {
+        let access_group = format!("A1B2C3D4E5{ACCESS_GROUP_SUFFIX}");
+        let requirement = hardened_requirement(&access_group);
+        requirement
+            .parse::<security_framework::os::macos::code_signing::SecRequirement>()
+            .expect("Apple must accept the Hardened signing requirement");
     }
 
     #[test]
