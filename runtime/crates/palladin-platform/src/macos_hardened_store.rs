@@ -2,7 +2,7 @@ use hmac::{Hmac, Mac};
 use secrecy::{ExposeSecret, SecretSlice};
 use security_framework::access_control::{ProtectionMode, SecAccessControl};
 use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
-use security_framework::os::macos::code_signing::{Flags, SecCode, SecRequirement};
+use security_framework::os::macos::code_signing::{Flags, SecCode, SecRequirement, SecStaticCode};
 use security_framework::passwords::{
     AccessControlOptions, PasswordOptions, delete_generic_password_options, generic_password,
     set_generic_password_options,
@@ -312,11 +312,23 @@ pub(crate) fn runtime_is_hardened() -> bool {
     let Ok(code) = SecCode::for_self(Flags::NONE) else {
         return false;
     };
-    code.check_validity(
-        Flags::STRICT_VALIDATE | Flags::CHECK_NESTED_CODE,
-        &requirement,
-    )
-    .is_ok()
+    if code.check_validity(Flags::NONE, &requirement).is_err() {
+        return false;
+    }
+    // Nested-code validation is a static-only flag. Keep the running-process
+    // requirement check and validate its kernel-reported bundle separately.
+    let Ok(path) = code.path(Flags::NONE) else {
+        return false;
+    };
+    let Ok(static_code) = SecStaticCode::from_path(&path, Flags::NONE) else {
+        return false;
+    };
+    static_code
+        .check_validity(
+            Flags::STRICT_VALIDATE | Flags::CHECK_NESTED_CODE,
+            &requirement,
+        )
+        .is_ok()
 }
 
 fn hardened_requirement(access_group: &str) -> String {
@@ -375,6 +387,11 @@ mod tests {
             SecretSlot::OrganizationApiKey.keychain_label(),
             "Palladin organization credential"
         );
+    }
+
+    #[test]
+    fn test_process_cannot_claim_hardened_without_release_identity() {
+        assert!(!super::runtime_is_hardened());
     }
 
     #[test]
