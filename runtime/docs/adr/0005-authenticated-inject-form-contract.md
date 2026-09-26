@@ -47,7 +47,7 @@ and replay-protect the existing `prepare`, `inject`, and value-free result messa
 wire definition and interoperability vector live in `contracts/inject-provider/v1`.
 
 The macOS Google Chrome implementation installs an exact Native Messaging allowlist for the stable
-Palladin extension ID and dynamically validates the Google-signed Chrome parent before opening the
+Palladin store and development extension IDs in both debug and release and dynamically validates the Google-signed Chrome parent before opening the
 host identity or socket. The browser/platform-authored identity, not a payload field or Palladin
 account/profile, authorizes the receiving extension. The CLI and Rust
 host also perform a separate mutually signed ephemeral handshake using the OS-secured host identity
@@ -57,10 +57,11 @@ Other operating systems and browsers fail closed until they have equivalent plat
 attestation and installation support.
 
 Chrome's Native Messaging contract does not distinguish a Web Store installation from an unpacked
-extension carrying the same public manifest key and therefore the same ID. The current source path
-is enabled only in debug builds with disposable data. Production `browser install` and direct host
-entry fail closed until a separately reviewed mechanism binds the invoking extension to the signed
-Palladin store artifact; Extension ID alone is not sufficient for that provenance claim.
+extension carrying the same public manifest key and therefore the same ID. The product owner
+accepted Google-signed Chrome plus the exact allowlisted origin on 2026-09-24, and both the store
+and development identities in both CLI build modes on 2026-09-25. Local same-ID replacement is
+outside that boundary; neither identity attests store review or signed-artifact provenance.
+The shared `io.palladin` host name does not upgrade the selected runtime secure-storage tier.
 
 ### Agent-owned Playwright Page transport
 

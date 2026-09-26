@@ -11,8 +11,10 @@ this security boundary.
 ## Browser/platform authorization
 
 Chrome Native Messaging's exact `allowed_origins` entry identifies which extension may launch the
-host. The compiled origin is
-`chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/`. The Runtime accepts only Chrome's exact
+host. Both debug and release compile the store origin
+`chrome-extension://ecejlpkceehnckgenjafoppffmbmmagf/` and the development origin
+`chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/`. Each uses the shared host `io.palladin`.
+The Runtime accepts only Chrome's exact
 browser-authored origin argument and, on macOS, validates the direct Google-signed Chrome parent
 before it opens the host identity or local socket. An Extension ID inside a message payload has no
 authority.
@@ -33,7 +35,7 @@ Messaging port it announces only the public key:
 The extension accepts exactly these three fields, keeps the public key only for that port, and uses
 it to validate the signed transcript below. This session-local key check binds the encrypted
 channel; it is not the authority that lets the Runtime release a credential. That authority is the
-browser/platform-authored official extension identity plus the separately authenticated local
+browser/platform-authored allowlisted extension identity plus the separately authenticated local
 CLI↔host hop.
 
 The CLI reaches this host through the separately mutually authenticated local protocol documented
