@@ -448,7 +448,9 @@ jobs:
           set -euo pipefail
           npm ci --ignore-scripts --workspaces=false
           brew list node@22 >/dev/null 2>&1 || brew install node@22
-          homebrew_node="$(/usr/bin/realpath "$(brew --prefix node@22)/bin/node")"
+          homebrew_node="$(node --input-type=commonjs -e \
+            'console.log(require("node:fs").realpathSync(process.argv[1]))' \
+            "$(brew --prefix node@22)/bin/node")"
           test -x "$homebrew_node"
           echo "PALLADIN_HOMEBREW_NODE=$homebrew_node" >>"$GITHUB_ENV"
 
