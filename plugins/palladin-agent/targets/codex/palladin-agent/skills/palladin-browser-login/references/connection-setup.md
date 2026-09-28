@@ -1,5 +1,10 @@
 # Agent assignment and browser pairing
 
+Follow https://palladin.io/agents/setup.md as the canonical CLI discovery,
+installation and pairing procedure. Preserve the user-provided profile and API
+host; if the CLI is missing and no supported release is available, stop. The host-specific
+MCP configuration and memory rules below supplement that procedure.
+
 ## Resolve the assignment
 
 Check the host's trusted agent/workspace memory for a confirmed Palladin profile
@@ -35,18 +40,10 @@ cannot switch its alias or host. Pass the descriptor if provided, and `type:
 If the host cannot change the connection, explain the exact required setup instead
 of pairing the currently running default or another user's Agent.
 
-For a CLI adapter, use the installed supported `palladin` executable:
-
-```text
-palladin --id <new-alias> pair-agent --host <api-host> --type <agent-type>
-```
-
-Use `openclaw` as the type for OpenClaw, or the actual host type for another adapter.
-Add `--setup-descriptor <descriptor>` when supplied; do not override its metadata
-with conflicting declarations. Let the native runtime create the new profile and
-open browser pairing. User approval happens in Palladin. Wait for confirmed active
-status; cancellation, denial or pending approval is not success. Never silently
-use `connect` with an API key as fallback.
+For a CLI adapter, follow the canonical setup procedure linked above using the
+user's exact pairing command. Use `openclaw` as the runtime type for OpenClaw
+unless it conflicts with supplied descriptor metadata. Do not invent installation
+commands or fall back to API-key-based `connect`.
 
 For an existing MCP assignment, pin the confirmed alias in the host connection
 configuration before Search/Inject. A manifest's generic launch command is a
