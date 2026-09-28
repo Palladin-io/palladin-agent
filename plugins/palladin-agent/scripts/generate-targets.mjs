@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const pluginSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const checkOnly = process.argv.includes('--check');
 const version = '0.1.0-preview.2';
-const codexVersion = `${version}+codex.20260904160709`;
+const codexVersion = `${version}+codex.20260928182846`;
 
 const canonicalSkill = await readFile(
   resolve(pluginSourceRoot, 'core/skills/palladin-browser-login/SKILL.md'),
