@@ -253,7 +253,7 @@ describe('Palladin plugin targets', () => {
       agentHostProviders: Array<{ id: string }>;
       browserProviders: Array<{ id: string; cliValue: string; mcpValue: string }>;
       credentialSurfaces: {
-        mcp: { inject: string; search: string; reportStale: string };
+        mcp: { pair: string; inject: string; search: string; reportStale: string };
         cli: {
           inject: string[];
           search: string[];
@@ -262,7 +262,7 @@ describe('Palladin plugin targets', () => {
       };
     };
     const mcpContract = JSON.parse(
-      await readFile(resolve(repositoryRoot, 'runtime/contracts/mcp/v1.2/mcp-tools.json'), 'utf8'),
+      await readFile(resolve(repositoryRoot, 'runtime/contracts/mcp/v1.3/mcp-tools.json'), 'utf8'),
     ) as {
       tools: Array<{
         name: string;
@@ -275,6 +275,7 @@ describe('Palladin plugin targets', () => {
     );
     const toolNames = mcpContract.tools.map(({ name }) => name);
     expect(toolNames).toEqual([
+      'pair_agent',
       'search_entries',
       'get_credential',
       'exec_with_credential',
@@ -283,6 +284,7 @@ describe('Palladin plugin targets', () => {
     ]);
     expect(toolNames).toEqual(
       expect.arrayContaining([
+        providerContract.credentialSurfaces.mcp.pair,
         providerContract.credentialSurfaces.mcp.search,
         providerContract.credentialSurfaces.mcp.inject,
         providerContract.credentialSurfaces.mcp.reportStale,
