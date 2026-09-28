@@ -3149,28 +3149,6 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         self.recover_pending_operations_locked()
     }
 
-    /// Creates only the authenticated empty-state root needed before release-policy
-    /// enforcement can persist its protected anti-rollback metadata.
-    ///
-    /// No Agent identity or organization credential is created or opened here. Existing
-    /// and legacy repositories are deliberately left untouched so their normal integrity
-    /// and migration checks still decide whether an identity operation may proceed.
-    pub fn prepare_empty_state_for_version_policy(&self) -> Result<(), RuntimeError> {
-        let _lock = self.repository.acquire_transaction_lock()?;
-        if self.read_trust_state()?.is_some() {
-            return Ok(());
-        }
-        let root_is_empty = match std::fs::read_dir(self.repository.root()) {
-            Ok(mut entries) => entries.next().transpose()?.is_none(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-            Err(error) => return Err(error.into()),
-        };
-        if root_is_empty {
-            self.bootstrap_integrity_root()?;
-        }
-        Ok(())
-    }
-
     fn recover_pending_operations_locked(&self) -> Result<(), RuntimeError> {
         match self.read_trust_state()? {
             None => self.bootstrap_integrity_root(),
@@ -3511,7 +3489,6 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
 
     fn finish_purge(&self) -> Result<(), RuntimeError> {
         self.repository.purge_public_data()?;
-        version_policy::purge_version_policy_cache(self.repository.root())?;
         self.secrets
             .delete(TRUST_OWNER_ID, SecretSlot::VersionPolicyTrustStateV1)?;
         self.secrets
@@ -6177,16 +6154,12 @@ fn authenticated_inject_metadata(
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
-    #[error("signed runtime version policy is not configured; no identity was opened")]
+    #[error("signed runtime release manifest is not configured; no identity was opened")]
     VersionPolicyNotConfigured,
-    #[error("signed runtime version policy is unavailable; no identity was opened")]
+    #[error("signed runtime release manifest is unavailable; no identity was opened")]
     VersionPolicyUnavailable,
-    #[error("signed runtime version policy verification failed; no identity was opened")]
+    #[error("signed runtime release manifest verification failed; no identity was opened")]
     VersionPolicyViolation,
-    #[error("this runtime version is blocked by signed policy; no identity was opened")]
-    VersionPolicyBlocked,
-    #[error("signed runtime version policy rollback was rejected; no identity was opened")]
-    VersionPolicyRollback,
     #[error("profile operation failed: {0}")]
     Profile(#[from] ProfileError),
     #[error("runtime filesystem operation failed")]

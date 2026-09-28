@@ -42,7 +42,7 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(workflow).toContain('gh release upload');
   });
 
-  it('binds real identity/grant continuity, repair, downgrade rejection, and purge without secret argv or env', () => {
+  it('binds real identity/grant continuity, repair, tamper rejection, and purge without secret argv or env', () => {
     expect(runner).toContain("['connect', '--api-key-stdin', '--host', contract.apiHost]");
     expect(runner).toContain("stdio: ['inherit', 'pipe', 'pipe']");
     expect(runner).toContain('assertNoApiKeyEmission([connect.stdout, connect.stderr]');
@@ -51,8 +51,8 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(runner).toContain("body.output !== 'withheld'");
     expect(runner).toContain('concurrent MCP grant binding changed');
     expect(runner).toContain('npm reinstall did not repair the missing runtime');
-    expect(runner).toContain('literal downgrade did not produce the exact signed-policy rejection');
-    expect(runner).toContain("rejected.stderr !== 'Error: Palladin native runtime version is blocked by signed version policy\\n'");
+    expect(runner).toContain('tampered runtime did not produce the exact signature rejection');
+    expect(runner).toContain("rejected.stderr !== 'Error: Palladin native runtime failed release signature verification\\n'");
     expect(runner).toContain("rollbackMode: 'forward-rebuild'");
     expect(runner).toContain("['purge', '--confirm']");
     expect(runner).toContain("purgeStdout !== 'Native Palladin profiles and secret slots purged.\\n'");
@@ -99,6 +99,6 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(release).toContain('- run: npm test');
     expect(release).toContain('node security/adversarial/operator-approval.mjs verify');
     expect(release).toContain('node security/lifecycle/operator-approval.mjs verify');
-    expect(release).toContain('needs: [authorize, prepare-meta, publish-policy, approve-adversarial, approve-lifecycle]');
+    expect(release).toContain('needs: [authorize, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle]');
   });
 });

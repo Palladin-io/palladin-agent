@@ -37,7 +37,6 @@ function fixture() {
 
 function signedPolicyFixture() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const issued = new Date(Math.floor(Date.now() / 1000) * 1000);
   const payload = {
     artifacts: [{
       executableSha256: '11'.repeat(32),
@@ -46,14 +45,7 @@ function signedPolicyFixture() {
       version: '1.2.2',
       workerExecutableSha256: '22'.repeat(32),
     }],
-    blockedVersions: [],
-    expiresAt: new Date(issued.getTime() + 24 * 60 * 60 * 1000).toISOString().replace('.000Z', 'Z'),
-    issuedAt: issued.toISOString().replace('.000Z', 'Z'),
-    minimumVersion: '1.2.2',
-    recommendedVersion: '1.2.2',
-    schemaVersion: 1,
-    sequence: 7,
-    source: 'https://releases.palladin.io/agent/version-policy.json',
+    schemaVersion: 2,
   };
   const signature = sign(
     null,
@@ -406,8 +398,8 @@ test('meta-package staging is blocked by the exact adversarial and physical life
   assert.match(workflow, /--approval "\$approval\/adversarial-approval\.json"/);
   assert.match(workflow, /--approval "\$approval\/lifecycle-approval\.json"/);
   assert.match(workflow, /prepare-meta:[^]*needs: \[authorize, compatibility, smoke-native, smoke-musl, approve-adversarial\]/);
-  assert.match(workflow, /stage-meta:[^]*needs: \[authorize, prepare-meta, publish-policy, approve-adversarial, approve-lifecycle\]/);
-  assert.match(workflow, /publish-policy:[^]*needs: \[authorize, smoke-native, smoke-musl, approve-lifecycle\]/);
+  assert.match(workflow, /stage-meta:[^]*needs: \[authorize, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle\]/);
+  assert.match(workflow, /artifact-smoke:[^]*needs: \[authorize, smoke-native, smoke-musl\]/);
   assert.match(workflow, /lifecycle_ready: \$\{\{ steps\.release_set\.outputs\.lifecycle_ready \}\}/);
   assert.match(workflow, /approve-lifecycle:[^]*if: needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
   assert.match(workflow, /\[\[ \$lifecycle_count -eq 0 \|\| \$lifecycle_count -eq 2 \]\]/);
@@ -418,85 +410,6 @@ test('meta-package staging is blocked by the exact adversarial and physical life
   assert.doesNotMatch(workflow.slice(prepareOffset, workflow.indexOf('\n  stage-meta:')), /npm stage publish/);
   assert.doesNotMatch(workflow, /adversarial\/report\.mjs validate[^]*\|\| true/);
   assert.doesNotMatch(workflow, /lifecycle\/report\.mjs validate[^]*\|\| true/);
-});
-
-test('signed version policy release is owner-only, KMS-backed, and published after smoke', () => {
-  const workflowDirectory = resolve('.github/workflows');
-  const platform = readFileSync(join(workflowDirectory, 'release-platforms.yml'), 'utf8');
-  const meta = readFileSync(join(workflowDirectory, 'release-meta.yml'), 'utf8');
-  const maintenance = readFileSync(
-    join(workflowDirectory, 'version-policy-maintenance.yml'),
-    'utf8',
-  );
-  const verify = readFileSync(join(workflowDirectory, 'version-policy-verify.yml'), 'utf8');
-
-  for (const workflow of [platform, meta, maintenance]) {
-    assert.match(workflow, /environment: version-policy-(?:signing|maintenance)/);
-    assert.match(workflow, /google-github-actions\/auth@[0-9a-f]{40}/);
-    assert.match(workflow, /google-github-actions\/setup-gcloud@[0-9a-f]{40}/);
-    assert.match(workflow, /version: 561\.0\.0/);
-    assert.match(workflow, /PALLADIN_VERSION_POLICY_PUBLIC_KEY/);
-    assert.doesNotMatch(workflow, /credentials_json|PALLADIN_VERSION_POLICY_PRIVATE|NPM_TOKEN/);
-  }
-
-  assert.match(platform, /PALLADIN_PRODUCTION_BUILD: "1"/);
-  assert.match(platform, /verify-kms-public-key\.mjs/);
-  assert.match(meta, /bootstrap_policy:/);
-  assert.match(meta, /npm install --prefix "\$root" --force --ignore-scripts --save-exact/);
-  assert.match(meta, /npm audit signatures --prefix "\$root"/);
-  assert.match(meta, /gh attestation verify "\$asset"/);
-  assert.match(meta, /cmp --silent "\$asset" "\$registry_tarball"/);
-  assert.match(meta, /verify-release-policy --policy/);
-  assert.ok(meta.indexOf('verify-release-policy --policy') < meta.indexOf('name: Publish the policy only after all native smokes pass'));
-  assert.match(meta, /Exercise the live dynamic policy before the meta-package can be staged/);
-  assert.doesNotMatch(meta, /tar --extract|curl[^\n]*\|\|/);
-  assert.match(meta, /needs: \[authorize, smoke-native, smoke-musl\]/);
-  assert.match(meta, /name: Publish the policy only after all native smokes pass/);
-  assert.match(meta, /group: palladin-npm-release/);
-  assert.match(maintenance, /github\.actor == 'patryk-roguszewski'/);
-  assert.match(maintenance, /github\.ref == 'refs\/heads\/main'/);
-  assert.match(maintenance, /inputs\.confirmation == 'SIGN POLICY'/);
-  assert.match(maintenance, /group: palladin-npm-release/);
-  for (const workflow of [meta, maintenance]) {
-    assert.match(workflow, /--if-generation-match=0/);
-    assert.match(workflow, /version-policy\/\$object/);
-    assert.match(workflow, /--if-generation-match="\$(?:OBSERVED_GENERATION|observed_generation)"/);
-  }
-  assert.doesNotMatch(maintenance, /npm deprecate|npm dist-tag add/);
-  assert.match(verify, /schedule:/);
-  assert.doesNotMatch(verify, /claude|anthropic|id-token: write/);
-});
-
-test('signed policy object names are immutable and incident latest moves only the meta-package', () => {
-  const root = fixture();
-  try {
-    const { envelope, publicKey } = signedPolicyFixture();
-    const current = join(root, 'current.json');
-    writeFileSync(current, envelope);
-    const digest = createHash('sha256').update(envelope).digest('hex');
-    assert.equal(run('version-policy-object-name.mjs', [
-      '--bundle', current,
-      '--public-key', publicKey,
-    ]), `7-${digest}.json`);
-
-    const output = join(root, 'incident');
-    run('create-version-policy-incident-plan.mjs', [
-      '--current', current,
-      '--block-version', '1.2.3',
-      '--safe-version', '1.2.2',
-      '--output-dir', output,
-      '--public-key', publicKey,
-      '--issued-at', new Date(Math.floor(Date.now() / 1000) * 1000)
-        .toISOString().replace('.000Z', 'Z'),
-    ]);
-    const plan = readFileSync(join(output, 'npm-incident-plan.txt'), 'utf8');
-    assert.match(plan, /npm deprecate '@palladin\/cli'@'1\.2\.3'/);
-    assert.match(plan, /npm deprecate '@palladin\/runtime-linux-x64-gnu'@'1\.2\.3'/);
-    assert.equal((plan.match(/npm dist-tag add/g) ?? []).length, 1);
-    assert.match(plan, /npm dist-tag add '@palladin\/cli'@'1\.2\.2' latest/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
 });
 
 test('CI policy fixture signs exact staged Linux bytes with an ephemeral matching key', () => {
@@ -530,8 +443,7 @@ test('CI policy fixture signs exact staged Linux bytes with an ephemeral matchin
     rmSync(privateKey);
     const policy = parseAndVerifyVersionPolicy(readFileSync(bundle), {
       publicKeyBase64: readFileSync(publicKey, 'utf8'),
-      source: 'https://releases.palladin.io/agent/version-policy.json',
-    }).signed;
+      }).signed;
     assert.deepEqual(policy.artifacts.map((artifact) => artifact.packageName), packages);
     for (const artifact of policy.artifacts) {
       const packageRoot = packageRoots[packages.indexOf(artifact.packageName)];
@@ -568,7 +480,7 @@ test('configured policy constants stay typed as strings for production compilati
     ], { cwd: root });
     const generated = readFileSync(join(root, 'src/runtime/version-policy-build.ts'), 'utf8');
     for (const name of [
-      'VERSION_POLICY_SOURCE', 'VERSION_POLICY_PUBLIC_KEY_BASE64',
+      'VERSION_POLICY_PUBLIC_KEY_BASE64',
       'RUNTIME_SOURCE_SHA', 'VERSION_POLICY_BUNDLE_BASE64',
     ]) {
       assert.match(generated, new RegExp(`export const ${name}: string =`));
@@ -582,8 +494,7 @@ test('saved signed policy must match the current release payload exactly', () =>
   const root = fixture();
   try {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-    const issued = new Date(Math.floor(Date.now() / 1000) * 1000);
-    const payload = {
+      const payload = {
       artifacts: PLATFORM_PACKAGE_NAMES.map((packageName) => ({
         executableSha256: '11'.repeat(32),
         packageName,
@@ -591,15 +502,8 @@ test('saved signed policy must match the current release payload exactly', () =>
         version: '1.2.3',
         workerExecutableSha256: '22'.repeat(32),
       })),
-      blockedVersions: [],
-      expiresAt: new Date(issued.getTime() + 24 * 60 * 60 * 1000).toISOString().replace('.000Z', 'Z'),
-      issuedAt: issued.toISOString().replace('.000Z', 'Z'),
-      minimumVersion: '1.2.3',
-      recommendedVersion: '1.2.3',
-      schemaVersion: 1,
-      sequence: 1,
-      source: 'https://releases.palladin.io/agent/version-policy.json',
-    };
+      schemaVersion: 2,
+      };
     const canonical = canonicalizeVersionPolicyPayload(payload);
     const signature = sign(null, Buffer.from(canonical), privateKey).toString('base64');
     const bundle = join(root, 'candidate.json');
@@ -612,7 +516,7 @@ test('saved signed policy must match the current release payload exactly', () =>
       '--expected-payload', expected,
     ];
     run('verify-version-policy-build.mjs', args);
-    writeFileSync(expected, canonicalizeVersionPolicyPayload({ ...payload, sequence: 2 }));
+    writeFileSync(expected, canonicalizeVersionPolicyPayload({ ...payload, artifacts: payload.artifacts.map((artifact) => ({ ...artifact, workerExecutableSha256: '33'.repeat(32) })) }));
     assert.notEqual(failing('verify-version-policy-build.mjs', args).status, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -622,13 +526,8 @@ test('saved signed policy must match the current release payload exactly', () =>
 test('release policy generator binds all exact executables and rejects a symlink', () => {
   const root = fixture();
   try {
-    const policyKeys = generateKeyPairSync('ed25519');
-    const policyPublicKey = policyKeys.publicKey.export({ format: 'der', type: 'spki' })
-      .subarray(-32).toString('base64');
     const modules = join(root, 'node_modules');
-    const current = join(root, 'current.json');
     const output = join(root, 'payload.json');
-    writeFileSync(current, '');
     const executables = new Map([
       ['@palladin/runtime-darwin-arm64', 'PalladinRuntime.app/Contents/MacOS/palladin'],
       ['@palladin/runtime-linux-arm64-gnu', 'bin/palladin-linux-client'],
@@ -652,34 +551,18 @@ test('release policy generator binds all exact executables and rejects a symlink
       '--node-modules', modules,
       '--version', '1.2.3',
       '--source-sha', sha,
-      '--current', current,
-      '--public-key', policyPublicKey,
-      '--issued-at', '2026-07-14T12:00:00Z',
       '--output', output,
     ];
     run('generate-version-policy-release.mjs', args);
     const payload = JSON.parse(readFileSync(output, 'utf8'));
-    assert.equal(payload.sequence, 1);
-    assert.equal(payload.minimumVersion, '1.2.3');
-    assert.equal(payload.recommendedVersion, '1.2.3');
-    assert.equal(payload.expiresAt, '2026-08-13T12:00:00Z');
+    assert.equal(payload.schemaVersion, 2);
     assert.equal(payload.artifacts.length, 5);
     assert.ok(payload.artifacts.every((artifact) => /^[0-9a-f]{64}$/.test(
       artifact.workerExecutableSha256,
     )));
 
-    const currentSignature = sign(
-      null,
-      Buffer.from(canonicalizeVersionPolicyPayload(payload)),
-      policyKeys.privateKey,
-    ).toString('base64');
-    writeFileSync(current, canonicalizeVersionPolicyEnvelope({
-      signed: payload,
-      signature: currentSignature,
-    }));
     const retryOutput = join(root, 'retry-payload.json');
     const retryArgs = [...args];
-    retryArgs[retryArgs.indexOf('--issued-at') + 1] = '2026-07-15T12:00:00Z';
     retryArgs[retryArgs.indexOf('--output') + 1] = retryOutput;
     run('generate-version-policy-release.mjs', retryArgs);
     assert.deepEqual(JSON.parse(readFileSync(retryOutput, 'utf8')), payload);

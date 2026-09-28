@@ -174,7 +174,7 @@ async fn proxy(
     .await
     .map_err(|_| ClientError::BrokerProtocol)?;
 
-    // The broker verifies its version policy and the exact worker image before
+    // The broker verifies the release signature and exact worker image before
     // sending Accepted. Do not prompt for or read secret input before this
     // authenticated pre-secret gate succeeds.
     match read_frame::<_, ServerFrame>(&mut reader)

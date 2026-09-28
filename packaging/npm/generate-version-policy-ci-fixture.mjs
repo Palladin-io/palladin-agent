@@ -53,18 +53,7 @@ const artifacts = packageRoots.map((rootHint) => {
   };
 }).sort((left, right) => left.packageName < right.packageName ? -1 : 1);
 
-const issued = new Date(Math.floor(Date.now() / 1000) * 1000);
-const payload = {
-  artifacts,
-  blockedVersions: [],
-  expiresAt: timestamp(new Date(issued.getTime() + 24 * 60 * 60 * 1000)),
-  issuedAt: timestamp(issued),
-  minimumVersion: version,
-  recommendedVersion: version,
-  schemaVersion: 1,
-  sequence: 1,
-  source: 'https://releases.palladin.io/agent/version-policy.json',
-};
+const payload = { artifacts, schemaVersion: 2 };
 const privateKey = createPrivateKey(readBoundedKey(required('private-key')));
 const publicKeyBase64 = readBoundedKey(required('public-key')).toString('utf8');
 const derivedPublicKey = createPublicKey(privateKey).export({ format: 'der', type: 'spki' })
@@ -99,10 +88,6 @@ function readRegularFile(root, path, maximum = 256 * 1024 * 1024) {
 
 function hash(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
-}
-
-function timestamp(date) {
-  return date.toISOString().replace('.000Z', 'Z');
 }
 
 function required(name) {
