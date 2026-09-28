@@ -719,6 +719,9 @@ pub(crate) fn valid_opaque_id(value: &str) -> bool {
 pub enum StoreError {
     #[error("OS secure storage is unavailable; no file or environment fallback is allowed")]
     Unavailable,
+    #[cfg(target_os = "macos")]
+    #[error("macOS Keychain write failed (OSStatus {0}); no fallback is allowed")]
+    MacKeychainWrite(i32),
     #[error("secret material is empty")]
     InvalidSecret,
     #[error("secret owner identifier is invalid")]

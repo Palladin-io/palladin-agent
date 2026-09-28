@@ -12,6 +12,7 @@ PACKAGING_DIR="$(dirname -- "$SCRIPT_DIR")"
 readonly PACKAGING_DIR
 # shellcheck source=packaging/macos/scripts/lib.sh
 source "$SCRIPT_DIR/lib.sh"
+source "$SCRIPT_DIR/boundary-failure.sh"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -92,6 +93,7 @@ cleanup() {
   rm -rf -- "$work_dir"
 }
 trap cleanup EXIT
+trap 'boundary_failure_status=$?; report_boundary_failure "$boundary_failure_status" "$LINENO" "$work_dir/init.err"; exit "$boundary_failure_status"' ERR
 
 "$binary" init >"$work_dir/init.out" 2>"$work_dir/init.err"
 

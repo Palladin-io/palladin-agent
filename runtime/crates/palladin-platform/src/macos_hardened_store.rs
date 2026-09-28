@@ -126,7 +126,8 @@ impl SecretStore for MacHardenedSecretStore {
             return Err(StoreError::InvalidSecret);
         }
         let options = query(owner_id, slot, true)?;
-        set_generic_password_options(secret, options).map_err(|_| StoreError::Unavailable)
+        set_generic_password_options(secret, options)
+            .map_err(|error| StoreError::MacKeychainWrite(error.code()))
     }
 
     fn delete(&self, owner_id: &str, slot: SecretSlot) -> Result<(), StoreError> {
