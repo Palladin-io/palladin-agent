@@ -15,6 +15,10 @@ const providerReference = await readFile(
   resolve(pluginSourceRoot, 'core/skills/palladin-browser-login/references/provider-contract.md'),
   'utf8',
 );
+const connectionSetup = await readFile(
+  resolve(pluginSourceRoot, 'core/skills/palladin-browser-login/references/connection-setup.md'),
+  'utf8',
+);
 const providerContract = await readFile(
   resolve(pluginSourceRoot, 'core/provider-contract.json'),
   'utf8',
@@ -193,6 +197,7 @@ for (const target of targets) {
     'palladin-provider-contract.json': providerContract,
     'skills/palladin-browser-login/SKILL.md': canonicalSkill,
     'skills/palladin-browser-login/references/provider-contract.md': providerReference,
+    'skills/palladin-browser-login/references/connection-setup.md': connectionSetup,
     'skills/palladin-browser-login/references/host-browser.md': hostAdapter,
     ...target.extraFiles,
   };

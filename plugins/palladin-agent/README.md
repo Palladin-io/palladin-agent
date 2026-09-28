@@ -20,20 +20,23 @@ npm run plugins:package:codex-skills-only
 
 The package command writes only below the ignored `dist/` directory, removes the local Codex cachebuster from the submission manifest, and prints the archive SHA-256 plus its entries as JSON. It does not modify the canonical skill or generated plugin targets.
 
-## Prepare a local macOS runtime
+## Select the Agent connection
 
-Build the native runtime from this checkout and install its reviewed development launcher somewhere already present on `PATH`:
+The shared skill includes `references/connection-setup.md`. With no remembered
+assignment, ask the user to select an existing Agent or pair a new one. Pin the
+confirmed local alias and API host in the host's MCP configuration before calling
+`pair_agent`; the tool cannot change the profile of an already-running server.
+CLI-only adapters use `palladin --id <alias> pair-agent --host <api-host>`.
+Browser pairing obtains approval without requesting an API key in chat.
 
-```bash
-./packaging/macos/scripts/development-runtime.sh build
-./packaging/macos/scripts/development-runtime.sh install-launcher ~/.local/bin/palladin
-palladin agents create codex
-palladin --id codex connect --host https://api.stage.palladin.io
-```
+Remember only non-secret alias/host/connection metadata in the host's scoped
+memory. Do not embed workstation paths, owner names, development flags or staging
+values in the plugin. A local development installation is configured separately.
 
-Do not pass an API key in argv or the environment. `connect` reads it from the masked prompt, or from protected standard input when `--api-key-stdin` is explicitly used. If the `codex` profile already exists, skip its creation.
-
-The plugin's fixed command is release-compatible and therefore does not enable literal HTTP loopback. Use the repository runtime helper directly with `--local-development` for separate localhost API diagnostics.
+OpenClaw's `extension` browser driver exposes `webExtensionTabId`; the adapter
+requires this field and the exact URL from the same retained tab. Other driver
+IDs are not interchangeable. This documents the supported routing preconditions,
+not completed production E2E acceptance or a release of the disabled native fixture.
 
 ## Install from the local marketplace
 

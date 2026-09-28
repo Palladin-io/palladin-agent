@@ -6,6 +6,7 @@
         "command": "palladin",
         "args": ["mcp", "serve"]
       },
+      "pair": "pair_agent",
       "search": "search_entries",
       "inject": "inject_credential",
       "reportStale": "report_credential_stale",
@@ -16,6 +17,7 @@
       }
     },
     "cli": {
+      "pair": ["palladin", "pair-agent"],
       "search": ["palladin", "search", "--json"],
       "inject": ["palladin", "inject"],
       "routing": {
