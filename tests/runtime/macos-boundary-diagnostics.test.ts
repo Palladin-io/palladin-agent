@@ -29,11 +29,11 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
   });
 
   it('reports only the numeric Keychain status from a complete known error', () => {
-    const result = report('Error: OS secure storage operation failed: macOS Keychain write failed (OSStatus -34018); no fallback is allowed\nsynthetic-private-marker\n');
+    const result = report('Error: OS secure storage operation failed: macOS Keychain operation failed (OSStatus -34018); no fallback is allowed\nsynthetic-private-marker\n');
     expect(result.status).toBe(0);
     const outputIsEmpty = result.stdout === '';
     expect(outputIsEmpty).toBe(true);
-    const messageIsExpected = result.stderr === 'Signed boundary failed at script line 101 (exit 7); init category: secure-storage-write-failed; Keychain OSStatus: -34018; captured output withheld.\n';
+    const messageIsExpected = result.stderr === 'Signed boundary failed at script line 101 (exit 7); init category: secure-storage-operation-failed; Keychain OSStatus: -34018; captured output withheld.\n';
     expect(messageIsExpected).toBe(true);
   });
 

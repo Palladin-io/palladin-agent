@@ -7,7 +7,7 @@ report_boundary_failure() {
   local category='unknown'
   local keychain_status='unavailable'
   local captured_line
-  local write_failure='^Error: OS secure storage operation failed: macOS Keychain write failed \(OSStatus (-?[0-9]{1,10})\); no fallback is allowed$'
+  local keychain_failure='^Error: OS secure storage operation failed: macOS Keychain operation failed \(OSStatus (-?[0-9]{1,10})\); no fallback is allowed$'
   if [[ -f "$init_error" && ! -L "$init_error" ]]; then
     if grep -Fxq -e 'Error: OS secure storage operation failed: OS secure storage is unavailable; no file or environment fallback is allowed' -e 'Error: OS secure storage is unavailable; no file or environment fallback is allowed' "$init_error"; then
       category='secure-storage-unavailable'
@@ -19,8 +19,8 @@ report_boundary_failure() {
       category='release-manifest-invalid'
     fi
     while IFS= read -r captured_line || [[ -n "$captured_line" ]]; do
-      if [[ "$captured_line" =~ $write_failure ]]; then
-        category='secure-storage-write-failed'
+      if [[ "$captured_line" =~ $keychain_failure ]]; then
+        category='secure-storage-operation-failed'
         keychain_status="${BASH_REMATCH[1]}"
         break
       fi
