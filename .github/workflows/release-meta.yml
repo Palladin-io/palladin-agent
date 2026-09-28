@@ -58,7 +58,7 @@ jobs:
       - run: npm install --global npm@11.18.0
 
       - id: source
-        name: Verify tag and all six public platform versions
+        name: Verify tag and all five public platform versions
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           VERSION: ${{ inputs.version }}
@@ -76,7 +76,6 @@ jobs:
 
           packages=(
             @palladin/runtime-darwin-arm64
-            @palladin/runtime-darwin-x64
             @palladin/runtime-linux-arm64-gnu
             @palladin/runtime-linux-arm64-musl
             @palladin/runtime-linux-x64-gnu
@@ -176,7 +175,6 @@ jobs:
             --platform-manifest "$assets/release-manifest.json"
           packages=(
             @palladin/runtime-darwin-arm64
-            @palladin/runtime-darwin-x64
             @palladin/runtime-linux-arm64-gnu
             @palladin/runtime-linux-arm64-musl
             @palladin/runtime-linux-x64-gnu
@@ -189,8 +187,8 @@ jobs:
             -name 'palladin-runtime-*.tgz' -print | sort)
           mapfile -t registry_tarballs < <(find "$registry" -maxdepth 1 -type f \
             -name 'palladin-runtime-*.tgz' -print | sort)
-          test "${#release_tarballs[@]}" -eq 6
-          test "${#registry_tarballs[@]}" -eq 6
+          test "${#release_tarballs[@]}" -eq 5
+          test "${#registry_tarballs[@]}" -eq 5
           for asset in "${release_tarballs[@]}"; do
             registry_tarball="$registry/$(basename "$asset")"
             test -f "$registry_tarball"
@@ -211,7 +209,6 @@ jobs:
           npm init --yes --prefix "$root" >/dev/null
           packages=(
             @palladin/runtime-darwin-arm64
-            @palladin/runtime-darwin-x64
             @palladin/runtime-linux-arm64-gnu
             @palladin/runtime-linux-arm64-musl
             @palladin/runtime-linux-x64-gnu
@@ -339,9 +336,6 @@ jobs:
           - runner: macos-15
             platform: macOS-arm64
             runtime_package: runtime-darwin-arm64
-          - runner: macos-15-intel
-            platform: macOS-x64
-            runtime_package: runtime-darwin-x64
           - runner: ubuntu-24.04-arm
             platform: Linux-GNU-arm64
             runtime_package: runtime-linux-arm64-gnu

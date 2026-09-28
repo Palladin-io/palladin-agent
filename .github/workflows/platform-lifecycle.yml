@@ -54,7 +54,7 @@ concurrency:
 jobs:
   authorize:
     name: Authorize immutable physical test inputs
-    if: github.actor == 'patryk-roguszewski' && github.ref == 'refs/heads/main'
+    if: github.actor == 'patryk-roguszewski' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     environment: lifecycle-qa
     timeout-minutes: 15
@@ -85,7 +85,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF" = "refs/tags/$CANDIDATE_TAG"
           test "$CONFIRMATION" = 'run physical lifecycle gate'
           test "$CANDIDATE_SHA" = "$GITHUB_SHA"
           for value in "$BASELINE_SHA" "$CANDIDATE_SHA" "$ROLLBACK_SHA"; do

@@ -339,7 +339,7 @@ jobs:
             while IFS= read -r -d '' source; do
               name=$(basename "$source")
               case "$name" in
-                palladin-agent*.tgz|release-manifest.json|SHA256SUMS) continue ;;
+                palladin-agent*.tgz|palladin-runtime-darwin-x64-*.tgz|release-manifest.json|SHA256SUMS) continue ;;
               esac
               test ! -e "$release/$name"
               cp "$source" "$release/$name"
@@ -397,12 +397,12 @@ jobs:
           subject-path: ${{ runner.temp }}/release-set/*
           sbom-path: ${{ runner.temp }}/release-set/sbom-release.spdx.json
 
-      - name: Stage all six platform packages under candidate
+      - name: Stage all five platform packages under candidate
         run: |
           set -euo pipefail
           mapfile -t packages < <(find "$RUNNER_TEMP/release-set" -type f \
             -name 'palladin-runtime-*.tgz' -print | sort)
-          test "${#packages[@]}" -eq 6
+          test "${#packages[@]}" -eq 5
           for package in "${packages[@]}"; do
             npm stage publish "$package" --tag candidate --provenance --ignore-scripts
           done
@@ -430,7 +430,7 @@ jobs:
       - name: Record the manual npm approval boundary
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          All six macOS/Linux platform versions were staged with the immutable `candidate` tag.
+          All five macOS/Linux platform versions were staged with the immutable `candidate` tag.
 
-          Patryk must inspect and approve every staged package with npm 2FA. Do not run `release-meta.yml` until all six exact versions are public and the native registry smoke matrix can consume them.
+          Patryk must inspect and approve every staged package with npm 2FA. Do not run `release-meta.yml` until all five exact versions are public and the native registry smoke matrix can consume them.
           SUMMARY

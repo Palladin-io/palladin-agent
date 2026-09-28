@@ -8,9 +8,9 @@ const release = readFileSync('.github/workflows/release-meta.yml', 'utf8');
 describe('owner-only physical lifecycle workflow', () => {
   it('has one manual owner-only entry point and twelve fixed native targets', () => {
     expect(workflow).toContain("if: github.actor == 'patryk-roguszewski'");
-    expect(workflow).toContain("github.ref == 'refs/heads/main'");
+    expect(workflow).toContain("github.ref_type == 'tag'");
     expect(workflow).toContain('ref: ${{ github.sha }}');
-    expect(workflow).toContain("test \"$GITHUB_REF\" = refs/heads/main");
+    expect(workflow).toContain('test "$GITHUB_REF" = "refs/tags/$CANDIDATE_TAG"');
     expect(workflow).toContain('test "$CANDIDATE_SHA" = "$GITHUB_SHA"');
     expect(workflow).toContain('test "$(git rev-parse "$tag^{commit}")" = "$source"');
     expect(workflow).not.toContain("with: { ref: '${{ inputs.candidate_source_sha }}'");

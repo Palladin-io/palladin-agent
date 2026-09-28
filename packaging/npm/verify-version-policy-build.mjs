@@ -26,7 +26,6 @@ const envelope = parseAndVerifyVersionPolicy(readFileSync(resolve(bundle)), {
 });
 const expected = [
   '@palladin/runtime-darwin-arm64',
-  '@palladin/runtime-darwin-x64',
   '@palladin/runtime-linux-arm64-gnu',
   '@palladin/runtime-linux-arm64-musl',
   '@palladin/runtime-linux-x64-gnu',

@@ -3,7 +3,6 @@ import { resolve } from 'node:path';
 
 export const PLATFORM_PACKAGE_NAMES = Object.freeze([
   '@palladin/runtime-darwin-arm64',
-  '@palladin/runtime-darwin-x64',
   '@palladin/runtime-linux-arm64-gnu',
   '@palladin/runtime-linux-arm64-musl',
   '@palladin/runtime-linux-x64-gnu',
@@ -13,6 +12,7 @@ export const PLATFORM_PACKAGE_NAMES = Object.freeze([
 export const PUBLIC_PACKAGE_NAMES = Object.freeze([
   '@palladin/cli',
   ...PLATFORM_PACKAGE_NAMES,
+  '@palladin/runtime-darwin-x64',
   '@palladin/runtime-win32-arm64',
   '@palladin/runtime-win32-x64',
 ]);
