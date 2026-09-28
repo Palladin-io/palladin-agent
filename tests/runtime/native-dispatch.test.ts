@@ -65,25 +65,7 @@ function host(overrides: Partial<NativeDispatchHost> = {}): NativeDispatchHost {
         authenticodePublisher: 'CN=Palladin Test',
         authenticodeThumbprint: 'A'.repeat(40),
       } : {}),
-      policySequence: 1,
-      policySource: 'https://releases.palladin.io/agent/version-policy.json',
       sourceSha: request.sourceSha,
-      runtimeAllowed: true,
-      envelopeBase64: 'fixture',
-    } satisfies VerifiedArtifactBinding)),
-    loadBundledArtifactBinding: vi.fn(async (request) => ({
-      packageName: request.packageName,
-      version: request.version,
-      executableSha256: request.executableSha256,
-      workerExecutableSha256: 'c'.repeat(64),
-      ...(request.packageName.startsWith('@palladin/runtime-win32-') ? {
-        authenticodePublisher: 'CN=Palladin Test',
-        authenticodeThumbprint: 'A'.repeat(40),
-      } : {}),
-      policySequence: 1,
-      policySource: 'https://releases.palladin.io/agent/version-policy.json',
-      sourceSha: request.sourceSha,
-      runtimeAllowed: true,
       envelopeBase64: 'fixture',
     } satisfies VerifiedArtifactBinding)),
     prepareWindowsRuntime: vi.fn((source) => fakeWindowsLease(source.executable)),
@@ -360,19 +342,17 @@ describe('native runtime dispatcher', () => {
   });
 
   it.each(['--help', '-h', '--version', '-V', 'doctor'])(
-    'keeps exact identity-free diagnostic %s available during a policy outage',
+    'verifies the bundled signature for diagnostic %s',
     async (diagnostic) => {
       const child = childProcess();
       const fixture = host({
-        loadVerifiedArtifactBinding: vi.fn(async () => { throw new Error('offline'); }),
         spawnRuntime: vi.fn(() => child),
       });
       const result = launchNativeRuntime([diagnostic], fixture);
       await vi.waitFor(() => expect(fixture.spawnRuntime).toHaveBeenCalledOnce());
       child.emit('exit', 0, null);
       await expect(result).resolves.toBe(0);
-      expect(fixture.loadVerifiedArtifactBinding).not.toHaveBeenCalled();
-      expect(fixture.loadBundledArtifactBinding).toHaveBeenCalledOnce();
+      expect(fixture.loadVerifiedArtifactBinding).toHaveBeenCalledOnce();
     },
   );
 
@@ -384,14 +364,12 @@ describe('native runtime dispatcher', () => {
       platform: 'win32',
       architecture: 'x64',
       resolvePackageJson: vi.fn(() => windowsPackageJson),
-      loadVerifiedArtifactBinding: vi.fn(async () => { throw new Error('offline'); }),
       prepareWindowsRuntime: vi.fn(() => lease),
       spawnRuntime: vi.fn(() => child),
     });
     const result = launchNativeRuntime(['doctor'], fixture);
     await vi.waitFor(() => expect(lease.spawnLocked).toHaveBeenCalledOnce());
-    expect(fixture.loadVerifiedArtifactBinding).not.toHaveBeenCalled();
-    expect(fixture.loadBundledArtifactBinding).toHaveBeenCalledOnce();
+    expect(fixture.loadVerifiedArtifactBinding).toHaveBeenCalledOnce();
     expect(lease.verifyBeforeSpawn).toHaveBeenCalledOnce();
     expect(lease.spawnLocked).toHaveBeenCalledWith(['doctor'], {
       shell: false,
@@ -404,22 +382,6 @@ describe('native runtime dispatcher', () => {
     await expect(result).resolves.toBe(0);
   });
 
-  it.each([
-    [[]],
-    [['doctor', '--id', 'other']],
-    [['--help', 'doctor']],
-    [['--id', 'other', 'doctor']],
-  ])('does not broaden the policy-independent diagnostic allowlist: %j', async (args) => {
-    const fixture = host({
-      loadVerifiedArtifactBinding: vi.fn(async () => { throw new Error('offline'); }),
-    });
-    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    await expect(launchNativeRuntime(args, fixture)).resolves.toBe(1);
-    expect(fixture.loadVerifiedArtifactBinding).toHaveBeenCalledOnce();
-    expect(fixture.spawnRuntime).not.toHaveBeenCalled();
-    write.mockRestore();
-  });
-
   it.each(['--help', '-h', '--version', '-V', 'doctor'])(
     'never starts tampered native code for offline diagnostic %s',
     async (diagnostic) => {
@@ -429,7 +391,6 @@ describe('native runtime dispatcher', () => {
       const fixture = host({ hashFile });
       const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
       await expect(launchNativeRuntime([diagnostic], fixture)).resolves.toBe(1);
-      expect(fixture.loadBundledArtifactBinding).toHaveBeenCalledOnce();
       expect(fixture.spawnRuntime).not.toHaveBeenCalled();
       expect(write).toHaveBeenCalledWith(expect.stringContaining('integrity verification'));
       write.mockRestore();
@@ -547,40 +508,24 @@ describe('native runtime dispatcher', () => {
     await expect(launchNativeRuntime(['status'], fixture)).resolves.toBe(1);
     expect(fixture.loadVerifiedArtifactBinding).toHaveBeenCalledOnce();
     expect(fixture.spawnRuntime).not.toHaveBeenCalled();
-    expect(write).toHaveBeenCalledWith(expect.stringContaining('signed version policy'));
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('release signature'));
     write.mockRestore();
   });
 
-  it('blocks a signed-policy downgrade before creating a Windows cache entry or process', async () => {
+  it('rejects an unverified release signature before creating a Windows cache entry or process', async () => {
     const fixture = host({
       platform: 'win32',
       architecture: 'x64',
       resolvePackageJson: vi.fn(() => windowsPackageJson),
       loadVerifiedArtifactBinding: vi.fn(async () => {
-        throw new Error('version is below the signed security floor');
+        throw new Error('release signature is invalid');
       }),
     });
     const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     await expect(launchNativeRuntime(['mcp', 'serve'], fixture)).resolves.toBe(1);
     expect(fixture.prepareWindowsRuntime).not.toHaveBeenCalled();
     expect(fixture.spawnRuntime).not.toHaveBeenCalled();
-    expect(write).toHaveBeenCalledWith(expect.stringContaining('signed version policy'));
-    write.mockRestore();
-  });
-
-  it('honors a verified dynamic block before any identity-bearing spawn', async () => {
-    const fixture = host();
-    const defaultLoader = fixture.loadVerifiedArtifactBinding;
-    fixture.loadVerifiedArtifactBinding = vi.fn(async (request) => ({
-      ...(await defaultLoader(request)),
-      runtimeAllowed: false,
-    }));
-    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    await expect(launchNativeRuntime(['status'], fixture)).resolves.toBe(1);
-    expect(fixture.spawnRuntime).not.toHaveBeenCalled();
-    expect(write).toHaveBeenCalledWith(
-      'Error: Palladin native runtime version is blocked by signed version policy\n',
-    );
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('release signature'));
     write.mockRestore();
   });
 

@@ -52,8 +52,6 @@ function binding(version: string, executable: string): VerifiedArtifactBinding {
     workerExecutableSha256: 'c'.repeat(64),
     authenticodePublisher: 'CN=Palladin Test',
     authenticodeThumbprint: 'A'.repeat(40),
-    policySequence: 7,
-    policySource: 'https://releases.palladin.io/agent/version-policy.json',
     sourceSha: 'b'.repeat(40),
     envelopeBase64: 'fixture',
   };

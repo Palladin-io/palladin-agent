@@ -70,26 +70,17 @@ compat_state_hash=
 compat_policy_state_hash=
 
 seed_compatible_state() {
-  local agents_root broker_gid broker_uid policy_cache policy_digest system_policy_cache
+  local agents_root broker_gid broker_uid
   docker exec "$container" useradd --system --no-create-home --shell /usr/sbin/nologin "$compat_agent"
   docker exec "$container" /usr/lib/palladin/runtime/palladin-manage-agent-uid \
     authorize "$compat_agent" package-state https://api.stage.palladin.io --dedicated
   compat_uid=$(docker exec "$container" id -u "$compat_agent")
   compat_principal=$(docker exec "$container" sed -n 's/^principal=//p' "/etc/palladin/agents.d/$compat_uid")
   [[ $compat_principal =~ ^[0-9a-f]{32}$ ]]
-  policy_digest=$(docker exec "$container" sha256sum /version-policy.json | cut -d' ' -f1)
-  [[ $policy_digest =~ ^[0-9a-f]{64}$ ]]
-  system_policy_cache=/var/lib/palladin-runtime/v1/.policy.palladin-policy-cache-v1
-  docker exec "$container" install -d -m 0700 -o palladin-runtime -g palladin-runtime \
-    "$system_policy_cache"
-  docker exec "$container" install -m 0600 -o palladin-runtime -g palladin-runtime \
-    /version-policy.json "$system_policy_cache/1-$policy_digest.json"
+  docker exec "$container" install -m 0644 -o root -g root \
+    /version-policy.json /usr/lib/palladin/runtime/release-signature.json
   agents_root=/var/lib/palladin-runtime/v1/agents
   docker exec "$container" install -d -m 0700 -o palladin-runtime -g palladin-runtime "$agents_root"
-  policy_cache="$agents_root/.$compat_principal.palladin-policy-cache-v1"
-  docker exec "$container" install -d -m 0700 -o palladin-runtime -g palladin-runtime "$policy_cache"
-  docker exec "$container" install -m 0600 -o palladin-runtime -g palladin-runtime \
-    /version-policy.json "$policy_cache/1-$policy_digest.json"
   docker exec "$container" runuser -u "$compat_agent" -- \
     /usr/lib/palladin/runtime/palladin-linux-client init \
     | grep -F 'Palladin initialized: package-state'
@@ -105,7 +96,7 @@ seed_compatible_state() {
   compat_state_hash=$(docker exec "$container" sh -c \
     "find '/var/lib/palladin-runtime/v1/agents/$compat_principal' -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1")
   compat_policy_state_hash=$(docker exec "$container" sh -c \
-    "find /var/lib/palladin-runtime/v1/policy /var/lib/palladin-runtime/v1/.policy.palladin-policy-cache-v1 -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1")
+    "sha256sum /usr/lib/palladin/runtime/release-signature.json | cut -d' ' -f1")
 }
 
 verify_compatible_state() {
@@ -128,7 +119,7 @@ verify_compatible_state() {
     "find '/var/lib/palladin-runtime/v1/agents/$compat_principal' -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1")
   [[ $current_state_hash == "$compat_state_hash" ]]
   current_policy_state_hash=$(docker exec "$container" sh -c \
-    "find /var/lib/palladin-runtime/v1/policy /var/lib/palladin-runtime/v1/.policy.palladin-policy-cache-v1 -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1")
+    "sha256sum /usr/lib/palladin/runtime/release-signature.json | cut -d' ' -f1")
   [[ $current_policy_state_hash == "$compat_policy_state_hash" ]]
   docker exec "$container" runuser -u "$compat_agent" -- \
     node /source/packaging/linux/tests/mcp-stdio-smoke.mjs \

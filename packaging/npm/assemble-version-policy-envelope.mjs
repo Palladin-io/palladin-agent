@@ -23,7 +23,6 @@ const envelope = { signature, signed: payload };
 const canonical = canonicalizeVersionPolicyEnvelope(envelope);
 parseAndVerifyVersionPolicy(Buffer.from(canonical), {
   publicKeyBase64: required('public-key'),
-  source: 'https://releases.palladin.io/agent/version-policy.json',
 });
 writeFileSync(resolve(required('output')), canonical, { mode: 0o600 });
 

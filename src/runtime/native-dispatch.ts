@@ -13,7 +13,6 @@ import { posix as darwinPath, win32 as windowsPath } from 'node:path';
 
 import {
   loadBundledVerifiedArtifactBinding,
-  loadSystemVerifiedArtifactBinding,
   type VerifiedArtifactBinding,
   type VersionPolicyRequest,
 } from './version-policy.js';
@@ -53,8 +52,6 @@ const ELF64_PROGRAM_HEADER_BYTES = 56;
 const PT_INTERP = 3;
 const NATIVE_RUNTIME_VERSION = '0.0.1';
 
-class NativeRuntimeVersionBlockedError extends Error {}
-
 export interface NativeDispatchHost {
   platform: NodeJS.Platform;
   architecture: string;
@@ -65,7 +62,6 @@ export interface NativeDispatchHost {
   readPackageManifest(path: string): unknown;
   hashFile(path: string): string;
   loadVerifiedArtifactBinding(request: VersionPolicyRequest): Promise<VerifiedArtifactBinding>;
-  loadBundledArtifactBinding(request: VersionPolicyRequest): Promise<VerifiedArtifactBinding>;
   prepareWindowsRuntime(
     source: WindowsRuntimeSource,
     binding: VerifiedArtifactBinding,
@@ -189,7 +185,6 @@ export async function launchNativeRuntime(
     return 1;
   }
 
-  const policyIndependentDiagnostic = isPolicyIndependentDiagnostic(args);
   let binding: VerifiedArtifactBinding;
   try {
     const executableSha256 = host.hashFile(runtime.executable);
@@ -202,27 +197,15 @@ export async function launchNativeRuntime(
       executableSha256,
       sourceSha: RUNTIME_SOURCE_SHA,
     };
-    // Exact identity-free diagnostics may bypass a dynamic policy outage or
-    // revocation, but never artifact integrity. Their offline path still
-    // verifies the release-bundled signed binding and exact source hash.
-    binding = policyIndependentDiagnostic
-      ? await host.loadBundledArtifactBinding(request)
-      : await host.loadVerifiedArtifactBinding(request);
-    if (!policyIndependentDiagnostic && !binding.runtimeAllowed) {
-      throw new NativeRuntimeVersionBlockedError();
-    }
+    binding = await host.loadVerifiedArtifactBinding(request);
     assertExactBinding(
       runtime.packageName,
       executableSha256,
       binding,
-      !policyIndependentDiagnostic,
       workerExecutableSha256,
     );
-  } catch (error) {
-    const message = error instanceof NativeRuntimeVersionBlockedError
-      ? 'Error: Palladin native runtime version is blocked by signed version policy\n'
-      : 'Error: Palladin native runtime failed signed version policy verification\n';
-    process.stderr.write(message);
+  } catch {
+    process.stderr.write('Error: Palladin native runtime failed release signature verification\n');
     return 1;
   }
 
@@ -260,7 +243,7 @@ export async function launchNativeRuntime(
       windowsHide: true,
       env: host.platform === 'win32' ? process.env : {
         ...process.env,
-        // Public, owner-signed policy material. The process image actually
+        // Public, owner-signed release manifest. The process image actually
         // opened by the OS re-verifies this envelope and its own bytes before
         // any identity-bearing operation, closing the parent spawn TOCTOU.
         PALLADIN_VERSION_POLICY_ENVELOPE_BASE64: binding.envelopeBase64,
@@ -328,12 +311,10 @@ export async function spawnNativeProviderRuntime(
     sourceSha: RUNTIME_SOURCE_SHA,
   };
   const binding = await host.loadVerifiedArtifactBinding(request);
-  if (!binding.runtimeAllowed) throw new NativeRuntimeVersionBlockedError();
   assertExactBinding(
     runtime.packageName,
     executableSha256,
     binding,
-    true,
     workerExecutableSha256,
   );
 
@@ -399,12 +380,6 @@ export async function spawnNativeProviderRuntime(
   return child;
 }
 
-function isPolicyIndependentDiagnostic(args: readonly string[]): boolean {
-  return args.length === 1
-    && (args[0] === '--help' || args[0] === '-h' || args[0] === '--version'
-      || args[0] === '-V' || args[0] === 'doctor');
-}
-
 function systemHost(): NativeDispatchHost {
   const require = createRequire(import.meta.url);
   return {
@@ -416,8 +391,7 @@ function systemHost(): NativeDispatchHost {
     assertExecutable: (path) => accessSync(path, fsConstants.X_OK),
     readPackageManifest: (path) => JSON.parse(readFileSync(path, 'utf8')) as unknown,
     hashFile: sha256File,
-    loadVerifiedArtifactBinding: (request) => loadSystemVerifiedArtifactBinding(request),
-    loadBundledArtifactBinding: async (request) => loadBundledVerifiedArtifactBinding(request),
+    loadVerifiedArtifactBinding: (request) => Promise.resolve(loadBundledVerifiedArtifactBinding(request)),
     prepareWindowsRuntime: (source, binding) => prepareWindowsRuntimeCache(source, binding),
     spawnRuntime: (path, args, options) => spawn(path, [...args], options),
     addSignalHandler: (signal, handler) => process.on(signal, handler),
@@ -451,15 +425,13 @@ function assertExactBinding(
   packageName: string,
   executableSha256: string,
   binding: VerifiedArtifactBinding,
-  requireAllowed: boolean,
   workerExecutableSha256?: string,
 ): void {
   if (binding.packageName !== packageName || binding.version !== NATIVE_RUNTIME_VERSION
     || binding.executableSha256 !== executableSha256
     || (workerExecutableSha256 !== undefined
       && binding.workerExecutableSha256 !== workerExecutableSha256)
-    || binding.sourceSha !== RUNTIME_SOURCE_SHA
-    || (requireAllowed && !binding.runtimeAllowed)) {
+    || binding.sourceSha !== RUNTIME_SOURCE_SHA) {
     throw new Error('Palladin native runtime binding is invalid');
   }
 }

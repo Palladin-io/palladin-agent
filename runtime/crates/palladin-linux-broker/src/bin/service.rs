@@ -12,21 +12,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use palladin_core::profiles::ProfileRepository;
 use palladin_linux_broker::peer::{authenticate_peer, prepare_principal_profile_root};
 use palladin_linux_broker::protocol::{
     ClientFrame, MAX_STREAM_CHUNK_BYTES, OutputStream, PROTOCOL_VERSION, RejectionCode,
     ServerFrame, read_frame, release_identity_matches, validate_arguments, write_frame,
 };
-use palladin_linux_broker::store::LinuxBrokerSecretStore;
-use palladin_linux_broker::{
-    SOCKET_PATH, STATE_ROOT, SYSTEM_MASTER_KEY, SYSTEM_POLICY_ROOT, SYSTEM_WORKER,
-};
+use palladin_linux_broker::{SOCKET_PATH, STATE_ROOT, SYSTEM_WORKER};
 use palladin_platform::broker_browser::{
     BROKER_BROWSER_OPEN_ENV, MAX_BROKER_BROWSER_CONTROL_LINE_BYTES,
     decode_broker_browser_open_request, generate_broker_browser_open_binding,
 };
-use palladin_runtime::RuntimeService;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -45,7 +40,7 @@ const MAX_SESSION_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 
-type SystemPolicyService = RuntimeService<LinuxBrokerSecretStore>;
+const SYSTEM_RELEASE_MANIFEST: &str = "/usr/lib/palladin/runtime/release-signature.json";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -62,7 +57,6 @@ async fn run() -> Result<(), ServiceError> {
     #[cfg(target_os = "linux")]
     nix::sys::prctl::set_dumpable(false).map_err(|_| ServiceError::Identity)?;
     let listener = create_listener(Path::new(SOCKET_PATH))?;
-    let policy = Arc::new(system_policy_service()?);
     let sessions = Arc::new(Semaphore::new(MAX_CONCURRENT_SESSIONS));
     let per_uid = Arc::new(Mutex::new(HashMap::<u32, Arc<Semaphore>>::new()));
     loop {
@@ -72,10 +66,9 @@ async fn run() -> Result<(), ServiceError> {
             continue;
         };
         let per_uid = Arc::clone(&per_uid);
-        let policy = Arc::clone(&policy);
         tokio::spawn(async move {
             let _permit = permit;
-            if let Err(error) = handle(stream, per_uid, policy).await {
+            if let Err(error) = handle(stream, per_uid).await {
                 let _ = error;
             }
         });
@@ -85,7 +78,6 @@ async fn run() -> Result<(), ServiceError> {
 async fn handle(
     mut stream: UnixStream,
     per_uid: Arc<Mutex<HashMap<u32, Arc<Semaphore>>>>,
-    policy: Arc<SystemPolicyService>,
 ) -> Result<(), ServiceError> {
     let peer = match authenticate_peer(&stream) {
         Ok(peer) => peer,
@@ -180,20 +172,14 @@ async fn handle(
             return Ok(());
         }
     };
-    let mut child = match spawn_worker(
-        &arguments,
-        &profile_root,
-        &policy,
-        browser_open_binding.as_deref(),
-    )
-    .await
-    {
-        Ok(child) => child,
-        Err(_) => {
-            reject(stream, Some(request_id), RejectionCode::Unavailable).await;
-            return Ok(());
-        }
-    };
+    let mut child =
+        match spawn_worker(&arguments, &profile_root, browser_open_binding.as_deref()).await {
+            Ok(child) => child,
+            Err(_) => {
+                reject(stream, Some(request_id), RejectionCode::Unavailable).await;
+                return Ok(());
+            }
+        };
     write_frame(&mut stream, &ServerFrame::Accepted { request_id })
         .await
         .map_err(|_| ServiceError::Protocol)?;
@@ -214,15 +200,17 @@ async fn handle(
 async fn spawn_worker(
     arguments: &[String],
     profile_root: &Path,
-    policy: &SystemPolicyService,
     browser_open_binding: Option<&str>,
 ) -> Result<Child, ServiceError> {
     let mut worker = open_system_worker(Path::new(SYSTEM_WORKER))?;
     let worker_sha256 = sha256_open_file(&mut worker)?;
-    policy
-        .enforce_system_version_policy_for_worker_hash(env!("CARGO_PKG_VERSION"), &worker_sha256)
-        .await
-        .map_err(|_| ServiceError::WorkerPolicy)?;
+    let manifest = read_system_manifest(Path::new(SYSTEM_RELEASE_MANIFEST))?;
+    let envelope_base64 = palladin_runtime::version_policy::verify_manifest_for_worker_hash(
+        &manifest,
+        env!("CARGO_PKG_VERSION"),
+        &worker_sha256,
+    )
+    .map_err(|_| ServiceError::WorkerPolicy)?;
 
     // /proc/self/fd resolves the descriptor inherited by the child before
     // O_CLOEXEC closes it. The root-owned inode cannot be rewritten by the
@@ -239,6 +227,7 @@ async fn spawn_worker(
             "PATH",
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         )
+        .env("PALLADIN_VERSION_POLICY_ENVELOPE_BASE64", envelope_base64)
         .env("PALLADIN_LINUX_HARDENED", "1")
         .env("PALLADIN_LINUX_BROKER_ROOT", profile_root)
         .stdin(Stdio::piped())
@@ -253,36 +242,29 @@ async fn spawn_worker(
     Ok(child)
 }
 
-fn system_policy_service() -> Result<SystemPolicyService, ServiceError> {
-    ensure_system_policy_root(Path::new(SYSTEM_POLICY_ROOT))?;
-    let store =
-        LinuxBrokerSecretStore::new(Path::new(SYSTEM_POLICY_ROOT), Path::new(SYSTEM_MASTER_KEY))
-            .map_err(|_| ServiceError::WorkerPolicy)?;
-    let repository = ProfileRepository::new(Path::new(SYSTEM_POLICY_ROOT).to_path_buf())
+fn read_system_manifest(path: &Path) -> Result<Vec<u8>, ServiceError> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)
         .map_err(|_| ServiceError::WorkerPolicy)?;
-    let service = RuntimeService::new(repository, store);
-    service
-        .prepare_empty_state_for_version_policy()
-        .map_err(|_| ServiceError::WorkerPolicy)?;
-    Ok(service)
-}
-
-fn ensure_system_policy_root(path: &Path) -> Result<(), ServiceError> {
-    match fs::create_dir(path) {
-        Ok(()) => fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|_| ServiceError::WorkerPolicy)?,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(_) => return Err(ServiceError::WorkerPolicy),
-    }
-    let metadata = fs::symlink_metadata(path).map_err(|_| ServiceError::WorkerPolicy)?;
-    if !metadata.file_type().is_dir()
-        || metadata.file_type().is_symlink()
-        || metadata.uid() != nix::unistd::geteuid().as_raw()
-        || metadata.permissions().mode() & 0o777 != 0o700
+    let metadata = file.metadata().map_err(|_| ServiceError::WorkerPolicy)?;
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.permissions().mode() & 0o022 != 0
+        || metadata.len() == 0
+        || metadata.len() > 64 * 1024
     {
         return Err(ServiceError::WorkerPolicy);
     }
-    Ok(())
+    let mut bytes = Vec::new();
+    file.take(64 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ServiceError::WorkerPolicy)?;
+    if bytes.len() as u64 != metadata.len() {
+        return Err(ServiceError::WorkerPolicy);
+    }
+    Ok(bytes)
 }
 
 fn open_system_worker(path: &Path) -> Result<File, ServiceError> {
@@ -733,7 +715,7 @@ enum ServiceError {
     Protocol,
     #[error("the Linux broker worker failed")]
     Worker,
-    #[error("the Linux system worker failed signed version policy verification")]
+    #[error("the Linux system worker failed release signature verification")]
     WorkerPolicy,
     #[error("the Linux broker output transport failed")]
     Output,
