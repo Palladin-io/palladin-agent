@@ -169,6 +169,8 @@ docker exec "$container" /usr/lib/palladin/runtime/palladin-manage-agent-uid \
   revoke-purge "$compat_agent" --confirm-purge
 docker exec "$container" grep -Fxq 'status=revoked' "/etc/palladin/agents.d/$compat_uid"
 docker exec "$container" test ! -e "/var/lib/palladin-runtime/v1/agents/$compat_principal"
+# This fixture owns the public manifest; the unsigned test packages do not include it.
+docker exec "$container" rm /usr/lib/palladin/runtime/release-signature.json
 case "$family" in
   ubuntu|debian)
     docker exec "$container" apt-get purge --yes palladin-runtime
