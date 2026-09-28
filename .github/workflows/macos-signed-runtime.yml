@@ -45,10 +45,13 @@ concurrency:
 jobs:
   authorize:
     name: Autoryzacja właściciela
-    if: github.actor == 'patryk-roguszewski' && (inputs.release_pipeline != true || github.ref_type == 'tag')
+    if: github.actor == 'patryk-roguszewski' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Potwierdź ręczne uruchomienie i niezmienny SHA
         env:
           ACTOR: ${{ github.actor }}
@@ -61,15 +64,7 @@ jobs:
           MARKETING_VERSION: ${{ inputs.marketing_version }}
         run: |
           set -euo pipefail
-          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          if [[ "$RELEASE_PIPELINE" == "true" ]]; then
-            test "$REF_TYPE" = "tag"
-            test "$REF_NAME" = "v$MARKETING_VERSION"
-            test "$SOURCE_SHA" = "$TAG_SHA"
-          else
-            test "$EVENT_NAME" = "workflow_dispatch"
-            test "$ACTOR" = "patryk-roguszewski"
-          fi
+          bash packaging/macos/scripts/verify-signing-ref.sh
 
   build-native:
     name: Zbuduj ${{ matrix.architecture }}

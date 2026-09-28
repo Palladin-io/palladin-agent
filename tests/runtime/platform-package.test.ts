@@ -44,7 +44,6 @@ describe('public npm package boundary', () => {
     expect(launcher).not.toContain('runExtensionInject');
     expect(root.optionalDependencies).toEqual({
       '@palladin/runtime-darwin-arm64': root.version,
-      '@palladin/runtime-darwin-x64': root.version,
       '@palladin/runtime-linux-arm64-gnu': root.version,
       '@palladin/runtime-linux-arm64-musl': root.version,
       '@palladin/runtime-linux-x64-gnu': root.version,

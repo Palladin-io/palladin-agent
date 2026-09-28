@@ -16,7 +16,6 @@ const FIRST_RELEASE_STEPS = [
 ];
 const FIRST_RELEASE_TARGETS = [
   ['macos-arm64', 'macos', 'arm64', 'macos', 'none', ['agent-npm', 'platform-npm', 'signed-runtime']],
-  ['macos-x64', 'macos', 'x64', 'macos', 'none', ['agent-npm', 'platform-npm', 'signed-runtime']],
   ['ubuntu-24.04-arm64', 'linux', 'arm64', 'ubuntu-24.04', 'gnu', ['agent-npm', 'platform-npm']],
   ['ubuntu-24.04-x64', 'linux', 'x64', 'ubuntu-24.04', 'gnu', ['agent-npm', 'platform-npm']],
   ['alpine-3.22-arm64', 'linux', 'arm64', 'alpine-3.22', 'musl', ['agent-npm', 'platform-npm']],
@@ -112,7 +111,7 @@ export function validateManifest(input) {
   unique(steps, 'id', 'manifest.steps');
   const upgradeSteps = [
     'install', 'enroll', 'mcp', 'update', 'concurrent-mcp', 'repair',
-    'downgrade-rejected', 'rollback', 'reinstall', 'purge', 'uninstall',
+    'tamper-rejected', 'rollback', 'reinstall', 'purge', 'uninstall',
   ];
   if (canonicalJson(steps.map((step) => step.id)) !== canonicalJson(firstRelease ? FIRST_RELEASE_STEPS : upgradeSteps)) fail('manifest.steps has an invalid lifecycle');
   steps.forEach((step, index) => {
@@ -210,7 +209,7 @@ function normalizeStep(input, runId, runAttempt, targetId, expected, previous, v
     'stepId', 'order', 'result', 'observedAt', 'evidenceRef',
     'versionBefore', 'versionAfter', 'identityFingerprintBefore', 'identityFingerprintAfter',
     'grantSetDigestBefore', 'grantSetDigestAfter', 'rollbackMode',
-    'concurrentMcpVerified', 'repairVerified', 'downgradeRejected', 'purgeVerified',
+    'concurrentMcpVerified', 'repairVerified', 'tamperRejected', 'purgeVerified',
   ], label);
   if (step.stepId !== expected.id || step.order !== expected.order) fail(`${label} is out of order`);
   if (!['passed', 'failed'].includes(step.result)) fail(`${label}.result is invalid`);
@@ -230,11 +229,11 @@ function normalizeStep(input, runId, runAttempt, targetId, expected, previous, v
     rollbackMode: step.rollbackMode,
     concurrentMcpVerified: step.concurrentMcpVerified,
     repairVerified: step.repairVerified,
-    downgradeRejected: step.downgradeRejected,
+    tamperRejected: step.tamperRejected,
     purgeVerified: step.purgeVerified,
   };
   if (normalized.rollbackMode !== null && normalized.rollbackMode !== 'forward-rebuild') fail(`${label}.rollbackMode is invalid`);
-  for (const field of ['concurrentMcpVerified', 'repairVerified', 'downgradeRejected', 'purgeVerified']) {
+  for (const field of ['concurrentMcpVerified', 'repairVerified', 'tamperRejected', 'purgeVerified']) {
     if (typeof normalized[field] !== 'boolean') fail(`${label}.${field} must be boolean`);
   }
   if (previous !== undefined) {
@@ -248,7 +247,7 @@ function normalizeStep(input, runId, runAttempt, targetId, expected, previous, v
     }
   }
   const noFlags = () => !normalized.concurrentMcpVerified && !normalized.repairVerified
-    && !normalized.downgradeRejected && !normalized.purgeVerified;
+    && !normalized.tamperRejected && !normalized.purgeVerified;
   const initialVersion = versions.baseline ?? versions.candidate;
   const finalVersion = versions.rollback ?? versions.candidate;
   const sameState = () => {
@@ -280,17 +279,17 @@ function normalizeStep(input, runId, runAttempt, targetId, expected, previous, v
   } else if (step.stepId === 'concurrent-mcp') {
     if (normalized.versionAfter !== versions.candidate || normalized.rollbackMode !== null
       || !normalized.concurrentMcpVerified || normalized.repairVerified
-      || normalized.downgradeRejected || normalized.purgeVerified) fail(`${label} concurrent MCP state is invalid`);
+      || normalized.tamperRejected || normalized.purgeVerified) fail(`${label} concurrent MCP state is invalid`);
     sameState();
   } else if (step.stepId === 'repair') {
     if (normalized.versionAfter !== versions.candidate || normalized.rollbackMode !== null
       || normalized.concurrentMcpVerified || !normalized.repairVerified
-      || normalized.downgradeRejected || normalized.purgeVerified) fail(`${label} repair state is invalid`);
+      || normalized.tamperRejected || normalized.purgeVerified) fail(`${label} repair state is invalid`);
     sameState();
-  } else if (step.stepId === 'downgrade-rejected') {
+  } else if (step.stepId === 'tamper-rejected') {
     if (normalized.versionAfter !== versions.candidate || normalized.rollbackMode !== null
       || normalized.concurrentMcpVerified || normalized.repairVerified
-      || !normalized.downgradeRejected || normalized.purgeVerified) fail(`${label} downgrade rejection state is invalid`);
+      || !normalized.tamperRejected || normalized.purgeVerified) fail(`${label} tamper rejection state is invalid`);
     sameState();
   } else if (step.stepId === 'rollback') {
     if (normalized.versionBefore !== versions.candidate || normalized.versionAfter !== versions.rollback
@@ -305,7 +304,7 @@ function normalizeStep(input, runId, runAttempt, targetId, expected, previous, v
     if (normalized.versionAfter !== finalVersion
       || normalized.identityFingerprintAfter !== null || normalized.grantSetDigestAfter !== null
       || normalized.rollbackMode !== null || normalized.concurrentMcpVerified || normalized.repairVerified
-      || normalized.downgradeRejected || !normalized.purgeVerified) fail(`${label} purge state is invalid`);
+      || normalized.tamperRejected || !normalized.purgeVerified) fail(`${label} purge state is invalid`);
   } else if (step.stepId === 'uninstall') {
     if (normalized.versionBefore !== finalVersion || normalized.versionAfter !== null
       || normalized.identityFingerprintBefore !== null || normalized.identityFingerprintAfter !== null

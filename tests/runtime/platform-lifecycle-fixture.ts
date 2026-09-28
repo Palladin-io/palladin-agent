@@ -48,7 +48,7 @@ export function lifecycleFixture() {
       rollbackMode: definition.id === 'rollback' ? 'forward-rebuild' : null,
       concurrentMcpVerified: definition.id === 'concurrent-mcp',
       repairVerified: definition.id === 'repair',
-      downgradeRejected: definition.id === 'downgrade-rejected',
+      tamperRejected: definition.id === 'tamper-rejected',
       purgeVerified: definition.id === 'purge',
     };
   });

@@ -9,7 +9,7 @@
     { "id": "update", "order": 4 },
     { "id": "concurrent-mcp", "order": 5 },
     { "id": "repair", "order": 6 },
-    { "id": "downgrade-rejected", "order": 7 },
+    { "id": "tamper-rejected", "order": 7 },
     { "id": "rollback", "order": 8 },
     { "id": "reinstall", "order": 9 },
     { "id": "purge", "order": 10 },

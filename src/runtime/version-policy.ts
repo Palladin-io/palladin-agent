@@ -3,19 +3,15 @@ import { createPublicKey, verify as verifySignature } from 'node:crypto';
 import {
   VERSION_POLICY_BUNDLE_BASE64,
   VERSION_POLICY_PUBLIC_KEY_BASE64,
-  VERSION_POLICY_SOURCE,
 } from './version-policy-build.js';
 
-const POLICY_SCHEMA_VERSION = 1;
+const POLICY_SCHEMA_VERSION = 2;
 const MAX_POLICY_BYTES = 64 * 1024;
-const MAX_POLICY_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
-const CLOCK_SKEW_MS = 5 * 60 * 1000;
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 const EXACT_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SOURCE_SHA = /^[0-9a-f]{40}$/;
 const THUMBPRINT = /^(?:[0-9A-F]{40}|[0-9A-F]{64})$/;
-const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const PACKAGE_NAME = /^@palladin\/(?:agent|runtime-(?:darwin|linux|win32)-[a-z0-9-]+)$/;
 
 export interface VersionPolicyArtifact {
@@ -29,14 +25,7 @@ export interface VersionPolicyArtifact {
 }
 
 export interface VersionPolicyPayload {
-  schemaVersion: 1;
-  sequence: number;
-  source: string;
-  issuedAt: string;
-  expiresAt: string;
-  minimumVersion: string;
-  recommendedVersion: string;
-  blockedVersions: string[];
+  schemaVersion: 2;
   artifacts: VersionPolicyArtifact[];
 }
 
@@ -46,10 +35,6 @@ export interface VersionPolicyEnvelope {
 }
 
 export interface VerifiedArtifactBinding extends VersionPolicyArtifact {
-  policySequence: number;
-  policySource: string;
-  /** Advisory only. The native secure-state gate is authoritative. */
-  runtimeAllowed: boolean;
   envelopeBase64: string;
 }
 
@@ -60,96 +45,14 @@ export interface VersionPolicyRequest {
   sourceSha: string;
 }
 
-export interface VersionPolicyLoaderOptions {
-  fetch?: typeof globalThis.fetch;
-  now?: Date;
-  publicKeyBase64?: string;
-  source?: string;
-  timeoutMs?: number;
-  /** Public bundled/cache candidates. Native secure state remains authoritative for rollback. */
-  offlineEnvelopes?: readonly Uint8Array[];
-}
-
 export class VersionPolicyError extends Error {
-  public constructor(message = 'Palladin version policy verification failed') {
+  public constructor(message = 'Palladin release signature verification failed') {
     super(message);
     this.name = 'VersionPolicyError';
   }
 }
 
-export async function loadSystemVerifiedArtifactBinding(
-  request: VersionPolicyRequest,
-  options: VersionPolicyLoaderOptions = {},
-): Promise<VerifiedArtifactBinding> {
-  const source = options.source ?? VERSION_POLICY_SOURCE;
-  const publicKey = options.publicKeyBase64 ?? VERSION_POLICY_PUBLIC_KEY_BASE64;
-  const fetchPolicy = options.fetch ?? globalThis.fetch;
-  const candidates = [...(options.offlineEnvelopes ?? systemBundledPolicy())];
-  if (fetchPolicy !== undefined) {
-    try {
-      const timeout = AbortSignal.timeout(options.timeoutMs ?? 5_000);
-      const response = await fetchPolicy(source, {
-        method: 'GET',
-        redirect: 'error',
-        cache: 'no-store',
-        credentials: 'omit',
-        headers: { accept: 'application/json' },
-        signal: timeout,
-      });
-      if (!response.ok || response.url !== source) throw new VersionPolicyError();
-      const declaredLength = response.headers.get('content-length');
-      if (declaredLength !== null && (!/^\d+$/.test(declaredLength)
-        || Number(declaredLength) > MAX_POLICY_BYTES)) throw new VersionPolicyError();
-      const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim();
-      if (contentType !== 'application/json') throw new VersionPolicyError();
-      const bytes = await readBoundedBody(response);
-      candidates.push(bytes);
-    } catch {
-      // A still-valid signed bundled/cache candidate may provide bounded offline use.
-    }
-  }
-
-  const verified: Array<{ envelope: VersionPolicyEnvelope; bytes: Uint8Array }> = [];
-  for (const bytes of candidates) {
-    try {
-      const envelope = parseAndVerifyVersionPolicy(bytes, {
-        publicKeyBase64: publicKey,
-        source,
-        now: options.now,
-      });
-      verified.push({ envelope, bytes });
-    } catch {
-      // Invalid public candidates are ignored; absence of a valid candidate fails closed below.
-    }
-  }
-  verified.sort((left, right) => left.envelope.signed.sequence - right.envelope.signed.sequence);
-  const selected = verified.at(-1);
-  if (selected === undefined) throw new VersionPolicyError();
-  if (verified.some((candidate) => candidate !== selected
-    && candidate.envelope.signed.sequence === selected.envelope.signed.sequence
-    && !Buffer.from(candidate.bytes).equals(Buffer.from(selected.bytes)))) {
-    throw new VersionPolicyError();
-  }
-  const { envelope, bytes } = selected;
-  const artifact = findArtifact(envelope.signed, request.packageName, request.version);
-  if (artifact.executableSha256 !== request.executableSha256
-    || artifact.sourceSha !== request.sourceSha) throw new VersionPolicyError();
-  return {
-    ...artifact,
-    policySequence: envelope.signed.sequence,
-    policySource: envelope.signed.source,
-    runtimeAllowed: versionAllowed(envelope.signed, request.version),
-    sourceSha: artifact.sourceSha,
-    envelopeBase64: Buffer.from(bytes).toString('base64'),
-  };
-}
-
-/**
- * Offline artifact-integrity gate for help/version/doctor. It intentionally ignores
- * dynamic revocation and freshness, but never skips the embedded signature or exact
- * package/version/source/hash binding. Dynamic native policy remains authoritative
- * before any identity-bearing command.
- */
+/** Every launch verifies the immutable signed manifest shipped with this exact release. */
 export function loadBundledVerifiedArtifactBinding(
   request: VersionPolicyRequest,
 ): VerifiedArtifactBinding {
@@ -157,53 +60,19 @@ export function loadBundledVerifiedArtifactBinding(
   if (bytes === undefined) throw new VersionPolicyError();
   return verifyArtifactIntegrityBinding(bytes, request, {
     publicKeyBase64: VERSION_POLICY_PUBLIC_KEY_BASE64,
-    source: VERSION_POLICY_SOURCE,
   });
 }
 
 export function verifyArtifactIntegrityBinding(
   bytes: Uint8Array,
   request: VersionPolicyRequest,
-  options: { publicKeyBase64: string; source: string },
+  options: { publicKeyBase64: string },
 ): VerifiedArtifactBinding {
-  const envelope = parseAndVerifyVersionPolicyInternal(bytes, {
-    ...options,
-    enforceFreshness: false,
-  });
-  const artifact = findArtifact(envelope.signed, request.packageName, request.version);
+  const envelope = parseAndVerifyVersionPolicy(bytes, options);
+  const artifact = selectArtifact(envelope.signed, request.packageName, request.version);
   if (artifact.executableSha256 !== request.executableSha256
     || artifact.sourceSha !== request.sourceSha) throw new VersionPolicyError();
-  return {
-    ...artifact,
-    policySequence: envelope.signed.sequence,
-    policySource: envelope.signed.source,
-    runtimeAllowed: true,
-    envelopeBase64: Buffer.from(bytes).toString('base64'),
-  };
-}
-
-async function readBoundedBody(response: Response): Promise<Buffer> {
-  if (response.body === null) throw new VersionPolicyError();
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      length += chunk.value.byteLength;
-      if (length > MAX_POLICY_BYTES) {
-        await reader.cancel();
-        throw new VersionPolicyError();
-      }
-      chunks.push(chunk.value);
-    }
-  } catch {
-    await reader.cancel().catch(() => undefined);
-    throw new VersionPolicyError();
-  }
-  if (length === 0) throw new VersionPolicyError();
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), length);
+  return { ...artifact, envelopeBase64: Buffer.from(bytes).toString('base64') };
 }
 
 function systemBundledPolicy(): readonly Uint8Array[] {
@@ -220,31 +89,7 @@ function systemBundledPolicy(): readonly Uint8Array[] {
 
 export function parseAndVerifyVersionPolicy(
   bytes: Uint8Array,
-  options: {
-    publicKeyBase64: string;
-    source: string;
-    now?: Date;
-  },
-): VersionPolicyEnvelope {
-  return parseAndVerifyVersionPolicyInternal(bytes, { ...options, enforceFreshness: true });
-}
-
-/** Administrative verification for monotonic renewal after expiry. Runtime callers must not use it. */
-export function parseAndVerifyHistoricalVersionPolicy(
-  bytes: Uint8Array,
-  options: { publicKeyBase64: string; source: string },
-): VersionPolicyEnvelope {
-  return parseAndVerifyVersionPolicyInternal(bytes, { ...options, enforceFreshness: false });
-}
-
-function parseAndVerifyVersionPolicyInternal(
-  bytes: Uint8Array,
-  options: {
-    publicKeyBase64: string;
-    source: string;
-    now?: Date;
-    enforceFreshness: boolean;
-  },
+  options: { publicKeyBase64: string },
 ): VersionPolicyEnvelope {
   if (bytes.length === 0 || bytes.length > MAX_POLICY_BYTES) throw new VersionPolicyError();
   let candidate: unknown;
@@ -257,12 +102,7 @@ function parseAndVerifyVersionPolicyInternal(
   if (Buffer.from(bytes).toString('utf8') !== canonicalizeVersionPolicyEnvelope(envelope)) {
     throw new VersionPolicyError();
   }
-  validatePayload(
-    envelope.signed,
-    options.source,
-    options.now ?? new Date(),
-    options.enforceFreshness,
-  );
+  validatePayloadShape(envelope.signed);
   const publicKey = decodeExactBase64(options.publicKeyBase64, 32);
   if (publicKey.every((byte) => byte === 0)) throw new VersionPolicyError();
   const signature = decodeExactBase64(envelope.signature, 64);
@@ -305,29 +145,11 @@ export function canonicalizeVersionPolicyPayload(payload: VersionPolicyPayload):
   });
   return JSON.stringify({
     artifacts,
-    blockedVersions: payload.blockedVersions,
-    expiresAt: payload.expiresAt,
-    issuedAt: payload.issuedAt,
-    minimumVersion: payload.minimumVersion,
-    recommendedVersion: payload.recommendedVersion,
     schemaVersion: payload.schemaVersion,
-    sequence: payload.sequence,
-    source: payload.source,
   });
 }
 
 export function selectArtifact(
-  policy: VersionPolicyPayload,
-  packageName: string,
-  version: string,
-): VersionPolicyArtifact {
-  if (!versionAllowed(policy, version)) {
-    throw new VersionPolicyError('This Palladin runtime version is blocked by signed policy');
-  }
-  return findArtifact(policy, packageName, version);
-}
-
-function findArtifact(
   policy: VersionPolicyPayload,
   packageName: string,
   version: string,
@@ -339,11 +161,6 @@ function findArtifact(
   return matches[0] as VersionPolicyArtifact;
 }
 
-function versionAllowed(policy: VersionPolicyPayload, version: string): boolean {
-  return isExactVersion(version) && compareVersions(version, policy.minimumVersion) >= 0
-    && !policy.blockedVersions.includes(version);
-}
-
 function parseEnvelope(value: unknown): VersionPolicyEnvelope {
   const object = exactObject(value, ['signature', 'signed']);
   if (typeof object.signature !== 'string') throw new VersionPolicyError();
@@ -352,22 +169,10 @@ function parseEnvelope(value: unknown): VersionPolicyEnvelope {
 }
 
 function parsePayload(value: unknown): VersionPolicyPayload {
-  const object = exactObject(value, [
-    'artifacts', 'blockedVersions', 'expiresAt', 'issuedAt', 'minimumVersion',
-    'recommendedVersion', 'schemaVersion', 'sequence', 'source',
-  ]);
-  if (!Array.isArray(object.artifacts) || !Array.isArray(object.blockedVersions)) {
-    throw new VersionPolicyError();
-  }
+  const object = exactObject(value, ['artifacts', 'schemaVersion']);
+  if (!Array.isArray(object.artifacts)) throw new VersionPolicyError();
   const payload = {
     schemaVersion: object.schemaVersion,
-    sequence: object.sequence,
-    source: object.source,
-    issuedAt: object.issuedAt,
-    expiresAt: object.expiresAt,
-    minimumVersion: object.minimumVersion,
-    recommendedVersion: object.recommendedVersion,
-    blockedVersions: [...object.blockedVersions],
     artifacts: object.artifacts.map(parseArtifact),
   };
   validatePayloadShape(payload);
@@ -401,49 +206,14 @@ function parseArtifact(value: unknown): VersionPolicyArtifact {
   };
 }
 
-function validatePayload(
-  payload: VersionPolicyPayload,
-  expectedSource: string,
-  now: Date,
-  enforceFreshness: boolean,
-): void {
-  validatePayloadShape(payload);
-  if (payload.source !== expectedSource) throw new VersionPolicyError();
-  const issued = parseTimestamp(payload.issuedAt);
-  const expires = parseTimestamp(payload.expiresAt);
-  const nowMs = now.getTime();
-  if (expires <= issued || expires - issued > MAX_POLICY_LIFETIME_MS
-    || (enforceFreshness && (!Number.isFinite(nowMs) || issued > nowMs + CLOCK_SKEW_MS
-      || expires <= nowMs))) {
-    throw new VersionPolicyError();
-  }
-}
-
 function validatePayloadShape(value: unknown): asserts value is VersionPolicyPayload {
   if (!isRecord(value)
-    || Object.keys(value).sort().join('\0') !== [
-      'artifacts', 'blockedVersions', 'expiresAt', 'issuedAt', 'minimumVersion',
-      'recommendedVersion', 'schemaVersion', 'sequence', 'source',
-    ].sort().join('\0')
+    || Object.keys(value).sort().join('\0') !== ['artifacts', 'schemaVersion'].sort().join('\0')
     || value.schemaVersion !== POLICY_SCHEMA_VERSION
-    || !Number.isSafeInteger(value.sequence) || (value.sequence as number) < 1
-    || typeof value.source !== 'string'
-    || typeof value.issuedAt !== 'string' || typeof value.expiresAt !== 'string'
-    || typeof value.minimumVersion !== 'string' || !Array.isArray(value.blockedVersions)
-    || typeof value.recommendedVersion !== 'string'
-    || !Array.isArray(value.artifacts)
-    || !isExactVersion(value.minimumVersion)
-    || !isExactVersion(value.recommendedVersion) || value.artifacts.length === 0) {
+    || !Array.isArray(value.artifacts) || value.artifacts.length === 0) {
     throw new VersionPolicyError();
   }
-  const blocked = value.blockedVersions;
-  if (blocked.some((version) => typeof version !== 'string' || !isExactVersion(version))
-    || !strictlySorted(blocked as string[])) throw new VersionPolicyError();
   const artifacts = value.artifacts as VersionPolicyArtifact[];
-  if (compareVersions(value.recommendedVersion, value.minimumVersion) < 0
-    || (value.blockedVersions as string[]).includes(value.recommendedVersion)) {
-    throw new VersionPolicyError();
-  }
   let previous = '';
   for (const artifact of artifacts) {
     if (!isRecord(artifact)) throw new VersionPolicyError();
@@ -476,25 +246,6 @@ function validatePayloadShape(value: unknown): asserts value is VersionPolicyPay
   }
 }
 
-function parseTimestamp(value: string): number {
-  if (!UTC_TIMESTAMP.test(value)) throw new VersionPolicyError();
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value.replace('Z', '.000Z')) {
-    throw new VersionPolicyError();
-  }
-  return parsed;
-}
-
-function compareVersions(left: string, right: string): number {
-  const leftParts = left.split('.').map(Number);
-  const rightParts = right.split('.').map(Number);
-  for (let index = 0; index < 3; index += 1) {
-    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
-    if (difference !== 0) return Math.sign(difference);
-  }
-  return 0;
-}
-
 function isExactVersion(value: string): boolean {
   if (!EXACT_VERSION.test(value)) return false;
   return value.split('.').every((part) => Number.isSafeInteger(Number(part)));
@@ -522,8 +273,4 @@ function exactObject(value: unknown, expectedKeys: string[]): Record<string, unk
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     && Object.getPrototypeOf(value) === Object.prototype;
-}
-
-function strictlySorted(values: string[]): boolean {
-  return values.every((value, index) => index === 0 || (values[index - 1] ?? '') < value);
 }

@@ -124,7 +124,7 @@ async fn main() -> ExitCode {
             env!("CARGO_PKG_VERSION"),
         ) {
             Ok(()) => {
-                println!("Release policy verified.");
+                println!("Release signature verified.");
                 ExitCode::SUCCESS
             }
             Err(error) => fail(&error.to_string()),
@@ -153,13 +153,7 @@ async fn main() -> ExitCode {
 
     if requires_version_policy(&cli.command) {
         if palladin_runtime::version_policy::system_version_policy_configured() {
-            if let Err(error) = service.prepare_empty_state_for_version_policy() {
-                return fail(&error.to_string());
-            }
-            if let Err(error) = service
-                .enforce_system_version_policy(env!("CARGO_PKG_VERSION"))
-                .await
-            {
+            if let Err(error) = service.enforce_system_version_policy(env!("CARGO_PKG_VERSION")) {
                 return fail(&error.to_string());
             }
         } else if !cfg!(debug_assertions) {
@@ -229,11 +223,9 @@ async fn chrome_native_host_main(
     };
     let service = RuntimeService::new(repository, secret_store);
     if palladin_runtime::version_policy::system_version_policy_configured() {
-        if service.prepare_empty_state_for_version_policy().is_err()
-            || service
-                .enforce_system_version_policy(env!("CARGO_PKG_VERSION"))
-                .await
-                .is_err()
+        if service
+            .enforce_system_version_policy(env!("CARGO_PKG_VERSION"))
+            .is_err()
         {
             return ExitCode::from(EXIT_FAILURE);
         }

@@ -30,7 +30,7 @@ concurrency:
 jobs:
   authorize:
     name: Authorize immutable physical test inputs
-    if: github.actor == 'patryk-roguszewski' && github.ref == 'refs/heads/main'
+    if: github.actor == 'patryk-roguszewski' && github.ref == 'refs/tags/v0.0.1'
     runs-on: ubuntu-latest
     environment: lifecycle-qa
     timeout-minutes: 15
@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF" = "refs/tags/$CANDIDATE_TAG"
           test "$CONFIRMATION" = 'run physical lifecycle gate'
           test "$CANDIDATE_SHA" = "$GITHUB_SHA"
           test "$CANDIDATE_VERSION" = 0.0.1
@@ -106,8 +106,6 @@ jobs:
         include:
           - target: macos-arm64
             runner: '["self-hosted","palladin-lifecycle","macos","arm64"]'
-          - target: macos-x64
-            runner: '["self-hosted","palladin-lifecycle","macos","x64"]'
     runs-on: ${{ fromJSON(matrix.runner) }}
     environment: lifecycle-qa
     timeout-minutes: 90
@@ -204,7 +202,7 @@ jobs:
         with: { name: 'lifecycle-${{ matrix.target }}', path: '${{ runner.temp }}/lifecycle-${{ matrix.target }}.json', if-no-files-found: error, retention-days: 7 }
 
   aggregate:
-    name: Aggregate all six first-release physical shards
+    name: Aggregate all five first-release physical shards
     if: always() && github.actor == 'patryk-roguszewski'
     needs: [authorize, macos, linux]
     runs-on: ubuntu-latest
@@ -223,7 +221,7 @@ jobs:
       - name: Generate and validate the fail-closed report
         run: |
           set -euo pipefail
-          test "$(find "$RUNNER_TEMP/lifecycle-shards" -maxdepth 1 -type f -name 'lifecycle-*.json' | wc -l | tr -d ' ')" = 6
+          test "$(find "$RUNNER_TEMP/lifecycle-shards" -maxdepth 1 -type f -name 'lifecycle-*.json' | wc -l | tr -d ' ')" = 5
           node security/lifecycle/aggregate-shards.mjs --manifest security/lifecycle/first-release-manifest.json --shards "$RUNNER_TEMP/lifecycle-shards" --source-sha '${{ needs.authorize.outputs.source_sha }}' --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --output "$RUNNER_TEMP/lifecycle-evidence.json"
           node security/lifecycle/report.mjs generate --manifest security/lifecycle/first-release-manifest.json --evidence "$RUNNER_TEMP/lifecycle-evidence.json" --source-sha '${{ needs.authorize.outputs.source_sha }}' --json "$RUNNER_TEMP/lifecycle-report.json" --markdown "$RUNNER_TEMP/lifecycle-report.md"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

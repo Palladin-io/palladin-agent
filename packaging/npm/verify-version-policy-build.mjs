@@ -22,11 +22,9 @@ if (publicKey === undefined || sourceSha === undefined || bundle === undefined |
 
 const envelope = parseAndVerifyVersionPolicy(readFileSync(resolve(bundle)), {
   publicKeyBase64: publicKey,
-  source: 'https://releases.palladin.io/agent/version-policy.json',
 });
 const expected = [
   '@palladin/runtime-darwin-arm64',
-  '@palladin/runtime-darwin-x64',
   '@palladin/runtime-linux-arm64-gnu',
   '@palladin/runtime-linux-arm64-musl',
   '@palladin/runtime-linux-x64-gnu',

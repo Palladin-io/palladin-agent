@@ -50,7 +50,7 @@ describe('Windows hardened packaging contract', () => {
     const dispatcher = read('src/runtime/native-dispatch.ts');
     const cache = read('src/runtime/windows-runtime-cache.ts');
     const workflow = read('.github/workflows/windows-signed-runtime.yml');
-    expect(dispatcher).toContain('loadSystemVerifiedArtifactBinding');
+    expect(dispatcher).toContain('loadBundledVerifiedArtifactBinding');
     expect(dispatcher).toContain('windowsLease.verifyBeforeSpawn()');
     expect(cache).toContain('\\\\?\\\\GLOBALROOT\\\\SystemRoot');
     expect(cache).toContain("sameFileIdentity(root, SYSTEM_ROOT, 'directory')");

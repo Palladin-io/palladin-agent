@@ -471,7 +471,7 @@ function step(run, id, versionBefore, versionAfter, identityBefore, identityAfte
     rollbackMode: flags.rollbackMode ?? null,
     concurrentMcpVerified: flags.concurrentMcpVerified ?? false,
     repairVerified: flags.repairVerified ?? false,
-    downgradeRejected: flags.downgradeRejected ?? false,
+    tamperRejected: flags.tamperRejected ?? false,
     purgeVerified: flags.purgeVerified ?? false,
   };
 }
@@ -543,14 +543,22 @@ export async function runPhysicalTarget({ contract, manifest: manifestInput = lo
     run.steps.push(step(run, 'repair', candidate.version, candidate.version, afterUpdate, afterRepair, grants, grants, { repairVerified: true }));
     let afterRollback = afterRepair;
     if (!firstRelease) {
-      npmInstall(baseline, prefix, env); const rejected = spawnSync(launcher(prefix), ['status'], { env, encoding: 'utf8', shell: false, timeout: 60_000 });
-      if (rejected.error || rejected.signal !== null || rejected.status !== 1
-        || rejected.stdout !== ''
-        || rejected.stderr !== 'Error: Palladin native runtime version is blocked by signed version policy\n') {
-        fail('literal downgrade did not produce the exact signed-policy rejection');
-      }
-      npmInstall(candidate, prefix, env); const afterRejected = identityDigest(prefix, env, home);
-      run.steps.push(step(run, 'downgrade-rejected', candidate.version, candidate.version, afterRepair, afterRejected, grants, grants, { downgradeRejected: true }));
+      const executable = join(candidatePlatformDirectory, target.os === 'macos'
+        ? 'PalladinRuntime.app/Contents/MacOS/palladin'
+        : target.os === 'windows' ? 'bin/palladin-client.exe' : 'bin/palladin-linux-client');
+      const original = readRegular(executable, 'installed runtime');
+      const modified = Buffer.from(original);
+      modified[modified.length - 1] ^= 1;
+      try {
+        writeFileSync(executable, modified);
+        const rejected = spawnSync(launcher(prefix), ['status'], { env, encoding: 'utf8', shell: false, timeout: 60_000 });
+        if (rejected.error || rejected.signal !== null || rejected.status !== 1 || rejected.stdout !== ''
+          || rejected.stderr !== 'Error: Palladin native runtime failed release signature verification\n') {
+          fail('tampered runtime did not produce the exact signature rejection');
+        }
+      } finally { writeFileSync(executable, original); }
+      const afterRejected = identityDigest(prefix, env, home);
+      run.steps.push(step(run, 'tamper-rejected', candidate.version, candidate.version, afterRepair, afterRejected, grants, grants, { tamperRejected: true }));
       installPhase(target, rollback, prefix, env, root); versionCheck(prefix, env, rollback.version);
       afterRollback = identityDigest(prefix, env, home);
       if (await mcpCall(prefix, env, contract.vaultId, contract.entryId) !== grants) fail('rollback MCP grant binding changed');

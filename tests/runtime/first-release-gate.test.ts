@@ -42,11 +42,11 @@ function firstReleaseFixture() {
 }
 
 describe('0.0.1 macOS/Linux release gate', () => {
-  it('accepts exactly six candidate-only physical targets and 48 passing steps', () => {
+  it('accepts exactly five candidate-only physical targets and 40 passing steps', () => {
     const { manifest, evidence } = firstReleaseFixture();
     expect(validateManifest(manifest)).toBe(manifest);
     const report = generateReport({ manifest, evidence, expectedSourceSha: sourceSha, now });
-    expect(report.summary).toEqual({ targetCount: 6, stepCount: 48, passed: 48, failed: 0 });
+    expect(report.summary).toEqual({ targetCount: 5, stepCount: 40, passed: 40, failed: 0 });
     expect(validateReport({ manifest, report, expectedSourceSha: sourceSha, now, markdown: renderMarkdown(report) })).toBe(true);
   });
 
@@ -67,10 +67,23 @@ describe('0.0.1 macOS/Linux release gate', () => {
     expect(() => aggregateShards({ manifest: valid.manifest, shards, expectedSourceSha: sourceSha, expectedRunId: runId, expectedRunAttempt: runAttempt })).toThrow('binding');
   });
 
+  it('rejects removing ARM acceptance or reintroducing unaccepted Intel support', () => {
+    const { manifest } = firstReleaseFixture();
+    const missing = structuredClone(manifest);
+    missing.targets.shift();
+    expect(() => validateManifest(missing)).toThrow('first-release');
+    const expanded = structuredClone(manifest);
+    expanded.targets.splice(1, 0, { ...expanded.targets[0], id: 'macos-x64', arch: 'x64' });
+    expect(() => validateManifest(expanded)).toThrow('first-release');
+    const adversarial = JSON.parse(readFileSync('security/adversarial/first-release-manifest.json', 'utf8'));
+    adversarial.targetTiers.splice(1, 0, { ...adversarial.targetTiers[0], id: 'macos-x64-hardened', arch: 'x64' });
+    expect(() => validateAdversarialManifest(adversarial)).toThrow('first-release adversarial targets');
+  });
+
   it('pins the adversarial matrix to macOS Hardened and Linux Convenience', () => {
     const manifest = JSON.parse(readFileSync('security/adversarial/first-release-manifest.json', 'utf8'));
     expect(validateAdversarialManifest(manifest)).toBe(manifest);
-    expect(manifest.targetTiers).toHaveLength(6);
+    expect(manifest.targetTiers).toHaveLength(5);
     const forged = structuredClone(manifest);
     forged.targetTiers[2].tier = 'Hardened';
     expect(() => validateAdversarialManifest(forged)).toThrow('first-release adversarial tier');

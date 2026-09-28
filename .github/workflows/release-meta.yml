@@ -11,11 +11,6 @@ on:
         description: "Exact approved platform version"
         required: true
         type: string
-      bootstrap_policy:
-        description: "One-time only: assert no current policy exists and start sequence 1"
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -40,7 +35,6 @@ jobs:
       id-token: write # authenticate to Cloud KMS through workload identity
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
-      policy_generation: ${{ steps.policy_input.outputs.policy_generation }}
       lifecycle_ready: ${{ steps.release_set.outputs.lifecycle_ready }}
       policy_ready: ${{ steps.release_set.outputs.policy_ready }}
     steps:
@@ -58,7 +52,7 @@ jobs:
       - run: npm install --global npm@11.18.0
 
       - id: source
-        name: Verify tag and all six public platform versions
+        name: Verify tag and all five public platform versions
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           VERSION: ${{ inputs.version }}
@@ -76,7 +70,6 @@ jobs:
 
           packages=(
             @palladin/runtime-darwin-arm64
-            @palladin/runtime-darwin-x64
             @palladin/runtime-linux-arm64-gnu
             @palladin/runtime-linux-arm64-musl
             @palladin/runtime-linux-x64-gnu
@@ -176,7 +169,6 @@ jobs:
             --platform-manifest "$assets/release-manifest.json"
           packages=(
             @palladin/runtime-darwin-arm64
-            @palladin/runtime-darwin-x64
             @palladin/runtime-linux-arm64-gnu
             @palladin/runtime-linux-arm64-musl
             @palladin/runtime-linux-x64-gnu
@@ -189,8 +181,8 @@ jobs:
             -name 'palladin-runtime-*.tgz' -print | sort)
           mapfile -t registry_tarballs < <(find "$registry" -maxdepth 1 -type f \
             -name 'palladin-runtime-*.tgz' -print | sort)
-          test "${#release_tarballs[@]}" -eq 6
-          test "${#registry_tarballs[@]}" -eq 6
+          test "${#release_tarballs[@]}" -eq 5
+          test "${#registry_tarballs[@]}" -eq 5
           for asset in "${release_tarballs[@]}"; do
             registry_tarball="$registry/$(basename "$asset")"
             test -f "$registry_tarball"
@@ -211,7 +203,6 @@ jobs:
           npm init --yes --prefix "$root" >/dev/null
           packages=(
             @palladin/runtime-darwin-arm64
-            @palladin/runtime-darwin-x64
             @palladin/runtime-linux-arm64-gnu
             @palladin/runtime-linux-arm64-musl
             @palladin/runtime-linux-x64-gnu
@@ -246,64 +237,32 @@ jobs:
             --pem "$RUNNER_TEMP/version-policy-public.pem" --expected "$PUBLIC_KEY"
 
       - id: policy_input
-        name: Generate and KMS-sign the canonical policy candidate
+        name: Generate and KMS-sign the immutable release manifest
         env:
           PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
           VERSION: ${{ inputs.version }}
-          RELEASE_BUCKET: ${{ vars.PALLADIN_RELEASE_BUCKET }}
-          BOOTSTRAP_POLICY: ${{ inputs.bootstrap_policy }}
           POLICY_READY: ${{ steps.release_set.outputs.policy_ready }}
         run: |
           set -euo pipefail
           policy="$RUNNER_TEMP/version-policy"
           mkdir -m 700 "$policy"
-          if [[ "$BOOTSTRAP_POLICY" == true ]]; then
-            if gcloud storage objects describe \
-              "gs://$RELEASE_BUCKET/agent/version-policy.json" >/dev/null 2>&1; then
-              echo 'bootstrap refused because a policy object already exists' >&2
-              exit 1
-            fi
-            if curl --fail --silent --show-error \
-              https://releases.palladin.io/agent/version-policy.json \
-              --output "$policy/current.json"; then
-              echo 'bootstrap refused because the fixed endpoint already exists' >&2
-              exit 1
-            fi
-            : >"$policy/current.json"
-            current_generation=0
-          else
-            current_generation=$(gcloud storage objects describe \
-              "gs://$RELEASE_BUCKET/agent/version-policy.json" --format='value(generation)')
-            [[ "$current_generation" =~ ^[1-9][0-9]*$ ]]
-            gcloud storage cp "gs://$RELEASE_BUCKET/agent/version-policy.json" \
-              "$policy/current.json" --if-generation-match="$current_generation"
-            curl --fail --silent --show-error \
-              https://releases.palladin.io/agent/version-policy.json \
-              --output "$policy/current-endpoint.json"
-            cmp --silent "$policy/current.json" "$policy/current-endpoint.json"
-          fi
-          echo "policy_generation=$current_generation" >>"$GITHUB_OUTPUT"
           if [[ "$POLICY_READY" == true ]]; then
             cp "$RUNNER_TEMP/release-evidence/version-policy-candidate.json" \
               "$policy/version-policy.json"
-            issued_at=$(jq -er '.signed.issuedAt' "$policy/version-policy.json")
             node packaging/npm/generate-version-policy-release.mjs \
               --node-modules "$RUNNER_TEMP/policy-install/node_modules" \
               --version "$VERSION" --source-sha "$SOURCE_SHA" \
-              --current "$policy/current.json" --public-key "$PUBLIC_KEY" \
-              --issued-at "$issued_at" --output "$policy/expected-payload.json"
+              --output "$policy/expected-payload.json"
             node packaging/npm/verify-version-policy-build.mjs \
               --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
               --bundle "$policy/version-policy.json" --version "$VERSION" \
               --expected-payload "$policy/expected-payload.json"
           else
-            issued_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
             node packaging/npm/generate-version-policy-release.mjs \
               --node-modules "$RUNNER_TEMP/policy-install/node_modules" \
               --version "$VERSION" --source-sha "$SOURCE_SHA" \
-              --current "$policy/current.json" --public-key "$PUBLIC_KEY" \
-              --issued-at "$issued_at" --output "$policy/payload.json"
+              --output "$policy/payload.json"
             gcloud kms asymmetric-sign \
               --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
               --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
@@ -339,9 +298,6 @@ jobs:
           - runner: macos-15
             platform: macOS-arm64
             runtime_package: runtime-darwin-arm64
-          - runner: macos-15-intel
-            platform: macOS-x64
-            runtime_package: runtime-darwin-x64
           - runner: ubuntu-24.04-arm
             platform: Linux-GNU-arm64
             runtime_package: runtime-linux-arm64-gnu
@@ -534,21 +490,19 @@ jobs:
               npm audit signatures --prefix /smoke
             '
 
-  publish-policy:
-    name: Publish the policy only after all native smokes pass
-    needs: [authorize, smoke-native, smoke-musl, approve-lifecycle]
+  artifact-smoke:
+    name: Exercise the signed bundled manifest before npm staging
+    needs: [authorize, smoke-native, smoke-musl]
     runs-on: ubuntu-latest
-    environment: version-policy-signing
     timeout-minutes: 10
     permissions:
       contents: read
-      id-token: write # authenticate to Cloud KMS through workload identity
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Check out the trusted source commit
+      - name: Check out the independently verified source commit
         env:
           SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
         run: |
@@ -567,58 +521,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: npm ci --ignore-scripts --workspaces=false
-      - run: npm run build
-      - name: Re-verify the exact signed object before external publication
-        run: >-
-          node packaging/npm/verify-version-policy-build.mjs
-          --public-key "${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}"
-          --source-sha "${{ needs.authorize.outputs.source_sha }}"
-          --bundle "$RUNNER_TEMP/version-policy-artifact/version-policy.json"
-          --version "${INPUTS_VERSION}"
-        env:
-          INPUTS_VERSION: ${{ inputs.version }}
-      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
-        with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_VERSION_POLICY_SERVICE_ACCOUNT }}
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
-        with:
-          version: 561.0.0
-      - name: Publish and observe the byte-identical fixed endpoint
-        env:
-          RELEASE_BUCKET: ${{ vars.PALLADIN_RELEASE_BUCKET }}
-          OBSERVED_GENERATION: ${{ needs.authorize.outputs.policy_generation }}
-          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
-        run: |
-          set -euo pipefail
-          policy="$RUNNER_TEMP/version-policy-artifact/version-policy.json"
-          object=$(node packaging/npm/version-policy-object-name.mjs \
-            --bundle "$policy" --public-key "$PUBLIC_KEY")
-          immutable="gs://$RELEASE_BUCKET/agent/version-policy/$object"
-          if ! gcloud storage cp "$policy" "$immutable" --if-generation-match=0 \
-            --cache-control=no-store --content-type=application/json; then
-            gcloud storage cp "$immutable" "$RUNNER_TEMP/existing-immutable.json"
-            cmp --silent "$policy" "$RUNNER_TEMP/existing-immutable.json"
-          fi
-          gcloud storage cp "$policy" "gs://$RELEASE_BUCKET/agent/version-policy.json" \
-            --if-generation-match="$OBSERVED_GENERATION" \
-            --cache-control=no-store --content-type=application/json
-          published=false
-          for attempt in {1..12}; do
-            echo "policy endpoint verification attempt $attempt"
-            if curl --fail --silent --show-error \
-              https://releases.palladin.io/agent/version-policy.json \
-              --output "$RUNNER_TEMP/published.json" && \
-              cmp --silent "$policy" "$RUNNER_TEMP/published.json"; then
-              published=true
-              break
-            fi
-            sleep 5
-          done
-          test "$published" = true
-
-      - name: Exercise the live dynamic policy before the meta-package can be staged
+      - name: Exercise the exact bundled signature before the meta-package can be staged
         env:
           PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
           SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
@@ -650,7 +553,7 @@ jobs:
           test "$status" -ne 0
           test ! -s "$RUNNER_TEMP/live-policy.stdout"
           grep -F 'profile does not exist' "$RUNNER_TEMP/live-policy.stderr"
-          if grep -F 'signed runtime version policy' "$RUNNER_TEMP/live-policy.stderr"; then
+          if grep -F 'signed runtime release manifest' "$RUNNER_TEMP/live-policy.stderr"; then
             exit 1
           fi
           npm audit signatures --prefix "$smoke"
@@ -1058,7 +961,7 @@ jobs:
 
   stage-meta:
     name: Stage the approved @palladin/cli candidate
-    needs: [authorize, prepare-meta, publish-policy, approve-adversarial, approve-lifecycle]
+    needs: [authorize, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle]
     runs-on: ubuntu-latest
     environment: npm-release
     timeout-minutes: 15
@@ -1125,10 +1028,6 @@ jobs:
           node packaging/npm/verify-version-policy-build.mjs \
             --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
             --bundle "$assets/version-policy-candidate.json" --version "$VERSION"
-          curl --fail --silent --show-error \
-            https://releases.palladin.io/agent/version-policy.json \
-            --output "$RUNNER_TEMP/live-version-policy.json"
-          cmp --silent "$assets/version-policy-candidate.json" "$RUNNER_TEMP/live-version-policy.json"
           node security/adversarial/report.mjs validate \
             --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
             --source-sha "$SOURCE_SHA" --json "$assets/adversarial-report.json" \

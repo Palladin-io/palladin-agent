@@ -271,7 +271,7 @@ export function validateManifest(input) {
   }
   if (manifest.releaseVersion === '0.0.1') {
     const expected = [
-      'macos-arm64-hardened', 'macos-x64-hardened',
+      'macos-arm64-hardened',
       'linux-gnu-arm64-convenience', 'linux-gnu-x64-convenience',
       'linux-musl-arm64-convenience', 'linux-musl-x64-convenience',
     ];

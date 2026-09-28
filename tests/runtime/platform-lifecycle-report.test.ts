@@ -20,7 +20,7 @@ describe('platform lifecycle release report', () => {
     expect(manifest.artifactPhases).toEqual(['baseline', 'candidate', 'forward-rollback']);
     expect(manifest.steps.map((step: { id: string }) => step.id)).toEqual([
       'install', 'enroll', 'mcp', 'update', 'concurrent-mcp', 'repair',
-      'downgrade-rejected', 'rollback', 'reinstall', 'purge', 'uninstall',
+      'tamper-rejected', 'rollback', 'reinstall', 'purge', 'uninstall',
     ]);
   });
 
