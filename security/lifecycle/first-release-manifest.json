@@ -16,7 +16,6 @@
   "artifactPhases": ["candidate"],
   "targets": [
     { "id": "macos-arm64", "os": "macos", "arch": "arm64", "distribution": "macos", "libc": "none", "requiredArtifactRoles": ["agent-npm", "platform-npm", "signed-runtime"] },
-    { "id": "macos-x64", "os": "macos", "arch": "x64", "distribution": "macos", "libc": "none", "requiredArtifactRoles": ["agent-npm", "platform-npm", "signed-runtime"] },
     { "id": "ubuntu-24.04-arm64", "os": "linux", "arch": "arm64", "distribution": "ubuntu-24.04", "libc": "gnu", "requiredArtifactRoles": ["agent-npm", "platform-npm"] },
     { "id": "ubuntu-24.04-x64", "os": "linux", "arch": "x64", "distribution": "ubuntu-24.04", "libc": "gnu", "requiredArtifactRoles": ["agent-npm", "platform-npm"] },
     { "id": "alpine-3.22-arm64", "os": "linux", "arch": "arm64", "distribution": "alpine-3.22", "libc": "musl", "requiredArtifactRoles": ["agent-npm", "platform-npm"] },

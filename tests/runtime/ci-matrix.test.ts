@@ -59,7 +59,8 @@ describe('cross-platform CI gates', () => {
     ];
 
     expect(Object.keys(rootPackage.optionalDependencies).sort()).toEqual(
-      supported.filter(({ packageName }) => !packageName.includes('/runtime-win32-'))
+      supported.filter(({ packageName }) => !packageName.includes('/runtime-win32-')
+        && packageName !== '@palladin/runtime-darwin-x64')
         .map(({ packageName }) => packageName).sort(),
     );
     for (const { packageName, target, runner } of supported) {

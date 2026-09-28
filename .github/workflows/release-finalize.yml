@@ -73,7 +73,6 @@ jobs:
           const version = process.argv[3];
           const expected = [
             '@palladin/runtime-darwin-arm64',
-            '@palladin/runtime-darwin-x64',
             '@palladin/runtime-linux-arm64-gnu',
             '@palladin/runtime-linux-arm64-musl',
             '@palladin/runtime-linux-x64-gnu',
@@ -104,9 +103,6 @@ jobs:
           - runner: macos-15
             platform: macOS-arm64
             runtime_package: runtime-darwin-arm64
-          - runner: macos-15-intel
-            platform: macOS-x64
-            runtime_package: runtime-darwin-x64
           - runner: ubuntu-24.04-arm
             platform: Linux-GNU-arm64
             runtime_package: runtime-linux-arm64-gnu

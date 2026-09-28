@@ -8931,20 +8931,6 @@
       ]
     },
     {
-      "bom-ref": "pkg:npm/%40palladin%2Fruntime-darwin-x64@0.0.1",
-      "type": "application",
-      "name": "@palladin/runtime-darwin-x64",
-      "version": "0.0.1",
-      "purl": "pkg:npm/%40palladin%2Fruntime-darwin-x64@0.0.1",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "pkg:npm/%40palladin%2Fruntime-linux-arm64-gnu@0.0.1",
       "type": "application",
       "name": "@palladin/runtime-linux-arm64-gnu",

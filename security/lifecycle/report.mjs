@@ -16,7 +16,6 @@ const FIRST_RELEASE_STEPS = [
 ];
 const FIRST_RELEASE_TARGETS = [
   ['macos-arm64', 'macos', 'arm64', 'macos', 'none', ['agent-npm', 'platform-npm', 'signed-runtime']],
-  ['macos-x64', 'macos', 'x64', 'macos', 'none', ['agent-npm', 'platform-npm', 'signed-runtime']],
   ['ubuntu-24.04-arm64', 'linux', 'arm64', 'ubuntu-24.04', 'gnu', ['agent-npm', 'platform-npm']],
   ['ubuntu-24.04-x64', 'linux', 'x64', 'ubuntu-24.04', 'gnu', ['agent-npm', 'platform-npm']],
   ['alpine-3.22-arm64', 'linux', 'arm64', 'alpine-3.22', 'musl', ['agent-npm', 'platform-npm']],

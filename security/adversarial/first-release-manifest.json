@@ -135,27 +135,6 @@
       ]
     },
     {
-      "id": "macos-x64-hardened",
-      "os": "macos",
-      "arch": "x64",
-      "libc": "none",
-      "tier": "Hardened",
-      "channel": "public-signed",
-      "disposition": "evidence-required",
-      "expectedResidualAttacks": [],
-      "expectedResidualRiskIds": [],
-      "manualRequiredAttacks": [
-        "node-key-enumeration-read",
-        "node-runtime-spawn",
-        "core-dump-debugger-ptrace",
-        "operation-replay"
-      ],
-      "residualRiskIds": [
-        "RR-PRIVILEGED-HOST-COMPROMISE",
-        "RR-AUTHORIZED-DESTINATION"
-      ]
-    },
-    {
       "id": "linux-gnu-arm64-convenience",
       "os": "linux",
       "arch": "arm64",

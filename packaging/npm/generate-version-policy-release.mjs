@@ -22,7 +22,6 @@ const modules = resolve(required('node-modules'));
 const canonicalModules = realpathSync(modules);
 const packages = [
   ['@palladin/runtime-darwin-arm64', 'PalladinRuntime.app/Contents/MacOS/palladin', 'PalladinRuntime.app/Contents/MacOS/palladin'],
-  ['@palladin/runtime-darwin-x64', 'PalladinRuntime.app/Contents/MacOS/palladin', 'PalladinRuntime.app/Contents/MacOS/palladin'],
   ['@palladin/runtime-linux-arm64-gnu', 'bin/palladin-linux-client', 'bin/palladin-worker'],
   ['@palladin/runtime-linux-arm64-musl', 'bin/palladin-linux-client', 'bin/palladin-worker'],
   ['@palladin/runtime-linux-x64-gnu', 'bin/palladin-linux-client', 'bin/palladin-worker'],

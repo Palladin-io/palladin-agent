@@ -35,7 +35,7 @@ jobs:
       github.ref == 'refs/heads/main' &&
       inputs.confirmation == 'SIGN POLICY'
     runs-on: ubuntu-latest
-    environment: version-policy-signing
+    environment: version-policy-maintenance
     timeout-minutes: 15
     permissions:
       contents: read

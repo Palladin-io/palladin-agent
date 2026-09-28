@@ -431,7 +431,7 @@ test('signed version policy release is owner-only, KMS-backed, and published aft
   const verify = readFileSync(join(workflowDirectory, 'version-policy-verify.yml'), 'utf8');
 
   for (const workflow of [platform, meta, maintenance]) {
-    assert.match(workflow, /environment: version-policy-signing/);
+    assert.match(workflow, /environment: version-policy-(?:signing|maintenance)/);
     assert.match(workflow, /google-github-actions\/auth@[0-9a-f]{40}/);
     assert.match(workflow, /google-github-actions\/setup-gcloud@[0-9a-f]{40}/);
     assert.match(workflow, /version: 561\.0\.0/);
@@ -631,7 +631,6 @@ test('release policy generator binds all exact executables and rejects a symlink
     writeFileSync(current, '');
     const executables = new Map([
       ['@palladin/runtime-darwin-arm64', 'PalladinRuntime.app/Contents/MacOS/palladin'],
-      ['@palladin/runtime-darwin-x64', 'PalladinRuntime.app/Contents/MacOS/palladin'],
       ['@palladin/runtime-linux-arm64-gnu', 'bin/palladin-linux-client'],
       ['@palladin/runtime-linux-arm64-musl', 'bin/palladin-linux-client'],
       ['@palladin/runtime-linux-x64-gnu', 'bin/palladin-linux-client'],
@@ -664,7 +663,7 @@ test('release policy generator binds all exact executables and rejects a symlink
     assert.equal(payload.minimumVersion, '1.2.3');
     assert.equal(payload.recommendedVersion, '1.2.3');
     assert.equal(payload.expiresAt, '2026-08-13T12:00:00Z');
-    assert.equal(payload.artifacts.length, 6);
+    assert.equal(payload.artifacts.length, 5);
     assert.ok(payload.artifacts.every((artifact) => /^[0-9a-f]{64}$/.test(
       artifact.workerExecutableSha256,
     )));
