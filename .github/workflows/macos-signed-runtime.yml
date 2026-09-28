@@ -450,15 +450,34 @@ jobs:
           echo "PALLADIN_HOMEBREW_NODE=$homebrew_node" >>"$GITHUB_ENV"
 
       - name: Run the same noninteractive boundary harness on the exact artifact
+        id: boundary
         env:
           PALLADIN_RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           set -euo pipefail
+          {
+            printf '## Signed macOS boundary — %s\n\n' '${{ matrix.architecture }}'
+            printf '| Test | Result | Line | Exit | Category | Keychain OSStatus |\n'
+            printf '| --- | --- | --- | --- | --- | --- |\n'
+          } >>"$GITHUB_STEP_SUMMARY"
           packaging/macos/scripts/test-security-boundary.sh \
             --app "$PALLADIN_SIGNED_APP" \
             --entitlements "$PALLADIN_SIGNED_ENTITLEMENTS" \
             --homebrew-node "$PALLADIN_HOMEBREW_NODE" \
             --architecture '${{ matrix.architecture }}'
+          printf '| all boundary tests | PASS | — | 0 | — | — |\n' >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Summarize signed boundary outcome
+        if: always()
+        env:
+          BOUNDARY_OUTCOME: ${{ steps.boundary.outcome }}
+        run: |
+          {
+            printf '\nBoundary harness outcome: **%s**.\n' "$BOUNDARY_OUTCOME"
+            printf '\n[Open workflow logs](%s/%s/actions/runs/%s).\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf '\nCaptured command output is withheld; failures report only test names and diagnostic metadata.\n'
+          } >>"$GITHUB_STEP_SUMMARY"
 
   macos-signed-gate:
     name: macOS Signed Release Gate
