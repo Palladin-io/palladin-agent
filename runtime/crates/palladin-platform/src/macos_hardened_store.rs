@@ -117,7 +117,7 @@ impl SecretStore for MacHardenedSecretStore {
         match generic_password(options) {
             Ok(secret) => Ok(Some(secret.into())),
             Err(error) if error.code() == errSecItemNotFound => Ok(None),
-            Err(_) => Err(StoreError::Unavailable),
+            Err(error) => Err(StoreError::MacKeychainStatus(error.code())),
         }
     }
 
@@ -126,7 +126,8 @@ impl SecretStore for MacHardenedSecretStore {
             return Err(StoreError::InvalidSecret);
         }
         let options = query(owner_id, slot, true)?;
-        set_generic_password_options(secret, options).map_err(|_| StoreError::Unavailable)
+        set_generic_password_options(secret, options)
+            .map_err(|error| StoreError::MacKeychainStatus(error.code()))
     }
 
     fn delete(&self, owner_id: &str, slot: SecretSlot) -> Result<(), StoreError> {
@@ -134,7 +135,7 @@ impl SecretStore for MacHardenedSecretStore {
         match delete_generic_password_options(options) {
             Ok(()) => Ok(()),
             Err(error) if error.code() == errSecItemNotFound => Ok(()),
-            Err(_) => Err(StoreError::Unavailable),
+            Err(error) => Err(StoreError::MacKeychainStatus(error.code())),
         }
     }
 
@@ -295,7 +296,7 @@ fn query(
             Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
             flags,
         )
-        .map_err(|_| StoreError::Unavailable)?;
+        .map_err(|error| StoreError::MacKeychainStatus(error.code()))?;
         options.set_access_control(access_control);
     }
     Ok(options)
