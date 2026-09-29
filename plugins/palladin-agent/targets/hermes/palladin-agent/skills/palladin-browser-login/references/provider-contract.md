@@ -13,18 +13,24 @@ Keep three boundaries separate:
 
 | Operation | MCP | CLI |
 |---|---|---|
+| Browser pairing | `pair_agent` | `palladin --id <alias> pair-agent --host <api-host>` |
 | Discovery | `search_entries` | `palladin search --json <query>` |
 | Inject | `inject_credential` | `palladin inject <vaultId> <entryId>` |
 | Browser provider | `provider` | `--provider` |
 | Exact tab | `targetTabId` | `--target-tab-id` |
 | Exact URL | `targetUrl` | `--page-url` |
 
-Packaged plugins launch their generated `palladin` MCP command directly, without a shell or secret
-environment. Codex pins its dedicated profile with `palladin --id codex mcp serve`; the other preview
-targets currently launch `palladin mcp serve`. They must not silently fall back to CLI when MCP
-fails. A CLI-only host adapter must invoke `palladin` as one executable with a separate argument
-list, preserve the same provider and exact-tab values, and parse only JSON Search output so complete
-`vaultId` and `entryId` values reach Inject.
+Packaged plugins launch `palladin` directly, without a shell or secret environment.
+Their generated commands are bootstrap defaults; select and pin the user-confirmed
+profile/host in the host connection configuration as described in
+[connection setup](connection-setup.md). Never infer an account assignment from
+a bundled example, the global default or a previous unrelated workspace.
+
+Do not silently fall back to CLI when MCP fails. A CLI-only host adapter invokes
+`palladin --id <confirmed-alias>` with separate argument values, preserves the
+same provider and exact-tab routing, and parses JSON Search output for Entry IDs.
+Browser pairing is an explicit onboarding operation, not recovery from every
+failed login. The existing native runtime owns key storage and approval.
 
 ## Current browser providers
 
