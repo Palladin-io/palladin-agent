@@ -12,6 +12,7 @@ PACKAGING_DIR="$(dirname -- "$SCRIPT_DIR")"
 readonly PACKAGING_DIR
 # shellcheck source=packaging/macos/scripts/lib.sh
 source "$SCRIPT_DIR/lib.sh"
+boundary_script="${BASH_SOURCE[0]}"
 source "$SCRIPT_DIR/boundary-failure.sh"
 
 usage() {

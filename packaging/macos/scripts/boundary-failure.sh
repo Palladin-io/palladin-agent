@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 
+die() {
+  local caller
+  for ((caller = 1; caller < ${#BASH_SOURCE[@]}; caller++)); do
+    if [[ "${BASH_SOURCE[caller]}" == "${boundary_script:-}" ]]; then
+      boundary_failure_line="${BASH_LINENO[caller - 1]}"
+      break
+    fi
+  done
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
 report_boundary_failure() {
   local status="$1"
   local line="$2"
