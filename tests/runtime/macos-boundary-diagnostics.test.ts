@@ -1,18 +1,18 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-function report(captured: string) {
+function report(captured: string, phase = 'initialization') {
   const directory = mkdtempSync(join(tmpdir(), 'palladin-boundary-diagnostic-'));
   try {
     const error = join(directory, 'init.err');
     writeFileSync(error, captured, { mode: 0o600 });
     const summary = join(directory, 'summary.md');
     const result = spawnSync('/bin/bash', ['-c',
-      'source packaging/macos/scripts/boundary-failure.sh; report_boundary_failure 7 101 "$1" initialization',
-      'boundary-test', error,
+      'source packaging/macos/scripts/boundary-failure.sh; report_boundary_failure 7 101 "$1" "$2"',
+      'boundary-test', error, phase,
     ], { encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: summary } });
     return { ...result, summary: readFileSync(summary, 'utf8') };
   } finally {
@@ -21,6 +21,28 @@ function report(captured: string) {
 }
 
 describe.skipIf(process.platform === 'win32')('signed boundary failure diagnostics', () => {
+  it('identifies the signed client operation without exposing its child output', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'palladin-signed-client-diagnostic-'));
+    try {
+      const fakeBinary = join(directory, 'fake-runtime');
+      writeFileSync(fakeBinary, '#!/bin/sh\nprintf "Error: profile does not exist; run: palladin agents create <name>\\nprivate-fixture-marker\\n" >&2\nexit 1\n');
+      chmodSync(fakeBinary, 0o700);
+      const probe = spawnSync(process.execPath, [
+        'packaging/macos/tests/signed-client-probe.mjs', fakeBinary, fakeBinary, join(directory, 'captures'),
+      ], { encoding: 'utf8', env: { ...process.env, HOME: directory } });
+      expect(probe.status).toBe(1);
+      const diagnostic = report(probe.stderr, 'intact-copy-and-client-authorization');
+      expect(diagnostic.status).toBe(0);
+      expect(diagnostic.stderr.includes('signed-client-blind-genuine-profile-not-found')).toBe(true);
+      expect(diagnostic.summary.includes('signed-client-blind-genuine-profile-not-found')).toBe(true);
+      expect(diagnostic.stderr.includes('private-fixture-marker')).toBe(false);
+      expect(diagnostic.stdout.includes('private-fixture-marker')).toBe(false);
+      expect(diagnostic.summary.includes('private-fixture-marker')).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ['OR assertion', ['false || die "fixed assertion"'], 0],
     ['if assertion', ['if true; then', '  die "fixed assertion"', 'fi'], 1],
