@@ -205,7 +205,11 @@ jobs:
       - name: Potwierdź pojedynczą natywną architekturę
         run: |
           set -euo pipefail
-          test "$(lipo -archs "$RUNNER_TEMP/slices/arm64/palladin-arm64")" = arm64
+          binary="$RUNNER_TEMP/slices/arm64/palladin-arm64"
+          test -f "$binary"
+          test ! -L "$binary"
+          test "$(lipo -archs "$binary")" = arm64
+          chmod 0755 "$binary"
 
       - name: Przygotuj tymczasowy Keychain i materiały podpisu
         env:
