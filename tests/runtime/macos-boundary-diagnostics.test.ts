@@ -21,6 +21,33 @@ function report(captured: string, phase = 'initialization') {
 }
 
 describe.skipIf(process.platform === 'win32')('signed boundary failure diagnostics', () => {
+  it.each([
+    ['unexpected-output', 'printf "private-fixture-marker\\n" >&2'],
+    ['canary-disclosure', 'printf "%s" "$PALLADIN_BOUNDARY_PRIVATE_CANARY" >&2'],
+    ['capture-bound', 'printf "fresh operating-system authorization is required for this operation\\n" >&2; head -c 1048577 /dev/zero'],
+  ] as const)('reports %s without exposing captured output', (reason, output) => {
+    const directory = mkdtempSync(join(tmpdir(), 'palladin-probe-reason-'));
+    try {
+      const fakeBinary = join(directory, 'fake-runtime');
+      writeFileSync(fakeBinary, `#!/bin/sh\n${output}\nexit 1\n`);
+      chmodSync(fakeBinary, 0o700);
+      const probe = spawnSync(process.execPath, [
+        'packaging/macos/tests/signed-client-probe.mjs', fakeBinary, fakeBinary, join(directory, 'captures'),
+      ], { encoding: 'utf8', env: { ...process.env, HOME: directory } });
+      expect(probe.status).toBe(1);
+      const diagnostic = report(probe.stderr, 'intact-copy-and-client-authorization');
+      expect(diagnostic.status).toBe(0);
+      expect(diagnostic.stderr.includes(`signed-client-blind-genuine-${reason}`)).toBe(true);
+      expect(diagnostic.summary.includes(`signed-client-blind-genuine-${reason}`)).toBe(true);
+      expect(diagnostic.stderr.includes('private-fixture-marker')).toBe(false);
+      expect(diagnostic.summary.includes('private-fixture-marker')).toBe(false);
+      expect(diagnostic.stderr.includes('palladin-boundary-')).toBe(false);
+      expect(diagnostic.summary.includes('palladin-boundary-')).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('attributes an unexpectedly successful MCP connection to its result, not the last stage', () => {
     const directory = mkdtempSync(join(tmpdir(), 'palladin-mcp-success-diagnostic-'));
     try {
@@ -53,12 +80,12 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
     const diagnostic = report([
       'Palladin signed-client probe stage: mcp-first-connection',
       'Palladin signed-client probe stage: mcp-second-connection',
-      'Palladin signed-client probe failure: mcp-first-connection: unclassified',
+      'Palladin signed-client probe failure: mcp-first-connection: probe-error',
       'private-fixture-marker',
     ].join('\n'), 'intact-copy-and-client-authorization');
     expect(diagnostic.status).toBe(0);
-    expect(diagnostic.stderr.includes('signed-client-mcp-first-connection-unclassified')).toBe(true);
-    expect(diagnostic.summary.includes('signed-client-mcp-first-connection-unclassified')).toBe(true);
+    expect(diagnostic.stderr.includes('signed-client-mcp-first-connection-probe-error')).toBe(true);
+    expect(diagnostic.summary.includes('signed-client-mcp-first-connection-probe-error')).toBe(true);
     expect(diagnostic.stderr.includes('private-fixture-marker')).toBe(false);
     expect(diagnostic.summary.includes('private-fixture-marker')).toBe(false);
   });

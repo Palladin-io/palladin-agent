@@ -83,7 +83,12 @@ async function runBounded(name, executable, args, options = {}) {
   try {
     return await runBoundedCaptured(name, executable, args, options);
   } catch (error) {
-    process.stderr.write(`Palladin signed-client probe failure: ${name}: unclassified\n`);
+    const reason = error instanceof Error ? ({
+      'signed-client output exceeded its safe capture bound': 'capture-bound',
+      'signed-client output contained the private boundary canary': 'canary-disclosure',
+      'signed-client probe timed out': 'timeout',
+    }[error.message] ?? 'probe-error') : 'probe-error';
+    process.stderr.write(`Palladin signed-client probe failure: ${name}: ${reason}\n`);
     throw error;
   }
 }
@@ -97,9 +102,13 @@ async function runBoundedCaptured(name, executable, args, options) {
   const stdout = [];
   const stderr = [];
   let size = 0;
+  let captureOverflowed = false;
   const collect = (target) => (chunk) => {
     size += chunk.length;
-    if (size > maximumCaptureBytes) child.kill('SIGKILL');
+    if (size > maximumCaptureBytes) {
+      captureOverflowed = true;
+      child.kill('SIGKILL');
+    }
     else target.push(Buffer.from(chunk));
   };
   child.stdout.on('data', collect(stdout));
@@ -121,6 +130,7 @@ async function runBoundedCaptured(name, executable, args, options) {
   clearTimeout(timer);
   const stdoutBuffer = Buffer.concat(stdout);
   const stderrBuffer = Buffer.concat(stderr);
+  if (captureOverflowed) throw new Error('signed-client output exceeded its safe capture bound');
   capture(name, stdoutBuffer, stderrBuffer);
   if (timedOut) throw new Error('signed-client probe timed out');
   return { ...result, stdout: stdoutBuffer, stderr: stderrBuffer };
@@ -138,7 +148,7 @@ function assertAuthorizationDenial(name, result) {
       ['signed runtime release manifest verification failed; no identity was opened', 'manifest-invalid'],
       ['macOS Keychain operation failed (OSStatus ', 'keychain-operation-failed'],
     ];
-    const reason = knownFailures.find(([message]) => output.includes(message))?.[1] ?? 'unclassified';
+    const reason = knownFailures.find(([message]) => output.includes(message))?.[1] ?? 'unexpected-output';
     process.stderr.write(`Palladin signed-client probe failure: ${name}: ${reason}\n`);
     throw new Error(`${name} failed before reaching the authenticated identity boundary`);
   }
