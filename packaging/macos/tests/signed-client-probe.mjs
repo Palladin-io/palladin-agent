@@ -116,7 +116,7 @@ async function runBoundedCaptured(name, executable, args, options) {
   }, options.timeoutMs ?? 8_000);
   const result = await new Promise((resolve, reject) => {
     child.once('error', reject);
-    child.once('exit', (code, signal) => resolve({ code, signal }));
+    child.once('close', (code, signal) => resolve({ code, signal }));
   });
   clearTimeout(timer);
   const stdoutBuffer = Buffer.concat(stdout);
