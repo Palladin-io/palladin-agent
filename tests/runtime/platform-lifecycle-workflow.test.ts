@@ -61,7 +61,7 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(runner).toContain('npm uninstall left the Agent launcher installed');
     expect(runner).toContain("openRepositoryFile('packaging/macos/scripts/verify-bundle.sh');");
     expect(runner).toContain("openRepositoryFile('packaging/macos/scripts/lib.sh');");
-    expect(runner).toContain("['/dev/fd/3', '--app', app, '--architecture', 'universal']");
+    expect(runner).toContain("phase.version === '0.0.1' ? 'arm64' : 'universal'");
     expect(runner).toContain("PALLADIN_VERIFIED_LIB_FD: '4'");
     expect(runner).toContain("stdio: ['pipe', 'pipe', 'pipe', scriptDescriptor, libraryDescriptor]");
     expect(runner).toContain('opened.dev !== linked.dev || opened.ino !== linked.ino');

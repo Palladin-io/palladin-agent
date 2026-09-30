@@ -144,7 +144,8 @@ function expectedNames(target, version, firstRelease = false) {
   const arch = target.arch;
   if (target.os === 'macos') return {
     agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-darwin-${arch}-${version}.tgz`,
-    extraRole: 'signed-runtime', extra: 'palladin-runtime-darwin-universal.zip',
+    extraRole: 'signed-runtime', extra: firstRelease
+      ? 'palladin-runtime-darwin-arm64.zip' : 'palladin-runtime-darwin-universal.zip',
   };
   if (target.os === 'windows') return {
     agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-win32-${arch}-${version}.tgz`,
@@ -197,7 +198,7 @@ function verifyMacBundle(app, phase, env) {
   try {
     scriptDescriptor = openRepositoryFile('packaging/macos/scripts/verify-bundle.sh');
     libraryDescriptor = openRepositoryFile('packaging/macos/scripts/lib.sh');
-    bounded('/bin/bash', ['/dev/fd/3', '--app', app, '--architecture', 'universal'], {
+    bounded('/bin/bash', ['/dev/fd/3', '--app', app, '--architecture', phase.version === '0.0.1' ? 'arm64' : 'universal'], {
       env: { ...env, PALLADIN_VERIFIED_LIB_FD: '4' }, timeout: 300_000,
       stdio: ['pipe', 'pipe', 'pipe', scriptDescriptor, libraryDescriptor],
     });

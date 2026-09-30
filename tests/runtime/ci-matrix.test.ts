@@ -166,8 +166,8 @@ describe('cross-platform CI gates', () => {
 
     const macos = read('.github/workflows/macos-signed-runtime.yml');
     expect(macos).toContain('name: macOS Signed Release Gate');
-    expect(macos).toContain('runner: macos-15-intel');
-    expect(macos).toContain('platform: macos/x86_64');
+    expect(macos).not.toContain('runner: macos-15-intel');
+    expect(macos).toContain('platform: macos/aarch64');
     const windows = read('.github/workflows/windows-signed-runtime.yml');
     expect(windows).toContain('name: Hosted Windows Signed Artifact Gate');
     expect(windows).toContain('incomplete-hosted-boundaries');

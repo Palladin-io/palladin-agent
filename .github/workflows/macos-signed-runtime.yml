@@ -76,9 +76,6 @@ jobs:
           - runner: macos-15
             target: aarch64-apple-darwin
             architecture: arm64
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-            architecture: x86_64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     env:
@@ -114,10 +111,8 @@ jobs:
           set -euo pipefail
           root_version=$(node -p 'require("./package.json").version')
           test "$root_version" = "$MARKETING_VERSION"
-          for architecture in arm64 x64; do
-            runtime_version=$(node -p "require('./packages/runtime-darwin-$architecture/package.json').version")
-            test "$runtime_version" = "$MARKETING_VERSION"
-          done
+          runtime_version=$(node -p 'require("./packages/runtime-darwin-arm64/package.json").version')
+          test "$runtime_version" = "$MARKETING_VERSION"
 
       - name: Potwierdź natywną architekturę bez Rosetty
         run: |
@@ -138,7 +133,7 @@ jobs:
             "target/${{ matrix.target }}/release/palladin" \
             "$RUNNER_TEMP/palladin-${{ matrix.architecture }}"
 
-      - name: Przekaż niepodpisany slice do joba universal
+      - name: Przekaż niepodpisaną binarkę do podpisu
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unsigned-palladin-${{ matrix.architecture }}-${{ inputs.source_sha }}
@@ -146,8 +141,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  sign-universal:
-    name: Podpisz i notaryzuj universal bundle
+  sign-arm64:
+    name: Podpisz i notaryzuj bundle ARM64
     needs: [authorize, build-native]
     runs-on: macos-15
     environment: macos-signing
@@ -207,23 +202,10 @@ jobs:
           name: unsigned-palladin-arm64-${{ inputs.source_sha }}
           path: ${{ runner.temp }}/slices/arm64
 
-      - name: Pobierz slice x86_64
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: unsigned-palladin-x86_64-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/slices/x86_64
-
-      - name: Złóż dokładnie dwa slice w universal binary
+      - name: Potwierdź pojedynczą natywną architekturę
         run: |
           set -euo pipefail
-          lipo -create \
-            "$RUNNER_TEMP/slices/arm64/palladin-arm64" \
-            "$RUNNER_TEMP/slices/x86_64/palladin-x86_64" \
-            -output "$RUNNER_TEMP/palladin-universal"
-          chmod 0755 "$RUNNER_TEMP/palladin-universal"
-          archs="$(lipo -archs "$RUNNER_TEMP/palladin-universal")"
-          [[ " $archs " == *' arm64 '* && " $archs " == *' x86_64 '* ]]
-          [[ "$(wc -w <<<"$archs" | tr -d ' ')" == "2" ]]
+          test "$(lipo -archs "$RUNNER_TEMP/slices/arm64/palladin-arm64")" = arm64
 
       - name: Przygotuj tymczasowy Keychain i materiały podpisu
         env:
@@ -257,7 +239,7 @@ jobs:
             echo "PALLADIN_NOTARY_KEY_PATH=$NOTARY_KEY_PATH"
           } >>"$GITHUB_ENV"
 
-      - name: Zbuduj, podpisz i notaryzuj universal bundle
+      - name: Zbuduj, podpisz i notaryzuj bundle ARM64
         env:
           SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_IDENTITY }}
           NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARYTOOL_KEY_ID }}
@@ -266,58 +248,52 @@ jobs:
           INPUTS_BUNDLE_VERSION: ${{ inputs.bundle_version }}
         run: |
           set -euo pipefail
-          output_dir="$RUNNER_TEMP/palladin-universal-bundle"
+          output_dir="$RUNNER_TEMP/palladin-arm64-bundle"
           packaging/macos/scripts/build-bundle.sh \
-            --binary "$RUNNER_TEMP/palladin-universal" \
+            --binary "$RUNNER_TEMP/slices/arm64/palladin-arm64" \
             --profile "$PALLADIN_PROFILE_PATH" \
             --output-dir "$output_dir" \
-            --architecture universal \
+            --architecture arm64 \
             --marketing-version "${INPUTS_MARKETING_VERSION}" \
             --bundle-version "${INPUTS_BUNDLE_VERSION}"
           packaging/macos/scripts/sign-notarize.sh \
             --bundle-dir "$output_dir" \
-            --architecture universal \
+            --architecture arm64 \
             --identity "$SIGNING_IDENTITY" \
             --notary-key "$PALLADIN_NOTARY_KEY_PATH" \
             --notary-key-id "$NOTARY_KEY_ID" \
             --notary-issuer "$NOTARY_ISSUER_ID" \
-            --output-archive "$RUNNER_TEMP/palladin-runtime-darwin-universal.zip"
+            --output-archive "$RUNNER_TEMP/palladin-runtime-darwin-arm64.zip"
 
       - name: Zweryfikuj instalację z rzeczywistych tarballi npm
         run: |
           set -euo pipefail
           unpacked="$RUNNER_TEMP/notarized-app"
           mkdir -p "$unpacked"
-          /usr/bin/ditto -x -k "$RUNNER_TEMP/palladin-runtime-darwin-universal.zip" "$unpacked"
+          /usr/bin/ditto -x -k "$RUNNER_TEMP/palladin-runtime-darwin-arm64.zip" "$unpacked"
           test -d "$unpacked/PalladinRuntime.app"
-          for architecture in arm64 x64; do
-            runtime_package="$RUNNER_TEMP/runtime-darwin-$architecture-package"
-            packaging/macos/scripts/stage-npm-platform-package.sh \
-              --architecture "$architecture" \
-              --app "$unpacked/PalladinRuntime.app" \
-              --output-dir "$runtime_package"
-          done
+          runtime_package="$RUNNER_TEMP/runtime-darwin-arm64-package"
+          packaging/macos/scripts/stage-npm-platform-package.sh \
+            --architecture arm64 \
+            --app "$unpacked/PalladinRuntime.app" \
+            --output-dir "$runtime_package"
 
           npm ci --ignore-scripts --workspaces=false
           npm run build
-          for architecture in arm64 x64; do
-            npm pack "$RUNNER_TEMP/runtime-darwin-$architecture-package" \
-              --pack-destination "$RUNNER_TEMP" >/dev/null
-          done
-          for architecture in arm64 x64; do
-            runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$architecture-${INPUTS_MARKETING_VERSION}.tgz"
-            test -f "$runtime_tgz"
-            packaged_runtime="$RUNNER_TEMP/packed-runtime-darwin-$architecture"
-            mkdir -p "$packaged_runtime"
-            /usr/bin/tar -xzf "$runtime_tgz" -C "$packaged_runtime"
-            packaging/macos/scripts/verify-bundle.sh \
-              --app "$packaged_runtime/package/PalladinRuntime.app" \
-              --architecture universal
-            packaging/macos/scripts/compare-bundles.sh \
-              "$unpacked/PalladinRuntime.app" \
-              "$packaged_runtime/package/PalladinRuntime.app"
-          done
+          npm pack "$runtime_package" --pack-destination "$RUNNER_TEMP" >/dev/null
+          runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-arm64-${INPUTS_MARKETING_VERSION}.tgz"
+          test -f "$runtime_tgz"
+          packaged_runtime="$RUNNER_TEMP/packed-runtime-darwin-arm64"
+          mkdir -p "$packaged_runtime"
+          /usr/bin/tar -xzf "$runtime_tgz" -C "$packaged_runtime"
+          packaging/macos/scripts/verify-bundle.sh \
+            --app "$packaged_runtime/package/PalladinRuntime.app" \
+            --architecture arm64
+          packaging/macos/scripts/compare-bundles.sh \
+            "$unpacked/PalladinRuntime.app" \
+            "$packaged_runtime/package/PalladinRuntime.app"
           runtime_arch=$(node -p 'process.arch')
+          test "$runtime_arch" = arm64
           runtime_tgz="$RUNNER_TEMP/palladin-runtime-darwin-$runtime_arch-${INPUTS_MARKETING_VERSION}.tgz"
           test -f "$runtime_tgz"
 
@@ -326,7 +302,7 @@ jobs:
           npm install --prefix "$smoke" --ignore-scripts "$runtime_tgz"
           installed_app="$smoke/node_modules/@palladin/runtime-darwin-$runtime_arch/PalladinRuntime.app"
           packaging/macos/scripts/verify-bundle.sh \
-            --app "$installed_app" --architecture universal
+            --app "$installed_app" --architecture arm64
           packaging/macos/scripts/compare-bundles.sh \
             "$unpacked/PalladinRuntime.app" "$installed_app"
           doctor=$("$installed_app/Contents/MacOS/palladin" doctor)
@@ -341,9 +317,8 @@ jobs:
         with:
           name: palladin-runtime-darwin
           path: |
-            ${{ runner.temp }}/palladin-runtime-darwin-universal.zip
+            ${{ runner.temp }}/palladin-runtime-darwin-arm64.zip
             ${{ runner.temp }}/palladin-runtime-darwin-arm64-*.tgz
-            ${{ runner.temp }}/palladin-runtime-darwin-x64-*.tgz
           if-no-files-found: error
           retention-days: 7
 
@@ -361,7 +336,7 @@ jobs:
 
   smoke-signed:
     name: Exact signed boundary - ${{ matrix.architecture }}
-    needs: [authorize, sign-universal]
+    needs: [authorize, sign-arm64]
     strategy:
       fail-fast: false
       matrix:
@@ -370,10 +345,6 @@ jobs:
             architecture: arm64
             npm_architecture: arm64
             platform: macos/aarch64
-          - runner: macos-15-intel
-            architecture: x86_64
-            npm_architecture: x64
-            platform: macos/x86_64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     env:
@@ -414,15 +385,15 @@ jobs:
           zip_root="$RUNNER_TEMP/signed-zip-${{ matrix.npm_architecture }}"
           mkdir -p "$zip_root"
           /usr/bin/ditto -x -k \
-            "$release/palladin-runtime-darwin-universal.zip" \
+            "$release/palladin-runtime-darwin-arm64.zip" \
             "$zip_root"
           packaging/macos/scripts/verify-bundle.sh \
-            --app "$zip_root/PalladinRuntime.app" --architecture universal
+            --app "$zip_root/PalladinRuntime.app" --architecture arm64
           smoke="$RUNNER_TEMP/npm-smoke-${{ matrix.npm_architecture }}"
           mkdir -p "$smoke"
           npm install --prefix "$smoke" --ignore-scripts --no-save "${runtime_matches[0]}"
           app="$smoke/node_modules/@palladin/runtime-darwin-${{ matrix.npm_architecture }}/PalladinRuntime.app"
-          packaging/macos/scripts/verify-bundle.sh --app "$app" --architecture universal
+          packaging/macos/scripts/verify-bundle.sh --app "$app" --architecture arm64
           packaging/macos/scripts/compare-bundles.sh \
             "$zip_root/PalladinRuntime.app" "$app"
           binary="$app/Contents/MacOS/palladin"
@@ -482,18 +453,18 @@ jobs:
   macos-signed-gate:
     name: macOS Signed Release Gate
     if: always()
-    needs: [authorize, build-native, sign-universal, smoke-signed]
+    needs: [authorize, build-native, sign-arm64, smoke-signed]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Require signed native Apple Silicon and Intel release
+      - name: Require signed native Apple Silicon release
         env:
           AUTHORIZE: ${{ needs.authorize.result }}
           BUILD_NATIVE: ${{ needs.build-native.result }}
-          SIGN_UNIVERSAL: ${{ needs.sign-universal.result }}
+          SIGN_ARM64: ${{ needs.sign-arm64.result }}
           SIGNED_BOUNDARY: ${{ needs.smoke-signed.result }}
         run: |
           test "$AUTHORIZE" = success
           test "$BUILD_NATIVE" = success
-          test "$SIGN_UNIVERSAL" = success
+          test "$SIGN_ARM64" = success
           test "$SIGNED_BOUNDARY" = success

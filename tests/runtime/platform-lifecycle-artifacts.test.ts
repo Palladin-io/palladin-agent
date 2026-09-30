@@ -53,6 +53,36 @@ const platformManifest = { version, sourceSha, artifacts: platformArtifacts };
 const agentManifest = { version, sourceSha, artifacts: [agent] };
 
 describe('platform lifecycle release artifact binding', () => {
+  it('binds the first macOS release to the ARM64 signed archive', () => {
+    const firstVersion = '0.0.1';
+    const signed = artifact('palladin-runtime-darwin-arm64.zip', digest('3'));
+    const platform = artifact('palladin-runtime-darwin-arm64-0.0.1.tgz', digest('1'));
+    const cli = artifact('palladin-cli-0.0.1.tgz', digest('0'));
+    const firstReport = {
+      sourceSha,
+      targets: [{
+        targetId: 'macos-arm64',
+        artifacts: [
+          ['agent-npm', cli], ['platform-npm', platform], ['signed-runtime', signed],
+        ].map(([role, file]) => ({
+          phase: 'candidate', role, version: firstVersion, sourceSha,
+          filename: (file as ReturnType<typeof artifact>).filename,
+          sha256: (file as ReturnType<typeof artifact>).sha256,
+        })),
+      }],
+    };
+    const firstPlatformManifest = { version: firstVersion, sourceSha, artifacts: [platform, signed] };
+    const firstAgentManifest = { version: firstVersion, sourceSha, artifacts: [cli] };
+    expect(verifyReleaseArtifactBindings({
+      report: firstReport, platformManifest: firstPlatformManifest, agentManifest: firstAgentManifest,
+    })).toBe(true);
+    const mislabeled = structuredClone(firstReport);
+    mislabeled.targets[0]!.artifacts[2]!.filename = 'palladin-runtime-darwin-universal.zip';
+    expect(() => verifyReleaseArtifactBindings({
+      report: mislabeled, platformManifest: firstPlatformManifest, agentManifest: firstAgentManifest,
+    })).toThrow('artifact role is invalid');
+  });
+
   it('binds every role and digest to the exact platform and agent manifests', () => {
     expect(verifyReleaseArtifactBindings({ report, platformManifest, agentManifest })).toBe(true);
   });

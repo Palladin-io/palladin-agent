@@ -42,7 +42,8 @@ function roleMatches(targetId, role, filename, version) {
   let match = /^macos-(arm64|x64)$/.exec(targetId);
   if (match) {
     if (role === 'platform-npm') return filename === `palladin-runtime-darwin-${match[1]}-${version}.tgz`;
-    if (role === 'signed-runtime') return filename === 'palladin-runtime-darwin-universal.zip';
+    if (role === 'signed-runtime') return filename === (version === '0.0.1'
+      ? 'palladin-runtime-darwin-arm64.zip' : 'palladin-runtime-darwin-universal.zip');
   }
   match = /^windows-(arm64|x64)$/.exec(targetId);
   if (match) {

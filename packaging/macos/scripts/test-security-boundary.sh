@@ -182,26 +182,28 @@ if "$modified_app/Contents/MacOS/palladin" --id default security upgrade \
   die "modified bundle unexpectedly opened the identity"
 fi
 
-begin_boundary_test unsigned-inactive-slice inactive.out
+if [[ "$(lipo -archs "$binary" | wc -w | tr -d ' ')" == 2 ]]; then
+  begin_boundary_test unsigned-inactive-slice inactive.out
 
-inactive_app="$work_dir/PalladinInactiveSlice.app"
-ditto "$app_path" "$inactive_app"
-inactive_architecture=arm64
-[[ "$architecture" != "arm64" ]] || inactive_architecture=x86_64
-inactive_binary="$work_dir/inactive-slice"
-lipo "$binary" -thin "$inactive_architecture" -output "$inactive_binary"
-codesign --remove-signature "$inactive_binary"
-lipo "$binary" -replace "$inactive_architecture" "$inactive_binary" \
-  -output "$inactive_app/Contents/MacOS/palladin"
-chmod 0755 "$inactive_app/Contents/MacOS/palladin"
-if codesign --verify --strict --all-architectures "$inactive_app" >/dev/null 2>&1; then
-  die "bundle with unsigned inactive slice unexpectedly retained a valid signature"
-fi
-if "$inactive_app/Contents/MacOS/palladin" doctor >"$work_dir/inactive.out" 2>&1; then
-  grep -Fx 'standalone-security-tier: Unavailable' "$work_dir/inactive.out" >/dev/null ||
-    die "bundle with unsigned inactive slice unexpectedly reported Hardened"
-  grep -Fx 'identity-opened: no' "$work_dir/inactive.out" >/dev/null ||
-    die "bundle with unsigned inactive slice unexpectedly opened identity"
+  inactive_app="$work_dir/PalladinInactiveSlice.app"
+  ditto "$app_path" "$inactive_app"
+  inactive_architecture=arm64
+  [[ "$architecture" != "arm64" ]] || inactive_architecture=x86_64
+  inactive_binary="$work_dir/inactive-slice"
+  lipo "$binary" -thin "$inactive_architecture" -output "$inactive_binary"
+  codesign --remove-signature "$inactive_binary"
+  lipo "$binary" -replace "$inactive_architecture" "$inactive_binary" \
+    -output "$inactive_app/Contents/MacOS/palladin"
+  chmod 0755 "$inactive_app/Contents/MacOS/palladin"
+  if codesign --verify --strict --all-architectures "$inactive_app" >/dev/null 2>&1; then
+    die "bundle with unsigned inactive slice unexpectedly retained a valid signature"
+  fi
+  if "$inactive_app/Contents/MacOS/palladin" doctor >"$work_dir/inactive.out" 2>&1; then
+    grep -Fx 'standalone-security-tier: Unavailable' "$work_dir/inactive.out" >/dev/null ||
+      die "bundle with unsigned inactive slice unexpectedly reported Hardened"
+    grep -Fx 'identity-opened: no' "$work_dir/inactive.out" >/dev/null ||
+      die "bundle with unsigned inactive slice unexpectedly opened identity"
+  fi
 fi
 
 begin_boundary_test dyld-injection dyld.err
