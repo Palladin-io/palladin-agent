@@ -9,6 +9,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { canonicalJson, canonicalSha256, loadManifest, validateManifest } from './report.mjs';
+import { macSignedRuntimeArchive } from './verify-release-artifacts.mjs';
 
 const SOURCE_SHA = /^[0-9a-f]{40}$/;
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
@@ -140,12 +141,11 @@ function artifactMap(manifest, directory, sourceSha, version, label) {
   }
   return result;
 }
-export function expectedNames(target, version, firstRelease = false) {
+function expectedNames(target, version, firstRelease = false) {
   const arch = target.arch;
   if (target.os === 'macos') return {
     agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-darwin-${arch}-${version}.tgz`,
-    extraRole: 'signed-runtime', extra: version === '0.0.1'
-      ? 'palladin-runtime-darwin-arm64.zip' : 'palladin-runtime-darwin-universal.zip',
+    extraRole: 'signed-runtime', extra: macSignedRuntimeArchive(version),
   };
   if (target.os === 'windows') return {
     agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-win32-${arch}-${version}.tgz`,

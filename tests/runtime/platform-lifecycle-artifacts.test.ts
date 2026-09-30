@@ -1,15 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { verifyReleaseArtifactBindings } from '../../security/lifecycle/verify-release-artifacts.mjs';
-import { expectedNames } from '../../security/lifecycle/run-physical-target.mjs';
+import { macSignedRuntimeArchive, verifyReleaseArtifactBindings } from '../../security/lifecycle/verify-release-artifacts.mjs';
 
 const sourceSha = 'a'.repeat(40);
 
 it('uses the original ARM64 archive when 0.0.1 is a lifecycle baseline', () => {
-  const mac = { os: 'macos', arch: 'arm64' };
-  expect(expectedNames(mac, '0.0.1', false).extra).toBe('palladin-runtime-darwin-arm64.zip');
-  expect(expectedNames(mac, '0.0.1', true).extra).toBe('palladin-runtime-darwin-arm64.zip');
-  expect(expectedNames(mac, '0.0.2', false).extra).toBe('palladin-runtime-darwin-universal.zip');
+  expect(macSignedRuntimeArchive('0.0.1')).toBe('palladin-runtime-darwin-arm64.zip');
+  expect(macSignedRuntimeArchive('0.0.2')).toBe('palladin-runtime-darwin-universal.zip');
 });
 const digest = (value: string) => value.repeat(64);
 const version = '1.2.3';
