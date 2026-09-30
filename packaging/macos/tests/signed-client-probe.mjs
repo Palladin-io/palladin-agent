@@ -79,6 +79,16 @@ function capture(name, stdout, stderr) {
 }
 
 async function runBounded(name, executable, args, options = {}) {
+  process.stderr.write(`Palladin signed-client probe stage: ${name}\n`);
+  try {
+    return await runBoundedCaptured(name, executable, args, options);
+  } catch (error) {
+    process.stderr.write(`Palladin signed-client probe failure: ${name}: unclassified\n`);
+    throw error;
+  }
+}
+
+async function runBoundedCaptured(name, executable, args, options) {
   const child = spawn(executable, args, {
     shell: false,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -106,7 +116,7 @@ async function runBounded(name, executable, args, options = {}) {
   }, options.timeoutMs ?? 8_000);
   const result = await new Promise((resolve, reject) => {
     child.once('error', reject);
-    child.once('exit', (code, signal) => resolve({ code, signal }));
+    child.once('close', (code, signal) => resolve({ code, signal }));
   });
   clearTimeout(timer);
   const stdoutBuffer = Buffer.concat(stdout);
@@ -119,6 +129,17 @@ async function runBounded(name, executable, args, options = {}) {
 function assertAuthorizationDenial(name, result) {
   const output = Buffer.concat([result.stdout, result.stderr]).toString('utf8');
   if (!output.includes('fresh operating-system authorization')) {
+    const knownFailures = [
+      ['profile does not exist; run: palladin agents create', 'profile-not-found'],
+      ['Agent is not registered; run palladin status', 'agent-not-registered'],
+      ['Agent is not active; approve it in Palladin', 'agent-not-active'],
+      ['OS secure storage is unavailable; no file or environment fallback is allowed', 'secure-store-unavailable'],
+      ['signed runtime release manifest is unavailable; no identity was opened', 'manifest-unavailable'],
+      ['signed runtime release manifest verification failed; no identity was opened', 'manifest-invalid'],
+      ['macOS Keychain operation failed (OSStatus ', 'keychain-operation-failed'],
+    ];
+    const reason = knownFailures.find(([message]) => output.includes(message))?.[1] ?? 'unclassified';
+    process.stderr.write(`Palladin signed-client probe failure: ${name}: ${reason}\n`);
     throw new Error(`${name} failed before reaching the authenticated identity boundary`);
   }
 }
@@ -158,8 +179,11 @@ const secondMcp = runBounded(
   { stdin: mcpInput, keepStdinOpen: true, interruptAfterMs: 600, timeoutMs: 5_000 },
 );
 const mcpResults = await Promise.all([firstMcp, secondMcp]);
-if (mcpResults.some((result) => result.code === 0)) {
-  throw new Error('blind MCP connection unexpectedly completed an identity operation');
+for (const [index, result] of mcpResults.entries()) {
+  if (result.code === 0) {
+    process.stderr.write(`Palladin signed-client probe failure: mcp-${index === 0 ? 'first' : 'second'}-connection: unexpected-success\n`);
+    throw new Error('blind MCP connection unexpectedly completed an identity operation');
+  }
 }
 mcpResults.forEach((result, index) => assertAuthorizationDenial(`mcp-connection-${index + 1}`, result));
 

@@ -20,6 +20,8 @@ report_boundary_failure() {
   local category='unknown'
   local keychain_status='unavailable'
   local captured_line
+  local client_failure='^Palladin signed-client probe failure: (blind-genuine|blind-copied|cancelled-connect|mcp-first-connection|mcp-second-connection|mcp-connection-[12]): (profile-not-found|agent-not-registered|agent-not-active|secure-store-unavailable|manifest-unavailable|manifest-invalid|keychain-operation-failed|unexpected-success|unclassified)$'
+  local client_stage='^Palladin signed-client probe stage: (blind-genuine|blind-copied|cancelled-connect|mcp-first-connection|mcp-second-connection)$'
   local keychain_failure='^Error: OS secure storage operation failed: macOS Keychain operation failed \(OSStatus (-?[0-9]{1,10})\); no fallback is allowed$'
   if [[ -f "$captured_error" && ! -L "$captured_error" ]]; then
     if grep -Fxq -e 'Error: OS secure storage operation failed: OS secure storage is unavailable; no file or environment fallback is allowed' -e 'Error: OS secure storage is unavailable; no file or environment fallback is allowed' "$captured_error"; then
@@ -36,6 +38,11 @@ report_boundary_failure() {
         category='secure-storage-operation-failed'
         keychain_status="${BASH_REMATCH[1]}"
         break
+      elif [[ "$phase" == 'intact-copy-and-client-authorization' && "$captured_line" =~ $client_failure ]]; then
+        category="signed-client-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+        break
+      elif [[ "$phase" == 'intact-copy-and-client-authorization' && "$captured_line" =~ $client_stage ]]; then
+        category="signed-client-${BASH_REMATCH[1]}-failed"
       fi
     done <"$captured_error"
   fi
