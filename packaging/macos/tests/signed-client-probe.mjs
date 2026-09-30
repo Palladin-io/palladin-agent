@@ -179,8 +179,11 @@ const secondMcp = runBounded(
   { stdin: mcpInput, keepStdinOpen: true, interruptAfterMs: 600, timeoutMs: 5_000 },
 );
 const mcpResults = await Promise.all([firstMcp, secondMcp]);
-if (mcpResults.some((result) => result.code === 0)) {
-  throw new Error('blind MCP connection unexpectedly completed an identity operation');
+for (const [index, result] of mcpResults.entries()) {
+  if (result.code === 0) {
+    process.stderr.write(`Palladin signed-client probe failure: mcp-${index === 0 ? 'first' : 'second'}-connection: unexpected-success\n`);
+    throw new Error('blind MCP connection unexpectedly completed an identity operation');
+  }
 }
 mcpResults.forEach((result, index) => assertAuthorizationDenial(`mcp-connection-${index + 1}`, result));
 
