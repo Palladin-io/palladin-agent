@@ -164,8 +164,6 @@ jobs:
         include:
           - target: macos-arm64
             runner: '["self-hosted","palladin-lifecycle","macos","arm64"]'
-          - target: macos-x64
-            runner: '["self-hosted","palladin-lifecycle","macos","x64"]'
     runs-on: ${{ fromJSON(matrix.runner) }}
     environment: lifecycle-qa
     timeout-minutes: 90
@@ -192,7 +190,7 @@ jobs:
           set -euo pipefail
           test "$(stat -f '%Su' /dev/console)" = "$USER"
           test "$(sysctl -in sysctl.proc_translated 2>/dev/null || echo 0)" = 0
-          test "$(uname -m)" = "${{ matrix.target == 'macos-arm64' && 'arm64' || 'x86_64' }}"
+          test "$(uname -m)" = arm64
       - name: Run the secret-safe lifecycle
         env:
           PALLADIN_APPLICATION_IDENTIFIER: ${{ vars.PALLADIN_MACOS_APPLICATION_IDENTIFIER }}
@@ -320,7 +318,7 @@ jobs:
         with: { name: 'lifecycle-${{ matrix.target }}', path: '${{ runner.temp }}/lifecycle-${{ matrix.target }}.json', if-no-files-found: error, retention-days: 7 }
 
   aggregate:
-    name: Aggregate all twelve physical shards
+    name: Aggregate all eleven physical shards
     if: always() && github.actor == 'patryk-roguszewski'
     needs: [authorize, macos, windows, linux]
     runs-on: ubuntu-latest
@@ -339,7 +337,7 @@ jobs:
       - name: Generate and validate the fail-closed report
         run: |
           set -euo pipefail
-          test "$(find "$RUNNER_TEMP/lifecycle-shards" -maxdepth 1 -type f -name 'lifecycle-*.json' | wc -l | tr -d ' ')" = 12
+          test "$(find "$RUNNER_TEMP/lifecycle-shards" -maxdepth 1 -type f -name 'lifecycle-*.json' | wc -l | tr -d ' ')" = 11
           node security/lifecycle/aggregate-shards.mjs --shards "$RUNNER_TEMP/lifecycle-shards" --source-sha '${{ needs.authorize.outputs.source_sha }}' --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --output "$RUNNER_TEMP/lifecycle-evidence.json"
           node security/lifecycle/report.mjs generate --evidence "$RUNNER_TEMP/lifecycle-evidence.json" --source-sha '${{ needs.authorize.outputs.source_sha }}' --json "$RUNNER_TEMP/lifecycle-report.json" --markdown "$RUNNER_TEMP/lifecycle-report.md"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

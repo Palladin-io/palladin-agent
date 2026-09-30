@@ -143,7 +143,8 @@ export function validateManifest(input) {
     if (canonicalJson(targets) !== canonicalJson(FIRST_RELEASE_TARGETS)) fail('first-release target matrix is invalid');
   } else {
     for (const distribution of ['macos', 'windows-11', 'ubuntu-24.04', 'debian-13', 'fedora-42', 'alpine-3.22']) {
-      for (const arch of ['arm64', 'x64']) if (!matrix.has(`${distribution}:${arch}`)) fail(`manifest misses ${distribution}/${arch}`);
+      const architectures = distribution === 'macos' ? ['arm64'] : ['arm64', 'x64'];
+      for (const arch of architectures) if (!matrix.has(`${distribution}:${arch}`)) fail(`manifest misses ${distribution}/${arch}`);
     }
   }
   noSecrets(manifest, 'manifest');

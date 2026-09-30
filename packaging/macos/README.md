@@ -87,7 +87,7 @@ process arguments.
 
 ## Release boundary
 
-The release workflow builds native arm64 and x86_64 slices, combines them into one universal executable, embeds it in `PalladinRuntime.app`, signs it with Developer ID, submits it to Apple notarization, staples the ticket, and packs the verified app into the platform npm package.
+The first `0.0.1` release workflow builds one native arm64 executable, embeds it in `PalladinRuntime.app`, signs it with Developer ID, submits it to Apple notarization, staples the ticket, and packs the verified app into the platform npm package. Intel remains outside the release and upgrade-lifecycle matrices. Reintroducing it requires a first-install lifecycle gate because the immutable `0.0.1` release has no Intel baseline package.
 
 The protected GitHub environment is `macos-signing`. Before removing its required reviewer, configure active tag rulesets allowing only the owner to create `v*` and `signing-*`, disallow updates/deletion without any bypass, and restrict this environment to those tags with no allowed branches. Repository admins remain trusted because they can edit rulesets. `version-policy-signing`, `npm-release`, `release-finalize` and first-release `lifecycle-qa` accept only `v*` tags. Release signatures are immutable and require no online policy renewal. Creating the immutable tag is the GitHub signing authorization; dispatch stays owner-only and all verification jobs remain required. npm staged-package acceptance with 2FA and physical test evidence are separate gates and are not removed.
 

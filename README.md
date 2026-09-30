@@ -461,7 +461,7 @@ dotnet run --no-restore --project runtime/contracts/dotnet/Palladin.ContractGate
 Every pull request runs two stable required contexts:
 
 - `CI Gate` aggregates the Node.js matrix, minimum supported npm selection tests, Rust formatting and linting, the full Rust workspace, and the frozen TypeScript/Rust/.NET contract consumers.
-- `Native Platform Gate` aggregates native Apple Silicon, Intel macOS, Windows x64, Windows ARM64, Linux glibc x64/arm64, and Linux musl x64/arm64 builds and smoke tests. A supported target cannot be skipped by a path filter.
+- `Native Platform Gate` aggregates native Apple Silicon, Windows x64, Windows ARM64, Linux glibc x64/arm64, and Linux musl x64/arm64 builds and smoke tests. Intel macOS is deferred until a native first-install lifecycle gate and physical acceptance tests pass. A supported target cannot be skipped by a path filter.
 
 The repository is public under [Apache-2.0](LICENSE). See [NOTICE](NOTICE),
 [third-party notices](THIRD_PARTY_NOTICES.md), and the
