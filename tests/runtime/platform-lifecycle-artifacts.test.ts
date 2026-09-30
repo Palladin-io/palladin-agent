@@ -1,20 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { macSignedRuntimeArchive, verifyReleaseArtifactBindings } from '../../security/lifecycle/verify-release-artifacts.mjs';
+import { verifyReleaseArtifactBindings } from '../../security/lifecycle/verify-release-artifacts.mjs';
 
 const sourceSha = 'a'.repeat(40);
 
-it('uses the original ARM64 archive when 0.0.1 is a lifecycle baseline', () => {
-  expect(macSignedRuntimeArchive('0.0.1')).toBe('palladin-runtime-darwin-arm64.zip');
-  expect(macSignedRuntimeArchive('0.0.2')).toBe('palladin-runtime-darwin-universal.zip');
-});
 const digest = (value: string) => value.repeat(64);
 const version = '1.2.3';
 const artifact = (filename: string, sha256: string) => ({ filename, sha256, sbom: { filename: 'fixture.spdx.json', sha256: digest('f') } });
 const platformArtifacts = [
   artifact('palladin-runtime-darwin-arm64-1.2.3.tgz', digest('1')),
-  artifact('palladin-runtime-darwin-x64-1.2.3.tgz', digest('2')),
-  artifact('palladin-runtime-darwin-universal.zip', digest('3')),
+  artifact('palladin-runtime-darwin-arm64.zip', digest('3')),
   artifact('palladin-runtime-win32-arm64-1.2.3.tgz', digest('4')),
   artifact('palladin-runtime-win32-x64-1.2.3.tgz', digest('5')),
   artifact('palladin-runtime-setup-arm64-1.2.3.zip', digest('6')),
@@ -40,8 +35,7 @@ const target = (targetId: string, roles: Array<[string, string]>) => ({
 const report = {
   sourceSha,
   targets: [
-    target('macos-arm64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-darwin-arm64-1.2.3.tgz'], ['signed-runtime', 'palladin-runtime-darwin-universal.zip']]),
-    target('macos-x64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-darwin-x64-1.2.3.tgz'], ['signed-runtime', 'palladin-runtime-darwin-universal.zip']]),
+    target('macos-arm64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-darwin-arm64-1.2.3.tgz'], ['signed-runtime', 'palladin-runtime-darwin-arm64.zip']]),
     target('windows-arm64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-win32-arm64-1.2.3.tgz'], ['signed-installer', 'palladin-runtime-setup-arm64-1.2.3.zip']]),
     target('windows-x64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-win32-x64-1.2.3.tgz'], ['signed-installer', 'palladin-runtime-setup-x64-1.2.3.zip']]),
     target('ubuntu-24.04-arm64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-arm64-gnu-1.2.3.tgz'], ['deb', 'palladin-runtime_1.2.3_arm64.deb']]),
@@ -90,6 +84,10 @@ describe('platform lifecycle release artifact binding', () => {
 
   it('binds every role and digest to the exact platform and agent manifests', () => {
     expect(verifyReleaseArtifactBindings({ report, platformManifest, agentManifest })).toBe(true);
+    const mislabeled = structuredClone(report);
+    mislabeled.targets[0]!.artifacts[2]!.filename = 'palladin-runtime-darwin-universal.zip';
+    expect(() => verifyReleaseArtifactBindings({ report: mislabeled, platformManifest, agentManifest }))
+      .toThrow('artifact role is invalid');
   });
 
   it('rejects a digest from another artifact or a role from another target', () => {
@@ -99,7 +97,7 @@ describe('platform lifecycle release artifact binding', () => {
       .toThrow('does not match the staged release');
 
     const wrongRole = structuredClone(report);
-    wrongRole.targets[2]!.artifacts[2]!.filename = 'palladin-runtime-setup-x64-1.2.3.zip';
+    wrongRole.targets[1]!.artifacts[2]!.filename = 'palladin-runtime-setup-x64-1.2.3.zip';
     expect(() => verifyReleaseArtifactBindings({ report: wrongRole, platformManifest, agentManifest }))
       .toThrow('artifact role is invalid');
   });

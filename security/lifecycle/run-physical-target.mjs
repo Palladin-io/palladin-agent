@@ -9,7 +9,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { canonicalJson, canonicalSha256, loadManifest, validateManifest } from './report.mjs';
-import { macSignedRuntimeArchive } from './verify-release-artifacts.mjs';
+import { MAC_SIGNED_RUNTIME_ARCHIVE } from './verify-release-artifacts.mjs';
 
 const SOURCE_SHA = /^[0-9a-f]{40}$/;
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
@@ -145,7 +145,7 @@ function expectedNames(target, version, firstRelease = false) {
   const arch = target.arch;
   if (target.os === 'macos') return {
     agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-darwin-${arch}-${version}.tgz`,
-    extraRole: 'signed-runtime', extra: macSignedRuntimeArchive(version),
+    extraRole: 'signed-runtime', extra: MAC_SIGNED_RUNTIME_ARCHIVE,
   };
   if (target.os === 'windows') return {
     agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-win32-${arch}-${version}.tgz`,
@@ -198,7 +198,7 @@ function verifyMacBundle(app, phase, env) {
   try {
     scriptDescriptor = openRepositoryFile('packaging/macos/scripts/verify-bundle.sh');
     libraryDescriptor = openRepositoryFile('packaging/macos/scripts/lib.sh');
-    bounded('/bin/bash', ['/dev/fd/3', '--app', app, '--architecture', phase.version === '0.0.1' ? 'arm64' : 'universal'], {
+    bounded('/bin/bash', ['/dev/fd/3', '--app', app, '--architecture', 'arm64'], {
       env: { ...env, PALLADIN_VERIFIED_LIB_FD: '4' }, timeout: 300_000,
       stdio: ['pipe', 'pipe', 'pipe', scriptDescriptor, libraryDescriptor],
     });
