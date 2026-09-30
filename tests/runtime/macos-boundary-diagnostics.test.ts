@@ -21,6 +21,20 @@ function report(captured: string, phase = 'initialization') {
 }
 
 describe.skipIf(process.platform === 'win32')('signed boundary failure diagnostics', () => {
+  it('attributes a concurrent MCP rejection to the failing connection, not the last one started', () => {
+    const diagnostic = report([
+      'Palladin signed-client probe stage: mcp-first-connection',
+      'Palladin signed-client probe stage: mcp-second-connection',
+      'Palladin signed-client probe failure: mcp-first-connection: unclassified',
+      'private-fixture-marker',
+    ].join('\n'), 'intact-copy-and-client-authorization');
+    expect(diagnostic.status).toBe(0);
+    expect(diagnostic.stderr.includes('signed-client-mcp-first-connection-unclassified')).toBe(true);
+    expect(diagnostic.summary.includes('signed-client-mcp-first-connection-unclassified')).toBe(true);
+    expect(diagnostic.stderr.includes('private-fixture-marker')).toBe(false);
+    expect(diagnostic.summary.includes('private-fixture-marker')).toBe(false);
+  });
+
   it('identifies the signed client operation without exposing its child output', () => {
     const directory = mkdtempSync(join(tmpdir(), 'palladin-signed-client-diagnostic-'));
     try {

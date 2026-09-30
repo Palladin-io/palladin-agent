@@ -80,6 +80,15 @@ function capture(name, stdout, stderr) {
 
 async function runBounded(name, executable, args, options = {}) {
   process.stderr.write(`Palladin signed-client probe stage: ${name}\n`);
+  try {
+    return await runBoundedCaptured(name, executable, args, options);
+  } catch (error) {
+    process.stderr.write(`Palladin signed-client probe failure: ${name}: unclassified\n`);
+    throw error;
+  }
+}
+
+async function runBoundedCaptured(name, executable, args, options) {
   const child = spawn(executable, args, {
     shell: false,
     stdio: ['pipe', 'pipe', 'pipe'],
