@@ -24,6 +24,7 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
   it.each([
     ['unexpected-output', 'printf "private-fixture-marker\\n" >&2'],
     ['canary-disclosure', 'printf "%s" "$PALLADIN_BOUNDARY_PRIVATE_CANARY" >&2'],
+    ['capture-bound', 'printf "fresh operating-system authorization is required for this operation\\n" >&2; head -c 1048577 /dev/zero'],
   ] as const)('reports %s without exposing captured output', (reason, output) => {
     const directory = mkdtempSync(join(tmpdir(), 'palladin-probe-reason-'));
     try {

@@ -102,9 +102,13 @@ async function runBoundedCaptured(name, executable, args, options) {
   const stdout = [];
   const stderr = [];
   let size = 0;
+  let captureOverflowed = false;
   const collect = (target) => (chunk) => {
     size += chunk.length;
-    if (size > maximumCaptureBytes) child.kill('SIGKILL');
+    if (size > maximumCaptureBytes) {
+      captureOverflowed = true;
+      child.kill('SIGKILL');
+    }
     else target.push(Buffer.from(chunk));
   };
   child.stdout.on('data', collect(stdout));
@@ -126,6 +130,7 @@ async function runBoundedCaptured(name, executable, args, options) {
   clearTimeout(timer);
   const stdoutBuffer = Buffer.concat(stdout);
   const stderrBuffer = Buffer.concat(stderr);
+  if (captureOverflowed) throw new Error('signed-client output exceeded its safe capture bound');
   capture(name, stdoutBuffer, stderrBuffer);
   if (timedOut) throw new Error('signed-client probe timed out');
   return { ...result, stdout: stdoutBuffer, stderr: stderrBuffer };
