@@ -140,11 +140,11 @@ function artifactMap(manifest, directory, sourceSha, version, label) {
   }
   return result;
 }
-function expectedNames(target, version, firstRelease = false) {
+export function expectedNames(target, version, firstRelease = false) {
   const arch = target.arch;
   if (target.os === 'macos') return {
     agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-darwin-${arch}-${version}.tgz`,
-    extraRole: 'signed-runtime', extra: firstRelease
+    extraRole: 'signed-runtime', extra: version === '0.0.1'
       ? 'palladin-runtime-darwin-arm64.zip' : 'palladin-runtime-darwin-universal.zip',
   };
   if (target.os === 'windows') return {

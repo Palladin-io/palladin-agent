@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import { verifyReleaseArtifactBindings } from '../../security/lifecycle/verify-release-artifacts.mjs';
+import { expectedNames } from '../../security/lifecycle/run-physical-target.mjs';
 
 const sourceSha = 'a'.repeat(40);
+
+it('uses the original ARM64 archive when 0.0.1 is a lifecycle baseline', () => {
+  const mac = { os: 'macos', arch: 'arm64' };
+  expect(expectedNames(mac, '0.0.1', false).extra).toBe('palladin-runtime-darwin-arm64.zip');
+  expect(expectedNames(mac, '0.0.1', true).extra).toBe('palladin-runtime-darwin-arm64.zip');
+  expect(expectedNames(mac, '0.0.2', false).extra).toBe('palladin-runtime-darwin-universal.zip');
+});
 const digest = (value: string) => value.repeat(64);
 const version = '1.2.3';
 const artifact = (filename: string, sha256: string) => ({ filename, sha256, sbom: { filename: 'fixture.spdx.json', sha256: digest('f') } });
