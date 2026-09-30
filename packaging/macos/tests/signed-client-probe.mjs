@@ -83,7 +83,12 @@ async function runBounded(name, executable, args, options = {}) {
   try {
     return await runBoundedCaptured(name, executable, args, options);
   } catch (error) {
-    process.stderr.write(`Palladin signed-client probe failure: ${name}: unclassified\n`);
+    const reason = error instanceof Error ? ({
+      'signed-client output exceeded its safe capture bound': 'capture-bound',
+      'signed-client output contained the private boundary canary': 'canary-disclosure',
+      'signed-client probe timed out': 'timeout',
+    }[error.message] ?? 'probe-error') : 'probe-error';
+    process.stderr.write(`Palladin signed-client probe failure: ${name}: ${reason}\n`);
     throw error;
   }
 }
@@ -138,7 +143,7 @@ function assertAuthorizationDenial(name, result) {
       ['signed runtime release manifest verification failed; no identity was opened', 'manifest-invalid'],
       ['macOS Keychain operation failed (OSStatus ', 'keychain-operation-failed'],
     ];
-    const reason = knownFailures.find(([message]) => output.includes(message))?.[1] ?? 'unclassified';
+    const reason = knownFailures.find(([message]) => output.includes(message))?.[1] ?? 'unexpected-output';
     process.stderr.write(`Palladin signed-client probe failure: ${name}: ${reason}\n`);
     throw new Error(`${name} failed before reaching the authenticated identity boundary`);
   }
