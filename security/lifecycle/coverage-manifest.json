@@ -18,7 +18,6 @@
   "artifactPhases": ["baseline", "candidate", "forward-rollback"],
   "targets": [
     { "id": "macos-arm64", "os": "macos", "arch": "arm64", "distribution": "macos", "libc": "none", "requiredArtifactRoles": ["agent-npm", "platform-npm", "signed-runtime"] },
-    { "id": "macos-x64", "os": "macos", "arch": "x64", "distribution": "macos", "libc": "none", "requiredArtifactRoles": ["agent-npm", "platform-npm", "signed-runtime"] },
     { "id": "windows-arm64", "os": "windows", "arch": "arm64", "distribution": "windows-11", "libc": "none", "requiredArtifactRoles": ["agent-npm", "platform-npm", "signed-installer"] },
     { "id": "windows-x64", "os": "windows", "arch": "x64", "distribution": "windows-11", "libc": "none", "requiredArtifactRoles": ["agent-npm", "platform-npm", "signed-installer"] },
     { "id": "ubuntu-24.04-arm64", "os": "linux", "arch": "arm64", "distribution": "ubuntu-24.04", "libc": "gnu", "requiredArtifactRoles": ["agent-npm", "platform-npm", "deb"] },

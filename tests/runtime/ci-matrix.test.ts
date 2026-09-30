@@ -49,7 +49,6 @@ describe('cross-platform CI gates', () => {
     const rootPackage = JSON.parse(read('package.json')) as RootPackage;
     const supported = [
       { packageName: '@palladin/runtime-darwin-arm64', target: 'aarch64-apple-darwin', runner: 'macos-15' },
-      { packageName: '@palladin/runtime-darwin-x64', target: 'x86_64-apple-darwin', runner: 'macos-15-intel' },
       { packageName: '@palladin/runtime-win32-arm64', target: 'aarch64-pc-windows-msvc', runner: 'windows-11-arm' },
       { packageName: '@palladin/runtime-win32-x64', target: 'x86_64-pc-windows-msvc', runner: 'windows-2025' },
       { packageName: '@palladin/runtime-linux-arm64-gnu', target: 'aarch64-unknown-linux-gnu', runner: 'ubuntu-24.04-arm' },
@@ -59,8 +58,7 @@ describe('cross-platform CI gates', () => {
     ];
 
     expect(Object.keys(rootPackage.optionalDependencies).sort()).toEqual(
-      supported.filter(({ packageName }) => !packageName.includes('/runtime-win32-')
-        && packageName !== '@palladin/runtime-darwin-x64')
+      supported.filter(({ packageName }) => !packageName.includes('/runtime-win32-'))
         .map(({ packageName }) => packageName).sort(),
     );
     for (const { packageName, target, runner } of supported) {
@@ -77,7 +75,7 @@ describe('cross-platform CI gates', () => {
     expect(native).toContain('cargo clippy --workspace --all-targets --locked --target ${{ matrix.musl_target }}');
     expect(native).toContain('--exclude palladin-linux-broker --exclude palladin-linux-executor');
     expect(native).toContain('--exclude palladin-windows-broker --exclude palladin-windows-executor');
-    expect(native).toContain('runner: macos-15-intel');
+    expect(native).not.toContain('runner: macos-15-intel');
     expect(native).toMatch(/apple:[\s\S]*?timeout-minutes: 45/);
     expect(native).toContain('runner: windows-11-arm');
     expect(native).toContain('runner: ubuntu-24.04-arm');
@@ -166,8 +164,8 @@ describe('cross-platform CI gates', () => {
 
     const macos = read('.github/workflows/macos-signed-runtime.yml');
     expect(macos).toContain('name: macOS Signed Release Gate');
-    expect(macos).toContain('runner: macos-15-intel');
-    expect(macos).toContain('platform: macos/x86_64');
+    expect(macos).not.toContain('runner: macos-15-intel');
+    expect(macos).toContain('platform: macos/aarch64');
     const windows = read('.github/workflows/windows-signed-runtime.yml');
     expect(windows).toContain('name: Hosted Windows Signed Artifact Gate');
     expect(windows).toContain('incomplete-hosted-boundaries');

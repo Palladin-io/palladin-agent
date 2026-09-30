@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const SOURCE_SHA = /^[0-9a-f]{40}$/;
+export const MAC_SIGNED_RUNTIME_ARCHIVE = 'palladin-runtime-darwin-arm64.zip';
 function fail(message) { throw new Error(message); }
 function record(value, label) {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) fail(`${label} is invalid`);
@@ -39,10 +40,10 @@ function manifestArtifacts(manifestInput, label, sourceSha, version) {
 }
 function roleMatches(targetId, role, filename, version) {
   if (role === 'agent-npm') return filename === `palladin-cli-${version}.tgz`;
-  let match = /^macos-(arm64|x64)$/.exec(targetId);
+  let match = /^macos-(arm64)$/.exec(targetId);
   if (match) {
     if (role === 'platform-npm') return filename === `palladin-runtime-darwin-${match[1]}-${version}.tgz`;
-    if (role === 'signed-runtime') return filename === 'palladin-runtime-darwin-universal.zip';
+    if (role === 'signed-runtime') return filename === MAC_SIGNED_RUNTIME_ARCHIVE;
   }
   match = /^windows-(arm64|x64)$/.exec(targetId);
   if (match) {

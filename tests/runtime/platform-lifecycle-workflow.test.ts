@@ -6,7 +6,7 @@ const runner = readFileSync('security/lifecycle/run-physical-target.mjs', 'utf8'
 const release = readFileSync('.github/workflows/release-meta.yml', 'utf8');
 
 describe('owner-only physical lifecycle workflow', () => {
-  it('has one manual owner-only entry point and twelve fixed native targets', () => {
+  it('has one manual owner-only entry point and eleven fixed native targets', () => {
     expect(workflow).toContain("if: github.actor == 'patryk-roguszewski'");
     expect(workflow).toContain("github.ref_type == 'tag'");
     expect(workflow).toContain('ref: ${{ github.sha }}');
@@ -17,7 +17,8 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(workflow).not.toContain("with: { ref: '${{ needs.authorize.outputs.source_sha }}'");
     expect(workflow).toContain('test "$GITHUB_EVENT_NAME" = workflow_dispatch');
     expect(workflow).not.toMatch(/^\s{2}(push|pull_request|schedule|workflow_run):/m);
-    expect(workflow.match(/- target: macos-/g)).toHaveLength(2);
+    expect(workflow.match(/- target: macos-/g)).toHaveLength(1);
+    expect(workflow).not.toContain('- target: macos-x64');
     expect(workflow.match(/- target: windows-/g)).toHaveLength(2);
     expect(workflow.match(/- \{ target: (?:ubuntu|debian|fedora|alpine)-/g)).toHaveLength(8);
     expect(workflow).toContain('environment: lifecycle-qa');
@@ -26,13 +27,13 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(workflow).toContain('Require exact native Linux VM');
   });
 
-  it('streams the organization QA key through inherited stdin and aggregates exactly twelve shards', () => {
+  it('streams the organization QA key through inherited stdin and aggregates exactly eleven shards', () => {
     expect(workflow).toContain("gcloud secrets versions access latest --secret='");
     expect(workflow).toContain('| node security/lifecycle/run-physical-target.mjs');
     expect(workflow).toContain("--vault-id '${{ vars.PALLADIN_LIFECYCLE_QA_VAULT_ID }}'");
     expect(workflow).toContain("--entry-id '${{ vars.PALLADIN_LIFECYCLE_QA_ENTRY_ID }}'");
     expect(workflow).not.toMatch(/PALLADIN_(?:API_KEY|LIFECYCLE_QA_SECRET):\s*\$\{\{\s*secrets\./);
-    expect(workflow).toContain("= 12");
+    expect(workflow).toContain("= 11");
     expect(workflow).toContain('name: physical-release-sets-${{ steps.verify.outputs.source_sha }}');
     expect(workflow).toContain("name: 'physical-release-sets-${{ needs.authorize.outputs.source_sha }}'");
     expect(workflow).not.toContain('name: lifecycle-release-sets-${{ inputs.candidate_source_sha }}');
@@ -61,7 +62,7 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(runner).toContain('npm uninstall left the Agent launcher installed');
     expect(runner).toContain("openRepositoryFile('packaging/macos/scripts/verify-bundle.sh');");
     expect(runner).toContain("openRepositoryFile('packaging/macos/scripts/lib.sh');");
-    expect(runner).toContain("['/dev/fd/3', '--app', app, '--architecture', 'universal']");
+    expect(runner).toContain("'--architecture', 'arm64'");
     expect(runner).toContain("PALLADIN_VERIFIED_LIB_FD: '4'");
     expect(runner).toContain("stdio: ['pipe', 'pipe', 'pipe', scriptDescriptor, libraryDescriptor]");
     expect(runner).toContain('opened.dev !== linked.dev || opened.ino !== linked.ino');

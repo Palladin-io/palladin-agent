@@ -13,10 +13,10 @@ import {
 } from './platform-lifecycle-fixture';
 
 describe('platform lifecycle release report', () => {
-  it('requires 12 physical targets, three artifact phases, and the complete lifecycle', () => {
+  it('requires 11 physical targets, three artifact phases, and the complete lifecycle', () => {
     const { manifest } = lifecycleFixture();
     expect(validateManifest(manifest)).toBe(manifest);
-    expect(manifest.targets).toHaveLength(12);
+    expect(manifest.targets).toHaveLength(11);
     expect(manifest.artifactPhases).toEqual(['baseline', 'candidate', 'forward-rollback']);
     expect(manifest.steps.map((step: { id: string }) => step.id)).toEqual([
       'install', 'enroll', 'mcp', 'update', 'concurrent-mcp', 'repair',
@@ -27,7 +27,7 @@ describe('platform lifecycle release report', () => {
   it('generates an eligible report only for all 132 fresh passing cells', () => {
     const { manifest, evidence } = lifecycleFixture();
     const report = generateReport({ manifest, evidence, expectedSourceSha: sourceSha, now });
-    expect(report.summary).toEqual({ targetCount: 12, stepCount: 132, passed: 132, failed: 0 });
+    expect(report.summary).toEqual({ targetCount: 11, stepCount: 121, passed: 121, failed: 0 });
     expect(report.runId).toBe(runId);
     const markdown = renderMarkdown(report);
     expect(validateReport({ manifest, report, expectedSourceSha: sourceSha, now, markdown })).toBe(true);
