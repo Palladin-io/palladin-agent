@@ -7,6 +7,8 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     testTimeout: 30_000,
+    // Windows Authenticode and browser-process probes contend under Defender on hosted runners.
+    fileParallelism: process.platform !== 'win32',
   },
   resolve: {
     alias: {
