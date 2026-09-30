@@ -30,7 +30,7 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
         'case "$1" in',
         '  get) printf "fresh operating-system authorization is required for this operation\\nprivate-fixture-marker\\n" >&2; exit 1 ;;',
         '  connect) exit 1 ;;',
-        '  mcp) exit 0 ;;',
+        '  mcp) IFS= read -r _; IFS= read -r _; exit 0 ;;',
         'esac',
       ].join('\n'));
       chmodSync(fakeBinary, 0o700);
