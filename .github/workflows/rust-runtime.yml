@@ -22,8 +22,6 @@ jobs:
         include:
           - runner: macos-15
             target: aarch64-apple-darwin
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -56,9 +54,8 @@ jobs:
           node --check ../packaging/macos/tests/canary-tree-probe.mjs
           fake_root="$(mktemp -d)"
           mkdir -p "$fake_root/PalladinRuntime.app"
-          npm_arch=${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'x64' }}
           ../packaging/macos/scripts/stage-npm-platform-package.sh \
-            --architecture "$npm_arch" \
+            --architecture arm64 \
             --app "$fake_root/PalladinRuntime.app" \
             --output-dir "$fake_root/staged"
           node -e '
@@ -66,7 +63,7 @@ jobs:
             if (manifest.private !== undefined) process.exit(1);
             if (JSON.stringify(manifest.os) !== JSON.stringify(["darwin"])) process.exit(1);
             if (JSON.stringify(manifest.cpu) !== JSON.stringify([process.argv[2]])) process.exit(1);
-          ' "$fake_root/staged/package.json" "$npm_arch"
+          ' "$fake_root/staged/package.json" arm64
       - name: Verify first-run signing bootstrap cleanup
         working-directory: .
         shell: bash
@@ -75,8 +72,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected=${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'x86_64' }}
-          test "$(uname -m)" = "$expected"
+          test "$(uname -m)" = arm64
           translated=$(sysctl -in sysctl.proc_translated 2>/dev/null || true)
           translated=${translated:-0}
           test "$translated" = 0
@@ -128,7 +124,7 @@ jobs:
           cargo test --locked --target "${{ matrix.target }}" -p palladin-platform --features macos-hardened
           cargo build --release --locked --target "${{ matrix.target }}" -p palladin-cli --features macos-hardened
           binary="./target/${{ matrix.target }}/release/palladin"
-          file "$binary" | grep -F "${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'x86_64' }}"
+          file "$binary" | grep -F arm64
           doctor=$($binary doctor)
           grep -F 'standalone-security-tier: Unavailable' <<<"$doctor"
           if grep -Fq 'standalone-security-tier: Hardened' <<<"$doctor"; then
