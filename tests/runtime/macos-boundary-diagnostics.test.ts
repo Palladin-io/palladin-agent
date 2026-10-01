@@ -57,7 +57,7 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
         'case "$1" in',
         '  init) printf "fresh operating-system authorization is required for this operation\\nprivate-fixture-marker\\n" >&2; exit 1 ;;',
         '  connect) exit 1 ;;',
-        '  mcp) IFS= read -r _; IFS= read -r _; printf \'{"jsonrpc":"2.0","id":2,"result":{"content":[]}}\\n\'; exit 0 ;;',
+        '  mcp) IFS= read -r _; printf \'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\\n\'; IFS= read -r _; IFS= read -r _; printf \'{"jsonrpc":"2.0","id":2,"result":{"content":[]}}\\n\'; exit 0 ;;',
         'esac',
       ].join('\n'));
       chmodSync(fakeBinary, 0o700);
@@ -85,7 +85,7 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
         'case "$1" in',
         '  init) printf "fresh operating-system authorization is required for this operation\\n" >&2; exit 1 ;;',
         '  connect) exit 1 ;;',
-        '  mcp) IFS= read -r _; IFS= read -r _; printf \'{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"invalid parameters"}}\\n\'; sleep 3 ;;',
+        '  mcp) IFS= read -r _; printf \'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\\n\'; IFS= read -r _; IFS= read -r _; printf \'{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"invalid parameters"}}\\n\'; sleep 3 ;;',
         'esac',
       ].join('\n'));
       chmodSync(fakeBinary, 0o700);
@@ -109,7 +109,7 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
         'case "$1" in',
         '  init) printf "fresh operating-system authorization is required for this operation\\n" >&2; exit 1 ;;',
         '  connect) exit 1 ;;',
-        '  mcp) IFS= read -r _; IFS= read -r _; printf \'{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"Palladin could not complete the request."}],"isError":true}}\\n\'; exit 0 ;;',
+        '  mcp) IFS= read -r _; printf \'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\\n\'; IFS= read -r notification; IFS= read -r _; case "$notification" in *notifications/initialized*) ;; *) exit 1 ;; esac; printf \'{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"Palladin could not complete the request."}],"isError":true}}\\n\'; exit 0 ;;',
         'esac',
       ].join('\n'));
       chmodSync(fakeBinary, 0o700);

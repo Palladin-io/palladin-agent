@@ -103,16 +103,33 @@ async function runBoundedCaptured(name, executable, args, options) {
   const stderr = [];
   let size = 0;
   let captureOverflowed = false;
-  const collect = (target) => (chunk) => {
+  let initializationOutput = '';
+  let initialized = false;
+  const collect = (target, inspectInitialization = false) => (chunk) => {
     size += chunk.length;
     if (size > maximumCaptureBytes) {
       captureOverflowed = true;
       child.kill('SIGKILL');
     }
-    else target.push(Buffer.from(chunk));
+    else {
+      target.push(Buffer.from(chunk));
+      if (inspectInitialization && options.afterInitialize !== undefined && !initialized) {
+        initializationOutput += chunk.toString('utf8');
+        const newline = initializationOutput.indexOf('\n');
+        if (newline !== -1) {
+          let response;
+          try { response = JSON.parse(initializationOutput.slice(0, newline)); } catch { /* fail closed below */ }
+          if (response?.id === 1 && response?.result?.protocolVersion === '2025-11-25') {
+            initialized = true;
+            child.stdin.write(options.afterInitialize);
+          }
+        }
+      }
+    }
   };
-  child.stdout.on('data', collect(stdout));
+  child.stdout.on('data', collect(stdout, true));
   child.stderr.on('data', collect(stderr));
+  child.stdin.on('error', () => {});
   if (options.stdin !== undefined) child.stdin.write(options.stdin);
   if (options.keepStdinOpen !== true) child.stdin.end();
   if (options.interruptAfterMs !== undefined) {
@@ -181,14 +198,14 @@ const toolCall = JSON.stringify({
   jsonrpc: '2.0', id: 2, method: 'tools/call',
   params: { name: 'get_credential', arguments: { vaultId: vault, entryId: entry, reason: 'noninteractive boundary probe', noWait: true } },
 });
-const mcpInput = `${initialize}\n${toolCall}\n`;
+const afterInitialize = `${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n${toolCall}\n`;
 const firstMcp = runBounded(
   'mcp-first-connection', binary, ['mcp', 'serve'],
-  { stdin: mcpInput, keepStdinOpen: true, interruptAfterMs: 1_500, timeoutMs: 5_000 },
+  { stdin: `${initialize}\n`, afterInitialize, keepStdinOpen: true, interruptAfterMs: 1_500, timeoutMs: 5_000 },
 );
 const secondMcp = runBounded(
   'mcp-second-connection', binary, ['mcp', 'serve'],
-  { stdin: mcpInput, keepStdinOpen: true, interruptAfterMs: 1_500, timeoutMs: 5_000 },
+  { stdin: `${initialize}\n`, afterInitialize, keepStdinOpen: true, interruptAfterMs: 1_500, timeoutMs: 5_000 },
 );
 const mcpResults = await Promise.all([firstMcp, secondMcp]);
 for (const [index, result] of mcpResults.entries()) {
