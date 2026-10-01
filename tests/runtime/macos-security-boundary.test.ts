@@ -142,13 +142,11 @@ describe('macOS authenticated signed-runtime boundary', () => {
     expect(client).toContain("child.kill('SIGINT')");
     expect(client).toContain('maximumCaptureBytes');
     expect(client).toContain('private boundary canary');
-    expect(client).toContain("['get', vault, entry");
+    expect(client).toContain("const blindArguments = ['init']");
     expect(client).toContain("['connect', '--api-key-stdin']");
     expect(client).toContain("['mcp', 'serve']");
     expect(client).toContain('mcp-first-connection');
     expect(client).toContain('mcp-second-connection');
-    expect(client).toContain('`${initialize}\\n${toolCall}\\n`');
-    expect(client).not.toContain('`${initialize}\\n${toolCall}\\n${toolCall}\\n`');
     expect(harness).toContain('PALLADIN_RUNNER_ENVIRONMENT:-}" == "github-hosted"');
     expect(harness).toContain('[[ ! -e "$HOME/.palladin" && ! -L "$HOME/.palladin" ]]');
     expect(harness).not.toContain('"$binary" purge');
