@@ -142,7 +142,7 @@ describe('macOS authenticated signed-runtime boundary', () => {
     expect(client).toContain("child.kill('SIGINT')");
     expect(client).toContain('maximumCaptureBytes');
     expect(client).toContain('private boundary canary');
-    expect(client).toContain("['get', vault, entry");
+    expect(client).toContain("const blindArguments = ['init']");
     expect(client).toContain("['connect', '--api-key-stdin']");
     expect(client).toContain("['mcp', 'serve']");
     expect(client).toContain('mcp-first-connection');

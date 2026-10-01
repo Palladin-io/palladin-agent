@@ -55,9 +55,9 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
       writeFileSync(fakeBinary, [
         '#!/bin/sh',
         'case "$1" in',
-        '  get) printf "fresh operating-system authorization is required for this operation\\nprivate-fixture-marker\\n" >&2; exit 1 ;;',
+        '  init) printf "fresh operating-system authorization is required for this operation\\nprivate-fixture-marker\\n" >&2; exit 1 ;;',
         '  connect) exit 1 ;;',
-        '  mcp) IFS= read -r _; IFS= read -r _; exit 0 ;;',
+        '  mcp) IFS= read -r _; IFS= read -r _; printf \'{"jsonrpc":"2.0","id":2,"result":{"content":[]}}\\n\'; exit 0 ;;',
         'esac',
       ].join('\n'));
       chmodSync(fakeBinary, 0o700);
@@ -67,10 +67,57 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
       expect(probe.status).toBe(1);
       const diagnostic = report(probe.stderr, 'intact-copy-and-client-authorization');
       expect(diagnostic.status).toBe(0);
-      expect(diagnostic.stderr.includes('signed-client-mcp-first-connection-unexpected-success')).toBe(true);
-      expect(diagnostic.summary.includes('signed-client-mcp-first-connection-unexpected-success')).toBe(true);
+      expect(diagnostic.stderr.includes('signed-client-mcp-connection-1-unexpected-success')).toBe(true);
+      expect(diagnostic.summary.includes('signed-client-mcp-connection-1-unexpected-success')).toBe(true);
       expect(diagnostic.stderr.includes('private-fixture-marker')).toBe(false);
       expect(diagnostic.summary.includes('private-fixture-marker')).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an MCP protocol error instead of accepting it as an authorized tool denial', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'palladin-mcp-parameters-diagnostic-'));
+    try {
+      const fakeBinary = join(directory, 'fake-runtime');
+      writeFileSync(fakeBinary, [
+        '#!/bin/sh',
+        'case "$1" in',
+        '  init) printf "fresh operating-system authorization is required for this operation\\n" >&2; exit 1 ;;',
+        '  connect) exit 1 ;;',
+        '  mcp) IFS= read -r _; IFS= read -r _; printf \'{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"invalid parameters"}}\\n\'; sleep 3 ;;',
+        'esac',
+      ].join('\n'));
+      chmodSync(fakeBinary, 0o700);
+      const probe = spawnSync(process.execPath, [
+        'packaging/macos/tests/signed-client-probe.mjs', fakeBinary, fakeBinary, join(directory, 'captures'),
+      ], { encoding: 'utf8', env: { ...process.env, HOME: directory } });
+      expect(probe.status).toBe(1);
+      const diagnostic = report(probe.stderr, 'intact-copy-and-client-authorization');
+      expect(diagnostic.stderr.includes('signed-client-mcp-connection-1-unexpected-output')).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a denied MCP tool call on an unconfigured synthetic profile', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'palladin-mcp-unconfigured-diagnostic-'));
+    try {
+      const fakeBinary = join(directory, 'fake-runtime');
+      writeFileSync(fakeBinary, [
+        '#!/bin/sh',
+        'case "$1" in',
+        '  init) printf "fresh operating-system authorization is required for this operation\\n" >&2; exit 1 ;;',
+        '  connect) exit 1 ;;',
+        '  mcp) IFS= read -r _; IFS= read -r _; printf \'{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"Palladin could not complete the request."}],"isError":true}}\\n\'; exit 0 ;;',
+        'esac',
+      ].join('\n'));
+      chmodSync(fakeBinary, 0o700);
+      const probe = spawnSync(process.execPath, [
+        'packaging/macos/tests/signed-client-probe.mjs', fakeBinary, fakeBinary, join(directory, 'captures'),
+      ], { encoding: 'utf8', env: { ...process.env, HOME: directory } });
+      expect(probe.status).toBe(0);
+      expect(probe.stdout.includes('failed closed')).toBe(true);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

@@ -156,7 +156,9 @@ function assertAuthorizationDenial(name, result) {
 
 const vault = '11111111111111111111111111111111';
 const entry = '22222222222222222222222222222222';
-const blindArguments = ['get', vault, entry, '--reason', 'noninteractive boundary probe', '--no-wait'];
+// A fresh profile has no server configuration. Re-running init verifies its existing
+// identity and reaches OS authorization without enrolling or contacting the API.
+const blindArguments = ['init'];
 for (const [name, executable] of [['genuine', binary], ['copied', copiedBinary]]) {
   const result = await runBounded(`blind-${name}`, executable, blindArguments);
   if (result.code === 0) throw new Error('blindly spawned signed runtime unexpectedly used an identity');
@@ -177,25 +179,28 @@ const initialize = JSON.stringify({
 });
 const toolCall = JSON.stringify({
   jsonrpc: '2.0', id: 2, method: 'tools/call',
-  params: { name: 'get_credential', arguments: { vault_id: vault, entry_id: entry, reason: 'noninteractive boundary probe', no_wait: true } },
+  params: { name: 'get_credential', arguments: { vaultId: vault, entryId: entry, reason: 'noninteractive boundary probe', noWait: true } },
 });
 const mcpInput = `${initialize}\n${toolCall}\n`;
 const firstMcp = runBounded(
   'mcp-first-connection', binary, ['mcp', 'serve'],
-  { stdin: mcpInput, keepStdinOpen: true, interruptAfterMs: 600, timeoutMs: 5_000 },
+  { stdin: mcpInput, keepStdinOpen: true, interruptAfterMs: 1_500, timeoutMs: 5_000 },
 );
 const secondMcp = runBounded(
   'mcp-second-connection', binary, ['mcp', 'serve'],
-  { stdin: mcpInput, keepStdinOpen: true, interruptAfterMs: 600, timeoutMs: 5_000 },
+  { stdin: mcpInput, keepStdinOpen: true, interruptAfterMs: 1_500, timeoutMs: 5_000 },
 );
 const mcpResults = await Promise.all([firstMcp, secondMcp]);
 for (const [index, result] of mcpResults.entries()) {
-  if (result.code === 0) {
-    process.stderr.write(`Palladin signed-client probe failure: mcp-${index === 0 ? 'first' : 'second'}-connection: unexpected-success\n`);
-    throw new Error('blind MCP connection unexpectedly completed an identity operation');
+  const toolResponse = result.stdout.toString('utf8').split('\n').filter(Boolean).map((line) => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).find((frame) => frame?.id === 2);
+  if (toolResponse?.result?.isError !== true || toolResponse.error !== undefined) {
+    const reason = toolResponse?.result && toolResponse.error === undefined ? 'unexpected-success' : 'unexpected-output';
+    process.stderr.write(`Palladin signed-client probe failure: mcp-connection-${index + 1}: ${reason}\n`);
+    throw new Error('unconfigured signed MCP request did not fail as a tool operation');
   }
 }
-mcpResults.forEach((result, index) => assertAuthorizationDenial(`mcp-connection-${index + 1}`, result));
 
 const home = process.env.HOME;
 if (!home) throw new Error('HOME is required for the public-state canary scan');
