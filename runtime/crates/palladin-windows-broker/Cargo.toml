@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 getrandom.workspace = true
 palladin-platform = { path = "../palladin-platform" }
+palladin-core = { path = "../palladin-core" }
 secrecy.workspace = true
 rpassword.workspace = true
 thiserror.workspace = true

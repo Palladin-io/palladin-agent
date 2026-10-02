@@ -228,8 +228,9 @@ impl std::fmt::Debug for McpMessage {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct McpSecretOperation {
+    pub profile: String,
     pub operation: SecureOperation,
     pub item_index: u32,
 }
@@ -702,8 +703,15 @@ pub fn mcp_secret_operations(message: &[u8]) -> Result<Vec<McpSecretOperation>, 
             Some("report_credential_stale") => SecureOperation::McpReportCredentialStale,
             Some(_) | None => return Err(ProtocolError::OperationForbidden),
         };
+        let profile = item
+            .pointer("/params/arguments/profile")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|profile| !profile.is_empty() && profile.len() <= MAX_AGENT_ID_BYTES)
+            .ok_or(ProtocolError::InvalidRequest)?;
         let item_index = u32::try_from(index).map_err(|_| ProtocolError::InvalidRequest)?;
         operations.push(McpSecretOperation {
+            profile: profile.to_owned(),
             operation,
             item_index,
         });
@@ -1159,24 +1167,28 @@ mod tests {
 
     #[test]
     fn mcp_classifier_gates_every_agent_identity_operation_and_denies_unknown_tools() {
-        let message = br#"[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_entries","arguments":{}}},{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_credential","arguments":{}}},{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"exec_with_credential","arguments":{}}},{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"report_credential_stale","arguments":{}}}]"#;
+        let message = br#"[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_entries","arguments":{"profile":"fixture"}}},{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_credential","arguments":{"profile":"fixture"}}},{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"exec_with_credential","arguments":{"profile":"fixture"}}},{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"report_credential_stale","arguments":{"profile":"fixture"}}}]"#;
         let operations = mcp_secret_operations(message).expect("classified operations");
         assert_eq!(
             operations,
             vec![
                 McpSecretOperation {
+                    profile: "fixture".into(),
                     operation: SecureOperation::McpSearchEntries,
                     item_index: 0,
                 },
                 McpSecretOperation {
+                    profile: "fixture".into(),
                     operation: SecureOperation::McpGetCredential,
                     item_index: 1,
                 },
                 McpSecretOperation {
+                    profile: "fixture".into(),
                     operation: SecureOperation::McpExecWithCredential,
                     item_index: 2,
                 },
                 McpSecretOperation {
+                    profile: "fixture".into(),
                     operation: SecureOperation::McpReportCredentialStale,
                     item_index: 3,
                 },
@@ -1184,7 +1196,7 @@ mod tests {
         );
         assert!(matches!(
             mcp_secret_operations(
-                br#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"future_secret_tool","arguments":{}}}"#
+                br#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"future_secret_tool","arguments":{"profile":"fixture"}}}"#
             ),
             Err(ProtocolError::OperationForbidden)
         ));
@@ -1196,30 +1208,64 @@ mod tests {
         ));
         assert_eq!(
             mcp_secret_operations(
-                br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"inject_credential","arguments":{"vaultId":"vault-a","entryId":"entry-a"}}}"#
+                br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"inject_credential","arguments":{"profile":"fixture","vaultId":"vault-a","entryId":"entry-a"}}}"#
             )
             .expect("known Inject tool"),
             vec![McpSecretOperation {
+                profile: "fixture".into(),
                 operation: SecureOperation::McpInjectCredential,
                 item_index: 0,
             }]
         );
         let mixed = mcp_secret_operations(
-            br#"[{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"inject_credential","arguments":{}}},{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"get_credential","arguments":{}}}]"#,
+            br#"[{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"inject_credential","arguments":{"profile":"fixture"}}},{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"get_credential","arguments":{"profile":"fixture"}}}]"#,
         )
         .expect("mixed batch");
         assert_eq!(
             mixed,
             vec![
                 McpSecretOperation {
+                    profile: "fixture".into(),
                     operation: SecureOperation::McpInjectCredential,
                     item_index: 0,
                 },
                 McpSecretOperation {
+                    profile: "fixture".into(),
                     operation: SecureOperation::McpGetCredential,
                     item_index: 1,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn mcp_profiles_are_required_and_bound_to_each_batch_item() {
+        for arguments in [
+            serde_json::json!({}),
+            serde_json::json!({"profile":null}),
+            serde_json::json!({"profile":" "}),
+            serde_json::json!({"profile":42}),
+        ] {
+            let message = serde_json::to_vec(&serde_json::json!({
+                "method":"tools/call", "params":{"name":"pair_agent","arguments":arguments}
+            }))
+            .unwrap();
+            assert!(matches!(
+                mcp_secret_operations(&message),
+                Err(ProtocolError::InvalidRequest)
+            ));
+        }
+        let operations = mcp_secret_operations(br#"[
+            {"method":"tools/call","params":{"name":"pair_agent","arguments":{"profile":" production "}}},
+            {"method":"tools/list"},
+            {"method":"tools/call","params":{"name":"search_entries","arguments":{"profile":"sandbox","query":"fixture"}}}
+        ]"#).unwrap();
+        assert_eq!(
+            operations
+                .iter()
+                .map(|op| (op.item_index, op.profile.as_str()))
+                .collect::<Vec<_>>(),
+            [(0, "production"), (2, "sandbox")]
         );
     }
 

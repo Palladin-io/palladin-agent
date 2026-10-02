@@ -677,7 +677,6 @@ mod windows_service_entry {
             duplex.then_some(worker_stdin),
             output_sender.clone(),
             control_sender,
-            request.consent.agent_id.clone(),
             verifier,
             guard,
             connection_nonce,
@@ -1043,7 +1042,6 @@ mod windows_service_entry {
         mut worker_stdin: Option<tokio::process::ChildStdin>,
         output: mpsc::Sender<OutboundItem>,
         control: mpsc::Sender<WorkerCompletion>,
-        agent_id: String,
         verifier: Option<RsaSha256ConsentVerifier>,
         mut guard: ReplayGuard,
         connection_nonce: [u8; 32],
@@ -1082,7 +1080,6 @@ mod windows_service_entry {
                         worker_stdin.as_mut().expect("checked worker stdin"),
                         &output,
                         request_id,
-                        &agent_id,
                         verifier
                             .as_ref()
                             .expect("duplex sessions require a verifier"),
@@ -1183,7 +1180,6 @@ mod windows_service_entry {
         worker_stdin: &mut W,
         output: &mpsc::Sender<OutboundItem>,
         session_request_id: [u8; 16],
-        agent_id: &str,
         verifier: &V,
         guard: &mut ReplayGuard,
         connection_nonce: [u8; 32],
@@ -1204,7 +1200,12 @@ mod windows_service_entry {
             }));
             McpGateFailure::InvalidRequest
         })?;
+        for operation in &operations {
+            palladin_core::profiles::ProfileName::parse(&operation.profile)
+                .map_err(|_| McpGateFailure::InvalidRequest)?;
+        }
         for operation in operations {
+            let agent_id = operation.profile.as_str();
             if !lifecycle.is_current() {
                 return Err(McpGateFailure::SessionRevoked);
             }
@@ -1591,7 +1592,6 @@ mod windows_service_entry {
                 None,
                 output,
                 control,
-                "default".to_owned(),
                 None,
                 ReplayGuard::new(Duration::from_secs(30), Duration::from_secs(1)),
                 [0; 32],
@@ -1611,7 +1611,7 @@ mod windows_service_entry {
         #[tokio::test]
         async fn mcp_identity_request_is_withheld_until_exact_fresh_consent() {
             let session_request_id = [7; 16];
-            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_credential","arguments":{"vaultId":"vault-a","entryId":"entry-a"}}}"#;
+            let message = br#"[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_credential","arguments":{"profile":"production","vaultId":"vault-a","entryId":"entry-a"}}},{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_entries","arguments":{"profile":"sandbox","query":"fixture"}}}]"#;
             let (mut service_reader, mut client_writer) = tokio::io::duplex(4096);
             let (mut worker_writer, mut worker_reader) = tokio::io::duplex(4096);
             let (output, mut frames) = mpsc::channel(4);
@@ -1624,7 +1624,6 @@ mod windows_service_entry {
                 &mut worker_writer,
                 &output,
                 session_request_id,
-                "default",
                 &AcceptConsent,
                 &mut guard,
                 [8; 32],
@@ -1633,48 +1632,53 @@ mod windows_service_entry {
                 message,
             );
             let client = async {
-                let challenge = frames.recv().await.expect("challenge");
-                let OutboundItem::Frame(BrokerFrame::Challenge {
-                    request_id: consent_request_id,
-                    nonce,
-                    issued_at_unix_ms,
-                    expires_at_unix_ms,
-                    ref agent_id,
-                    operation,
-                    request_hash,
-                }) = challenge
-                else {
-                    panic!("operation challenge");
-                };
-                let mut probe = [0_u8; 1];
-                assert!(
-                    tokio::time::timeout(
-                        Duration::from_millis(20),
-                        worker_reader.read(&mut probe),
+                for (consent_sequence, expected_profile) in
+                    ["production", "sandbox"].iter().enumerate()
+                {
+                    let challenge = frames.recv().await.expect("challenge");
+                    let OutboundItem::Frame(BrokerFrame::Challenge {
+                        request_id: consent_request_id,
+                        nonce,
+                        issued_at_unix_ms,
+                        expires_at_unix_ms,
+                        ref agent_id,
+                        operation,
+                        request_hash,
+                    }) = challenge
+                    else {
+                        panic!("operation challenge");
+                    };
+                    assert_eq!(agent_id, expected_profile);
+                    let mut probe = [0_u8; 1];
+                    assert!(
+                        tokio::time::timeout(
+                            Duration::from_millis(20),
+                            worker_reader.read(&mut probe),
+                        )
+                        .await
+                        .is_err(),
+                        "the worker must not receive request bytes before consent"
+                    );
+                    write_frame(
+                        &mut client_writer,
+                        &ClientFrame::AuthorizeMcp(McpConsentResponse {
+                            session_request_id,
+                            consent_request_id,
+                            sequence: consent_sequence as u64,
+                            consent: ConsentChallenge {
+                                nonce,
+                                issued_at_unix_ms,
+                                expires_at_unix_ms,
+                                agent_id: agent_id.clone(),
+                                operation,
+                                request_hash,
+                                signature: vec![1],
+                            },
+                        }),
                     )
                     .await
-                    .is_err(),
-                    "the worker must not receive request bytes before consent"
-                );
-                write_frame(
-                    &mut client_writer,
-                    &ClientFrame::AuthorizeMcp(McpConsentResponse {
-                        session_request_id,
-                        consent_request_id,
-                        sequence: 0,
-                        consent: ConsentChallenge {
-                            nonce,
-                            issued_at_unix_ms,
-                            expires_at_unix_ms,
-                            agent_id: agent_id.clone(),
-                            operation,
-                            request_hash,
-                            signature: vec![1],
-                        },
-                    }),
-                )
-                .await
-                .expect("consent response");
+                    .expect("consent response");
+                }
                 let mut forwarded = vec![0_u8; message.len() + 1];
                 worker_reader
                     .read_exact(&mut forwarded)
@@ -1686,13 +1690,18 @@ mod windows_service_entry {
             };
             let (result, ()) = tokio::join!(gate, client);
             assert_eq!(result, Ok(()));
-            assert_eq!(sequence, 1);
+            assert_eq!(sequence, 2);
         }
 
         #[tokio::test]
         async fn modified_mcp_consent_never_reaches_the_worker() {
+            assert_modified_mcp_consent_rejected(false).await;
+            assert_modified_mcp_consent_rejected(true).await;
+        }
+
+        async fn assert_modified_mcp_consent_rejected(wrong_profile: bool) {
             let session_request_id = [3; 16];
-            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec_with_credential","arguments":{"vaultId":"vault-a","entryId":"entry-a","command":"example"}}}"#;
+            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec_with_credential","arguments":{"profile":"production","vaultId":"vault-a","entryId":"entry-a","command":"example"}}}"#;
             let (mut service_reader, mut client_writer) = tokio::io::duplex(4096);
             let (mut worker_writer, mut worker_reader) = tokio::io::duplex(4096);
             let (output, mut frames) = mpsc::channel(4);
@@ -1705,7 +1714,6 @@ mod windows_service_entry {
                 &mut worker_writer,
                 &output,
                 session_request_id,
-                "default",
                 &AcceptConsent,
                 &mut guard,
                 [4; 32],
@@ -1732,12 +1740,16 @@ mod windows_service_entry {
                     &ClientFrame::AuthorizeMcp(McpConsentResponse {
                         session_request_id,
                         consent_request_id,
-                        sequence: 1,
+                        sequence: if wrong_profile { 0 } else { 1 },
                         consent: ConsentChallenge {
                             nonce,
                             issued_at_unix_ms,
                             expires_at_unix_ms,
-                            agent_id: agent_id.clone(),
+                            agent_id: if wrong_profile {
+                                "default".into()
+                            } else {
+                                agent_id.clone()
+                            },
                             operation,
                             request_hash,
                             signature: vec![1],
@@ -1765,9 +1777,56 @@ mod windows_service_entry {
         }
 
         #[tokio::test]
+        async fn invalid_mcp_profile_reaches_neither_consent_nor_worker() {
+            for arguments in [
+                "{}",
+                r#"{"profile":null}"#,
+                r#"{"profile":" "}"#,
+                r#"{"profile":"../other"}"#,
+                r#"{"profile":"con"}"#,
+                r#"{"profile":42}"#,
+                r#"{"profile":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}"#,
+            ] {
+                let message = format!(
+                    r#"{{"method":"tools/call","params":{{"name":"pair_agent","arguments":{arguments}}}}}"#
+                );
+                let (mut reader, _client) = tokio::io::duplex(1024);
+                let (mut worker, mut worker_reader) = tokio::io::duplex(1024);
+                let (output, mut frames) = mpsc::channel(4);
+                let mut guard = ReplayGuard::new(Duration::from_secs(60), Duration::from_secs(1));
+                let mut sequence = 0;
+                let result = authorize_mcp_message(
+                    &mut reader,
+                    &mut worker,
+                    &output,
+                    [1; 16],
+                    &AcceptConsent,
+                    &mut guard,
+                    [2; 32],
+                    &lifecycle(9),
+                    &mut sequence,
+                    message.as_bytes(),
+                )
+                .await;
+                assert_eq!(result, Err(super::McpGateFailure::InvalidRequest));
+                while let Ok(frame) = frames.try_recv() {
+                    assert!(matches!(
+                        frame,
+                        OutboundItem::Frame(BrokerFrame::Rejected { .. })
+                    ));
+                }
+                assert_eq!(sequence, 0);
+                drop(worker);
+                let mut bytes = Vec::new();
+                worker_reader.read_to_end(&mut bytes).await.unwrap();
+                assert!(bytes.is_empty());
+            }
+        }
+
+        #[tokio::test]
         async fn cancelling_a_pending_mcp_consent_releases_no_worker_bytes() {
             let session_request_id = [2; 16];
-            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_entries","arguments":{"query":"mail"}}}"#;
+            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_entries","arguments":{"profile":"production","query":"mail"}}}"#;
             let (mut service_reader, mut client_writer) = tokio::io::duplex(4096);
             let (mut worker_writer, mut worker_reader) = tokio::io::duplex(4096);
             let (output, mut frames) = mpsc::channel(2);
@@ -1779,7 +1838,6 @@ mod windows_service_entry {
                 &mut worker_writer,
                 &output,
                 session_request_id,
-                "default",
                 &AcceptConsent,
                 &mut guard,
                 [5; 32],
@@ -1815,7 +1873,7 @@ mod windows_service_entry {
         #[tokio::test]
         async fn a_second_mcp_message_while_consent_is_pending_fails_closed() {
             let session_request_id = [14; 16];
-            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_credential","arguments":{"vaultId":"vault-a","entryId":"entry-a"}}}"#;
+            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_credential","arguments":{"profile":"production","vaultId":"vault-a","entryId":"entry-a"}}}"#;
             let (mut service_reader, mut client_writer) = tokio::io::duplex(4096);
             let (mut worker_writer, mut worker_reader) = tokio::io::duplex(4096);
             let (output, mut frames) = mpsc::channel(4);
@@ -1828,7 +1886,6 @@ mod windows_service_entry {
                 &mut worker_writer,
                 &output,
                 session_request_id,
-                "default",
                 &AcceptConsent,
                 &mut guard,
                 [15; 32],
@@ -1870,7 +1927,7 @@ mod windows_service_entry {
         #[tokio::test]
         async fn mcp_authorization_sent_before_its_broker_challenge_is_rejected() {
             let session_request_id = [16; 16];
-            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_entries","arguments":{"query":"mail"}}}"#;
+            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_entries","arguments":{"profile":"production","query":"mail"}}}"#;
             let (mut service_reader, mut client_writer) = tokio::io::duplex(4096);
             let (mut worker_writer, mut worker_reader) = tokio::io::duplex(4096);
             let (output, mut frames) = mpsc::channel(4);
@@ -1904,7 +1961,6 @@ mod windows_service_entry {
                 &mut worker_writer,
                 &output,
                 session_request_id,
-                "default",
                 &AcceptConsent,
                 &mut guard,
                 [17; 32],
@@ -1934,7 +1990,7 @@ mod windows_service_entry {
         #[tokio::test]
         async fn lifecycle_revocation_cancels_blocked_worker_input_release() {
             let session_request_id = [11; 16];
-            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_credential","arguments":{"vaultId":"vault-a","entryId":"entry-a"}}}"#;
+            let message = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_credential","arguments":{"profile":"production","vaultId":"vault-a","entryId":"entry-a"}}}"#;
             let (mut service_reader, mut client_writer) = tokio::io::duplex(4096);
             let write_started = Arc::new(AtomicBool::new(false));
             let mut worker_writer = BlockingWriter {
@@ -1950,7 +2006,6 @@ mod windows_service_entry {
                 &mut worker_writer,
                 &output,
                 session_request_id,
-                "default",
                 &AcceptConsent,
                 &mut guard,
                 [12; 32],

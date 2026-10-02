@@ -240,6 +240,8 @@ On Linux Hardened, the administrator's UID-to-profile mapping additionally limit
 which `profile` the caller may request. The authenticated broker passes that
 assignment internally; each tool still requires an explicit matching profile.
 It is an authorization constraint, never a missing-argument default.
+Windows Hardened binds each operation's Windows Hello consent to that call's
+validated profile, including separate profiles within an MCP batch.
 
 | Tool | Behavior |
 |---|---|
