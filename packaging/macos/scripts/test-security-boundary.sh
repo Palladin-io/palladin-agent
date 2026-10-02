@@ -212,14 +212,33 @@ injection_library="$work_dir/palladin-dyld-probe.dylib"
 injection_marker="$work_dir/dyld-injection-succeeded"
 xcrun clang -dynamiclib -Wall -Wextra -Werror \
   "$PACKAGING_DIR/tests/dyld-injection-probe.c" -o "$injection_library"
-if ! PALLADIN_DYLD_PROBE_MARKER="$injection_marker" \
+if PALLADIN_DYLD_PROBE_MARKER="$injection_marker" \
   DYLD_INSERT_LIBRARIES="$injection_library" \
   "$binary" doctor >"$work_dir/dyld.out" 2>"$work_dir/dyld.err"; then
-  die "signed runtime did not execute safely with a rejected DYLD injection request"
+  dyld_status=0
+else
+  dyld_status=$?
 fi
 [[ ! -e "$injection_marker" ]] || die "DYLD injection reached the signed runtime"
-grep -F -q 'standalone-security-tier: Hardened' "$work_dir/dyld.out" ||
+grep -Fxq 'Palladin Runtime Doctor' "$work_dir/dyld.out" ||
+  die "DYLD probe did not execute the signed doctor"
+grep -Fxq 'identity-opened: no' "$work_dir/dyld.out" ||
+  die "DYLD probe did not prove identity stayed closed"
+grep -Fxq 'standalone-security-tier: Hardened' "$work_dir/dyld.out" ||
   die "DYLD probe changed the runtime security tier"
+case "$dyld_status" in
+  0)
+    grep -Fxq 'environment: safe' "$work_dir/dyld.out" ||
+      die "DYLD probe succeeded without a safe environment report"
+    ;;
+  78)
+    grep -Fxq 'environment: unsafe' "$work_dir/dyld.out" ||
+      die "DYLD probe rejected an unexpected environment"
+    grep -Fxq 'dangerous-variable-names: DYLD_INSERT_LIBRARIES' "$work_dir/dyld.out" ||
+      die "DYLD probe did not identify the injection variable"
+    ;;
+  *) die "signed doctor returned an unexpected DYLD probe exit status: $dyld_status" ;;
+esac
 
 begin_boundary_test argument-scanner-positive-control process-arguments.err
 
