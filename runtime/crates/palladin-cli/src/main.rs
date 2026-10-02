@@ -633,6 +633,22 @@ const fn requires_version_policy(command: &Commands) -> bool {
     )
 }
 
+fn mcp_profile_authority(
+    profile: Option<&str>,
+    authenticated_broker: bool,
+) -> Result<Option<palladin_core::profiles::ProfileName>, &'static str> {
+    match (profile, authenticated_broker) {
+        (Some(profile), true) => palladin_core::profiles::ProfileName::parse(profile)
+            .map(Some)
+            .map_err(|_| "The authenticated broker profile is invalid"),
+        (None, true) => Err("The authenticated broker profile is required"),
+        (Some(_), false) => {
+            Err("MCP requires profile in each tool call. Remove --id from the server command.")
+        }
+        (None, false) => Ok(None),
+    }
+}
+
 async fn mcp(
     service: Arc<RuntimeService<RuntimeSecretStore>>,
     profile: Option<String>,
@@ -640,11 +656,18 @@ async fn mcp(
 ) -> ExitCode {
     match command {
         McpCommand::Serve { host } => {
-            if profile.is_some() {
-                return fail(
-                    "MCP requires profile in each tool call. Remove --id from the server command.",
-                );
-            }
+            #[cfg(target_os = "linux")]
+            let authenticated_broker = match hardened_linux_worker_root() {
+                Ok(root) => root.is_some(),
+                Err(error) => return fail(&error),
+            };
+            #[cfg(not(target_os = "linux"))]
+            let authenticated_broker = false;
+            let authorized_profile =
+                match mcp_profile_authority(profile.as_deref(), authenticated_broker) {
+                    Ok(profile) => profile,
+                    Err(error) => return fail(error),
+                };
             let pairing_host = match ApiHost::parse(&host) {
                 Ok(host) => host,
                 Err(error) => return fail(&error.to_string()),
@@ -662,6 +685,10 @@ async fn mcp(
                     Ok(server) => server,
                     Err(error) => return fail(&error.to_string()),
                 };
+            let server = match authorized_profile {
+                Some(profile) => server.with_authorized_profile(profile),
+                None => server,
+            };
             match palladin_mcp::serve_stdio(server).await {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => fail(&error.to_string()),
@@ -2135,5 +2162,25 @@ mod operation_descriptor_tests {
             "auth_failed"
         );
         assert_eq!(stale_reason_code_name(StaleReasonCode::Manual), "manual");
+    }
+}
+
+#[cfg(test)]
+mod mcp_profile_tests {
+    use super::mcp_profile_authority;
+
+    #[test]
+    fn only_authenticated_broker_may_supply_a_profile_constraint() {
+        assert!(mcp_profile_authority(Some("first"), false).is_err());
+        assert!(mcp_profile_authority(None, false).unwrap().is_none());
+        assert!(mcp_profile_authority(None, true).is_err());
+        assert!(mcp_profile_authority(Some("../first"), true).is_err());
+        assert_eq!(
+            mcp_profile_authority(Some("first"), true)
+                .unwrap()
+                .unwrap()
+                .as_str(),
+            "first"
+        );
     }
 }

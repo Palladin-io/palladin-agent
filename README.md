@@ -236,6 +236,11 @@ server's `--host` option (production by default); confirm that environment befor
 pairing and remember the resulting assignment. Never auto-pair to repair a failed
 request or store credentials in Agent memory.
 
+On Linux Hardened, the administrator's UID-to-profile mapping additionally limits
+which `profile` the caller may request. The authenticated broker passes that
+assignment internally; each tool still requires an explicit matching profile.
+It is an authorization constraint, never a missing-argument default.
+
 | Tool | Behavior |
 |---|---|
 | `pair_agent` | Pair the explicitly selected profile through owner approval in the browser. |

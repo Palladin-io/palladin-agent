@@ -80,6 +80,32 @@ child.stdout.on('data', (chunk) => {
         fail();
         return;
       }
+      if (!message.result.tools.every((tool) => tool.inputSchema?.required?.includes('profile'))) {
+        fail();
+        return;
+      }
+      child.stdin.write(`${JSON.stringify({
+        jsonrpc: '2.0', id: 3, method: 'tools/call',
+        params: { name: 'pair_agent', arguments: { profile: 'not-the-broker-assignment' } },
+      })}\n`);
+      continue;
+    }
+    if (responses.length === 3) {
+      if (message?.id !== 3 || message?.error?.code !== -32602) {
+        fail();
+        return;
+      }
+      child.stdin.write(`${JSON.stringify({
+        jsonrpc: '2.0', id: 4, method: 'tools/call',
+        params: { name: 'pair_agent', arguments: {} },
+      })}\n`);
+      continue;
+    }
+    if (responses.length === 4) {
+      if (message?.id !== 4 || message?.error?.code !== -32602) {
+        fail();
+        return;
+      }
       protocolComplete = true;
       clearTimeout(timeout);
       if (!child.kill('SIGTERM')) fail();
@@ -91,12 +117,12 @@ child.once('exit', (code, signal) => {
   clearTimeout(timeout);
   if (failed) return;
   const expectedExit = (code === 0 && signal === null) || (code === null && signal === 'SIGTERM');
-  if (!protocolComplete || responses.length !== 2 || !expectedExit) {
+  if (!protocolComplete || responses.length !== 4 || !expectedExit) {
     process.stderr.write('MCP lifecycle smoke failed without emitting child output\n');
     process.exitCode = 1;
     return;
   }
-  process.stdout.write('mcp-initialize-and-tools-list=passed\n');
+  process.stdout.write('mcp-initialize-tools-list-and-profile-authority=passed\n');
 });
 
 child.stdin.write(`${JSON.stringify({

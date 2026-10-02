@@ -558,6 +558,7 @@ where
 pub struct PalladinMcpServer<A: McpApplication> {
     application: Arc<A>,
     tools: Arc<Vec<Tool>>,
+    authorized_profile: Option<palladin_core::profiles::ProfileName>,
     global_limit: Arc<Semaphore>,
     secret_limit: Arc<Semaphore>,
     batch_cancellations: Arc<Mutex<HashMap<String, CancellationToken>>>,
@@ -569,11 +570,23 @@ impl<A: McpApplication> PalladinMcpServer<A> {
         Ok(Self {
             application: Arc::new(application),
             tools: Arc::new(load_tools()?),
+            authorized_profile: None,
             global_limit: Arc::new(Semaphore::new(MAX_PARALLEL_REQUESTS)),
             secret_limit: Arc::new(Semaphore::new(MAX_PARALLEL_SECRET_OPERATIONS)),
             batch_cancellations: Arc::new(Mutex::new(HashMap::new())),
             next_internal_request_id: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Constrain requests to an independently authenticated broker assignment.
+    /// This never supplies a default for a missing tool argument.
+    #[must_use]
+    pub fn with_authorized_profile(
+        mut self,
+        profile: palladin_core::profiles::ProfileName,
+    ) -> Self {
+        self.authorized_profile = Some(profile);
+        self
     }
 
     async fn invoke(
@@ -587,6 +600,18 @@ impl<A: McpApplication> PalladinMcpServer<A> {
             .try_acquire_owned()
             .map_err(|_| McpError::internal_error("Server request limit reached", None))?;
         let arguments = Value::Object(request.arguments.unwrap_or_default());
+        if self.authorized_profile.as_ref().is_some_and(|authorized| {
+            arguments
+                .get("profile")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                != Some(authorized.as_str())
+        }) {
+            return Err(McpError::invalid_params(
+                "profile must match the authenticated broker assignment",
+                None,
+            ));
+        }
         let cancellation = serde_json::to_value(&context.id)
             .ok()
             .and_then(|id| request_id_key(&id).ok())

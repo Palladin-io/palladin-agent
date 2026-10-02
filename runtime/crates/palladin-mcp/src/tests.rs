@@ -1374,9 +1374,24 @@ fn every_tool_requires_an_explicit_profile() {
 
 #[tokio::test]
 async fn one_connection_routes_each_tool_profile_and_rejects_invalid_selection() {
+    assert_connection_profiles(None).await;
+}
+
+#[tokio::test]
+async fn broker_assignment_rejects_missing_or_different_profiles_for_every_tool() {
+    assert_connection_profiles(Some("first")).await;
+}
+
+async fn assert_connection_profiles(authorized_profile: Option<&str>) {
     let application = FakeApplication::default();
     let profiles = application.profiles.clone();
     let server = PalladinMcpServer::new(application).expect("server");
+    let server = match authorized_profile {
+        Some(profile) => server.with_authorized_profile(
+            palladin_core::profiles::ProfileName::parse(profile).expect("broker assignment"),
+        ),
+        None => server,
+    };
     let (client, transport) = tokio::io::duplex(128 * 1024);
     let (read, write) = tokio::io::split(transport);
     let task = tokio::spawn(serve_io(server, read, write));
@@ -1446,8 +1461,12 @@ async fn one_connection_routes_each_tool_profile_and_rejects_invalid_selection()
             send(&mut write, &json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}})).await;
             let result = receive(&mut read).await;
             assert_eq!(result["id"], id);
-            assert!(result.get("error").is_none());
-            expected.push(profile.to_owned());
+            if authorized_profile.is_some_and(|authorized| authorized != profile) {
+                assert_eq!(result["error"]["code"], -32602);
+            } else {
+                assert!(result.get("error").is_none());
+                expected.push(profile.to_owned());
+            }
             assert_eq!(*profiles.lock().await, expected);
             id += 1;
         }
