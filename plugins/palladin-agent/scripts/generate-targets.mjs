@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const pluginSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const checkOnly = process.argv.includes('--check');
 const version = '0.1.0-preview.2';
-const codexVersion = `${version}+codex.20260928182846`;
+const codexVersion = `${version}+codex.20261002120000`;
 
 const canonicalSkill = await readFile(
   resolve(pluginSourceRoot, 'core/skills/palladin-browser-login/SKILL.md'),
@@ -41,11 +41,6 @@ const metadata = {
 const mcpCommand = {
   command: 'palladin',
   args: ['mcp', 'serve'],
-};
-
-const codexMcpCommand = {
-  command: 'palladin',
-  args: ['--id', 'codex', 'mcp', 'serve'],
 };
 
 const codexManifest = {
@@ -107,7 +102,7 @@ const targets = [
     manifestPath: '.codex-plugin/plugin.json',
     manifest: codexManifest,
     mcpPath: '.mcp.json',
-    mcp: { mcpServers: { palladin: codexMcpCommand } },
+    mcp: { mcpServers: { palladin: mcpCommand } },
     extraFiles: {
       'assets/icon.png': icon,
       'skills/palladin-browser-login/agents/openai.yaml': [

@@ -82,6 +82,7 @@ use super::{
 #[derive(Clone, Default)]
 struct FakeApplication {
     calls: Arc<Mutex<Vec<String>>>,
+    profiles: Arc<Mutex<Vec<String>>>,
 }
 
 impl McpApplication for FakeApplication {
@@ -91,6 +92,7 @@ impl McpApplication for FakeApplication {
         _cancellation: CancellationToken,
     ) -> ApplicationFuture<'a> {
         Box::pin(async move {
+            self.profiles.lock().await.push(input.profile.clone());
             self.calls.lock().await.push(format!(
                 "pair:{}:{}",
                 input.display_name.as_deref().unwrap_or("absent"),
@@ -106,6 +108,7 @@ impl McpApplication for FakeApplication {
         _cancellation: CancellationToken,
     ) -> ApplicationFuture<'a> {
         Box::pin(async move {
+            self.profiles.lock().await.push(input.profile.clone());
             self.calls.lock().await.push("search".to_owned());
             ToolOutcome::success(
                 serde_json::to_string_pretty(
@@ -118,10 +121,11 @@ impl McpApplication for FakeApplication {
 
     fn get<'a>(
         &'a self,
-        _input: GetInput,
+        input: GetInput,
         _cancellation: CancellationToken,
     ) -> ApplicationFuture<'a> {
         Box::pin(async move {
+            self.profiles.lock().await.push(input.profile.clone());
             self.calls.lock().await.push("get".to_owned());
             ToolOutcome::success("synthetic-get")
         })
@@ -129,18 +133,22 @@ impl McpApplication for FakeApplication {
 
     fn exec<'a>(
         &'a self,
-        _input: ExecInput,
+        input: ExecInput,
         _cancellation: CancellationToken,
     ) -> ApplicationFuture<'a> {
-        Box::pin(async move { ToolOutcome::success("synthetic-exec") })
+        Box::pin(async move {
+            self.profiles.lock().await.push(input.profile.clone());
+            ToolOutcome::success("synthetic-exec")
+        })
     }
 
     fn inject<'a>(
         &'a self,
-        _input: InjectInput,
+        input: InjectInput,
         _cancellation: CancellationToken,
     ) -> ApplicationFuture<'a> {
         Box::pin(async move {
+            self.profiles.lock().await.push(input.profile.clone());
             self.calls.lock().await.push("inject".to_owned());
             ToolOutcome::success("synthetic-inject")
         })
@@ -148,10 +156,13 @@ impl McpApplication for FakeApplication {
 
     fn report_stale<'a>(
         &'a self,
-        _input: ReportStaleInput,
+        input: ReportStaleInput,
         _cancellation: CancellationToken,
     ) -> ApplicationFuture<'a> {
-        Box::pin(async move { ToolOutcome::success("synthetic-report") })
+        Box::pin(async move {
+            self.profiles.lock().await.push(input.profile.clone());
+            ToolOutcome::success("synthetic-report")
+        })
     }
 }
 
@@ -175,6 +186,13 @@ fn frozen_contract_exposes_pairing_and_exactly_five_legacy_tools() {
     for tool in &tools {
         assert!(tool.description.is_some());
         assert_eq!(tool.input_schema.get("type"), Some(&json!("object")));
+        assert!(
+            tool.input_schema["required"]
+                .as_array()
+                .expect("required")
+                .contains(&json!("profile"))
+        );
+        assert_eq!(tool.input_schema["properties"]["profile"]["type"], "string");
     }
     let exec = tools
         .iter()
@@ -205,7 +223,7 @@ fn frozen_inject_contract_requires_the_trusted_inject_method() {
     );
     assert_eq!(
         inject.input_schema.get("required"),
-        Some(&json!(["vaultId", "entryId"]))
+        Some(&json!(["profile", "vaultId", "entryId"]))
     );
     assert!(inject.input_schema["properties"].get("form").is_none());
     assert_eq!(
@@ -238,22 +256,28 @@ fn pair_agent_contract_is_free_form_bounded_and_rejects_unknown_arguments() {
     );
 
     let boundary = parse_input::<PairAgentInput>(json!({
-        "displayName": "n".repeat(64),
+        "profile": "fixture", "displayName": "n".repeat(64),
         "type": "t".repeat(100)
     }))
     .expect("boundary shape");
     validate_pair_agent(&boundary).expect("boundary metadata");
 
     let overlong =
-        parse_input::<PairAgentInput>(json!({"type": "t".repeat(101)})).expect("overlong shape");
+        parse_input::<PairAgentInput>(json!({"profile": "fixture", "type": "t".repeat(101)}))
+            .expect("overlong shape");
     assert!(validate_pair_agent(&overlong).is_err());
-    assert!(parse_input::<PairAgentInput>(json!({"apiKey": "must-not-be-accepted"})).is_err());
+    assert!(
+        parse_input::<PairAgentInput>(
+            json!({"profile": "fixture", "apiKey": "must-not-be-accepted"})
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn inject_browser_target_requires_a_tab_id_and_url_pair() {
     let targeted = parse_input::<InjectInput>(json!({
-        "vaultId": "vault-1",
+        "profile": "fixture", "vaultId": "vault-1",
         "entryId": "entry-1",
         "targetTabId": 1_240_594_015_u64,
         "targetUrl": "https://login.example.com/start"
@@ -262,9 +286,9 @@ fn inject_browser_target_requires_a_tab_id_and_url_pair() {
     validate_inject(&targeted).expect("paired browser target");
 
     for invalid in [
-        json!({"vaultId":"vault-1","entryId":"entry-1","targetTabId":7}),
-        json!({"vaultId":"vault-1","entryId":"entry-1","targetUrl":"https://example.com"}),
-        json!({"vaultId":"vault-1","entryId":"entry-1","targetTabId":0,"targetUrl":"https://example.com"}),
+        json!({"profile": "fixture", "vaultId":"vault-1","entryId":"entry-1","targetTabId":7}),
+        json!({"profile": "fixture", "vaultId":"vault-1","entryId":"entry-1","targetUrl":"https://example.com"}),
+        json!({"profile": "fixture", "vaultId":"vault-1","entryId":"entry-1","targetTabId":0,"targetUrl":"https://example.com"}),
     ] {
         let input = parse_input::<InjectInput>(invalid).expect("structurally valid fixture");
         assert!(validate_inject(&input).is_err());
@@ -302,14 +326,14 @@ fn mcp_wait_is_one_shot_unless_explicitly_requested() {
 fn tool_arguments_fail_closed_on_unknown_fields_and_invalid_wait_options() {
     assert!(
         parse_input::<GetInput>(json!({
-            "vaultId": "vault-fixture",
+            "profile": "fixture", "vaultId": "vault-fixture",
             "entryId": "entry-fixture",
             "unexpected": "ignored-by-default-serde"
         }))
         .is_err()
     );
     let invalid_wait = parse_input::<GetInput>(json!({
-        "vaultId": "vault-fixture",
+        "profile": "fixture", "vaultId": "vault-fixture",
         "entryId": "entry-fixture",
         "wait": "forever"
     }))
@@ -317,7 +341,7 @@ fn tool_arguments_fail_closed_on_unknown_fields_and_invalid_wait_options() {
     assert!(validate_get(&invalid_wait).is_err());
 
     let script = parse_input::<ExecInput>(json!({
-        "vaultId": "vault-fixture",
+        "profile": "fixture", "vaultId": "vault-fixture",
         "entryId": "script-fixture",
         "parameters": {"activeOnly": true, "limit": 25}
     }))
@@ -325,7 +349,7 @@ fn tool_arguments_fail_closed_on_unknown_fields_and_invalid_wait_options() {
     validate_exec(&script).expect("typed parameter object");
     assert!(
         parse_input::<ExecInput>(json!({
-            "vaultId": "vault-fixture",
+            "profile": "fixture", "vaultId": "vault-fixture",
             "entryId": "script-fixture",
             "parameters": "must-not-be-accepted"
         }))
@@ -333,6 +357,7 @@ fn tool_arguments_fail_closed_on_unknown_fields_and_invalid_wait_options() {
     );
 
     let unicode_query = SearchInput {
+        profile: "fixture".into(),
         query: "ż".repeat(512),
         cursor: None,
         page_size: None,
@@ -341,7 +366,7 @@ fn tool_arguments_fail_closed_on_unknown_fields_and_invalid_wait_options() {
 
     assert!(
         parse_input::<InjectInput>(json!({
-            "vaultId": "vault-fixture",
+            "profile": "fixture", "vaultId": "vault-fixture",
             "entryId": "entry-fixture",
             "form": {
                 "version": 1,
@@ -539,7 +564,7 @@ async fn declared_protocol_versions_complete_the_raw_stdio_lifecycle() {
                 "jsonrpc":"2.0",
                 "id":3,
                 "method":"tools/call",
-                "params":{"name":"pair_agent","arguments":{"displayName":"Runtime Helper","type":"custom/runtime"}}
+                "params":{"name":"pair_agent","arguments":{"profile":"fixture","displayName":"Runtime Helper","type":"custom/runtime"}}
             }),
         )
         .await;
@@ -557,7 +582,7 @@ async fn declared_protocol_versions_complete_the_raw_stdio_lifecycle() {
                 "jsonrpc":"2.0",
                 "id":4,
                 "method":"tools/call",
-                "params":{"name":"search_entries","arguments":{"query":"fixture"}}
+                "params":{"name":"search_entries","arguments":{"profile":"fixture","query":"fixture"}}
             }),
         )
         .await;
@@ -583,7 +608,7 @@ async fn declared_protocol_versions_complete_the_raw_stdio_lifecycle() {
                 "params":{
                     "name":"inject_credential",
                     "arguments":{
-                        "vaultId":"vault-fixture",
+                        "profile":"fixture","vaultId":"vault-fixture",
                         "entryId":"entry-fixture",
                         "provider":"playwright"
                     }
@@ -645,7 +670,7 @@ async fn raw_stdio_validation_errors_never_echo_secret_bearing_arguments() {
             "jsonrpc":"2.0","id":2,"method":"tools/call",
             "params":{
                 "name":"get_credential",
-                "arguments":{"vaultId":"vault","entryId":"entry","secret":CANARY}
+                "arguments":{"profile":"fixture","vaultId":"vault","entryId":"entry","secret":CANARY}
             }
         }),
     )
@@ -1090,7 +1115,7 @@ async fn cancellation_stops_a_tool_and_suppresses_its_late_response() {
         &mut client_write,
         &json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"get_credential","arguments":{"vaultId":"vault","entryId":"entry","noWait":true}}
+            "params":{"name":"get_credential","arguments":{"profile":"fixture","vaultId":"vault","entryId":"entry","noWait":true}}
         }),
     )
     .await;
@@ -1158,11 +1183,11 @@ async fn cancellation_inside_a_2025_03_batch_emits_the_remaining_response_array(
         &json!([
             {
                 "jsonrpc":"2.0","id":2,"method":"tools/call",
-                "params":{"name":"get_credential","arguments":{"vaultId":"vault","entryId":"entry","noWait":true}}
+                "params":{"name":"get_credential","arguments":{"profile":"fixture","vaultId":"vault","entryId":"entry","noWait":true}}
             },
             {
                 "jsonrpc":"2.0","id":3,"method":"tools/call",
-                "params":{"name":"search_entries","arguments":{"query":"fixture"}}
+                "params":{"name":"search_entries","arguments":{"profile":"fixture","query":"fixture"}}
             }
         ]),
     )
@@ -1212,14 +1237,14 @@ impl McpApplication for LateApplication {
 
     fn get<'a>(
         &'a self,
-        _input: GetInput,
+        input: GetInput,
         _cancellation: CancellationToken,
     ) -> ApplicationFuture<'a> {
         Box::pin(async move {
             self.started.notify_one();
             self.release.notified().await;
             self.completed.notify_one();
-            ToolOutcome::success("late-get-result")
+            ToolOutcome::success(format!("late-get-result:{}", input.profile))
         })
     }
 
@@ -1267,11 +1292,11 @@ async fn late_response_after_batch_cancellation_never_escapes_as_a_standalone_fr
         &json!([
             {
                 "jsonrpc":"2.0","id":2,"method":"tools/call",
-                "params":{"name":"get_credential","arguments":{"vaultId":"vault","entryId":"entry","noWait":true}}
+                "params":{"name":"get_credential","arguments":{"profile":"fixture","vaultId":"vault","entryId":"entry","noWait":true}}
             },
             {
                 "jsonrpc":"2.0","id":3,"method":"tools/call",
-                "params":{"name":"search_entries","arguments":{"query":"fixture"}}
+                "params":{"name":"search_entries","arguments":{"profile":"fixture","query":"fixture"}}
             }
         ]),
     )
@@ -1329,4 +1354,176 @@ async fn receive(reader: &mut BufReader<impl AsyncRead + Unpin>) -> Value {
         .expect("read response");
     assert!(line.ends_with('\n'));
     serde_json::from_str(&line).expect("every stdout line is one JSON-RPC message")
+}
+
+#[test]
+fn every_tool_requires_an_explicit_profile() {
+    assert!(parse_input::<PairAgentInput>(json!({})).is_err());
+    assert!(parse_input::<SearchInput>(json!({"query":"fixture"})).is_err());
+    let credential = json!({"vaultId":"vault", "entryId":"entry"});
+    assert!(parse_input::<GetInput>(credential.clone()).is_err());
+    assert!(parse_input::<ExecInput>(credential.clone()).is_err());
+    assert!(parse_input::<InjectInput>(credential).is_err());
+    assert!(
+        parse_input::<ReportStaleInput>(json!({
+            "vaultId":"vault", "entryId":"entry", "code":"manual"
+        }))
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn one_connection_routes_each_tool_profile_and_rejects_invalid_selection() {
+    assert_connection_profiles(None).await;
+}
+
+#[tokio::test]
+async fn broker_assignment_rejects_missing_or_different_profiles_for_every_tool() {
+    assert_connection_profiles(Some("first")).await;
+}
+
+async fn assert_connection_profiles(authorized_profile: Option<&str>) {
+    let application = FakeApplication::default();
+    let profiles = application.profiles.clone();
+    let server = PalladinMcpServer::new(application).expect("server");
+    let server = match authorized_profile {
+        Some(profile) => server.with_authorized_profile(
+            palladin_core::profiles::ProfileName::parse(profile).expect("broker assignment"),
+        ),
+        None => server,
+    };
+    let (client, transport) = tokio::io::duplex(128 * 1024);
+    let (read, write) = tokio::io::split(transport);
+    let task = tokio::spawn(serve_io(server, read, write));
+    let (read, mut write) = tokio::io::split(client);
+    let mut read = BufReader::new(read);
+    send(
+        &mut write,
+        &json!({
+            "jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
+                "protocolVersion":"2025-11-25", "capabilities":{},
+                "clientInfo":{"name":"profile-routing-test","version":"1"}
+            }
+        }),
+    )
+    .await;
+    receive(&mut read).await;
+    send(
+        &mut write,
+        &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+    let fixtures = [
+        ("pair_agent", json!({})),
+        ("search_entries", json!({"query":"fixture"})),
+        (
+            "get_credential",
+            json!({"vaultId":"vault","entryId":"entry"}),
+        ),
+        (
+            "exec_with_credential",
+            json!({"vaultId":"vault","entryId":"entry"}),
+        ),
+        (
+            "inject_credential",
+            json!({"vaultId":"vault","entryId":"entry"}),
+        ),
+        (
+            "report_credential_stale",
+            json!({"vaultId":"vault","entryId":"entry"}),
+        ),
+    ];
+    let mut id = 2;
+    let mut expected = Vec::new();
+    for profile in ["first", "second", "first"] {
+        for (name, arguments) in &fixtures {
+            for invalid in [
+                Value::Null,
+                json!(""),
+                json!(" "),
+                json!("../first"),
+                json!("con"),
+                json!("x".repeat(65)),
+            ] {
+                let mut args = arguments.clone();
+                if !invalid.is_null() {
+                    args["profile"] = invalid;
+                }
+                send(&mut write, &json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}})).await;
+                let rejected = receive(&mut read).await;
+                assert_eq!(rejected["id"], id);
+                assert_eq!(rejected["error"]["code"], -32602);
+                assert_eq!(*profiles.lock().await, expected);
+                id += 1;
+            }
+            let mut args = arguments.clone();
+            args["profile"] = json!(profile);
+            send(&mut write, &json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}})).await;
+            let result = receive(&mut read).await;
+            assert_eq!(result["id"], id);
+            if authorized_profile.is_some_and(|authorized| authorized != profile) {
+                assert_eq!(result["error"]["code"], -32602);
+            } else {
+                assert!(result.get("error").is_none());
+                expected.push(profile.to_owned());
+            }
+            assert_eq!(*profiles.lock().await, expected);
+            id += 1;
+        }
+    }
+    write.shutdown().await.expect("shutdown");
+    drop(write);
+    task.await.expect("server task").expect("server result");
+}
+
+#[tokio::test]
+async fn overlapping_profile_request_cannot_change_an_in_flight_operation() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let server = PalladinMcpServer::new(LateApplication {
+        started: started.clone(),
+        release: release.clone(),
+        completed: Arc::new(Notify::new()),
+    })
+    .expect("server");
+    let (client, transport) = tokio::io::duplex(128 * 1024);
+    let (read, write) = tokio::io::split(transport);
+    let task = tokio::spawn(serve_io(server, read, write));
+    let (read, mut write) = tokio::io::split(client);
+    let mut read = BufReader::new(read);
+    send(&mut write, &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+        "protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"profile-overlap","version":"1"}
+    }})).await;
+    receive(&mut read).await;
+    send(
+        &mut write,
+        &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+    send(&mut write, &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+        "name":"get_credential","arguments":{"profile":"first","vaultId":"vault","entryId":"entry"}
+    }})).await;
+    tokio::time::timeout(Duration::from_secs(2), started.notified())
+        .await
+        .expect("first started");
+    send(
+        &mut write,
+        &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+            "name":"search_entries","arguments":{"profile":"second","query":"fixture"}
+        }}),
+    )
+    .await;
+    let busy = receive(&mut read).await;
+    assert_eq!(busy["id"], 3);
+    assert_eq!(busy["error"]["code"], -32603);
+    release.notify_one();
+    let first = receive(&mut read).await;
+    assert_eq!(first["id"], 2);
+    assert_eq!(
+        first["result"]["content"][0]["text"],
+        "late-get-result:first"
+    );
+    write.shutdown().await.expect("shutdown");
+    drop(write);
+    task.await.expect("server task").expect("server result");
 }

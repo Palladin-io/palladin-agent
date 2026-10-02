@@ -16,13 +16,14 @@ Keep three boundaries separate:
 | Browser pairing | `pair_agent` | `palladin --id <alias> pair-agent --host <api-host>` |
 | Discovery | `search_entries` | `palladin search --json <query>` |
 | Inject | `inject_credential` | `palladin inject <vaultId> <entryId>` |
+| Agent profile | required `profile` on every call | `--id <confirmed-alias>` |
 | Browser provider | `provider` | `--provider` |
 | Exact tab | `targetTabId` | `--target-tab-id` |
 | Exact URL | `targetUrl` | `--page-url` |
 
 Packaged plugins launch `palladin` directly, without a shell or secret environment.
-Their generated commands are bootstrap defaults; select and pin the user-confirmed
-profile/host in the host connection configuration as described in
+The server launch is profile-independent. Every tool call requires `profile`
+from trusted Agent/workspace memory, as described in
 [connection setup](connection-setup.md). Never infer an account assignment from
 a bundled example, the global default or a previous unrelated workspace.
 

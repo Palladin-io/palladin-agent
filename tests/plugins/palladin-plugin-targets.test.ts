@@ -34,7 +34,7 @@ const targets: Target[] = [
     manifestPath: '.codex-plugin/plugin.json',
     mcpPath: '.mcp.json',
     format: 'codex',
-    expectedMcpArgs: ['--id', 'codex', 'mcp', 'serve'],
+    expectedMcpArgs: ['mcp', 'serve'],
   },
   {
     id: 'claude',
@@ -262,7 +262,7 @@ describe('Palladin plugin targets', () => {
       };
     };
     const mcpContract = JSON.parse(
-      await readFile(resolve(repositoryRoot, 'runtime/contracts/mcp/v1.3/mcp-tools.json'), 'utf8'),
+      await readFile(resolve(repositoryRoot, 'runtime/contracts/mcp/v2.0/mcp-tools.json'), 'utf8'),
     ) as {
       tools: Array<{
         name: string;

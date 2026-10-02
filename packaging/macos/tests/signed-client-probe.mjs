@@ -196,7 +196,7 @@ const initialize = JSON.stringify({
 });
 const toolCall = JSON.stringify({
   jsonrpc: '2.0', id: 2, method: 'tools/call',
-  params: { name: 'get_credential', arguments: { vaultId: vault, entryId: entry, reason: 'noninteractive boundary probe', noWait: true } },
+  params: { name: 'get_credential', arguments: { profile: 'default', vaultId: vault, entryId: entry, reason: 'noninteractive boundary probe', noWait: true } },
 });
 const afterInitialize = `${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n${toolCall}\n`;
 const firstMcp = runBounded(

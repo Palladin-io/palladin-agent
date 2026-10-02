@@ -1933,6 +1933,7 @@ name = "palladin-windows-broker"
 version = "0.0.1"
 dependencies = [
  "getrandom 0.4.3",
+ "palladin-core",
  "palladin-platform",
  "rpassword",
  "secrecy",

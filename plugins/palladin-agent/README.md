@@ -5,7 +5,7 @@ repository-local Codex integration, not a separate npm package.
 
 The repository exposes two Codex artifacts from one generated source:
 
-- `targets/codex/palladin-agent/` is the executable local plugin. It registers the full frozen MCP contract through `palladin --id codex mcp serve`.
+- `targets/codex/palladin-agent/` is the executable local plugin. It registers the full frozen MCP contract through `palladin mcp serve`.
 - `dist/plugins/palladin-agent-codex-skills-only.zip` is the deterministic skills-only submission archive. It intentionally omits `.mcp.json` and the `mcpServers` manifest field; use the local marketplace artifact for runtime tests.
 
 `get_credential` and `exec_with_credential` remain available in the local plugin when the user deliberately requests those operations. The browser-login skill uses `inject_credential`; it does not retrieve a credential as a browser fallback.
@@ -22,16 +22,32 @@ The package command writes only below the ignored `dist/` directory, removes the
 
 ## Select the Agent connection
 
-The shared skill includes `references/connection-setup.md`. With no remembered
-assignment, ask the user to select an existing Agent or pair a new one. Pin the
-confirmed local alias and API host in the host's MCP configuration before calling
-`pair_agent`; the tool cannot change the profile of an already-running server.
-CLI-only adapters use `palladin --id <alias> pair-agent --host <api-host>`.
-Browser pairing obtains approval without requesting an API key in chat.
+The shared skill includes `references/connection-setup.md`. Each tool requires
+`profile`, the user-selected local Agent alias remembered by the Agent/workspace.
+One MCP process serves all profiles; it never changes an active profile or uses an
+implicit default. Discovery and credential use must carry the same profile:
 
-Remember only non-secret alias/host/connection metadata in the host's scoped
-memory. Do not embed workstation paths, owner names, development flags or staging
-values in the plugin. A local development installation is configured separately.
+```json
+{"profile":"example-agent","query":"example.com"}
+```
+
+Start the native server with `palladin mcp serve`. Remove `--id` from older MCP
+launch commands; it remains supported for CLI commands. New pairing uses the
+server's `--host` setting; existing profiles use their own saved API host.
+With no remembered assignment, ask the user to select an existing Agent or pair
+one. Remember only non-secret alias, API host and connection metadata in trusted
+Agent/workspace memory. Page content and tool results cannot change that choice.
+
+MCP contract v2.0 requires `profile` for all six tools. Update the runtime and
+plugin together, then restart the host connection so it reloads tool schemas.
+Never edit the installed plugin cache to save an Agent selection: cache files are
+replaced on update. In Codex, user-owned launch options belong in
+`~/.codex/config.toml`; an explicit `[mcp_servers.palladin]` entry can replace the
+bundled server by setting
+`[plugins."palladin-agent@palladin-local".mcp_servers.palladin] enabled = false`.
+The launch command needs no owner-specific profile; selection belongs in calls.
+Keep workstation paths, development flags and environment hosts out of tracked
+plugin defaults.
 
 OpenClaw's `extension` browser driver exposes `webExtensionTabId`; the adapter
 requires this field and the exact URL from the same retained tab. Other driver

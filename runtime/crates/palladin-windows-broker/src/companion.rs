@@ -1,11 +1,13 @@
+use std::collections::VecDeque;
 use std::io::{self, BufRead, IsTerminal, Read};
 use std::process::Stdio;
 use std::time::Duration;
 
 use palladin_platform::broker_protocol::{
     BrokerFrame, ClientFrame, ConsentChallenge, ExecuteRequest, InputChunk, MAX_MCP_MESSAGE_BYTES,
-    MAX_STREAM_CHUNK_BYTES, McpConsentResponse, McpMessage, OutputStream, ProtocolError,
-    SecureOperation, consent_payload, operation_and_profile, read_frame, request_hash, write_frame,
+    MAX_STREAM_CHUNK_BYTES, McpConsentResponse, McpMessage, McpSecretOperation, OutputStream,
+    ProtocolError, SecureOperation, consent_payload, mcp_secret_operations, operation_and_profile,
+    read_frame, request_hash, write_frame,
 };
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -188,7 +190,7 @@ async fn execute(
     write_client_frame(&mut pipe, &ClientFrame::Execute(request)).await?;
 
     if operation == SecureOperation::McpServe {
-        return execute_duplex(pipe, request_id, credential, agent_id).await;
+        return execute_duplex(pipe, request_id, credential).await;
     }
 
     execute_one_shot(pipe, request_id, operation, standard_input_plan).await
@@ -301,6 +303,7 @@ where
 struct McpFlowControl {
     next_sequence: u64,
     message_in_flight: bool,
+    pending_consent: VecDeque<McpSecretOperation>,
 }
 
 impl McpFlowControl {
@@ -308,16 +311,38 @@ impl McpFlowControl {
         !self.message_in_flight
     }
 
-    fn begin_message(&mut self) -> Result<u64, CompanionError> {
+    fn begin_message(&mut self, message: &[u8]) -> Result<u64, CompanionError> {
         if self.message_in_flight {
             return Err(CompanionError::InvalidResponse);
         }
+        self.pending_consent = mcp_secret_operations(message)
+            .map_err(|_| CompanionError::InvalidResponse)?
+            .into();
         self.message_in_flight = true;
         Ok(self.next_sequence)
     }
 
+    fn consume_consent(
+        &mut self,
+        operation: SecureOperation,
+        profile: &str,
+    ) -> Result<(), CompanionError> {
+        if !self.message_in_flight
+            || !self.pending_consent.front().is_some_and(|expected| {
+                expected.operation == operation && expected.profile == profile
+            })
+        {
+            return Err(CompanionError::InvalidResponse);
+        }
+        self.pending_consent.pop_front();
+        Ok(())
+    }
+
     fn acknowledge(&mut self, sequence: u64) -> Result<(), CompanionError> {
-        if !self.message_in_flight || sequence != self.next_sequence {
+        if !self.message_in_flight
+            || sequence != self.next_sequence
+            || !self.pending_consent.is_empty()
+        {
             return Err(CompanionError::InvalidResponse);
         }
         self.next_sequence = self
@@ -341,7 +366,6 @@ async fn execute_duplex(
     pipe: NamedPipeClient,
     request_id: [u8; 16],
     credential: KeyCredential,
-    agent_id: String,
 ) -> Result<i32, CompanionError> {
     let (reader, mut writer) = tokio::io::split(pipe);
     let (mut frames, _reader_task) = broker_frame_reader(reader);
@@ -360,7 +384,7 @@ async fn execute_duplex(
     loop {
         if accepted && flow.can_send() && !input_closed && !cancel_sent {
             if let Some(mut bytes) = take_next_mcp_message(&mut pending, input_eof)? {
-                let input_sequence = flow.begin_message()?;
+                let input_sequence = flow.begin_message(&bytes)?;
                 write_client_frame(
                     &mut writer,
                     &ClientFrame::McpMessage(McpMessage {
@@ -420,7 +444,6 @@ async fn execute_duplex(
                         request_hash,
                     } if accepted
                         && flow.message_in_flight()
-                        && challenge_agent_id == &agent_id
                         && matches!(
                             operation,
                             SecureOperation::McpPairAgent
@@ -429,6 +452,7 @@ async fn execute_duplex(
                                 | SecureOperation::McpExecWithCredential
                                 | SecureOperation::McpReportCredentialStale
                         ) => {
+                            flow.consume_consent(*operation, challenge_agent_id)?;
                             let mut consent = ConsentChallenge {
                                 nonce: *nonce,
                                 issued_at_unix_ms: *issued_at_unix_ms,
@@ -834,11 +858,15 @@ fn verify_user_context(operation: SecureOperation, agent_id: &str) -> Result<(),
     if availability != UserConsentVerifierAvailability::Available {
         return Err(CompanionError::HelloUnavailable);
     }
-    let message = HSTRING::from(format!(
-        "Palladin: authorize {} for profile {}",
-        operation_display_name(operation),
-        safe_profile_hint(agent_id),
-    ));
+    let message = HSTRING::from(if operation == SecureOperation::McpServe {
+        "Palladin: authorize opening the MCP transport; each profile operation requires separate consent".to_owned()
+    } else {
+        format!(
+            "Palladin: authorize {} for profile {}",
+            operation_display_name(operation),
+            safe_profile_hint(agent_id)
+        )
+    });
     let result = UserConsentVerifier::RequestVerificationAsync(&message)
         .and_then(|operation| operation.join())
         .map_err(|_| CompanionError::HelloUnavailable)?;
@@ -1138,7 +1166,7 @@ mod tests {
             .expect("first")
             .expect("first message");
         assert_eq!(&*first, br#"{"id":1}"#);
-        assert_eq!(flow.begin_message().expect("first sequence"), 0);
+        assert_eq!(flow.begin_message(&first).expect("first sequence"), 0);
         assert!(!flow.can_send());
         assert_eq!(
             pending,
@@ -1146,7 +1174,7 @@ mod tests {
 "#
         );
         assert!(matches!(
-            flow.begin_message(),
+            flow.begin_message(br#"{"id":1}"#),
             Err(CompanionError::InvalidResponse)
         ));
         assert!(matches!(
@@ -1160,7 +1188,7 @@ mod tests {
             .expect("second")
             .expect("second message");
         assert_eq!(&*second, br#"{"id":2}"#);
-        assert_eq!(flow.begin_message().expect("second sequence"), 1);
+        assert_eq!(flow.begin_message(&second).expect("second sequence"), 1);
         assert!(matches!(
             flow.acknowledge(0),
             Err(CompanionError::InvalidResponse)
@@ -1171,6 +1199,42 @@ mod tests {
             Err(CompanionError::InvalidResponse)
         ));
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn mcp_consent_matches_each_requested_profile_before_acknowledgement() {
+        let mut flow = McpFlowControl::default();
+        let message = br#"[
+            {"method":"tools/call","params":{"name":"search_entries","arguments":{"profile":"production","query":"fixture"}}},
+            {"method":"tools/call","params":{"name":"search_entries","arguments":{"profile":"sandbox","query":"fixture"}}}
+        ]"#;
+        flow.begin_message(message).unwrap();
+        assert!(
+            flow.consume_consent(SecureOperation::McpSearchEntries, "default")
+                .is_err()
+        );
+        assert!(
+            flow.consume_consent(SecureOperation::McpGetCredential, "production")
+                .is_err()
+        );
+        assert!(flow.acknowledge(0).is_err());
+        flow.consume_consent(SecureOperation::McpSearchEntries, "production")
+            .unwrap();
+        assert!(
+            flow.consume_consent(SecureOperation::McpSearchEntries, "production")
+                .is_err()
+        );
+        flow.consume_consent(SecureOperation::McpSearchEntries, "sandbox")
+            .unwrap();
+        flow.acknowledge(0).unwrap();
+        flow.begin_message(br#"{"method":"tools/call","params":{"name":"search_entries","arguments":{"profile":"third","query":"fixture"}}}"#).unwrap();
+        assert!(
+            flow.consume_consent(SecureOperation::McpSearchEntries, "sandbox")
+                .is_err()
+        );
+        flow.consume_consent(SecureOperation::McpSearchEntries, "third")
+            .unwrap();
+        flow.acknowledge(1).unwrap();
     }
 
     #[test]
