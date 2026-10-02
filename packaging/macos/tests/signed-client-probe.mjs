@@ -149,11 +149,18 @@ async function runBoundedCaptured(name, executable, args, options) {
   const stderrBuffer = Buffer.concat(stderr);
   if (captureOverflowed) throw new Error('signed-client output exceeded its safe capture bound');
   capture(name, stdoutBuffer, stderrBuffer);
-  if (timedOut) throw new Error('signed-client probe timed out');
-  return { ...result, stdout: stdoutBuffer, stderr: stderrBuffer };
+  if (timedOut && options.acceptBoundedDenial !== true) throw new Error('signed-client probe timed out');
+  return { ...result, timedOut, stdout: stdoutBuffer, stderr: stderrBuffer };
 }
 
 function assertAuthorizationDenial(name, result) {
+  if (result.timedOut) {
+    if (result.signal !== 'SIGKILL' || result.stdout.length !== 0 || result.stderr.length !== 0) {
+      throw new Error(`${name} did not give a clean bounded denial`);
+    }
+    process.stderr.write(`Palladin signed-client probe result: ${name}: bounded-no-identity\n`);
+    return;
+  }
   const output = Buffer.concat([result.stdout, result.stderr]).toString('utf8');
   if (!output.includes('fresh operating-system authorization')) {
     const knownFailures = [
@@ -177,7 +184,7 @@ const entry = '22222222222222222222222222222222';
 // identity and reaches OS authorization without enrolling or contacting the API.
 const blindArguments = ['init'];
 for (const [name, executable] of [['genuine', binary], ['copied', copiedBinary]]) {
-  const result = await runBounded(`blind-${name}`, executable, blindArguments);
+  const result = await runBounded(`blind-${name}`, executable, blindArguments, { acceptBoundedDenial: true });
   if (result.code === 0) throw new Error('blindly spawned signed runtime unexpectedly used an identity');
   assertAuthorizationDenial(`blind-${name}`, result);
 }

@@ -123,6 +123,30 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
     }
   });
 
+  it('accepts a bounded, output-free identity wait on a headless Mac', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'palladin-headless-authorization-'));
+    try {
+      const fakeBinary = join(directory, 'fake-runtime');
+      writeFileSync(fakeBinary, [
+        '#!/bin/sh',
+        'case "$1" in',
+        '  init) exec sleep 20 ;;',
+        '  connect) exit 1 ;;',
+        '  mcp) IFS= read -r _; printf \'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\\n\'; IFS= read -r _; IFS= read -r _; printf \'{"jsonrpc":"2.0","id":2,"result":{"content":[],"isError":true}}\\n\'; exit 0 ;;',
+        'esac',
+      ].join('\n'));
+      chmodSync(fakeBinary, 0o700);
+      const probe = spawnSync(process.execPath, [
+        'packaging/macos/tests/signed-client-probe.mjs', fakeBinary, fakeBinary, join(directory, 'captures'),
+      ], { encoding: 'utf8', env: { ...process.env, HOME: directory }, timeout: 25_000 });
+      expect(probe.status).toBe(0);
+      expect(probe.stderr.match(/bounded-no-identity/g)).toHaveLength(2);
+      expect(probe.stdout.includes('failed closed')).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('attributes a concurrent MCP rejection to the failing connection, not the last one started', () => {
     const diagnostic = report([
       'Palladin signed-client probe stage: mcp-first-connection',
