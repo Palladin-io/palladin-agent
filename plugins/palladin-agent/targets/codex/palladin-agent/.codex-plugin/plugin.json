@@ -1,6 +1,6 @@
 {
   "name": "palladin-agent",
-  "version": "0.1.0-preview.2+codex.20260928182846",
+  "version": "0.1.0-preview.2+codex.20261002120000",
   "description": "Preview of Palladin credential workflows and secure browser injection.",
   "author": {
     "name": "Palladin.io",

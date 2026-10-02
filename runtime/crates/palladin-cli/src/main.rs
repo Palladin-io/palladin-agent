@@ -640,6 +640,11 @@ async fn mcp(
 ) -> ExitCode {
     match command {
         McpCommand::Serve { host } => {
+            if profile.is_some() {
+                return fail(
+                    "MCP requires profile in each tool call. Remove --id from the server command.",
+                );
+            }
             let pairing_host = match ApiHost::parse(&host) {
                 Ok(host) => host,
                 Err(error) => return fail(&error.to_string()),
@@ -652,16 +657,11 @@ async fn mcp(
                 Ok(connection) => connection,
                 Err(error) => return fail(&error.to_string()),
             };
-            let server = match palladin_mcp::native_server(
-                service,
-                profile,
-                hostname,
-                connection,
-                pairing_host,
-            ) {
-                Ok(server) => server,
-                Err(error) => return fail(&error.to_string()),
-            };
+            let server =
+                match palladin_mcp::native_server(service, hostname, connection, pairing_host) {
+                    Ok(server) => server,
+                    Err(error) => return fail(&error.to_string()),
+                };
             match palladin_mcp::serve_stdio(server).await {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => fail(&error.to_string()),

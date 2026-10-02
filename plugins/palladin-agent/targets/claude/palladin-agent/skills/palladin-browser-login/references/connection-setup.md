@@ -31,24 +31,25 @@ Palladin Add Agent. The descriptor carries setup metadata, not API-host authorit
 confirm the target environment separately. Never request an API key, password,
 private key, session token or mnemonic in chat, argv or environment variables.
 
-For MCP, configure the host-managed server connection to the selected alias and
-host using argument values `--id <alias> mcp serve --host <api-host>`, then restart
-that connection through the host's supported mechanism before calling `pair_agent`.
-The tool pairs the profile selected when that MCP process started; a tool argument
-cannot switch its alias or host. Pass the descriptor if provided, and `type:
-"openclaw"` for a new OpenClaw Agent when it does not conflict with that descriptor.
-If the host cannot change the connection, explain the exact required setup instead
-of pairing the currently running default or another user's Agent.
+For MCP, launch one `palladin mcp serve` process without `--id`. Pass the
+user-selected alias as required `profile` in `pair_agent` and every subsequent
+tool call. Pairing uses the server's configured `--host <api-host>` (production
+by default); verify it matches the separately confirmed environment before
+pairing. Existing profiles always use their own saved API host for operations.
+Pass the descriptor if provided, and `type: "openclaw"` for a new OpenClaw Agent
+when it does not conflict with that descriptor. Do not re-pair an existing profile
+just because a tool call fails.
 
 For a CLI adapter, follow the canonical setup procedure linked above using the
 user's exact pairing command. Use `openclaw` as the runtime type for OpenClaw
 unless it conflicts with supplied descriptor metadata. Do not invent installation
 commands or fall back to API-key-based `connect`.
 
-For an existing MCP assignment, pin the confirmed alias in the host connection
-configuration before Search/Inject. A manifest's generic launch command is a
-bootstrap, not a remembered account assignment. If a host supports multiple named
-MCP connections, retain the selected connection reference as well as its alias/host.
+For an existing MCP assignment, send the remembered alias as `profile` on every
+call. Keep it unchanged across Search, Inject and approval retries. The server
+has no mutable active profile and never falls back to the machine's default.
+Missing or invalid `profile` is an argument error; an unknown profile must be
+resolved with the user rather than silently substituted or created.
 
 ## Remember only the confirmed connection
 

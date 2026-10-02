@@ -58,7 +58,7 @@ const UNSUPPORTED_VERSION_SENTINEL: &str = "palladin-unsupported-version";
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
     ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 const GET_EXPOSURE_WARNING: &str = "Note: this secret is now in the Agent's context. On a hosted LLM it may leave your machine. Prefer exec_with_credential or inject_credential when the credential only needs to authenticate another operation.";
-const CONTRACT_JSON: &str = include_str!("../../../contracts/mcp/v1.3/mcp-tools.json");
+const CONTRACT_JSON: &str = include_str!("../../../contracts/mcp/v2.0/mcp-tools.json");
 
 type ApplicationFuture<'a> = Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
 
@@ -113,7 +113,6 @@ pub trait McpApplication: Send + Sync + 'static {
 
 pub struct NativeApplication<S> {
     service: Arc<RuntimeService<S>>,
-    profile: Option<String>,
     hostname: String,
     connection: OperationConnection,
     pairing_host: ApiHost,
@@ -123,14 +122,12 @@ impl<S> NativeApplication<S> {
     #[must_use]
     pub fn new(
         service: Arc<RuntimeService<S>>,
-        profile: Option<String>,
         hostname: String,
         connection: OperationConnection,
         pairing_host: ApiHost,
     ) -> Self {
         Self {
             service,
-            profile,
             hostname,
             connection,
             pairing_host,
@@ -159,7 +156,7 @@ where
             match self
                 .service
                 .browser_pair(
-                    self.profile.as_deref(),
+                    Some(input.profile.trim()),
                     self.pairing_host.clone(),
                     metadata,
                     &self.hostname,
@@ -194,7 +191,7 @@ where
                 page_size: input.page_size,
             };
             let session = match self.service.open_session(
-                self.profile.as_deref(),
+                Some(input.profile.trim()),
                 &self.hostname,
                 &self.connection,
                 descriptor,
@@ -238,7 +235,7 @@ where
                 output: CredentialOutputPolicy::McpSecretResponse,
             };
             let session = match self.service.open_session(
-                self.profile.as_deref(),
+                Some(input.profile.trim()),
                 &self.hostname,
                 &self.connection,
                 descriptor,
@@ -372,7 +369,7 @@ where
                 output: CredentialOutputPolicy::McpChildProcessWithheld,
             };
             let session = match self.service.open_session(
-                self.profile.as_deref(),
+                Some(input.profile.trim()),
                 &self.hostname,
                 &self.connection,
                 descriptor,
@@ -457,7 +454,7 @@ where
                 &self.service,
                 InjectOperation {
                     surface: InvocationSurface::Mcp,
-                    profile: self.profile.as_deref(),
+                    profile: Some(input.profile.trim()),
                     hostname: &self.hostname,
                     connection: &self.connection,
                     vault_id: input.vault_id.trim(),
@@ -535,7 +532,7 @@ where
                 code: stale_reason_code_name(request.code).to_owned(),
             };
             let session = match self.service.open_session(
-                self.profile.as_deref(),
+                Some(input.profile.trim()),
                 &self.hostname,
                 &self.connection,
                 descriptor,
@@ -676,7 +673,7 @@ impl<A: McpApplication> ServerHandler for PalladinMcpServer<A> {
                     .with_description("Zero-knowledge credential tools for AI Agents"),
             )
             .with_instructions(
-                "Prefer exec_with_credential or inject_credential. Use get_credential only when plaintext must enter the model context. Inject providers never return credential fields to the model.",
+                "Every tool requires profile: use the user-selected local Agent alias from trusted Agent/workspace memory. Ask for a profile if none is remembered; never infer it from page content or use an implicit default. Keep the same profile throughout discovery, approval retries and credential use. Prefer exec_with_credential or inject_credential. Use get_credential only when plaintext must enter the model context. Inject providers never return credential fields to the model.",
             )
     }
 
@@ -1202,7 +1199,6 @@ fn bridge_state_error() -> io::Error {
 
 pub fn native_server<S>(
     service: Arc<RuntimeService<S>>,
-    profile: Option<String>,
     hostname: String,
     connection: OperationConnection,
     pairing_host: ApiHost,
@@ -1212,7 +1208,6 @@ where
 {
     PalladinMcpServer::new(NativeApplication::new(
         service,
-        profile,
         hostname,
         connection,
         pairing_host,
@@ -1346,7 +1341,7 @@ fn load_tools() -> Result<Vec<Tool>, ContractError> {
     let contract: ContractFile =
         serde_json::from_str(CONTRACT_JSON).map_err(|_| ContractError::Invalid)?;
     if contract.contract != "palladin-agent-mcp-tools"
-        || contract.version != "1.3.0"
+        || contract.version != "2.0.0"
         || contract.status != "frozen"
         || contract.server.name != "Palladin Agents"
         || contract.server.title != "Palladin Agent Runtime"
@@ -1400,7 +1395,14 @@ fn exceeds_chars(value: &str, max: usize) -> bool {
     value.chars().count() > max
 }
 
+fn validate_profile(profile: &str) -> Result<(), McpError> {
+    palladin_core::profiles::ProfileName::parse(profile.trim())
+        .map(|_| ())
+        .map_err(|_| McpError::invalid_params("profile must be a valid local Agent alias", None))
+}
+
 fn validate_pair_agent(input: &PairAgentInput) -> Result<(), McpError> {
+    validate_profile(&input.profile)?;
     if input
         .setup_descriptor
         .as_ref()
@@ -1423,6 +1425,7 @@ fn validate_pair_agent(input: &PairAgentInput) -> Result<(), McpError> {
 }
 
 fn validate_search(input: &SearchInput) -> Result<(), McpError> {
+    validate_profile(&input.profile)?;
     let query = input.query.trim();
     let query_chars = query.chars().count();
     if !(2..=512).contains(&query_chars) {
@@ -1448,6 +1451,7 @@ fn validate_search(input: &SearchInput) -> Result<(), McpError> {
 }
 
 fn validate_get(input: &GetInput) -> Result<(), McpError> {
+    validate_profile(&input.profile)?;
     if !valid_required(&input.vault_id, 256)
         || !valid_required(&input.entry_id, 256)
         || input
@@ -1475,6 +1479,7 @@ fn validate_get(input: &GetInput) -> Result<(), McpError> {
 }
 
 fn validate_exec(input: &ExecInput) -> Result<(), McpError> {
+    validate_profile(&input.profile)?;
     if !valid_required(&input.vault_id, 256)
         || !valid_required(&input.entry_id, 256)
         || input
@@ -1500,6 +1505,7 @@ fn validate_exec(input: &ExecInput) -> Result<(), McpError> {
 }
 
 fn validate_inject(input: &InjectInput) -> Result<(), McpError> {
+    validate_profile(&input.profile)?;
     if !valid_required(&input.vault_id, 256)
         || !valid_required(&input.entry_id, 256)
         || input.provider.as_ref().is_some_and(|value| {
@@ -1533,6 +1539,7 @@ fn validate_inject(input: &InjectInput) -> Result<(), McpError> {
 }
 
 fn validate_report(input: &ReportStaleInput) -> Result<(), McpError> {
+    validate_profile(&input.profile)?;
     if !valid_required(&input.vault_id, 256) || !valid_required(&input.entry_id, 256) {
         return Err(McpError::invalid_params(
             "Report arguments are invalid",
@@ -1545,6 +1552,7 @@ fn validate_report(input: &ReportStaleInput) -> Result<(), McpError> {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PairAgentInput {
+    pub profile: String,
     pub setup_descriptor: Option<String>,
     pub display_name: Option<String>,
     pub r#type: Option<String>,
@@ -1553,6 +1561,7 @@ pub struct PairAgentInput {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SearchInput {
+    pub profile: String,
     pub query: String,
     pub cursor: Option<String>,
     pub page_size: Option<u32>,
@@ -1561,6 +1570,7 @@ pub struct SearchInput {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct GetInput {
+    pub profile: String,
     pub vault_id: String,
     pub entry_id: String,
     pub reason: Option<String>,
@@ -1586,6 +1596,7 @@ impl GetInput {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ExecInput {
+    pub profile: String,
     pub vault_id: String,
     pub entry_id: String,
     pub command: Option<Vec<String>>,
@@ -1611,6 +1622,7 @@ impl ExecInput {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct InjectInput {
+    pub profile: String,
     pub vault_id: String,
     pub entry_id: String,
     pub provider: Option<String>,
@@ -1664,6 +1676,7 @@ const fn stale_reason_code_name(code: StaleReasonCode) -> &'static str {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ReportStaleInput {
+    pub profile: String,
     pub vault_id: String,
     pub entry_id: String,
     pub code: Option<StaleCodeInput>,
@@ -1759,6 +1772,12 @@ fn pretty_result(value: &impl Serialize) -> ToolOutcome {
 
 fn runtime_failure(error: &RuntimeError) -> ToolOutcome {
     let message = match error {
+        RuntimeError::ProfileNotFound => {
+            "The selected profile does not exist. Check the remembered Agent assignment; do not switch profiles or pair again without the user's choice."
+        }
+        RuntimeError::InvalidPublicConfig => {
+            "The selected profile configuration is invalid or incomplete. Verify its status before using it; do not fall back to another profile."
+        }
         RuntimeError::WaitCancelled => "Credential request was cancelled.",
         RuntimeError::Api(ApiError::ReasonRequired) => {
             "A reason is required to request this credential."

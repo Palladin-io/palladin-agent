@@ -217,10 +217,28 @@ Finally, revoke the old shared organization API key and deactivate the old Agent
 }
 ```
 
-The Agent must be active before credential tools work.
+Every tool call requires `profile`, the local Agent alias selected by the user:
+
+```json
+{"profile":"example-agent","query":"example.com"}
+```
+
+One MCP server supports multiple profiles. The caller remembers its selected alias
+and API host in trusted Agent/workspace memory and passes the same `profile` across
+discovery, credential use and approval retries. The server never switches a shared
+active profile or falls back to the machine default. Existing profiles use their
+own saved API host and identity; the Agent must be active before credential use.
+
+MCP contract v2.0 makes `profile` required. Remove `--id` from older server launch
+commands and restart the MCP connection to reload its schemas after updating the
+runtime/plugin. `--id` remains the CLI selector. New `pair_agent` calls use the
+server's `--host` option (production by default); confirm that environment before
+pairing and remember the resulting assignment. Never auto-pair to repair a failed
+request or store credentials in Agent memory.
 
 | Tool | Behavior |
 |---|---|
+| `pair_agent` | Pair the explicitly selected profile through owner approval in the browser. |
 | `search_entries` | Search metadata without returning secret values. |
 | `get_credential` | Intentionally return a granted value; TOTP fields return only the current code. |
 | `exec_with_credential` | Execute without returning child stdout/stderr to the model. |

@@ -1722,3 +1722,89 @@ fn read_public_files(root: &std::path::Path) -> String {
     walk(root, &mut output);
     output
 }
+
+#[tokio::test]
+async fn mcp_requests_bind_each_profile_to_its_saved_host_and_identity_without_changing_default() {
+    use palladin_mcp::{McpApplication, NativeApplication, SearchInput};
+    use tokio_util::sync::CancellationToken;
+
+    let root = tempfile::tempdir().expect("root");
+    let service = Arc::new(service(root.path(), MemoryStore::default()));
+    let search_response = || Response {
+        status: 200,
+        headers: Vec::new(),
+        body: r#"{"agentAccessEpoch":1,"items":[]}"#.into(),
+    };
+    let mut captured = Vec::new();
+    for alias in ["first", "second"] {
+        service.create_profile(alias, None).expect("profile");
+        let (host, requests) = response_server(vec![
+            Response::active(alias),
+            search_response(),
+            search_response(),
+        ])
+        .await;
+        service
+            .connect(
+                Some(alias),
+                OrganizationApiKey::new(format!("pl_synthetic_{alias}")),
+                ApiHost::parse(&host).expect("host"),
+                None,
+                None,
+                "fixture-host",
+                &operation_connection(),
+            )
+            .await
+            .expect("connect");
+        captured.push((alias, requests));
+    }
+    service.set_default_profile("second").expect("default");
+    let application = NativeApplication::new(
+        service.clone(),
+        "fixture-host".into(),
+        operation_connection(),
+        ApiHost::parse("https://api.palladin.io").expect("pairing host"),
+    );
+    let request = |profile: &str| SearchInput {
+        profile: profile.into(),
+        query: "fixture".into(),
+        cursor: None,
+        page_size: Some(1),
+    };
+    for alias in ["first", "second", "first", "second"] {
+        application
+            .search(request(alias), CancellationToken::new())
+            .await;
+    }
+    application
+        .search(request("missing"), CancellationToken::new())
+        .await;
+    for (alias, requests) in captured {
+        let requests = requests.lock().expect("requests");
+        assert_eq!(
+            requests.len(),
+            3,
+            "unknown profile must not reach either host"
+        );
+        for request in &requests[1..] {
+            let request = request.to_ascii_lowercase();
+            assert!(request.starts_with("get /api/agent/vault-manifests"));
+            assert!(request.contains(&format!("x-agent-id: {alias}\r\n")));
+            assert!(request.contains("x-agent-signature: "));
+        }
+    }
+    let registry = service.registry().expect("registry");
+    assert_eq!(registry.default, "second");
+    assert_eq!(registry.agents.len(), 2);
+    for profile in registry.agents {
+        assert!(
+            service
+                .repository()
+                .load_config(&profile.identity_id)
+                .expect("config")
+                .discovery_cache
+                .is_some(),
+            "each selected profile must complete discovery with its own encrypted cache"
+        );
+    }
+}
