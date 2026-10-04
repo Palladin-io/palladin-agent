@@ -108,6 +108,14 @@ jobs:
     name: Build, sign, notarize, and smoke macOS
     needs: [authorize, compatibility]
     uses: ./.github/workflows/macos-signed-runtime.yml
+    secrets:
+      APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+      APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+      APPLE_DEVELOPER_ID_APPLICATION_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_IDENTITY }}
+      APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64 }}
+      APPLE_NOTARYTOOL_KEY_BASE64: ${{ secrets.APPLE_NOTARYTOOL_KEY_BASE64 }}
+      APPLE_NOTARYTOOL_KEY_ID: ${{ secrets.APPLE_NOTARYTOOL_KEY_ID }}
+      APPLE_NOTARYTOOL_ISSUER_ID: ${{ secrets.APPLE_NOTARYTOOL_ISSUER_ID }}
     with:
       source_sha: ${{ needs.authorize.outputs.source_sha }}
       marketing_version: ${{ inputs.version }}

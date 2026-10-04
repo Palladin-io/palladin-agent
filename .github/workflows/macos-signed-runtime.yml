@@ -20,6 +20,21 @@ on:
         required: false
         default: false
         type: boolean
+    secrets:
+      APPLE_DEVELOPER_ID_CERTIFICATE_BASE64:
+        required: false
+      APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD:
+        required: false
+      APPLE_DEVELOPER_ID_APPLICATION_IDENTITY:
+        required: false
+      APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64:
+        required: false
+      APPLE_NOTARYTOOL_KEY_BASE64:
+        required: false
+      APPLE_NOTARYTOOL_KEY_ID:
+        required: false
+      APPLE_NOTARYTOOL_ISSUER_ID:
+        required: false
   workflow_dispatch:
     inputs:
       source_sha:
