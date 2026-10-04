@@ -67,7 +67,7 @@ require_regular_file "$entitlements" "generated entitlements"
 require_regular_file "$PACKAGING_DIR/tests/node-keyring-probe.mjs" "Node isolation probe"
 require_regular_file "$PACKAGING_DIR/tests/untrusted-dpk-probe.swift" "Data Protection Keychain probe"
 require_regular_file "$PACKAGING_DIR/tests/signed-client-probe.mjs" "signed-client probe"
-require_regular_file "$PACKAGING_DIR/tests/dyld-injection-probe.c" "DYLD injection probe"
+require_regular_file "$SCRIPT_DIR/test-dyld-injection.sh" "DYLD injection probe"
 require_regular_file "$PACKAGING_DIR/tests/task-port-probe.c" "task-port probe"
 require_regular_file "$PACKAGING_DIR/tests/process-arguments-probe.c" "process arguments probe"
 require_regular_file "$PACKAGING_DIR/tests/canary-tree-probe.mjs" "canary tree probe"
@@ -208,37 +208,8 @@ fi
 
 begin_boundary_test dyld-injection dyld.err
 
-injection_library="$work_dir/palladin-dyld-probe.dylib"
-injection_marker="$work_dir/dyld-injection-succeeded"
-xcrun clang -dynamiclib -Wall -Wextra -Werror \
-  "$PACKAGING_DIR/tests/dyld-injection-probe.c" -o "$injection_library"
-if PALLADIN_DYLD_PROBE_MARKER="$injection_marker" \
-  DYLD_INSERT_LIBRARIES="$injection_library" \
-  "$binary" doctor >"$work_dir/dyld.out" 2>"$work_dir/dyld.err"; then
-  dyld_status=0
-else
-  dyld_status=$?
-fi
-[[ ! -e "$injection_marker" ]] || die "DYLD injection reached the signed runtime"
-grep -Fxq 'Palladin Runtime Doctor' "$work_dir/dyld.out" ||
-  die "DYLD probe did not execute the signed doctor"
-grep -Fxq 'identity-opened: no' "$work_dir/dyld.out" ||
-  die "DYLD probe did not prove identity stayed closed"
-grep -Fxq 'standalone-security-tier: Hardened' "$work_dir/dyld.out" ||
-  die "DYLD probe changed the runtime security tier"
-case "$dyld_status" in
-  0)
-    grep -Fxq 'environment: safe' "$work_dir/dyld.out" ||
-      die "DYLD probe succeeded without a safe environment report"
-    ;;
-  78)
-    grep -Fxq 'environment: unsafe' "$work_dir/dyld.out" ||
-      die "DYLD probe rejected an unexpected environment"
-    grep -Fxq 'dangerous-variable-names: DYLD_INSERT_LIBRARIES' "$work_dir/dyld.out" ||
-      die "DYLD probe did not identify the injection variable"
-    ;;
-  *) die "signed doctor returned an unexpected DYLD probe exit status: $dyld_status" ;;
-esac
+"$SCRIPT_DIR/test-dyld-injection.sh" --app "$app_path" --mode hosted \
+  >"$work_dir/dyld.out" 2>"$work_dir/dyld.err"
 
 begin_boundary_test argument-scanner-positive-control process-arguments.err
 
@@ -331,4 +302,4 @@ if find "$work_dir" -type f \( -name 'core' -o -name 'core.*' -o -name '*.core' 
   die "boundary probe left a core file"
 fi
 
-printf 'Verified exact signed artifact storage, blind-spawn, copy, signature, DYLD, task-port, debugger, cancellation, second-connection, and profile boundaries on %s.\n' "$architecture"
+printf 'Verified applicable exact signed artifact storage, blind-spawn, copy, signature, task-port, debugger, cancellation, second-connection, and profile boundaries on %s; see the job summary for SIP-dependent DYLD coverage.\n' "$architecture"
