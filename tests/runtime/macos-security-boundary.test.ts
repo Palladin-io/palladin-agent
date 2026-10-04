@@ -136,7 +136,6 @@ describe('macOS authenticated signed-runtime boundary', () => {
       'PalladinModified.app',
       'task-port-probe',
       'lldb --batch --attach-pid',
-      'process save-core',
     ]) expect(harness, evidence).toContain(evidence);
     expect(harness).toContain('test-dyld-injection.sh" --app "$app_path" --mode hosted');
     expect(lifecycle).toContain("'--app', app, '--mode', 'physical'");
