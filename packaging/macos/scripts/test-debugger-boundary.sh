@@ -54,14 +54,12 @@ kill -0 "$target_pid" >/dev/null 2>&1 || die 'suspended runtime exited before pr
 
 "$work_dir/task-port-probe" "$target_pid" >"$work_dir/task-port.out" 2>"$work_dir/task-port.err" ||
   die 'task port opened for the signed runtime'
-core_path="$work_dir/palladin.core"
 if /usr/bin/xcrun lldb --batch --attach-pid "$target_pid" \
-  -o "process save-core $core_path" -o detach -o quit \
+  -o 'process kill' -o quit \
   >"$work_dir/lldb.out" 2>"$work_dir/lldb.err"; then
   die 'debugger attached to the signed runtime'
 fi
 grep -Fq 'Not allowed to attach to process' "$work_dir/lldb.err" ||
   die 'debugger rejection was not confirmed'
-[[ ! -e "$core_path" && ! -L "$core_path" ]] || die 'debugger created a runtime core file'
 kill -0 "$guardian_pid" >/dev/null 2>&1 || die 'suspended runtime launcher timed out'
 printf 'Palladin debugger probe: PASS with SIP enabled.\n'

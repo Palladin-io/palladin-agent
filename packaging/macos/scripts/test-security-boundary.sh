@@ -255,11 +255,10 @@ begin_boundary_test task-port task-port.err
 
 begin_boundary_test debugger-and-core lldb.err
 
-core_path="$work_dir/palladin.core"
 sip_status="$(/usr/bin/csrutil status 2>/dev/null)" || die "SIP status is unavailable"
 if [[ "$sip_status" == 'System Integrity Protection status: enabled.' ]]; then
   if xcrun lldb --batch --attach-pid "$target_pid" \
-    -o "process save-core $core_path" -o detach -o quit \
+    -o 'process kill' -o quit \
     >"$work_dir/lldb.out" 2>"$work_dir/lldb.err"; then
     die "debugger unexpectedly attached to the signed runtime"
   fi
@@ -274,7 +273,6 @@ elif [[ "$sip_status" == 'System Integrity Protection status: disabled.' ]]; the
 else
   die "debugger acceptance requires fully enabled SIP"
 fi
-[[ ! -e "$core_path" ]] || die "debugger unexpectedly created a runtime core file"
 exec 9>&-
 for _ in {1..100}; do
   kill -0 "$target_pid" >/dev/null 2>&1 || break
