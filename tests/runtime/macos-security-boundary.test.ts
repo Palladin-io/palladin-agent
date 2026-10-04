@@ -140,6 +140,8 @@ describe('macOS authenticated signed-runtime boundary', () => {
     ]) expect(harness, evidence).toContain(evidence);
     expect(harness).toContain('test-dyld-injection.sh" --app "$app_path" --mode hosted');
     expect(lifecycle).toContain("'--app', app, '--mode', 'physical'");
+    expect(lifecycle).toContain('test-debugger-boundary.sh');
+    expect(harness).toContain('UNVERIFIED: SIP disabled; physical gate required');
     expect(dyld).toContain('DYLD_INSERT_LIBRARIES="$injection_library"');
     expect(dyld).toContain('System Integrity Protection status: enabled.');
     expect(dyld).toContain('UNVERIFIED on a SIP-disabled hosted runner');
