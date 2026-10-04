@@ -30,7 +30,7 @@ concurrency:
 jobs:
   authorize:
     name: Authorize immutable physical test inputs
-    if: github.actor == 'patryk-roguszewski' && (github.ref == 'refs/tags/v0.0.1' || github.ref == 'refs/tags/v0.0.1+retry.1')
+    if: github.actor == 'patryk-roguszewski' && (github.ref == 'refs/tags/v0.0.1' || startsWith(github.ref, 'refs/tags/v0.0.1+retry.'))
     runs-on: ubuntu-latest
     environment: lifecycle-qa
     timeout-minutes: 15
@@ -59,7 +59,7 @@ jobs:
           test "$CONFIRMATION" = 'run physical lifecycle gate'
           test "$CANDIDATE_SHA" = "$GITHUB_SHA"
           test "$CANDIDATE_VERSION" = 0.0.1
-          [[ "$CANDIDATE_TAG" = v0.0.1 || "$CANDIDATE_TAG" = 'v0.0.1+retry.1' ]]
+          [[ "$CANDIDATE_TAG" = v0.0.1 || "$CANDIDATE_TAG" =~ ^v0[.]0[.]1[+]retry[.][1-9][0-9]*$ ]]
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
           git cat-file -e "$CANDIDATE_SHA^{commit}"
           git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main

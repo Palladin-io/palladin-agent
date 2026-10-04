@@ -50,8 +50,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          if [[ "$VERSION" = 0.0.1 && "$RELEASE_TAG" = 'v0.0.1+retry.1' ]]; then
-            : # The original immutable v0.0.1 tag failed before any artifact was built.
+          if [[ "$VERSION" = 0.0.1 && "$RELEASE_TAG" =~ ^v0[.]0[.]1[+]retry[.][1-9][0-9]*$ ]]; then
+            : # Failed immutable first-release tags cannot be moved to a repaired source.
           else
             [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
             test "$RELEASE_TAG" = "v$VERSION"
@@ -177,7 +177,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes musl-tools
           cargo install --locked --version 0.23.0 cargo-zigbuild
-          rustup target add "${{ matrix.target }}" "${{ matrix.musl_target }}"
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup target add --toolchain 1.97.0 \
+            "${{ matrix.target }}" "${{ matrix.musl_target }}"
 
       - name: Build GNU runtime against the release baseline
         working-directory: runtime
