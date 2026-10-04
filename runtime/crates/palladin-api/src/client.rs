@@ -1725,21 +1725,16 @@ mod tests {
 
     #[tokio::test]
     async fn best_effort_stale_report_never_propagates_transport_failure() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let address = listener.local_addr().expect("address");
-        drop(listener);
-        let reported = client(
-            &format!("http://{address}"),
-            vec![12; 32],
-            Duration::from_millis(20),
-        )
-        .try_report_credential_stale(&ReportCredentialStaleInput {
-            vault_id: "vault".to_owned(),
-            entry_id: "entry".to_owned(),
-            code: StaleReasonCode::Manual,
-        })
-        .await;
+        let (host, count) = hanging_server().await;
+        let reported = client(&host, vec![12; 32], Duration::from_millis(100))
+            .try_report_credential_stale(&ReportCredentialStaleInput {
+                vault_id: "vault".to_owned(),
+                entry_id: "entry".to_owned(),
+                code: StaleReasonCode::Manual,
+            })
+            .await;
         assert!(!reported);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
     fn client(host: &str, private_key: Vec<u8>, timeout: Duration) -> ApiClient {
