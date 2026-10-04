@@ -20,9 +20,9 @@ For an HTTP loopback API, enable only the reviewed source-development feature
 through the same signed route:
 
 ```bash
-./packaging/macos/scripts/development-runtime.sh run --local-development -- connect --host http://127.0.0.2:5000
+./packaging/macos/scripts/development-runtime.sh run --local-development -- connect --host http://127.0.0.1:5000
 # Or after install-launcher:
-palladin --local-development connect --host http://127.0.0.2:5000
+palladin --local-development connect --host http://127.0.0.1:5000
 ```
 
 The flag must appear before the `--` separator (or first in the installed

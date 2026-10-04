@@ -141,13 +141,13 @@ palladin connect --host https://api.palladin.io
 Literal HTTP loopback origins are available only in an explicitly compiled source-development build:
 
 ```bash
-./packaging/macos/scripts/development-runtime.sh run --local-development -- connect --host http://127.0.0.2:5000
+./packaging/macos/scripts/development-runtime.sh run --local-development -- connect --host http://127.0.0.1:5000
 # Or, after install-launcher on macOS:
-palladin --local-development connect --host http://127.0.0.2:5000
+palladin --local-development connect --host http://127.0.0.1:5000
 
 # On other development platforms:
 cd runtime
-cargo run -p palladin-cli --features local-development -- connect --host http://127.0.0.2:5000
+cargo run -p palladin-cli --features local-development -- connect --host http://127.0.0.1:5000
 ```
 
 Automation must pass the key through protected standard input:
@@ -306,7 +306,7 @@ remaining-use limit, and records successful delivery in the audit trail. Script 
 
 ## Security notes
 
-- Release origins are pinned to exactly `https://api.palladin.io` and `https://api.stage.palladin.io`; development HTTP accepts only literal `127.0.0.2` or `[::1]` with an explicit port.
+- Release origins are pinned to exactly `https://api.palladin.io` and `https://api.stage.palladin.io`; development HTTP accepts only literal `127.0.0.1` or `[::1]` with an explicit port.
 - Native secret storage has no file or environment fallback.
 - The organization API key and private keys are never child-process environment variables.
 - `exec` uses no implicit shell, rebuilds the child environment from an allowlist, and supplies null stdin.

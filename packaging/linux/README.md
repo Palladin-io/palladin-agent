@@ -46,7 +46,7 @@ Both the client and worker are static ELF files without `PT_INTERP` or dynamic
 Alpine 3.22 without `gcompat` or `libc6-compat` and verifies that a missing
 Secret Service produces an error without a file or environment fallback.
 
-The protected production build accepts only the exact Palladin production and staging HTTPS origins. While the project is local-only, build `palladin-cli` with `--features local-development`; that build additionally accepts literal `127.0.0.2` or `[::1]` HTTP with an explicit port. Never enable that feature in a production candidate.
+The protected production build accepts only the exact Palladin production and staging HTTPS origins. While the project is local-only, build `palladin-cli` with `--features local-development`; that build additionally accepts literal `127.0.0.1` or `[::1]` HTTP with an explicit port. Never enable that feature in a production candidate.
 
 ## Install and authorize a headless Agent
 
