@@ -1,0 +1,30 @@
+name: Check draft release access
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing first-release candidate tag"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.actor == 'patryk-roguszewski'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # GitHub restricts draft releases to actors with push access.
+    steps:
+      - name: Confirm exact draft candidate is visible
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v0[.]0[.]1[+]retry[.][1-9][0-9]*$ ]]
+          release=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,tagName)
+          test "$(jq -r .isDraft <<<"$release")" = true
+          test "$(jq -r .tagName <<<"$release")" = "$RELEASE_TAG"
