@@ -19,14 +19,14 @@ function firstReleaseFixture() {
     return {
       ...run,
       artifacts: run.artifacts.filter((item: { phase: string; role: string }) => item.phase === 'candidate' && target.requiredArtifactRoles.includes(item.role)).map((item: { version: string }) => ({
-        ...item, version: '0.0.1',
+        ...item, version: '0.0.2',
       })),
       steps: run.steps.filter((step: { stepId: string }) => manifest.steps.some((item: { id: string }) => item.id === step.stepId))
         .map((step: { order: number; versionBefore: string | null; versionAfter: string | null }, index: number) => ({
           ...step,
           order: index + 1,
-          versionBefore: step.versionBefore === null ? null : '0.0.1',
-          versionAfter: step.versionAfter === null ? null : '0.0.1',
+          versionBefore: step.versionBefore === null ? null : '0.0.2',
+          versionAfter: step.versionAfter === null ? null : '0.0.2',
         })),
     };
   });
@@ -41,7 +41,7 @@ function firstReleaseFixture() {
   return { manifest, evidence };
 }
 
-describe('0.0.1 macOS/Linux release gate', () => {
+describe('0.0.2 macOS/Linux release gate', () => {
   it('accepts exactly five candidate-only physical targets and 40 passing steps', () => {
     const { manifest, evidence } = firstReleaseFixture();
     expect(validateManifest(manifest)).toBe(manifest);
@@ -53,7 +53,7 @@ describe('0.0.1 macOS/Linux release gate', () => {
   it('rejects missing targets, foreign versions, mixed phases, and a forged shard', () => {
     const missing = firstReleaseFixture(); missing.evidence.targets.pop();
     expect(() => generateReport({ ...missing, expectedSourceSha: sourceSha, now })).toThrow('missing a required target');
-    const version = firstReleaseFixture(); version.evidence.targets[0]!.artifacts.forEach((item: { version: string }) => { item.version = '0.0.2'; });
+    const version = firstReleaseFixture(); version.evidence.targets[0]!.artifacts.forEach((item: { version: string }) => { item.version = '0.0.1'; });
     expect(() => generateReport({ ...version, expectedSourceSha: sourceSha, now })).toThrow('first release');
     const phase = firstReleaseFixture(); phase.evidence.targets[0]!.artifacts[0]!.phase = 'baseline';
     expect(() => generateReport({ ...phase, expectedSourceSha: sourceSha, now })).toThrow('phase/role');
