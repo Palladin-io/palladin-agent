@@ -978,8 +978,8 @@ mod tests {
 
     use super::{
         ApiClient, ApiError, BrowserPairingClient, MAX_BOUNDED_RESPONSE_BYTES,
-        MAX_PAIRING_RESPONSE_BYTES, SigningContext, diagnostics_enabled_for, encode_component,
-        enforce_vault_manifest_item_limit,
+        MAX_PAIRING_RESPONSE_BYTES, SigningContext, diagnostics_enabled, diagnostics_enabled_for,
+        encode_component, enforce_vault_manifest_item_limit,
     };
     use crate::{
         AgentRegistrationResult, CredentialMethod, GetCredentialOptions,
@@ -1734,7 +1734,10 @@ mod tests {
             })
             .await;
         assert!(!reported);
-        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            usize::from(diagnostics_enabled())
+        );
     }
 
     fn client(host: &str, private_key: Vec<u8>, timeout: Duration) -> ApiClient {
