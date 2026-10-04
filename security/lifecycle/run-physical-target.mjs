@@ -227,6 +227,16 @@ function installNativeExtra(target, phase, env, work) {
     }
     const binary = join(app, 'Contents', 'MacOS', 'palladin');
     const binarySha256 = verifyMacBundle(app, phase, env);
+    let dyld;
+    try {
+      dyld = bounded('/bin/bash', [
+        join(REPOSITORY_ROOT, 'packaging/macos/scripts/test-dyld-injection.sh'),
+        '--app', app, '--mode', 'physical',
+      ], { env, timeout: 60_000 });
+    } catch {
+      fail('the signed macOS DYLD boundary did not pass on a SIP-enabled physical runner');
+    }
+    dyld.stdout.fill(0); dyld.stderr.fill(0);
     versionOutput(bounded(binary, ['--version'], { env }), phase.version);
     return { role: extra.role, binarySha256 };
   }

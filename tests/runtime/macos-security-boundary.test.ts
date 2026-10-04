@@ -126,17 +126,23 @@ describe('macOS authenticated signed-runtime boundary', () => {
 
   it('runs bounded blind-client and local process attack probes without printing captures', () => {
     const harness = read('packaging/macos/scripts/test-security-boundary.sh');
+    const dyld = read('packaging/macos/scripts/test-dyld-injection.sh');
+    const lifecycle = read('security/lifecycle/run-physical-target.mjs');
     const client = read('packaging/macos/tests/signed-client-probe.mjs');
     for (const evidence of [
       'PalladinCopied.app',
       'palladin-unsigned',
       'PalladinFork.app',
       'PalladinModified.app',
-      'DYLD_INSERT_LIBRARIES',
       'task-port-probe',
       'lldb --batch --attach-pid',
       'process save-core',
     ]) expect(harness, evidence).toContain(evidence);
+    expect(harness).toContain('test-dyld-injection.sh" --app "$app_path" --mode hosted');
+    expect(lifecycle).toContain("'--app', app, '--mode', 'physical'");
+    expect(dyld).toContain('DYLD_INSERT_LIBRARIES="$injection_library"');
+    expect(dyld).toContain('System Integrity Protection status: enabled.');
+    expect(dyld).toContain('UNVERIFIED on a SIP-disabled hosted runner');
     expect(client).toContain("shell: false");
     expect(client).toContain("child.kill('SIGKILL')");
     expect(client).toContain("child.kill('SIGINT')");
