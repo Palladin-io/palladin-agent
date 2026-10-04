@@ -440,7 +440,7 @@ jobs:
             --entitlements "$PALLADIN_SIGNED_ENTITLEMENTS" \
             --homebrew-node "$PALLADIN_HOMEBREW_NODE" \
             --architecture '${{ matrix.architecture }}'
-          printf '| applicable hosted boundary tests | PASS; see DYLD row for SIP-dependent coverage | — | 0 | — | — |\n' >>"$GITHUB_STEP_SUMMARY"
+          printf '| applicable hosted boundary tests | PASS; see SIP-dependent rows | — | 0 | — | — |\n' >>"$GITHUB_STEP_SUMMARY"
 
       - name: Summarize signed boundary outcome
         if: always()

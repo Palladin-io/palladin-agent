@@ -255,13 +255,24 @@ begin_boundary_test task-port task-port.err
 
 begin_boundary_test debugger-and-core lldb.err
 
-core_path="$work_dir/palladin.core"
-if xcrun lldb --batch --attach-pid "$target_pid" \
-  -o "process save-core $core_path" -o detach -o quit \
-  >"$work_dir/lldb.out" 2>"$work_dir/lldb.err"; then
-  die "debugger unexpectedly attached to the signed runtime"
+sip_status="$(/usr/bin/csrutil status 2>/dev/null)" || die "SIP status is unavailable"
+if [[ "$sip_status" == 'System Integrity Protection status: enabled.' ]]; then
+  if xcrun lldb --batch --attach-pid "$target_pid" \
+    -o 'process kill' -o quit \
+    >"$work_dir/lldb.out" 2>"$work_dir/lldb.err"; then
+    die "debugger unexpectedly attached to the signed runtime"
+  fi
+  grep -Fq 'Not allowed to attach to process' "$work_dir/lldb.err" ||
+    die "debugger rejection was not confirmed"
+elif [[ "$sip_status" == 'System Integrity Protection status: disabled.' ]]; then
+  : >"$work_dir/lldb.out"
+  : >"$work_dir/lldb.err"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf '| debugger-and-core | UNVERIFIED: SIP disabled; physical gate required | — | — | — | — |\n' >>"$GITHUB_STEP_SUMMARY"
+  fi
+else
+  die "debugger acceptance requires fully enabled SIP"
 fi
-[[ ! -e "$core_path" ]] || die "debugger unexpectedly created a runtime core file"
 exec 9>&-
 for _ in {1..100}; do
   kill -0 "$target_pid" >/dev/null 2>&1 || break
@@ -302,4 +313,4 @@ if find "$work_dir" -type f \( -name 'core' -o -name 'core.*' -o -name '*.core' 
   die "boundary probe left a core file"
 fi
 
-printf 'Verified applicable exact signed artifact storage, blind-spawn, copy, signature, task-port, debugger, cancellation, second-connection, and profile boundaries on %s; see the job summary for SIP-dependent DYLD coverage.\n' "$architecture"
+printf 'Verified applicable exact signed artifact storage, blind-spawn, copy, signature, task-port, debugger, cancellation, second-connection, and profile boundaries on %s; see the job summary for SIP-dependent coverage.\n' "$architecture"

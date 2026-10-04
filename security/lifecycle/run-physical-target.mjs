@@ -237,6 +237,16 @@ function installNativeExtra(target, phase, env, work) {
       fail('the signed macOS DYLD boundary did not pass on a SIP-enabled physical runner');
     }
     dyld.stdout.fill(0); dyld.stderr.fill(0);
+    let debuggerProbe;
+    try {
+      debuggerProbe = bounded('/bin/bash', [
+        join(REPOSITORY_ROOT, 'packaging/macos/scripts/test-debugger-boundary.sh'),
+        '--app', app,
+      ], { env, timeout: 75_000 });
+    } catch {
+      fail('the signed macOS debugger boundary did not pass on a SIP-enabled physical runner');
+    }
+    debuggerProbe.stdout.fill(0); debuggerProbe.stderr.fill(0);
     versionOutput(bounded(binary, ['--version'], { env }), phase.version);
     return { role: extra.role, binarySha256 };
   }
