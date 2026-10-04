@@ -27,7 +27,7 @@ Prefer `exec` or `inject` when an agent needs to use a credential without receiv
 
 ## Security boundary
 
-The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed executable from the exact platform npm package. The first `0.0.1` release builds and publishes only the Apple Silicon (ARM64) package; Intel support remains deferred until physical acceptance tests pass. On Windows it verifies the exact Authenticode-signed `palladin-client.exe` against signed release policy, copies only that public executable into a version-and-hash-specific per-user cache, opens and re-verifies the cached file under a non-write/non-delete handle, and keeps that handle until the child exits. The child is started without a shell. This avoids locking `node_modules` while an MCP session remains active. The client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. On Linux the dispatcher reads only the `PT_INTERP` header of its own Node executable and selects the exact x64 or arm64 glibc or musl package; unknown libc loaders fail before package resolution. There is no TypeScript credential implementation, `PATH`, runtime download, cross-libc, or plaintext fallback.
+The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed executable from the exact platform npm package. The first `0.0.2` release builds and publishes only the Apple Silicon (ARM64) package; Intel support remains deferred until physical acceptance tests pass. On Windows it verifies the exact Authenticode-signed `palladin-client.exe` against signed release policy, copies only that public executable into a version-and-hash-specific per-user cache, opens and re-verifies the cached file under a non-write/non-delete handle, and keeps that handle until the child exits. The child is started without a shell. This avoids locking `node_modules` while an MCP session remains active. The client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. On Linux the dispatcher reads only the `PT_INTERP` header of its own Node executable and selects the exact x64 or arm64 glibc or musl package; unknown libc loaders fail before package resolution. There is no TypeScript credential implementation, `PATH`, runtime download, cross-libc, or plaintext fallback.
 
 The native runtime keeps these concepts separate:
 
@@ -43,16 +43,18 @@ The Windows Hardened tier is under development and is not part of the first publ
 
 The [Code signing policy](CODE_SIGNING_POLICY.md) describes the proposed SignPath Foundation route for a later Windows release. No Windows package is currently released or signed by the Foundation.
 
-Linux Secret Service is always Convenience because it cannot distinguish two processes under the same UID. The first release installs through npm alone and requires a compatible Secret Service for secret operations. The separate Linux Hardened DEB/RPM broker is under development and is not distributed in `0.0.1`. See [the Linux runbook](packaging/linux/README.md).
+Linux Secret Service is always Convenience because it cannot distinguish two processes under the same UID. The first release installs through npm alone and requires a compatible Secret Service for secret operations. The separate Linux Hardened DEB/RPM broker is under development and is not distributed in `0.0.2`. See [the Linux runbook](packaging/linux/README.md).
 
-The `0.0.1` release gate uses the [first-release adversarial matrix](security/adversarial/first-release-manifest.json) and the owner-only [first-release physical lifecycle workflow](.github/workflows/first-release-lifecycle.yml). For `0.0.1` it requires passing, fresh evidence for macOS ARM Hardened and Linux npm Convenience on ARM64 and x64 (glibc and musl), binds every result to the candidate source and artifact digests, and requires the owner's signed approval before the meta-package can be staged or the release finalized. macOS runs on an interactive Apple Silicon Mac; Linux uses native GitHub-hosted Ubuntu runners, with Alpine tested in native-architecture containers and a real Secret Service. The first meta workflow run attaches the signed policy, CLI candidate, SBOM, and manifest to the draft release; the run after lifecycle testing reuses and verifies those exact artifacts. The lifecycle test covers installation, Agent enrollment, MCP use, concurrent use, repair, reinstall, purge, and uninstall. Upgrade, downgrade, and forward rollback require a prior functional release and remain in the [later-version lifecycle gate](.github/workflows/platform-lifecycle.yml).
+The `0.0.2` release gate uses the [first-release adversarial matrix](security/adversarial/first-release-manifest.json) and the owner-only [first-release physical lifecycle workflow](.github/workflows/first-release-lifecycle.yml). For `0.0.2` it requires passing, fresh evidence for macOS ARM Hardened and Linux npm Convenience on ARM64 and x64 (glibc and musl), binds every result to the candidate source and artifact digests, and requires the owner's signed approval before the meta-package can be staged or the release finalized. macOS runs on an interactive Apple Silicon Mac; Linux uses native GitHub-hosted Ubuntu runners, with Alpine tested in native-architecture containers and a real Secret Service. The first meta workflow run attaches the signed policy, CLI candidate, SBOM, and manifest to the draft release; the run after lifecycle testing reuses and verifies those exact artifacts. The lifecycle test covers installation, Agent enrollment, MCP use, concurrent use, repair, reinstall, purge, and uninstall. Upgrade, downgrade, and forward rollback require a prior functional release and remain in the [later-version lifecycle gate](.github/workflows/platform-lifecycle.yml).
 
 | Linux target | npm Convenience | Hardened |
 |---|---|---|
-| glibc x64/arm64 | Supported when a compatible Secret Service is available | Not published in `0.0.1` |
-| musl x64/arm64, including Alpine 3.22 | Supported when a compatible Secret Service is available | Not published in `0.0.1` |
+| glibc x64/arm64 | Supported when a compatible Secret Service is available | Not published in `0.0.2` |
+| musl x64/arm64, including Alpine 3.22 | Supported when a compatible Secret Service is available | Not published in `0.0.2` |
 
 ## Installation
+
+The five `0.0.1` platform packages were published under the `candidate` tag, but no `@palladin/cli@0.0.1` was released. The first complete CLI candidate is `0.0.2`.
 
 Once the release packages are available:
 
@@ -61,9 +63,9 @@ npm install --global @palladin/cli
 palladin doctor
 ```
 
-Windows runtime packages are not part of `0.0.1`; the CLI cannot run there yet.
+Windows runtime packages are not part of `0.0.2`; the CLI cannot run there yet.
 
-On Linux, npm alone installs the Convenience tier. It does not need administrator access or install a system service. The runtime fails closed if a compatible Secret Service is unavailable; another process running under the same user ID remains inside the trust boundary. The separate Hardened broker requires administrator installation and is deferred beyond `0.0.1`.
+On Linux, npm alone installs the Convenience tier. It does not need administrator access or install a system service. The runtime fails closed if a compatible Secret Service is unavailable; another process running under the same user ID remains inside the trust boundary. The separate Hardened broker requires administrator installation and is deferred beyond `0.0.2`.
 
 No package uses `preinstall`, `install`, `postinstall`, `preprepare`, `prepare`, or `postprepare`. npm installs the matching prebuilt platform package; it does not download or compile a binary during installation.
 
@@ -139,13 +141,13 @@ palladin connect --host https://api.palladin.io
 Literal HTTP loopback origins are available only in an explicitly compiled source-development build:
 
 ```bash
-./packaging/macos/scripts/development-runtime.sh run --local-development -- connect --host http://127.0.0.1:5000
+./packaging/macos/scripts/development-runtime.sh run --local-development -- connect --host http://127.0.0.2:5000
 # Or, after install-launcher on macOS:
-palladin --local-development connect --host http://127.0.0.1:5000
+palladin --local-development connect --host http://127.0.0.2:5000
 
 # On other development platforms:
 cd runtime
-cargo run -p palladin-cli --features local-development -- connect --host http://127.0.0.1:5000
+cargo run -p palladin-cli --features local-development -- connect --host http://127.0.0.2:5000
 ```
 
 Automation must pass the key through protected standard input:
@@ -304,7 +306,7 @@ remaining-use limit, and records successful delivery in the audit trail. Script 
 
 ## Security notes
 
-- Release origins are pinned to exactly `https://api.palladin.io` and `https://api.stage.palladin.io`; development HTTP accepts only literal `127.0.0.1` or `[::1]` with an explicit port.
+- Release origins are pinned to exactly `https://api.palladin.io` and `https://api.stage.palladin.io`; development HTTP accepts only literal `127.0.0.2` or `[::1]` with an explicit port.
 - Native secret storage has no file or environment fallback.
 - The organization API key and private keys are never child-process environment variables.
 - `exec` uses no implicit shell, rebuilds the child environment from an allowlist, and supplies null stdin.

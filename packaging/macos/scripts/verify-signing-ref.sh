@@ -9,7 +9,7 @@ test "$REF_TYPE" = tag
 [[ "$MARKETING_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
 test "$SOURCE_SHA" = "$TAG_SHA"
 if [[ "$RELEASE_PIPELINE" == true ]]; then
-  if [[ "$MARKETING_VERSION" = 0.0.1 && "$REF_NAME" =~ ^v0[.]0[.]1[+]retry[.][1-9][0-9]*$ ]]; then
+  if [[ "$MARKETING_VERSION" = 0.0.2 && "$REF_NAME" =~ ^v0[.]0[.]2[+]retry[.][1-9][0-9]*$ ]]; then
     : # Failed immutable first-release tags cannot be moved to a repaired source.
   else
     test "$REF_NAME" = "v$MARKETING_VERSION"

@@ -7,7 +7,7 @@ function authorize(overrides: Record<string, string> = {}) {
     env: {
       ACTOR: 'patryk-roguszewski', EVENT_NAME: 'workflow_dispatch', REF_TYPE: 'tag',
       RELEASE_PIPELINE: 'false', SOURCE_SHA: source, TAG_SHA: source,
-      MARKETING_VERSION: '0.0.1', REF_NAME: `signing-0.0.1-${source}`,
+      MARKETING_VERSION: '0.0.2', REF_NAME: `signing-0.0.2-${source}`,
       ...overrides,
     },
   }).status;
@@ -16,18 +16,18 @@ function authorize(overrides: Record<string, string> = {}) {
 describe.skipIf(process.platform === 'win32')('macOS signing authorization', () => {
   it('accepts exact owner candidate and release tags', () => {
     expect(authorize()).toBe(0);
-    expect(authorize({ RELEASE_PIPELINE: 'true', REF_NAME: 'v0.0.1' })).toBe(0);
-    expect(authorize({ RELEASE_PIPELINE: 'true', REF_NAME: 'v0.0.1+retry.2' })).toBe(0);
+    expect(authorize({ RELEASE_PIPELINE: 'true', REF_NAME: 'v0.0.2' })).toBe(0);
+    expect(authorize({ RELEASE_PIPELINE: 'true', REF_NAME: 'v0.0.2+retry.2' })).toBe(0);
   });
 
   it.each([
     { ACTOR: 'other-maintainer' }, { EVENT_NAME: 'pull_request' }, { REF_TYPE: 'branch' },
-    { TAG_SHA: 'a'.repeat(40) }, { SOURCE_SHA: '../main' }, { MARKETING_VERSION: '0.0.1;exit 0' },
-    { REF_NAME: 'main' }, { REF_NAME: `signing-0.0.2-${source}` },
-    { RELEASE_PIPELINE: 'true' }, { RELEASE_PIPELINE: 'true', REF_NAME: 'v0.0.2' },
-    { RELEASE_PIPELINE: 'true', REF_NAME: 'v0.0.1+retry.0' },
-    { RELEASE_PIPELINE: 'true', REF_NAME: 'v0.0.1+retry.invalid' },
-    { RELEASE_PIPELINE: 'true', REF_NAME: 'v0.0.1+retry.2', MARKETING_VERSION: '0.0.2' },
+    { TAG_SHA: 'a'.repeat(40) }, { SOURCE_SHA: '../main' }, { MARKETING_VERSION: '0.0.2;exit 0' },
+    { REF_NAME: 'main' }, { REF_NAME: `signing-0.0.3-${source}` },
+    { RELEASE_PIPELINE: 'true' }, { RELEASE_PIPELINE: 'true', REF_NAME: 'v0.0.1' },
+    { RELEASE_PIPELINE: 'true', REF_NAME: 'v0.0.2+retry.0' },
+    { RELEASE_PIPELINE: 'true', REF_NAME: 'v0.0.2+retry.invalid' },
+    { RELEASE_PIPELINE: 'true', REF_NAME: 'v0.0.2+retry.2', MARKETING_VERSION: '0.0.3' },
   ])('rejects mismatched authorization context %j', (context) => {
     expect(authorize(context)).not.toBe(0);
   });

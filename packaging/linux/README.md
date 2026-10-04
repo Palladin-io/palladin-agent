@@ -2,14 +2,14 @@
 
 The first public release provides Linux glibc and musl npm artifacts on x64 and arm64.
 The Hardened DEB/RPM package below is a source-build development path; it is
-not included in the `0.0.1` release. It requires systemd 252 or newer:
+not included in the `0.0.2` release. It requires systemd 252 or newer:
 Debian 12+, Ubuntu 24.04+, Fedora, and RHEL/Rocky/AlmaLinux 9+. RHEL 8,
 Ubuntu 22.04, and Alpine/OpenRC are not supported by this boundary.
 
 | Tier | Installation | Trust boundary |
 |---|---|---|
 | Convenience | `npm install -g @palladin/cli` | Linux Secret Service protects data at rest. Another process under the same UID is inside the trust domain. PolKit does not turn this into process isolation. |
-| Hardened headless (not published in `0.0.1`) | Build and install the `palladin-runtime` DEB or RPM, then authorize one dedicated OS account per Agent | A dedicated Agent UID reaches a broker under `palladin-runtime` through `SO_PEERCRED`. A root-owned record binds the UID and account to one immutable random principal namespace, fixed profile, and approved API origin. Secret-bearing state is broker-only. Credential execution runs through a broker-only socket and a one-shot systemd service with a fresh `DynamicUser` UID. |
+| Hardened headless (not published in `0.0.2`) | Build and install the `palladin-runtime` DEB or RPM, then authorize one dedicated OS account per Agent | A dedicated Agent UID reaches a broker under `palladin-runtime` through `SO_PEERCRED`. A root-owned record binds the UID and account to one immutable random principal namespace, fixed profile, and approved API origin. Secret-bearing state is broker-only. Credential execution runs through a broker-only socket and a one-shot systemd service with a fresh `DynamicUser` UID. |
 
 Alpine 3.22 receives only the musl npm Convenience runtime. Secret operations
 require a compatible D-Bus Secret Service and fail closed when it is absent.
@@ -33,9 +33,9 @@ cargo build --release --locked \
 cp target/release/palladin target/release/palladin-worker
 cd ..
 packaging/linux/deb/build-deb.sh \
-  --version 0.0.1 --architecture x64 --binaries runtime/target/release --output artifacts
+  --version 0.0.2 --architecture x64 --binaries runtime/target/release --output artifacts
 packaging/linux/rpm/build-rpm.sh \
-  --version 0.0.1 --architecture x64 --binaries runtime/target/release --output artifacts
+  --version 0.0.2 --architecture x64 --binaries runtime/target/release --output artifacts
 ```
 
 Use `arm64` on a native arm64 builder. QEMU user-mode is sufficient for a build smoke test, but is not accepted as proof for UID, systemd, `/proc`, or ptrace isolation.
@@ -46,13 +46,13 @@ Both the client and worker are static ELF files without `PT_INTERP` or dynamic
 Alpine 3.22 without `gcompat` or `libc6-compat` and verifies that a missing
 Secret Service produces an error without a file or environment fallback.
 
-The protected production build accepts only the exact Palladin production and staging HTTPS origins. While the project is local-only, build `palladin-cli` with `--features local-development`; that build additionally accepts literal `127.0.0.1` or `[::1]` HTTP with an explicit port. Never enable that feature in a production candidate.
+The protected production build accepts only the exact Palladin production and staging HTTPS origins. While the project is local-only, build `palladin-cli` with `--features local-development`; that build additionally accepts literal `127.0.0.2` or `[::1]` HTTP with an explicit port. Never enable that feature in a production candidate.
 
 ## Install and authorize a headless Agent
 
 ```bash
-sudo apt install ./artifacts/palladin-runtime_0.0.1_amd64.deb
-# or: sudo dnf install ./artifacts/palladin-runtime-0.0.1-1.x86_64.rpm
+sudo apt install ./artifacts/palladin-runtime_0.0.2_amd64.deb
+# or: sudo dnf install ./artifacts/palladin-runtime-0.0.2-1.x86_64.rpm
 
 sudo useradd --system --create-home --shell /usr/sbin/nologin palladin-agent-prod
 pkexec /usr/lib/palladin/runtime/palladin-manage-agent-uid \

@@ -15,7 +15,7 @@ The product owner and only release approver is `@patryk-roguszewski`. A release 
 - Require Patryk to review every staged npm package and approve it interactively with npm 2FA.
 - Never place npm tokens, signing keys, notarization credentials, package contents, or runtime secrets in logs or artifacts.
 - Never move or reuse a release tag. Never reuse a version that reached npm staging or the live registry.
-- Run only one Palladin npm release train at a time. All release workflows share a global concurrency group, and a new version must not be staged while an earlier version still awaits owner approval or finalization.
+- Run only one active Palladin npm release train at a time. All release workflows share a global concurrency group. An abandoned candidate with no pending npm stages may remain as a draft for audit, but it must never be resumed or finalized after the release source changes.
 - Treat SHA-256 checksums, a release manifest, an SBOM, npm provenance, and GitHub artifact attestations as release artifacts, not optional metadata.
 
 ## One-time npm bootstrap
@@ -96,7 +96,7 @@ An already installed correctly signed version is not remotely revocable. Publish
 
 ## Release order
 
-npm does not provide a multi-package transaction. Palladin uses the `@palladin/cli` meta package as the atomic consumer boundary: all eight native packages become verified candidates first, and the meta package is published last.
+npm does not provide a multi-package transaction. Palladin uses the `@palladin/cli` meta package as the atomic consumer boundary: every supported native package becomes a verified candidate first, and the meta package is published last. The first complete CLI release (`0.0.2`) supports five platforms: macOS ARM and Linux x64/ARM64 glibc and musl. The five `0.0.1` platform packages remain candidate-only; no `@palladin/cli@0.0.1` exists.
 
 ### 1. Prepare the release
 
@@ -108,12 +108,12 @@ npm does not provide a multi-package transaction. Palladin uses the `@palladin/c
 
 ### 2. Build and verify platform candidates
 
-The release pipeline builds all eight platform packages from the same tagged source commit. It must not download a runtime executable from a mutable URL or another release.
+The release pipeline builds every supported platform package from the same tagged source commit (five for `0.0.2`). It must not download a runtime executable from a mutable URL or another release.
 
 For every platform tarball:
 
 1. Build with the locked toolchain and dependency lockfiles.
-2. Sign macOS and Windows binaries in their protected environments. Linux artifacts remain unsigned binaries but still require provenance and attestations.
+2. Sign macOS binaries in the protected environment. When Windows is supported, sign its binaries in its protected environment too. Linux artifacts remain unsigned binaries but still require provenance and attestations.
 3. Run `npm pack --dry-run`, create the final tarball, extract that tarball into a clean directory, and verify the extracted binary. Verification of a pre-packaging build output is insufficient.
 4. On macOS, require `codesign --verify --deep --strict`, the expected Team ID, hardened runtime, fixed entitlements, successful notarization, and a stapled ticket validated with `spctl` and `stapler validate`.
 5. On Windows, require Authenticode status `Valid`, the expected publisher certificate and thumbprint, a trusted RFC 3161 timestamp, and signature verification on both runtime and broker or executor binaries shipped in the package.
@@ -150,16 +150,16 @@ An unresolved or accepted Critical/High finding, incomplete target, stale observ
 
 ### 5. Stage and approve the meta package
 
-Only after all eight registry smoke tests and the adversarial gate pass:
+Only after all supported platform registry smoke tests and the adversarial gate pass:
 
 1. Build the meta tarball from the same tag commit.
 2. Verify its package allowlist contains only the launcher, runtime metadata, documentation, and license files. It must not contain private source, keys, build caches, test fixtures, or lifecycle scripts.
-3. Verify all eight optional dependencies use exact `X.Y.Z` versions and no unsupported platform fallback exists.
+3. Verify every supported optional dependency uses exact `X.Y.Z` and no unsupported platform fallback exists.
 4. Generate and verify its checksum, manifest entry, SBOM, provenance, and attestations.
 5. Re-download and revalidate the approved adversarial reports and KMS-signed operator approval against the tagged source and exact platform release manifest.
 6. Stage the meta package through the protected OIDC workflow with `npm stage publish --tag latest`.
 7. Patryk downloads and inspects the staged tarball, verifies the digest, provenance, and recorded adversarial gate, then approves it with npm 2FA.
-8. Install `@palladin/cli@X.Y.Z` and `@palladin/cli@latest` from npm in clean macOS, Windows, and Linux runners and repeat the end-to-end smoke checks.
+8. Install `@palladin/cli@X.Y.Z` and `@palladin/cli@latest` from npm in clean runners for every supported platform and repeat the end-to-end smoke checks.
 
 Publishing the meta package is the consumer-visible commit point. Never approve it while a platform package, registry smoke test, attestation, required adversarial cell, or Critical/High release blocker is missing.
 
@@ -183,7 +183,8 @@ The owner-only finalizer requires the exact draft asset set, revalidates the sam
 
 - **Build, test, signing, notarization, or attestation fails before staging:** publish nothing. Fix through a pull request. If the tag's source changes, create a new version and a new protected tag.
 - **A staged package is wrong and no package was approved:** reject every stage for that version with interactive npm 2FA. Fix through a pull request and use a new version. Never overwrite or reuse the staged version.
-- **Only some platform stages were approved:** do not approve the meta package. Do not unpublish the approved packages as routine cleanup. Correct the issue under a new patch version, rebuild all nine packages, and repeat the complete flow.
+- **Only some platform stages were approved:** do not approve the meta package. Do not unpublish the approved packages as routine cleanup. Correct the issue under a new patch version, rebuild every supported platform package and the meta package, and repeat the complete flow.
+- **All platform packages are public but a release-workflow defect prevents the meta package from being built:** preserve the published bytes and failed run as audit evidence. Fix the workflow through a reviewed PR, abandon the old draft without finalizing it, and start a new exact patch version with the complete platform and meta gates. Never move the original tag or reuse its npm package versions.
 - **All platforms are live but a registry smoke test fails:** keep the meta package unapproved. Preserve evidence, reject its stage if present, and issue a complete new patch release after the cause is fixed.
 - **The meta package is live but GitHub finalization fails:** do not republish npm packages and do not move the tag. Resume finalization from the same verified artifacts and digests after Patryk's protected approval.
 - **A stage expires or is rejected:** treat that version as consumed and start a new version. Do not silently create a different tarball with the same version.
