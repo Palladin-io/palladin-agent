@@ -59,8 +59,12 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          test "$RELEASE_TAG" = "v$VERSION"
+          if [[ "$VERSION" = 0.0.1 && "$RELEASE_TAG" = 'v0.0.1+retry.1' ]]; then
+            : # The original immutable v0.0.1 tag failed before any artifact was built.
+          else
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            test "$RELEASE_TAG" = "v$VERSION"
+          fi
           source_sha=$(git rev-parse HEAD)
           test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
           test "$GITHUB_SHA" = "$source_sha"

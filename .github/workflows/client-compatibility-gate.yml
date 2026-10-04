@@ -201,10 +201,6 @@ jobs:
           cache: npm
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install 1.97.0 --profile minimal
-      - name: Install the isolated Secret Service test backend
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes dbus-x11 gnome-keyring
       - run: npm ci --ignore-scripts --workspaces=false
       - name: Prove Node-seeded Linux keyutils records are deleted by Rust
         shell: bash
@@ -228,6 +224,10 @@ jobs:
           node packaging/npm/run-bounded.mjs 30 node \
             packaging/npm/legacy-keyring-interop.mjs assert-missing \
             "$PALLADIN_LEGACY_KEYRING_TEST_PROFILE"
+      - name: Install the isolated Secret Service test backend
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes dbus-x11 gnome-keyring
       - name: Prove Node-seeded Linux Secret Service records are deleted by Rust
         shell: bash
         run: |
