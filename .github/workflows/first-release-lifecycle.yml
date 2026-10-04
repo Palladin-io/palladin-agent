@@ -155,11 +155,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: ubuntu-24.04-arm64, runner: '["self-hosted","palladin-lifecycle","ubuntu-24.04","arm64"]', distro: ubuntu, version: '24.04', machine: aarch64 }
-          - { target: ubuntu-24.04-x64, runner: '["self-hosted","palladin-lifecycle","ubuntu-24.04","x64"]', distro: ubuntu, version: '24.04', machine: x86_64 }
-          - { target: alpine-3.22-arm64, runner: '["self-hosted","palladin-lifecycle","alpine-3.22","arm64"]', distro: alpine, version: '3.22', machine: aarch64 }
-          - { target: alpine-3.22-x64, runner: '["self-hosted","palladin-lifecycle","alpine-3.22","x64"]', distro: alpine, version: '3.22', machine: x86_64 }
-    runs-on: ${{ fromJSON(matrix.runner) }}
+          - { target: ubuntu-24.04-arm64, runner: ubuntu-24.04-arm, distro: ubuntu, machine: aarch64 }
+          - { target: ubuntu-24.04-x64, runner: ubuntu-24.04, distro: ubuntu, machine: x86_64 }
+          - { target: alpine-3.22-arm64, runner: ubuntu-24.04-arm, distro: alpine, machine: aarch64 }
+          - { target: alpine-3.22-x64, runner: ubuntu-24.04, distro: alpine, machine: x86_64 }
+    runs-on: ${{ matrix.runner }}
     environment: lifecycle-qa
     timeout-minutes: 90
     permissions:
@@ -173,6 +173,12 @@ jobs:
       - run: npm install --global npm@11.18.0
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: { name: 'physical-release-sets-${{ needs.authorize.outputs.source_sha }}', path: '${{ runner.temp }}/lifecycle-release-sets' }
+      - name: Stage Alpine source before cloud authentication
+        if: matrix.distro == 'alpine'
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/qa-source"
+          rsync -a --exclude='.git' --exclude='gha-creds-*.json' "$GITHUB_WORKSPACE/" "$RUNNER_TEMP/qa-source/"
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -180,24 +186,54 @@ jobs:
           project_id: ${{ vars.GCP_PROJECT_ID }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
         with: { version: 561.0.0 }
-      - name: Require exact native Linux VM
-        env: { EXPECTED_ID: '${{ matrix.distro }}', EXPECTED_VERSION: '${{ matrix.version }}', EXPECTED_MACHINE: '${{ matrix.machine }}' }
+      - name: Require exact native Linux host
+        env: { EXPECTED_MACHINE: '${{ matrix.machine }}' }
         run: |
           set -euo pipefail
-          . /etc/os-release
-          test "$ID" = "$EXPECTED_ID"
-          [[ "$VERSION_ID" == "$EXPECTED_VERSION" || "$VERSION_ID" == "$EXPECTED_VERSION".* ]]
           test "$(uname -m)" = "$EXPECTED_MACHINE"
           if grep -Eqi 'qemu|emulat' /proc/cpuinfo; then exit 1; fi
-          if [ "$EXPECTED_ID" != alpine ]; then test "$(systemd --version | awk 'NR==1 {print $2}')" -ge 252; fi
-      - name: Run the secret-safe lifecycle
-        env: { TARGET: '${{ matrix.target }}' }
+          . /etc/os-release
+          test "$ID" = ubuntu
+          [[ "$VERSION_ID" == 24.04 || "$VERSION_ID" == 24.04.* ]]
+      - name: Prepare native Linux Secret Service
+        if: matrix.distro == 'ubuntu'
         run: |
           set -euo pipefail
-          contract="$RUNNER_TEMP/contract-$TARGET.json"
-          output="$RUNNER_TEMP/lifecycle-$TARGET.json"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends dbus-x11 gnome-keyring libsecret-tools
+      - name: Build native Alpine QA container
+        if: matrix.distro == 'alpine'
+        run: |
+          set -euo pipefail
+          docker build --build-arg "QA_UID=$(id -u)" --file "$RUNNER_TEMP/qa-source/security/lifecycle/qa-alpine.Dockerfile" --tag palladin-lifecycle-alpine:local "$RUNNER_TEMP/qa-source"
+      - name: Run the secret-safe lifecycle
+        env: { TARGET: '${{ matrix.target }}', EXPECTED_DISTRIBUTION: '${{ matrix.distro }}', EXPECTED_MACHINE: '${{ matrix.machine }}' }
+        run: |
+          set -euo pipefail
+          if [ '${{ matrix.distro }}' = alpine ]; then
+            mkdir -m 700 "$RUNNER_TEMP/qa-output"
+            contract="$RUNNER_TEMP/qa-output/contract-$TARGET.json"
+            output="$RUNNER_TEMP/qa-output/lifecycle-$TARGET.json"
+          else
+            contract="$RUNNER_TEMP/contract-$TARGET.json"
+            output="$RUNNER_TEMP/lifecycle-$TARGET.json"
+          fi
           node security/lifecycle/write-run-contract.mjs --manifest security/lifecycle/first-release-manifest.json --target "$TARGET" --release-sets "$RUNNER_TEMP/lifecycle-release-sets" --source-sha '${{ needs.authorize.outputs.source_sha }}' --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --vault-id '${{ vars.PALLADIN_LIFECYCLE_QA_VAULT_ID }}' --entry-id '${{ vars.PALLADIN_LIFECYCLE_QA_ENTRY_ID }}' --output "$output" --contract "$contract"
-          gcloud secrets versions access latest --secret='${{ vars.PALLADIN_LIFECYCLE_QA_SECRET }}' | node security/lifecycle/run-physical-target.mjs "$contract"
+          if [ '${{ matrix.distro }}' = alpine ]; then
+            gcloud secrets versions access latest --secret='${{ vars.PALLADIN_LIFECYCLE_QA_SECRET }}' | \
+              docker run --rm --interactive --network bridge \
+                --user "$(id -u):$(id -g)" \
+                --env EXPECTED_DISTRIBUTION --env EXPECTED_MACHINE \
+                --volume "$RUNNER_TEMP/qa-source:$RUNNER_TEMP/qa-source" \
+                --volume "$RUNNER_TEMP/lifecycle-release-sets:$RUNNER_TEMP/lifecycle-release-sets:ro" \
+                --volume "$RUNNER_TEMP/qa-output:$RUNNER_TEMP/qa-output" \
+                --workdir "$RUNNER_TEMP/qa-source" palladin-lifecycle-alpine:local \
+                sh security/lifecycle/run-linux-secret-service.sh "$contract"
+            cp "$output" "$RUNNER_TEMP/lifecycle-$TARGET.json"
+          else
+            gcloud secrets versions access latest --secret='${{ vars.PALLADIN_LIFECYCLE_QA_SECRET }}' | \
+              sh security/lifecycle/run-linux-secret-service.sh "$contract"
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: { name: 'lifecycle-${{ matrix.target }}', path: '${{ runner.temp }}/lifecycle-${{ matrix.target }}.json', if-no-files-found: error, retention-days: 7 }
 
