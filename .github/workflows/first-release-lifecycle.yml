@@ -35,7 +35,7 @@ jobs:
     environment: lifecycle-qa
     timeout-minutes: 15
     permissions:
-      contents: read
+      contents: write # GitHub restricts draft release reads to actors with push access.
     outputs:
       source_sha: ${{ steps.verify.outputs.source_sha }}
     steps:

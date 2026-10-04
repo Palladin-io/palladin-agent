@@ -31,7 +31,7 @@ jobs:
     environment: version-policy-signing
     timeout-minutes: 20
     permissions:
-      contents: read
+      contents: write # Draft release assets require push access for cross-run reads.
       id-token: write # authenticate to Cloud KMS through workload identity
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
@@ -970,7 +970,7 @@ jobs:
     environment: npm-release
     timeout-minutes: 15
     permissions:
-      contents: read
+      contents: write # Revalidate the protected draft before npm staging.
       id-token: write # npm trusted publishing with provenance
       attestations: read # verify the candidate attestations before npm staging
     steps:
