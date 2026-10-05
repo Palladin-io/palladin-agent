@@ -973,7 +973,7 @@ jobs:
     name: Stage the approved @palladin/cli candidate
     needs: [authorize, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle]
     if: >-
-      always() && needs.authorize.result == 'success' && needs.prepare-meta.result == 'success'
+      !cancelled() && needs.authorize.result == 'success' && needs.prepare-meta.result == 'success'
       && needs.artifact-smoke.result == 'success'
       && (inputs.version == '0.0.3'
         || (needs.approve-adversarial.result == 'success' && needs.approve-lifecycle.result == 'success'))
