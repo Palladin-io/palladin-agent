@@ -314,7 +314,7 @@ test('release workflows pin actions and do not permit direct or token-based npm 
   }
 });
 
-test('release finalization preserves the security gates except for the documented 0.0.3 QA deferral', () => {
+test('release finalization preserves the security gates except for the documented 0.0.4 QA deferral', () => {
   const workflow = readFileSync(resolve('.github/workflows/release-finalize.yml'), 'utf8');
   assert.match(workflow, /if: github\.actor == 'patryk-roguszewski'/);
   assert.match(workflow, /needs: \[authorize, compatibility, smoke-native, smoke-musl\]/);
@@ -325,7 +325,7 @@ test('release finalization preserves the security gates except for the documente
   assert.match(workflow, /test -f "\$assets\/lifecycle-report\.json"/);
   assert.match(workflow, /test -f "\$assets\/lifecycle-report\.md"/);
   assert.match(workflow, /test -f "\$assets\/lifecycle-approval\.json"/);
-  assert.match(workflow, /if \[\[ "\$VERSION" != 0\.0\.3 \]\]; then/);
+  assert.match(workflow, /if \[\[ "\$VERSION" != 0\.0\.4 \]\]; then/);
   assert.match(workflow, /QA remains pending and is not claimed as passed/);
   assert.match(workflow, /--directory "\$platform_packages" --version "\$VERSION"/);
   assert.match(workflow, /expected-release-assets\.txt/);
@@ -353,7 +353,7 @@ test('release finalization preserves the security gates except for the documente
   );
 });
 
-test('meta-package staging preserves signed artifacts and makes the 0.0.3 QA deferral explicit', () => {
+test('meta-package staging preserves signed artifacts and makes the 0.0.4 QA deferral explicit', () => {
   const workflow = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8');
   const reportValidations = [...workflow.matchAll(/node security\/adversarial\/report\.mjs validate/g)];
   const artifactValidations = [
@@ -405,7 +405,7 @@ test('meta-package staging preserves signed artifacts and makes the 0.0.3 QA def
   assert.doesNotMatch(workflow.slice(workflow.indexOf('\n  stage-meta:')), /always\(\)/);
   assert.match(workflow, /artifact-smoke:[^]*needs: \[authorize, smoke-native, smoke-musl\]/);
   assert.match(workflow, /lifecycle_ready: \$\{\{ steps\.release_set\.outputs\.lifecycle_ready \}\}/);
-  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.3' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
+  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.4' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
   assert.match(workflow, /\[\[ \$lifecycle_count -eq 0 \|\| \$lifecycle_count -eq 2 \]\]/);
   const prepareOffset = workflow.indexOf('\n  prepare-meta:');
   const approveLifecycleOffset = workflow.indexOf('\n  approve-lifecycle:');
@@ -522,6 +522,48 @@ test('saved signed policy must match the current release payload exactly', () =>
     run('verify-version-policy-build.mjs', args);
     writeFileSync(expected, canonicalizeVersionPolicyPayload({ ...payload, artifacts: payload.artifacts.map((artifact) => ({ ...artifact, workerExecutableSha256: '33'.repeat(32) })) }));
     assert.notEqual(failing('verify-version-policy-build.mjs', args).status, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('release policy assembler accepts raw gcloud signature bytes and rejects altered bytes', () => {
+  const root = fixture();
+  try {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const payload = {
+      artifacts: [{
+        executableSha256: '11'.repeat(32),
+        packageName: '@palladin/runtime-linux-x64-gnu',
+        sourceSha: sha,
+        version: '1.2.3',
+        workerExecutableSha256: '22'.repeat(32),
+      }],
+      schemaVersion: 2,
+    };
+    const payloadFile = join(root, 'payload.json');
+    const signatureFile = join(root, 'signature.bin');
+    const outputFile = join(root, 'policy.json');
+    const payloadBytes = canonicalizeVersionPolicyPayload(payload);
+    const signatureBytes = sign(null, Buffer.from(payloadBytes), privateKey);
+    writeFileSync(payloadFile, payloadBytes);
+    writeFileSync(signatureFile, signatureBytes);
+    const publicKeyBase64 = publicKey.export({ format: 'der', type: 'spki' })
+      .subarray(-32).toString('base64');
+    const args = [
+      '--payload', payloadFile,
+      '--signature', signatureFile,
+      '--public-key', publicKeyBase64,
+      '--output', outputFile,
+    ];
+    run('assemble-version-policy-envelope.mjs', args);
+    assert.deepEqual(
+      parseAndVerifyVersionPolicy(readFileSync(outputFile), { publicKeyBase64 }).signed,
+      payload,
+    );
+    signatureBytes[0] ^= 1;
+    writeFileSync(signatureFile, signatureBytes);
+    assert.notEqual(failing('assemble-version-policy-envelope.mjs', args).status, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -193,7 +193,7 @@ export function validateManifest(input) {
   ], 'manifest');
   if (integer(manifest.schemaVersion, 'manifest.schemaVersion') !== 1) fail('unsupported manifest schemaVersion');
   if (integer(manifest.reportSchemaVersion, 'manifest.reportSchemaVersion') !== 1) fail('unsupported report schemaVersion');
-  if (manifest.releaseVersion !== undefined && manifest.releaseVersion !== '0.0.3') fail('first-release version is invalid');
+  if (manifest.releaseVersion !== undefined && manifest.releaseVersion !== '0.0.4') fail('first-release version is invalid');
   const freshness = integer(manifest.evidenceFreshnessHours, 'manifest.evidenceFreshnessHours');
   if (freshness < 1 || freshness > 720) fail('manifest.evidenceFreshnessHours must be between 1 and 720');
 
@@ -269,7 +269,7 @@ export function validateManifest(input) {
       fail(`${label} may include rationale only when not applicable`);
     }
   }
-  if (manifest.releaseVersion === '0.0.3') {
+  if (manifest.releaseVersion === '0.0.4') {
     const expected = [
       'macos-arm64-hardened',
       'linux-gnu-arm64-convenience', 'linux-gnu-x64-convenience',

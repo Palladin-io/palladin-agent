@@ -1,11 +1,16 @@
 import { generateKeyPairSync, sign } from 'node:crypto';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { canonicalJson } from '../../security/lifecycle/report.mjs';
+import { canonicalJson, generateReport, renderMarkdown } from '../../security/lifecycle/report.mjs';
 import {
   createOperatorApprovalPayload,
   verifyOperatorApproval,
 } from '../../security/lifecycle/operator-approval.mjs';
+import { lifecycleFixture } from './platform-lifecycle-fixture';
 
 const sourceSha = 'a'.repeat(40);
 const approvedAt = '2026-07-15T10:02:00.000Z';
@@ -86,5 +91,49 @@ describe('platform lifecycle operator approval', () => {
       expectedOperator: 'patryk-roguszewski', expectedSourceSha: sourceSha,
       now: new Date('2026-07-23T10:03:00.000Z'),
     })).toThrow('stale');
+  });
+
+  it('assembles and verifies raw KMS signature bytes through the CLI', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'palladin-lifecycle-approval-'));
+    try {
+      const { manifest, evidence } = lifecycleFixture();
+      const input = generateReport({ manifest, evidence, expectedSourceSha: sourceSha, now });
+      const manifestPath = join(directory, 'manifest.json');
+      const reportPath = join(directory, 'report.json');
+      const markdownPath = join(directory, 'report.md');
+      const payloadPath = join(directory, 'payload.json');
+      const signaturePath = join(directory, 'signature.bin');
+      const publicKeyPath = join(directory, 'public-key.pem');
+      const approvalPath = join(directory, 'approval.json');
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      writeFileSync(reportPath, JSON.stringify(input));
+      writeFileSync(markdownPath, renderMarkdown(input));
+      writeFileSync(publicKeyPath, publicKey.export({ type: 'spki', format: 'pem' }));
+      const common = [
+        '--manifest', manifestPath, '--report', reportPath, '--markdown', markdownPath,
+        '--source-sha', sourceSha, '--operator', 'patryk-roguszewski', '--now', now.toISOString(),
+      ];
+      execFileSync(process.execPath, [
+        'security/lifecycle/operator-approval.mjs', 'payload', ...common,
+        '--approved-at', now.toISOString(), '--output', payloadPath,
+      ]);
+      const signatureBytes = sign(null, readFileSync(payloadPath), privateKey);
+      writeFileSync(signaturePath, signatureBytes);
+      const assemble = [
+        'security/lifecycle/operator-approval.mjs', 'assemble', ...common,
+        '--payload', payloadPath, '--signature', signaturePath,
+        '--public-key', publicKeyPath, '--output', approvalPath,
+      ];
+      execFileSync(process.execPath, assemble);
+      expect(() => execFileSync(process.execPath, [
+        'security/lifecycle/operator-approval.mjs', 'verify', ...common,
+        '--approval', approvalPath, '--public-key', publicKeyPath,
+      ])).not.toThrow();
+      signatureBytes[0] ^= 1;
+      writeFileSync(signaturePath, signatureBytes);
+      expect(spawnSync(process.execPath, assemble).status).not.toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

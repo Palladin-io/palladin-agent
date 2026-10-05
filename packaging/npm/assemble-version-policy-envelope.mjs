@@ -18,7 +18,10 @@ if ([...values.keys()].some((key) => !['payload', 'signature', 'public-key', 'ou
 const payloadBytes = readFileSync(resolve(required('payload')));
 const payload = JSON.parse(payloadBytes.toString('utf8'));
 if (canonicalizeVersionPolicyPayload(payload) !== payloadBytes.toString('utf8')) fail();
-const signature = readFileSync(resolve(required('signature')), 'utf8').trim();
+// gcloud writes raw signature bytes to --signature-file.
+const signatureBytes = readFileSync(resolve(required('signature')));
+if (signatureBytes.length !== 64) fail();
+const signature = signatureBytes.toString('base64');
 const envelope = { signature, signed: payload };
 const canonical = canonicalizeVersionPolicyEnvelope(envelope);
 parseAndVerifyVersionPolicy(Buffer.from(canonical), {
