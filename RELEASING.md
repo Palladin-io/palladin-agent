@@ -90,7 +90,7 @@ Configure the public `PALLADIN_VERSION_POLICY_PUBLIC_KEY` variable and the prote
 1. `release-platforms.yml` builds the five macOS ARM/Linux candidates, signs and notarizes macOS, and stages the exact platform packages.
 2. After owner acceptance of those candidates, `release-meta.yml` verifies their provenance and exact bytes, hashes each client and worker, and KMS-signs the deterministic manifest.
 3. Native artifact smokes verify the signature and exact source/version/worker hash. An installed CLI smoke verifies the bundled signature without contacting release infrastructure.
-4. The same signed manifest is embedded in the CLI and attached to the draft release. Retries must reuse its byte-identical artifact bindings. npm staging and finalization still require the owner-approved adversarial and physical lifecycle evidence.
+4. The same signed manifest is embedded in the CLI and attached to the draft release. Retries must reuse its byte-identical artifact bindings. For releases after `0.0.3`, npm staging and finalization also require the owner-approved adversarial and physical lifecycle evidence.
 
 An already installed correctly signed version is not remotely revocable. Publish a security advisory, deprecate affected npm versions and instruct users to update explicitly. Do not promise forced upgrades or immediate revocation. Existing package-manager downgrade checks and native identity/schema integrity remain independent safeguards; a signed release is not rejected solely because a newer release exists.
 
@@ -145,7 +145,7 @@ After platform staging and registry smoke tests pass, but before the public meta
 4. Keep canaries, credentials, API keys, private keys, process memory, environments, protocol payloads, and all other secret values out of evidence and reports.
 5. Use `node security/adversarial/report.mjs evidence` once with the complete exact target list, source SHA, per-target artifact hashes, observation time, explicit outcome map, evidence-reference map, and findings JSON. Use that complete bundle to generate both reports with `node security/adversarial/report.mjs generate`.
 6. Run `node security/adversarial/report.mjs validate` against both generated files and the exact 40-character source SHA. Missing, stale, incomplete, blocked, mismatched, or overdue evidence must fail.
-7. Patryk alone uploads `adversarial-report.json` and `adversarial-report.md` to the existing draft release after reviewing that both files contain no secrets. Do not replace either file after approval.
+7. For releases after `0.0.3`, Patryk alone uploads `adversarial-report.json` and `adversarial-report.md` to the existing draft release after reviewing that both files contain no secrets. Do not replace either file after approval. For the deferred `0.0.3` run, retain the reviewed reports outside the immutable release, with their exact source and artifact digests.
 8. The protected `version-policy-signing` job derives every manual-required cell from that exact report and KMS-signs `adversarial-approval.json` as Patryk. The signed payload binds the operator, approval time, source SHA, report digest, target, attack, result, observation time, evidence reference, and exact artifact SHA-256. Never create or upload this approval by hand.
 
 An unresolved or accepted Critical/High finding, incomplete target, stale observation, artifact mismatch, overdue residual-risk review, missing manual attestation, forged operator, or invalid KMS signature stops the workflow before `@palladin/cli` is staged. Linux Hardened DEB and RPM are separate evidence targets with separate artifact digests. The protected meta workflow validates the report before build, KMS-signs the manual approval after native smoke tests, and verifies both again immediately before `npm stage publish`.
@@ -160,7 +160,7 @@ For `0.0.3`, stage after all supported platform registry smokes and the retained
 4. Generate and verify its checksum, manifest entry, SBOM, provenance, and attestations.
 5. Except for `0.0.3`, re-download and revalidate the approved adversarial reports and KMS-signed operator approval against the tagged source and exact platform release manifest.
 6. Stage the meta package through the protected OIDC workflow with `npm stage publish --tag latest`.
-7. Patryk downloads and inspects the staged tarball, verifies the digest, provenance, and recorded adversarial gate, then approves it with npm 2FA.
+7. Patryk downloads and inspects the staged tarball, verifies the digest and provenance, and, for releases after `0.0.3`, the recorded adversarial gate, then approves it with npm 2FA.
 8. Install `@palladin/cli@X.Y.Z` and `@palladin/cli@latest` from npm in clean runners for every supported platform and repeat the end-to-end smoke checks.
 
 Publishing the meta package is the consumer-visible commit point. Never approve it while a platform package, registry smoke test, attestation, applicable adversarial cell, or Critical/High release blocker is missing.
@@ -200,7 +200,7 @@ Record the following without secrets:
 - version, protected tag, and full source commit SHA
 - GitHub workflow run IDs and environment approvals
 - npm stage IDs and Patryk's approval timestamps
-- the KMS-signed adversarial operator approval and its exact report digest
+- for releases after `0.0.3`, the KMS-signed adversarial operator approval and its exact report digest; for `0.0.3`, the explicit deferral and, after QA runs, the retained reports with exact source and artifact digests
 - package names, registry URLs, tarball digests, and dist-tags
 - signing identities, certificate fingerprints, timestamps, notarization request IDs, and verification results
 - release manifest, SBOM, provenance, and attestation URLs and digests
