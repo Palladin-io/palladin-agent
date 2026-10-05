@@ -20,8 +20,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PALLADIN_ADVERSARIAL_MANIFEST: ${{ inputs.version == '0.0.2' && 'security/adversarial/first-release-manifest.json' || 'security/adversarial/coverage-manifest.json' }}
-  PALLADIN_LIFECYCLE_MANIFEST: ${{ inputs.version == '0.0.2' && 'security/lifecycle/first-release-manifest.json' || 'security/lifecycle/coverage-manifest.json' }}
+  PALLADIN_ADVERSARIAL_MANIFEST: ${{ inputs.version == '0.0.3' && 'security/adversarial/first-release-manifest.json' || 'security/adversarial/coverage-manifest.json' }}
+  PALLADIN_LIFECYCLE_MANIFEST: ${{ inputs.version == '0.0.3' && 'security/lifecycle/first-release-manifest.json' || 'security/lifecycle/coverage-manifest.json' }}
 
 jobs:
   authorize:
@@ -59,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          if [[ "$VERSION" = 0.0.2 && "$RELEASE_TAG" =~ ^v0[.]0[.]2[+]retry[.][1-9][0-9]*$ ]]; then
+          if [[ "$VERSION" = 0.0.3 && "$RELEASE_TAG" =~ ^v0[.]0[.]3[+]retry[.][1-9][0-9]*$ ]]; then
             : # Failed immutable first-release tags cannot be moved to a repaired source.
           else
             [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -129,11 +129,13 @@ jobs:
           else
             echo 'policy_ready=false' >>"$GITHUB_OUTPUT"
           fi
-          for filename in adversarial-report.json adversarial-report.md; do
-            test -f "$assets/$filename"
-            test ! -L "$assets/$filename"
-            mv "$assets/$filename" "$evidence/$filename"
-          done
+          if [[ "$VERSION" != 0.0.3 ]]; then
+            for filename in adversarial-report.json adversarial-report.md; do
+              test -f "$assets/$filename"
+              test ! -L "$assets/$filename"
+              mv "$assets/$filename" "$evidence/$filename"
+            done
+          fi
           lifecycle_count=0
           for filename in lifecycle-report.json lifecycle-report.md; do
             if [[ -e "$assets/$filename" || -L "$assets/$filename" ]]; then
@@ -163,14 +165,16 @@ jobs:
             --artifacts "$assets" --version "$VERSION" --source-sha "$SOURCE_SHA" \
             --sbom "$assets/sbom-release.spdx.json" \
             --manifest "$assets/release-manifest.json" --checksums "$assets/SHA256SUMS"
-          node security/adversarial/report.mjs validate \
-            --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
-            --source-sha "$SOURCE_SHA" \
-            --json "$evidence/adversarial-report.json" \
-            --markdown "$evidence/adversarial-report.md"
-          node security/adversarial/verify-release-artifacts.mjs \
-            --report "$evidence/adversarial-report.json" \
-            --platform-manifest "$assets/release-manifest.json"
+          if [[ "$VERSION" != 0.0.3 ]]; then
+            node security/adversarial/report.mjs validate \
+              --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
+              --source-sha "$SOURCE_SHA" \
+              --json "$evidence/adversarial-report.json" \
+              --markdown "$evidence/adversarial-report.md"
+            node security/adversarial/verify-release-artifacts.mjs \
+              --report "$evidence/adversarial-report.json" \
+              --platform-manifest "$assets/release-manifest.json"
+          fi
           packages=(
             @palladin/runtime-darwin-arm64
             @palladin/runtime-linux-arm64-gnu
@@ -565,6 +569,7 @@ jobs:
   approve-adversarial:
     name: KMS-sign the owner-approved adversarial evidence
     needs: [authorize, smoke-native, smoke-musl]
+    if: inputs.version != '0.0.3'
     runs-on: ubuntu-latest
     environment: version-policy-signing
     timeout-minutes: 10
@@ -661,7 +666,7 @@ jobs:
   approve-lifecycle:
     name: KMS-sign the owner-approved platform lifecycle evidence
     needs: [authorize, prepare-meta]
-    if: needs.authorize.outputs.lifecycle_ready == 'true'
+    if: inputs.version != '0.0.3' && needs.authorize.outputs.lifecycle_ready == 'true'
     runs-on: ubuntu-latest
     environment: version-policy-signing
     timeout-minutes: 15
@@ -760,7 +765,7 @@ jobs:
 
   prepare-meta:
     name: Build and attest the exact @palladin/cli candidate
-    needs: [authorize, compatibility, smoke-native, smoke-musl, approve-adversarial]
+    needs: [authorize, compatibility, smoke-native, smoke-musl]
     runs-on: ubuntu-latest
     environment: version-policy-signing
     timeout-minutes: 15
@@ -955,7 +960,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Record the physical lifecycle boundary
+      - name: Record the deferred physical lifecycle boundary
+        if: inputs.version != '0.0.3'
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
           The exact `@palladin/cli` candidate was attached to the draft release but was not published to npm.
@@ -966,6 +972,11 @@ jobs:
   stage-meta:
     name: Stage the approved @palladin/cli candidate
     needs: [authorize, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle]
+    if: >-
+      !cancelled() && needs.authorize.result == 'success' && needs.prepare-meta.result == 'success'
+      && needs.artifact-smoke.result == 'success'
+      && (inputs.version == '0.0.3'
+        || (needs.approve-adversarial.result == 'success' && needs.approve-lifecycle.result == 'success'))
     runs-on: ubuntu-latest
     environment: npm-release
     timeout-minutes: 15
@@ -995,7 +1006,7 @@ jobs:
           package-manager-cache: false
       - run: npm install --global npm@11.18.0
       - run: npm ci --ignore-scripts --workspaces=false
-      - name: Download the immutable candidate and both approved gates
+      - name: Download the immutable candidate and applicable release gates
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -1006,11 +1017,16 @@ jobs:
           mkdir -m 700 "$assets"
           for pattern in \
             "palladin-cli-${INPUTS_VERSION}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json \
-            release-manifest.json adversarial-report.json adversarial-report.md adversarial-approval.json \
-            lifecycle-report.json lifecycle-report.md lifecycle-approval.json version-policy-candidate.json; do
+            release-manifest.json version-policy-candidate.json; do
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
           done
-      - name: Revalidate the exact candidate and release gates
+          if [[ "$INPUTS_VERSION" != 0.0.3 ]]; then
+            for pattern in adversarial-report.json adversarial-report.md adversarial-approval.json \
+              lifecycle-report.json lifecycle-report.md lifecycle-approval.json; do
+              gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
+            done
+          fi
+      - name: Revalidate the exact candidate and applicable release gates
         env:
           GH_TOKEN: ${{ github.token }}
           OPERATOR: ${{ github.actor }}
@@ -1032,31 +1048,33 @@ jobs:
           node packaging/npm/verify-version-policy-build.mjs \
             --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
             --bundle "$assets/version-policy-candidate.json" --version "$VERSION"
-          node security/adversarial/report.mjs validate \
-            --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
-            --source-sha "$SOURCE_SHA" --json "$assets/adversarial-report.json" \
-            --markdown "$assets/adversarial-report.md"
-          node security/adversarial/verify-release-artifacts.mjs \
-            --report "$assets/adversarial-report.json" --platform-manifest "$assets/release-manifest.json" \
-            --agent-manifest "$assets/release-manifest-agent.json"
-          printf '%s' "$PUBLIC_KEY" >"$RUNNER_TEMP/operator-public-key.txt"
-          node security/adversarial/operator-approval.mjs verify \
-            --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
-            --report "$assets/adversarial-report.json" --markdown "$assets/adversarial-report.md" \
-            --source-sha "$SOURCE_SHA" --operator "$OPERATOR" --approval "$assets/adversarial-approval.json" \
-            --public-key "$RUNNER_TEMP/operator-public-key.txt"
-          node security/lifecycle/report.mjs validate \
-            --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
-            --source-sha "$SOURCE_SHA" --json "$assets/lifecycle-report.json" \
-            --markdown "$assets/lifecycle-report.md"
-          node security/lifecycle/verify-release-artifacts.mjs \
-            --report "$assets/lifecycle-report.json" --platform-manifest "$assets/release-manifest.json" \
-            --agent-manifest "$assets/release-manifest-agent.json"
-          node security/lifecycle/operator-approval.mjs verify \
-            --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
-            --report "$assets/lifecycle-report.json" --markdown "$assets/lifecycle-report.md" \
-            --source-sha "$SOURCE_SHA" --operator "$OPERATOR" --approval "$assets/lifecycle-approval.json" \
-            --public-key "$RUNNER_TEMP/operator-public-key.txt"
+          if [[ "$VERSION" != 0.0.3 ]]; then
+            node security/adversarial/report.mjs validate \
+              --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
+              --source-sha "$SOURCE_SHA" --json "$assets/adversarial-report.json" \
+              --markdown "$assets/adversarial-report.md"
+            node security/adversarial/verify-release-artifacts.mjs \
+              --report "$assets/adversarial-report.json" --platform-manifest "$assets/release-manifest.json" \
+              --agent-manifest "$assets/release-manifest-agent.json"
+            printf '%s' "$PUBLIC_KEY" >"$RUNNER_TEMP/operator-public-key.txt"
+            node security/adversarial/operator-approval.mjs verify \
+              --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
+              --report "$assets/adversarial-report.json" --markdown "$assets/adversarial-report.md" \
+              --source-sha "$SOURCE_SHA" --operator "$OPERATOR" --approval "$assets/adversarial-approval.json" \
+              --public-key "$RUNNER_TEMP/operator-public-key.txt"
+            node security/lifecycle/report.mjs validate \
+              --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
+              --source-sha "$SOURCE_SHA" --json "$assets/lifecycle-report.json" \
+              --markdown "$assets/lifecycle-report.md"
+            node security/lifecycle/verify-release-artifacts.mjs \
+              --report "$assets/lifecycle-report.json" --platform-manifest "$assets/release-manifest.json" \
+              --agent-manifest "$assets/release-manifest-agent.json"
+            node security/lifecycle/operator-approval.mjs verify \
+              --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
+              --report "$assets/lifecycle-report.json" --markdown "$assets/lifecycle-report.md" \
+              --source-sha "$SOURCE_SHA" --operator "$OPERATOR" --approval "$assets/lifecycle-approval.json" \
+              --public-key "$RUNNER_TEMP/operator-public-key.txt"
+          fi
           for filename in palladin-cli-$VERSION.tgz release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json version-policy-candidate.json; do
             gh attestation verify "$assets/$filename" --repo "$GITHUB_REPOSITORY"
           done
@@ -1067,7 +1085,7 @@ jobs:
       - name: Record the final manual npm approval boundary
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          `@palladin/cli` was staged only after the owner-signed adversarial and version-selected physical lifecycle gates passed.
+          `@palladin/cli` was staged after artifact, signature, provenance, and native smoke checks. For 0.0.3, adversarial and physical lifecycle QA is deferred by the product owner.
 
           Patryk must inspect and approve this single npm stage with 2FA. Run `release-finalize.yml` only after the exact meta-package is public.
           SUMMARY

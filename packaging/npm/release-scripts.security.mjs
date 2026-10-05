@@ -314,7 +314,7 @@ test('release workflows pin actions and do not permit direct or token-based npm 
   }
 });
 
-test('release finalization requires both exact owner-approved security gates before publication', () => {
+test('release finalization preserves the security gates except for the documented 0.0.3 QA deferral', () => {
   const workflow = readFileSync(resolve('.github/workflows/release-finalize.yml'), 'utf8');
   assert.match(workflow, /if: github\.actor == 'patryk-roguszewski'/);
   assert.match(workflow, /needs: \[authorize, compatibility, smoke-native, smoke-musl\]/);
@@ -325,6 +325,8 @@ test('release finalization requires both exact owner-approved security gates bef
   assert.match(workflow, /test -f "\$assets\/lifecycle-report\.json"/);
   assert.match(workflow, /test -f "\$assets\/lifecycle-report\.md"/);
   assert.match(workflow, /test -f "\$assets\/lifecycle-approval\.json"/);
+  assert.match(workflow, /if \[\[ "\$VERSION" != 0\.0\.3 \]\]; then/);
+  assert.match(workflow, /QA remains pending and is not claimed as passed/);
   assert.match(workflow, /--directory "\$platform_packages" --version "\$VERSION"/);
   assert.match(workflow, /expected-release-assets\.txt/);
   assert.match(workflow, /actual-release-assets\.txt/);
@@ -351,7 +353,7 @@ test('release finalization requires both exact owner-approved security gates bef
   );
 });
 
-test('meta-package staging is blocked by the exact adversarial and physical lifecycle gates', () => {
+test('meta-package staging preserves signed artifacts and makes the 0.0.3 QA deferral explicit', () => {
   const workflow = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8');
   const reportValidations = [...workflow.matchAll(/node security\/adversarial\/report\.mjs validate/g)];
   const artifactValidations = [
@@ -387,7 +389,7 @@ test('meta-package staging is blocked by the exact adversarial and physical life
     workflow.indexOf('mv "$assets/$filename" "$evidence/$filename"')
       < workflow.indexOf('node packaging/npm/verify-release-manifest.mjs'),
   );
-  assert.match(workflow, /name: Revalidate the exact candidate and release gates/);
+  assert.match(workflow, /name: Revalidate the exact candidate and applicable release gates/);
   assert.match(workflow, /--platform-manifest "\$assets\/release-manifest\.json"/);
   assert.match(workflow, /--agent-manifest "\$assets\/release-manifest-agent\.json"/);
   assert.match(workflow, /name: KMS-sign the owner-approved adversarial evidence/);
@@ -397,11 +399,13 @@ test('meta-package staging is blocked by the exact adversarial and physical life
   assert.match(workflow, /operator-approval\.mjs verify/);
   assert.match(workflow, /--approval "\$approval\/adversarial-approval\.json"/);
   assert.match(workflow, /--approval "\$approval\/lifecycle-approval\.json"/);
-  assert.match(workflow, /prepare-meta:[^]*needs: \[authorize, compatibility, smoke-native, smoke-musl, approve-adversarial\]/);
+  assert.match(workflow, /prepare-meta:[^]*needs: \[authorize, compatibility, smoke-native, smoke-musl\]/);
   assert.match(workflow, /stage-meta:[^]*needs: \[authorize, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle\]/);
+  assert.match(workflow, /!cancelled\(\) && needs\.authorize\.result == 'success'/);
+  assert.doesNotMatch(workflow.slice(workflow.indexOf('\n  stage-meta:')), /always\(\)/);
   assert.match(workflow, /artifact-smoke:[^]*needs: \[authorize, smoke-native, smoke-musl\]/);
   assert.match(workflow, /lifecycle_ready: \$\{\{ steps\.release_set\.outputs\.lifecycle_ready \}\}/);
-  assert.match(workflow, /approve-lifecycle:[^]*if: needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
+  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.3' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
   assert.match(workflow, /\[\[ \$lifecycle_count -eq 0 \|\| \$lifecycle_count -eq 2 \]\]/);
   const prepareOffset = workflow.indexOf('\n  prepare-meta:');
   const approveLifecycleOffset = workflow.indexOf('\n  approve-lifecycle:');
