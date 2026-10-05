@@ -1,5 +1,5 @@
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -150,7 +150,8 @@ describe('adversarial operator approval', () => {
         '--output', payloadPath,
       ]);
       const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-      writeFileSync(signaturePath, sign(null, readFileSync(payloadPath), privateKey).toString('base64'));
+      const signatureBytes = sign(null, readFileSync(payloadPath), privateKey);
+      writeFileSync(signaturePath, signatureBytes);
       const publicKeyDer = publicKey.export({ type: 'spki', format: 'der' });
       writeFileSync(publicKeyPath, publicKeyDer.subarray(-32).toString('base64'));
       execFileSync(process.execPath, [
@@ -169,6 +170,17 @@ describe('adversarial operator approval', () => {
         '--approval', approvalPath,
         '--public-key', publicKeyPath,
       ])).not.toThrow();
+      signatureBytes[0] ^= 1;
+      writeFileSync(signaturePath, signatureBytes);
+      expect(spawnSync(process.execPath, [
+        'security/adversarial/operator-approval.mjs',
+        'assemble',
+        ...common,
+        '--payload', payloadPath,
+        '--signature', signaturePath,
+        '--public-key', publicKeyPath,
+        '--output', approvalPath,
+      ]).status).not.toBe(0);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

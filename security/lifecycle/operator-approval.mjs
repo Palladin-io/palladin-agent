@@ -170,9 +170,11 @@ function cli(argv) {
   }
   const publicKeyPem = readRegularFile(options.get('--public-key'), 'public key', 'utf8');
   if (command === 'assemble') {
+    const signatureBytes = readRegularFile(options.get('--signature'), 'signature');
+    if (signatureBytes.length !== 64) fail('signature must be 64 raw bytes');
     const approval = {
       signed: readJson(options.get('--payload'), 'approval payload'),
-      signature: readRegularFile(options.get('--signature'), 'signature', 'utf8').trim(),
+      signature: signatureBytes.toString('base64'),
     };
     verifyOperatorApproval({ report, approval, publicKeyPem, expectedOperator: options.get('--operator'), expectedSourceSha: options.get('--source-sha'), now });
     writeAtomic(options.get('--output'), `${canonicalJson(approval)}\n`);
