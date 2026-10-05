@@ -45,7 +45,7 @@ describe('Linux hardened package boundary', () => {
         optionalDependencies?: unknown;
       };
       expect(manifest.name).toBe(`@palladin/runtime-linux-${architecture}-${suffix}`);
-      expect(manifest.version).toBe('0.0.2');
+      expect(manifest.version).toBe('0.0.3');
       expect(manifest.private).toBeUndefined();
       expect(manifest.os).toEqual(['linux']);
       expect(manifest.cpu).toEqual([architecture]);
