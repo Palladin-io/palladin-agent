@@ -53,12 +53,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          if [[ "$VERSION" = 0.0.5 && "$RELEASE_TAG" =~ ^v0[.]0[.]5[+]retry[.][1-9][0-9]*$ ]]; then
-            : # Failed immutable first-release tags cannot be moved to a repaired source.
-          else
-            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-            test "$RELEASE_TAG" = "v$VERSION"
-          fi
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$RELEASE_TAG" = "v$VERSION"
           source_sha=$(git rev-parse HEAD)
           test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
           test "$GITHUB_SHA" = "$source_sha"
