@@ -12,12 +12,15 @@ import {
 } from './release-policy.mjs';
 
 const EXPECTED_FILES = Object.freeze([
-  'dist/bin/', 'dist/runtime/', 'README.md', 'LICENSE', 'NOTICE',
+  'dist/bin/', 'dist/runtime/',
+  'dist/inject-contract.js', 'dist/inject-contract.d.ts',
+  'dist/form-map.js', 'dist/form-map.d.ts',
+  'README.md', 'LICENSE', 'NOTICE',
   'THIRD_PARTY_NOTICES.md', 'SBOM.cdx.json', 'SECURITY.md',
 ]);
 const OUTPUT_FIELDS = Object.freeze([
   'name', 'version', 'description', 'license', 'repository', 'homepage', 'bugs',
-  'files', 'publishConfig', 'type', 'bin', 'engines', 'optionalDependencies',
+  'files', 'publishConfig', 'type', 'exports', 'bin', 'engines', 'optionalDependencies',
 ]);
 
 function copyAllowlisted(source, destination) {
