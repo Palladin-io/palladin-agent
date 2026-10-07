@@ -20,8 +20,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PALLADIN_ADVERSARIAL_MANIFEST: ${{ inputs.version == '0.0.4' && 'security/adversarial/first-release-manifest.json' || 'security/adversarial/coverage-manifest.json' }}
-  PALLADIN_LIFECYCLE_MANIFEST: ${{ inputs.version == '0.0.4' && 'security/lifecycle/first-release-manifest.json' || 'security/lifecycle/coverage-manifest.json' }}
+  PALLADIN_ADVERSARIAL_MANIFEST: ${{ inputs.version == '0.0.5' && 'security/adversarial/first-release-manifest.json' || 'security/adversarial/coverage-manifest.json' }}
+  PALLADIN_LIFECYCLE_MANIFEST: ${{ inputs.version == '0.0.5' && 'security/lifecycle/first-release-manifest.json' || 'security/lifecycle/coverage-manifest.json' }}
 
 jobs:
   authorize:
@@ -53,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          if [[ "$VERSION" = 0.0.4 && "$RELEASE_TAG" =~ ^v0[.]0[.]4[+]retry[.][1-9][0-9]*$ ]]; then
+          if [[ "$VERSION" = 0.0.5 && "$RELEASE_TAG" =~ ^v0[.]0[.]5[+]retry[.][1-9][0-9]*$ ]]; then
             : # Failed immutable first-release tags cannot be moved to a repaired source.
           else
             [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -224,7 +224,7 @@ jobs:
           test -f "$assets/SHA256SUMS"
           test -f "$assets/release-manifest-agent.json"
           test -f "$assets/SHA256SUMS-agent"
-          if [[ "$VERSION" != 0.0.4 ]]; then
+          if [[ "$VERSION" != 0.0.5 ]]; then
             test -f "$assets/adversarial-report.json"
             test -f "$assets/adversarial-report.md"
             test -f "$assets/adversarial-approval.json"
@@ -264,7 +264,7 @@ jobs:
             'SHA256SUMS-agent',
             'version-policy-candidate.json',
           ]);
-          if (process.env.VERSION !== '0.0.4') {
+          if (process.env.VERSION !== '0.0.5') {
             for (const name of [
               'adversarial-report.json', 'adversarial-report.md', 'adversarial-approval.json',
               'lifecycle-report.json', 'lifecycle-report.md', 'lifecycle-approval.json',
@@ -291,7 +291,7 @@ jobs:
             --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
             --bundle "$assets/version-policy-candidate.json" --version "$VERSION"
 
-          if [[ "$VERSION" != 0.0.4 ]]; then
+          if [[ "$VERSION" != 0.0.5 ]]; then
             node security/adversarial/report.mjs validate \
               --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
               --source-sha "$SOURCE_SHA" \
@@ -344,7 +344,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [[ "$VERSION" = 0.0.4 ]]; then
+          if [[ "$VERSION" = 0.0.5 ]]; then
             gh release edit "${INPUTS_RELEASE_TAG}" --repo "$GITHUB_REPOSITORY" \
               --notes 'Official macOS ARM and Linux CLI release. Signed and notarized macOS, artifact integrity, provenance, compatibility, and clean npm registry smokes passed. Product-owner-directed adversarial and physical lifecycle QA remains pending and is not claimed as passed.'
           fi

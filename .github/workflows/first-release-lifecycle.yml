@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       candidate_version:
-        description: "Exact first complete CLI release version (0.0.4)"
+        description: "Exact first complete CLI release version (0.0.5)"
         required: true
         type: string
       candidate_source_sha:
@@ -30,7 +30,7 @@ concurrency:
 jobs:
   authorize:
     name: Authorize immutable physical test inputs
-    if: github.actor == 'patryk-roguszewski' && (github.ref == 'refs/tags/v0.0.4' || startsWith(github.ref, 'refs/tags/v0.0.4+retry.'))
+    if: github.actor == 'patryk-roguszewski' && (github.ref == 'refs/tags/v0.0.5' || startsWith(github.ref, 'refs/tags/v0.0.5+retry.'))
     runs-on: ubuntu-latest
     environment: lifecycle-qa
     timeout-minutes: 15
@@ -56,8 +56,8 @@ jobs:
           test "$GITHUB_REF" = "refs/tags/$CANDIDATE_TAG"
           test "$CONFIRMATION" = 'run physical lifecycle gate'
           test "$CANDIDATE_SHA" = "$GITHUB_SHA"
-          test "$CANDIDATE_VERSION" = 0.0.4
-          [[ "$CANDIDATE_TAG" = v0.0.4 || "$CANDIDATE_TAG" =~ ^v0[.]0[.]4[+]retry[.][1-9][0-9]*$ ]]
+          test "$CANDIDATE_VERSION" = 0.0.5
+          [[ "$CANDIDATE_TAG" = v0.0.5 || "$CANDIDATE_TAG" =~ ^v0[.]0[.]5[+]retry[.][1-9][0-9]*$ ]]
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
           git cat-file -e "$CANDIDATE_SHA^{commit}"
           git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main

@@ -334,7 +334,7 @@ test('release workflows pin actions and do not permit direct or token-based npm 
   }
 });
 
-test('release finalization preserves the security gates except for the documented 0.0.4 QA deferral', () => {
+test('release finalization preserves the security gates except for the documented 0.0.5 QA deferral', () => {
   const workflow = readFileSync(resolve('.github/workflows/release-finalize.yml'), 'utf8');
   assert.match(workflow, /if: github\.actor == 'patryk-roguszewski'/);
   assert.match(workflow, /needs: \[authorize, compatibility, smoke-native, smoke-musl\]/);
@@ -345,7 +345,7 @@ test('release finalization preserves the security gates except for the documente
   assert.match(workflow, /test -f "\$assets\/lifecycle-report\.json"/);
   assert.match(workflow, /test -f "\$assets\/lifecycle-report\.md"/);
   assert.match(workflow, /test -f "\$assets\/lifecycle-approval\.json"/);
-  assert.match(workflow, /if \[\[ "\$VERSION" != 0\.0\.4 \]\]; then/);
+  assert.match(workflow, /if \[\[ "\$VERSION" != 0\.0\.5 \]\]; then/);
   assert.match(workflow, /QA remains pending and is not claimed as passed/);
   assert.match(workflow, /--directory "\$platform_packages" --version "\$VERSION"/);
   assert.match(workflow, /expected-release-assets\.txt/);
@@ -373,7 +373,7 @@ test('release finalization preserves the security gates except for the documente
   );
 });
 
-test('meta-package staging preserves signed artifacts and makes the 0.0.4 QA deferral explicit', () => {
+test('meta-package staging preserves signed artifacts and makes the 0.0.5 QA deferral explicit', () => {
   const workflow = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8');
   const reportValidations = [...workflow.matchAll(/node security\/adversarial\/report\.mjs validate/g)];
   const artifactValidations = [
@@ -425,7 +425,7 @@ test('meta-package staging preserves signed artifacts and makes the 0.0.4 QA def
   assert.doesNotMatch(workflow.slice(workflow.indexOf('\n  stage-meta:')), /always\(\)/);
   assert.match(workflow, /artifact-smoke:[^]*needs: \[authorize, smoke-native, smoke-musl\]/);
   assert.match(workflow, /lifecycle_ready: \$\{\{ steps\.release_set\.outputs\.lifecycle_ready \}\}/);
-  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.4' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
+  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.5' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
   assert.match(workflow, /\[\[ \$lifecycle_count -eq 0 \|\| \$lifecycle_count -eq 2 \]\]/);
   const prepareOffset = workflow.indexOf('\n  prepare-meta:');
   const approveLifecycleOffset = workflow.indexOf('\n  approve-lifecycle:');
