@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "reportSchemaVersion": 2,
-  "releaseVersion": "0.0.4",
+  "releaseVersion": "0.0.5",
   "evidenceFreshnessHours": 168,
   "steps": [
     { "id": "install", "order": 1 },
