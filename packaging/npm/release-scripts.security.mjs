@@ -70,12 +70,25 @@ function metaManifest(overrides = {}) {
     homepage: 'https://example.test',
     bugs: { url: 'https://example.test/issues' },
     files: [
-      'dist/bin/', 'dist/runtime/', 'README.md', 'LICENSE', 'NOTICE',
+      'dist/bin/', 'dist/runtime/',
+      'dist/inject-contract.js', 'dist/inject-contract.d.ts',
+      'dist/form-map.js', 'dist/form-map.d.ts',
+      'README.md', 'LICENSE', 'NOTICE',
       'THIRD_PARTY_NOTICES.md', 'SBOM.cdx.json', 'SECURITY.md',
     ],
     workspaces: ['packages/*'],
     publishConfig: { access: 'public', provenance: true },
     type: 'module',
+    exports: {
+      './inject-contract': {
+        types: './dist/inject-contract.d.ts',
+        import: './dist/inject-contract.js',
+      },
+      './form-map': {
+        types: './dist/form-map.d.ts',
+        import: './dist/form-map.js',
+      },
+    },
     bin: { palladin: './dist/bin/palladin.js' },
     scripts: { build: 'tsc', test: 'vitest run' },
     devDependencies: { typescript: '1.0.0' },
@@ -90,6 +103,9 @@ function createMetaSource(root, manifest = metaManifest()) {
   mkdirSync(join(root, 'dist/runtime'), { recursive: true });
   writeFileSync(join(root, 'dist/bin/palladin.js'), 'fixture');
   writeFileSync(join(root, 'dist/runtime/native-dispatch.js'), 'fixture');
+  for (const file of [
+    'inject-contract.js', 'inject-contract.d.ts', 'form-map.js', 'form-map.d.ts',
+  ]) writeFileSync(join(root, 'dist', file), file);
   for (const file of [
     'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md', 'SBOM.cdx.json', 'SECURITY.md',
   ]) writeFileSync(join(root, file), file);
@@ -110,6 +126,10 @@ test('stages only the publishable meta package and preserves the private source'
     assert.equal(staged.scripts, undefined);
     assert.equal(staged.devDependencies, undefined);
     assert.deepEqual(staged.optionalDependencies, metaManifest().optionalDependencies);
+    assert.deepEqual(staged.exports, metaManifest().exports);
+    for (const file of [
+      'inject-contract.js', 'inject-contract.d.ts', 'form-map.js', 'form-map.d.ts',
+    ]) assert.equal(readFileSync(join(output, 'dist', file), 'utf8'), file);
     assert.equal(readFileSync(join(source, 'package.json'), 'utf8'), before);
     assert.deepEqual(readdirSync(output).sort(), [
       'LICENSE', 'NOTICE', 'README.md', 'SBOM.cdx.json', 'SECURITY.md',
