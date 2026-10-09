@@ -36,7 +36,9 @@ resolves the active tab once, then pins that tab and URL.
 The host ends an operation with `operation.close` and no request payload. The
 extension stops subsequent writes, waits for in-flight work and pending deferred
 submission cleanup, releases the tab, then returns `operation.closed`. Both
-messages carry the protocol and operation ID. Closing an unknown/already closed
+messages carry the protocol and operation ID. A canceled request may return its
+result before the close acknowledgement or omit it; `operation.closed` is
+terminal and no result may follow it. Closing an unknown/already closed
 operation is idempotent. The host retains admission capacity until authenticated
 acknowledgement; a missing acknowledgement terminates the stale connection after
 the cleanup deadline. Neither side replays credential delivery or submission.

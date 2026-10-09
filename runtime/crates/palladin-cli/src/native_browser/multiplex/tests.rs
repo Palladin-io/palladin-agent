@@ -227,6 +227,15 @@ async fn two_authenticated_local_clients_prepare_independently_on_one_browser_co
 
 #[tokio::test]
 async fn disconnected_local_client_closes_only_its_operation_without_waiting_for_browser_reply() {
+    canceled_operation_keeps_other_operations_available(true).await;
+}
+
+#[tokio::test]
+async fn canceled_operation_accepts_close_ack_without_a_result() {
+    canceled_operation_keeps_other_operations_available(false).await;
+}
+
+async fn canceled_operation_keeps_other_operations_available(send_result: bool) {
     let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
     let (session, peer) = ExtensionPeer::start(&identity);
     let (connection, broker) = BrowserConnection::new(session);
@@ -265,8 +274,11 @@ async fn disconnected_local_client_closes_only_its_operation_without_waiting_for
         "operationId":prepare["operationId"],"response":{"outcome":"provider-unavailable"}}),
         0,
     );
-    write_message(&mut browser, &late).await.unwrap();
-    let closed = peer.seal(json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"operation.closed","operationId":prepare["operationId"]}), 1);
+    if send_result {
+        write_message(&mut browser, &late).await.unwrap();
+    }
+    let sequence = u64::from(send_result);
+    let closed = peer.seal(json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"operation.closed","operationId":prepare["operationId"]}), sequence);
     write_message(&mut browser, &closed).await.unwrap();
     let other = connection.operation().unwrap();
     let pending = other.enqueue(&json!({"type":"prepare"}), None).unwrap();
@@ -277,7 +289,7 @@ async fn disconnected_local_client_closes_only_its_operation_without_waiting_for
         &peer.seal(
             json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"operation.result",
         "operationId":request["operationId"],"response":{"outcome":"ready"}}),
-            2,
+            sequence + 1,
         ),
     )
     .await

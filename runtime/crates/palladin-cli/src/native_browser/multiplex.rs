@@ -272,8 +272,13 @@ impl BrowserBroker {
                             let value = response.response.ok_or(NativeBrowserError::InvalidMessage)?;
                             let _ = reply.send(Ok(value));
                         }
-                        "operation.closed" if response.response.is_none() && closing.remove(&response.operation_id).is_some()
-                            && !pending.contains_key(&response.operation_id) => {},
+                        "operation.closed" if response.response.is_none() && closing.remove(&response.operation_id).is_some() => {
+                            // Cleanup acknowledgement is terminal even if a canceled request
+                            // has no result. It must not abort other operations on this channel.
+                            if let Some(reply) = pending.remove(&response.operation_id) {
+                                let _ = reply.send(Err(NativeBrowserError::Unavailable));
+                            }
+                        },
                         _ => return Err(NativeBrowserError::InvalidMessage),
                     }
                 }
