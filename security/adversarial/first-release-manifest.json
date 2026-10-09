@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "reportSchemaVersion": 1,
-  "releaseVersion": "0.0.6",
+  "releaseVersion": "0.0.7",
   "evidenceFreshnessHours": 168,
   "coverage": {
     "mode": "cartesian-product",
