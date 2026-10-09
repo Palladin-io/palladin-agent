@@ -104,7 +104,7 @@ export function validateManifest(input) {
   ], 'manifest');
   if (integer(manifest.schemaVersion, 'manifest.schemaVersion') !== (firstRelease ? 2 : 1)
     || integer(manifest.reportSchemaVersion, 'manifest.reportSchemaVersion') !== (firstRelease ? 2 : 1)) fail('unsupported lifecycle schema');
-  if (firstRelease && manifest.releaseVersion !== '0.0.5') fail('first-release manifest version is invalid');
+  if (firstRelease && manifest.releaseVersion !== '0.0.6') fail('first-release manifest version is invalid');
   const freshness = integer(manifest.evidenceFreshnessHours, 'manifest.evidenceFreshnessHours');
   if (freshness < 1 || freshness > 720) fail('manifest.evidenceFreshnessHours is invalid');
   const steps = array(manifest.steps, 'manifest.steps');
