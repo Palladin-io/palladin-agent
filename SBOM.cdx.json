@@ -5401,11 +5401,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/rtoolbox@0.0.6",
+      "bom-ref": "pkg:cargo/rtoolbox@0.0.5",
       "type": "library",
       "name": "rtoolbox",
-      "version": "0.0.6",
-      "purl": "pkg:cargo/rtoolbox@0.0.6",
+      "version": "0.0.5",
+      "purl": "pkg:cargo/rtoolbox@0.0.5",
       "licenses": [
         {
           "expression": "Apache-2.0"
