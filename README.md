@@ -54,7 +54,7 @@ For `0.0.8`, the product owner directed publication before the [first-release ad
 
 ## Installation
 
-The five platform packages for each version from `0.0.1` through `0.0.6` were published as candidates, but no matching CLI version was released. The `0.0.3` meta release stopped when its KMS signature file was decoded incorrectly; `0.0.4` stopped at the staging allowlist; `0.0.5` stopped because the Alpine smoke test mounted its installation directory with `noexec`; and `0.0.6` stopped because the bundled-policy smoke tried to open unavailable OS secure storage. Their tags and public platform artifacts remain unchanged. The next complete CLI candidate is `0.0.8`.
+The five platform packages for each version from `0.0.1` through `0.0.7` were published as candidates, but no matching CLI version was released. The `0.0.3` meta release stopped when its KMS signature file was decoded incorrectly; `0.0.4` stopped at the staging allowlist; `0.0.5` stopped because the Alpine smoke test mounted its installation directory with `noexec`; `0.0.6` stopped because the bundled-policy smoke tried to open unavailable OS secure storage; and `0.0.7` stopped before its Alpine smoke when Docker Hub authentication timed out. Their tags and public platform artifacts remain unchanged. The next complete CLI candidate is `0.0.8`.
 
 Once the release packages are available:
 
