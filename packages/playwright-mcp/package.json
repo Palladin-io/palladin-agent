@@ -32,7 +32,7 @@
     "lint": "tsc -p tsconfig.lint.json"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
     "@playwright/mcp": "0.0.79",
     "playwright": "1.63.0-alpha-2026-08-05"
   },
