@@ -428,7 +428,7 @@ jobs:
           gh release create "${INPUTS_RELEASE_TAG}" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
             --title "Palladin Agent ${INPUTS_VERSION}" \
-            --notes "Platform candidates are staged for owner approval. The meta-package is not staged by this workflow. For 0.0.7, product-owner-directed physical lifecycle and adversarial QA will follow publication; these tests are not claimed as passed."
+            --notes "Platform candidates are staged for owner approval. The meta-package is not staged by this workflow. For 0.0.8, product-owner-directed physical lifecycle and adversarial QA will follow publication; these tests are not claimed as passed."
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
