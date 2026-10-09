@@ -428,7 +428,7 @@ test('meta-package staging preserves signed artifacts and makes the 0.0.7 QA def
   assert.ok(artifactSmokeOffset > 0 && approveAdversarialOffset > artifactSmokeOffset);
   assert.match(
     workflow.slice(artifactSmokeOffset, approveAdversarialOffset),
-    /\n    needs: \[authorize, prepare-meta\]\n/,
+    /\n    needs: \[authorize, prepare-meta\]\r?\n/,
   );
   assert.match(workflow, /lifecycle_ready: \$\{\{ steps\.release_set\.outputs\.lifecycle_ready \}\}/);
   assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.7' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
