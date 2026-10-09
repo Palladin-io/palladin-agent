@@ -423,7 +423,13 @@ test('meta-package staging preserves signed artifacts and makes the 0.0.7 QA def
   assert.match(workflow, /stage-meta:[^]*needs: \[authorize, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle\]/);
   assert.match(workflow, /!cancelled\(\) && needs\.authorize\.result == 'success'/);
   assert.doesNotMatch(workflow.slice(workflow.indexOf('\n  stage-meta:')), /always\(\)/);
-  assert.match(workflow, /artifact-smoke:[^]*needs: \[authorize, smoke-native, smoke-musl\]/);
+  const artifactSmokeOffset = workflow.indexOf('\n  artifact-smoke:');
+  const approveAdversarialOffset = workflow.indexOf('\n  approve-adversarial:');
+  assert.ok(artifactSmokeOffset > 0 && approveAdversarialOffset > artifactSmokeOffset);
+  assert.match(
+    workflow.slice(artifactSmokeOffset, approveAdversarialOffset),
+    /\n    needs: \[authorize, prepare-meta\]\n/,
+  );
   assert.match(workflow, /lifecycle_ready: \$\{\{ steps\.release_set\.outputs\.lifecycle_ready \}\}/);
   assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.7' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
   assert.match(workflow, /\[\[ \$lifecycle_count -eq 0 \|\| \$lifecycle_count -eq 2 \]\]/);
