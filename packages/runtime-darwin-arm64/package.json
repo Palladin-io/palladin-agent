@@ -1,6 +1,6 @@
 {
   "name": "@palladin/runtime-darwin-arm64",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Signed native Palladin runtime for macOS arm64",
   "license": "Apache-2.0",
   "repository": {
