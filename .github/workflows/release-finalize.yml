@@ -155,7 +155,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --platform "linux/${{ matrix.docker_architecture }}" \
-            --tmpfs /smoke node:24-alpine3.22 sh -euc "
+            --tmpfs /smoke:exec node:24-alpine3.22 sh -euc "
               npm install --global npm@11.18.0 >/dev/null
               npm install --prefix /smoke --ignore-scripts --package-lock @palladin/cli@$VERSION
               test -f /smoke/node_modules/@palladin/runtime-linux-${{ matrix.architecture }}-musl/package.json
