@@ -2,7 +2,6 @@
 use super::*;
 use palladin_browser_bridge::live_login::{CancelSubmitRequest, SubmitReady, SubmitRequest};
 use palladin_browser_bridge::local_transport::LocalSecureSession;
-use palladin_browser_bridge::secure_transport::HostSecureSession;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -67,11 +66,10 @@ pub(super) fn validate_commit(
     Ok(())
 }
 
-pub(super) async fn finish<R, W, F, G>(
+pub(super) async fn finish_with<R, W, F, G>(
     local: &mut UnixStream,
     local_session: &mut LocalSecureSession,
-    extension_session: &mut HostSecureSession,
-    native: (&mut R, &mut W),
+    exchange: &mut super::exchange::BrowserExchange<'_, R, W>,
     prepared: (&PendingBinding, &InjectResult),
     lifecycle_guard: &F,
 ) -> Result<InjectResult, NativeBrowserError>
@@ -100,7 +98,6 @@ where
         .await
         .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
     let command: PendingCommand = local_session.open(&next)?;
-    let (native_input, native_output) = native;
     let PendingCommand::Commit(mut command) = command else {
         let PendingCommand::Cancel(cancel) = command else {
             unreachable!()
@@ -115,13 +112,8 @@ where
         {
             return Err(NativeBrowserError::InvalidMessage);
         }
-        let frame = extension_session.seal(&cancel.request)?;
-        timeout(
-            Duration::from_millis(200),
-            write_message(native_output, &frame),
-        )
-        .await
-        .map_err(|_| NativeBrowserError::Unavailable)??;
+        let queued = exchange.enqueue(&cancel.request, None)?;
+        exchange.send_cancel(queued).await?;
         return Err(NativeBrowserError::Unavailable);
     };
     if command.protocol != LOCAL_TRANSPORT_PROTOCOL || command.message_type != "submit.forward" {
@@ -142,15 +134,9 @@ where
     if command.request.expires_at <= epoch_ms()? {
         return Err(NativeBrowserError::AuthorizationExpired);
     }
-    let frame = extension_session.seal(&command.request)?;
-    let response_deadline =
-        write_authorized_extension_frame(native_output, &frame, &not_after.to_string()).await?;
-    // Pending TTL bounds permission to commit, not discovery after an accepted click.
-    // The original native authorization still bounds the reply; no commit is replayed.
-    let response: SecureFrame = timeout_at(response_deadline, read_message(native_input))
-        .await
-        .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
-    let result: InjectResult = extension_session.open(&response)?;
+    let queued = exchange.enqueue(&command.request, Some(&not_after.to_string()))?;
+    // The original authorization bounds the reply; an uncertain commit is never replayed.
+    let result: InjectResult = exchange.receive(queued, local).await?;
     validate_inject_result(&result, &command.request.transaction_id)?;
     if result.submit_ready.is_some() {
         return Err(NativeBrowserError::InvalidMessage);

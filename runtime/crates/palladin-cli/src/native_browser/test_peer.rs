@@ -33,6 +33,44 @@ impl ExtensionPeer {
         let (ready, session) = identity
             .accept(FIXTURE_EXTENSION_ORIGIN, &open)
             .expect("test handshake");
+        let peer = Self::from_ready(secret, &open, &ready);
+        (session, peer)
+    }
+
+    pub(super) async fn connect(stream: &mut tokio::io::DuplexStream) -> Self {
+        let offer: Value = read_message(stream).await.expect("session offer");
+        let secret = StaticSecret::from([23; 32]);
+        let open = ExtensionSessionOpen {
+            protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
+            message_type: "session.open".to_owned(),
+            extension_nonce: URL_SAFE_NO_PAD.encode([24; 32]),
+            extension_ephemeral_public_key: URL_SAFE_NO_PAD
+                .encode(PublicKey::from(&secret).as_bytes()),
+        };
+        write_message(stream, &open).await.expect("session open");
+        let ready: HostSessionReady = read_message(stream).await.expect("session ready");
+        palladin_browser_bridge::secure_transport::verify_host_ready(
+            FIXTURE_EXTENSION_ORIGIN,
+            &open,
+            &ready,
+            offer["hostSigningPublicKey"].as_str().unwrap(),
+        )
+        .expect("authenticated host");
+        let peer = Self::from_ready(secret, &open, &ready);
+        let hello: SecureFrame = read_message(stream).await.expect("operation negotiation");
+        assert_eq!(
+            peer.open(&hello, 0),
+            serde_json::json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"operation.hello","version":1})
+        );
+        write_message(stream, &peer.seal(serde_json::json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"operation.ready","version":1}), 0)).await.expect("operation readiness");
+        peer
+    }
+
+    fn from_ready(
+        secret: StaticSecret,
+        open: &ExtensionSessionOpen,
+        ready: &HostSessionReady,
+    ) -> Self {
         let mut transcript = b"palladin.inject-provider.v1\0extension-session-v1\0".to_vec();
         let mut append = |bytes: &[u8]| {
             transcript.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
@@ -61,13 +99,10 @@ impl ExtensionPeer {
                 &mut material,
             )
             .expect("derive");
-        (
-            session,
-            Self {
-                material,
-                session_id: ready.session_id,
-            },
-        )
+        Self {
+            material,
+            session_id: ready.session_id.clone(),
+        }
     }
 
     fn aad_nonce(&self, incoming: bool, sequence: u64) -> (Vec<u8>, [u8; 24]) {

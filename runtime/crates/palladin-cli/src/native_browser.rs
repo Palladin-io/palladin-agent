@@ -1,3 +1,7 @@
+use futures_util::stream::{FuturesUnordered, StreamExt};
+use palladin_browser_bridge::target_probe::{
+    TargetProbeOutcome, TargetProbeRequest, TargetProbeResult,
+};
 use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -5,6 +9,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use palladin_browser_bridge::discovery::{
+    BrowserSessionInfo, BrowserStatusRequest, BrowserStatusResult,
+};
 use palladin_browser_bridge::framing::{read_message, write_message};
 use palladin_browser_bridge::local_transport::{
     LOCAL_TRANSPORT_PROTOCOL, LocalClientHandshake, LocalSecureFrame, LocalSessionOpen,
@@ -22,15 +29,22 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::time::{Instant, timeout, timeout_at};
 use zeroize::Zeroize;
 
-use crate::browser::{ChromeExtensionOrigin, local_socket_path};
+use crate::browser::ChromeExtensionOrigin;
+#[cfg(test)]
+use crate::browser::local_socket_path;
+use palladin_browser_bridge::routing::{session_socket_path, single_browser_socket};
 
 mod deferred;
+mod exchange;
+#[cfg(test)]
+mod lifecycle_tests;
 mod live_flow;
+mod multiplex;
+mod negotiation;
 #[cfg(test)]
 mod test_peer;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 const APPROVAL_TIMEOUT_MARGIN_MS: u64 = 30_000;
 const GRANT_APPROVAL_TIMEOUT: Duration =
@@ -239,7 +253,7 @@ impl ExtensionClient {
         root: &Path,
         identity: &BrowserHostIdentity,
     ) -> Result<Self, NativeBrowserError> {
-        let path = local_socket_path(root);
+        let path = single_browser_socket(root).map_err(|_| NativeBrowserError::Unavailable)?;
         validate_socket_path(&path)?;
         let mut stream = timeout(HANDSHAKE_TIMEOUT, UnixStream::connect(&path))
             .await
@@ -359,61 +373,269 @@ where
     .map_err(|_| NativeBrowserError::Unavailable)??;
     drop(_lifecycle);
 
-    let (listener, _guard) = bind_local_listener(root).await?;
-    let (mut local, _) = timeout(CLIENT_WAIT_TIMEOUT, listener.accept())
-        .await
-        .map_err(|_| NativeBrowserError::Unavailable)?
-        .map_err(|_| NativeBrowserError::Unavailable)?;
-    validate_peer(&local)?;
-    let local_open: LocalSessionOpen = timeout(HANDSHAKE_TIMEOUT, read_message(&mut local))
+    let lifecycle = lifecycle_guard(HANDSHAKE_TIMEOUT)?;
+    let mode = negotiation::negotiate(
+        &mut extension_session,
+        &mut native_input,
+        &mut native_output,
+    )
+    .await?;
+    drop(lifecycle);
+    let path = session_socket_path(root, &ready.session_id);
+    let session_info = BrowserSessionInfo {
+        browser_session: palladin_browser_bridge::routing::session_locator(&ready.session_id),
+        concurrent: mode == negotiation::Mode::Multiplex,
+    };
+    let (listener, _guard) = bind_listener_at(&path)?;
+    if mode == negotiation::Mode::Legacy {
+        return serve_legacy_clients(
+            &listener,
+            identity,
+            &mut extension_session,
+            (&mut native_input, &mut native_output),
+            &session_info,
+            &lifecycle_guard,
+        )
+        .await;
+    }
+    let (connection, broker) = multiplex::BrowserConnection::new(extension_session);
+    let broker = broker.run(&mut native_input, &mut native_output);
+    tokio::pin!(broker);
+    let mut clients = FuturesUnordered::new();
+    loop {
+        tokio::select! {
+            result = &mut broker => return result,
+            accepted = listener.accept(), if clients.len() < 32 => {
+                let (local, _) = accepted.map_err(|_| NativeBrowserError::Unavailable)?;
+                clients.push(serve_multiplex_client(local, identity, &connection, &session_info, &lifecycle_guard));
+            }
+            result = clients.next(), if !clients.is_empty() => {
+                if matches!(result, Some(Err(NativeBrowserError::Revoked))) {
+                    return Err(NativeBrowserError::Revoked);
+                }
+                // Correlated replies permit one failed/cancelled client to close
+                // its own operation without invalidating another client's lease.
+            }
+        }
+    }
+}
+
+async fn serve_legacy_clients<R, W, F, G>(
+    listener: &UnixListener,
+    identity: &BrowserHostIdentity,
+    session: &mut palladin_browser_bridge::secure_transport::HostSecureSession,
+    (input, output): (&mut R, &mut W),
+    session_info: &BrowserSessionInfo,
+    lifecycle_guard: &F,
+) -> Result<(), NativeBrowserError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+    F: Fn(Duration) -> Result<G, NativeBrowserError>,
+{
+    loop {
+        let mut idle_byte = [0_u8; 1];
+        let (mut local, _) = tokio::select! {
+            accepted = listener.accept() => accepted.map_err(|_| NativeBrowserError::Unavailable)?,
+            incoming = tokio::io::AsyncReadExt::read(input, &mut idle_byte) => {
+                return match incoming { Ok(0) => Ok(()), _ => Err(NativeBrowserError::InvalidMessage) };
+            }
+        };
+        let (mut local_session, prepare) =
+            match prepare_local_client(&mut local, identity, session_info, lifecycle_guard).await {
+                Ok(Some(prepared)) => prepared,
+                Ok(None) => continue,
+                Err(NativeBrowserError::Revoked) => return Err(NativeBrowserError::Revoked),
+                Err(_) => continue,
+            };
+        let prepare = match prepare {
+            LocalRequest::Prepare(prepare) => prepare,
+            LocalRequest::Probe(probe) => {
+                let response = local_session.seal(&TargetProbeResult {
+                    protocol: INJECT_PROVIDER_PROTOCOL.into(),
+                    message_type: "target.probe.result".into(),
+                    nonce: probe.nonce,
+                    outcome: TargetProbeOutcome::Unavailable,
+                })?;
+                timeout(HANDSHAKE_TIMEOUT, write_message(&mut local, &response))
+                    .await
+                    .map_err(|_| NativeBrowserError::Unavailable)??;
+                continue;
+            }
+        };
+        let mut exchange = exchange::BrowserExchange::Direct {
+            session,
+            input,
+            output,
+        };
+        // Legacy replies have no operation correlation. An uncertain response
+        // terminates this channel; it cannot be reused for the next client.
+        serve_prepared_client(
+            &mut local,
+            &mut local_session,
+            &mut exchange,
+            &prepare,
+            lifecycle_guard,
+        )
+        .await?;
+    }
+}
+
+async fn serve_multiplex_client<F, G>(
+    mut local: UnixStream,
+    identity: &BrowserHostIdentity,
+    connection: &multiplex::BrowserConnection,
+    session_info: &BrowserSessionInfo,
+    lifecycle_guard: &F,
+) -> Result<(), NativeBrowserError>
+where
+    F: Fn(Duration) -> Result<G, NativeBrowserError>,
+{
+    let Some((mut session, prepare)) =
+        prepare_local_client(&mut local, identity, session_info, lifecycle_guard).await?
+    else {
+        return Ok(());
+    };
+    let mut exchange: exchange::BrowserExchange<'_, tokio::io::Empty, tokio::io::Sink> =
+        exchange::BrowserExchange::Multiplex(connection.operation()?);
+    let prepare = match prepare {
+        LocalRequest::Prepare(prepare) => prepare,
+        LocalRequest::Probe(probe) => {
+            let _lifecycle = lifecycle_guard(OPERATION_TIMEOUT)?;
+            let queued = exchange.enqueue(&probe, None)?;
+            let response: TargetProbeResult = exchange.receive(queued, &local).await?;
+            if response.protocol != INJECT_PROVIDER_PROTOCOL
+                || response.message_type != "target.probe.result"
+                || response.nonce != probe.nonce
+            {
+                return Err(NativeBrowserError::InvalidMessage);
+            }
+            let frame = session.seal(&response)?;
+            timeout(OPERATION_TIMEOUT, write_message(&mut local, &frame))
+                .await
+                .map_err(|_| NativeBrowserError::Unavailable)??;
+            return Ok(());
+        }
+    };
+    serve_prepared_client(
+        &mut local,
+        &mut session,
+        &mut exchange,
+        &prepare,
+        lifecycle_guard,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LocalRequest {
+    Probe(TargetProbeRequest),
+    Prepare(OwnedPrepareRequest),
+}
+
+async fn prepare_local_client<F, G>(
+    local: &mut UnixStream,
+    identity: &BrowserHostIdentity,
+    session_info: &BrowserSessionInfo,
+    lifecycle_guard: &F,
+) -> Result<
+    Option<(
+        palladin_browser_bridge::local_transport::LocalSecureSession,
+        LocalRequest,
+    )>,
+    NativeBrowserError,
+>
+where
+    F: Fn(Duration) -> Result<G, NativeBrowserError>,
+{
+    validate_peer(local)?;
+    let local_open: LocalSessionOpen = timeout(HANDSHAKE_TIMEOUT, read_message(local))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
     let (local_ready, mut local_session) = accept_local_client(identity, &local_open)?;
     let _lifecycle = lifecycle_guard(HANDSHAKE_TIMEOUT)?;
-    timeout(HANDSHAKE_TIMEOUT, write_message(&mut local, &local_ready))
+    timeout(HANDSHAKE_TIMEOUT, write_message(local, &local_ready))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
     drop(_lifecycle);
 
-    let local_frame: LocalSecureFrame = timeout(OPERATION_TIMEOUT, read_message(&mut local))
+    let local_frame: LocalSecureFrame = timeout(OPERATION_TIMEOUT, read_message(local))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
-    let prepare: OwnedPrepareRequest = local_session.open(&local_frame)?;
-    validate_prepare(&prepare)?;
-    let _lifecycle = lifecycle_guard(OPERATION_TIMEOUT)?;
-    let extension_frame = extension_session.seal(&prepare)?;
-    timeout(
-        OPERATION_TIMEOUT,
-        write_message(&mut native_output, &extension_frame),
-    )
-    .await
-    .map_err(|_| NativeBrowserError::Unavailable)??;
-    let extension_response: SecureFrame =
-        timeout(OPERATION_TIMEOUT, read_message(&mut native_input))
-            .await
-            .map_err(|_| NativeBrowserError::Unavailable)??;
-    let response: PrepareResponse = extension_session.open(&extension_response)?;
-    let prepared = decode_prepare_response(response, &prepare)?;
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum InitialRequest {
+        Status(BrowserStatusRequest),
+        Operation(LocalRequest),
+    }
+    let request: InitialRequest = local_session.open(&local_frame)?;
+    let prepare = match request {
+        InitialRequest::Operation(request) => request,
+        InitialRequest::Status(status) => {
+            if status.protocol != LOCAL_TRANSPORT_PROTOCOL || !valid_nonce(&status.nonce) {
+                return Err(NativeBrowserError::InvalidMessage);
+            }
+            let lifecycle = lifecycle_guard(HANDSHAKE_TIMEOUT)?;
+            let frame = local_session.seal(&BrowserStatusResult {
+                protocol: LOCAL_TRANSPORT_PROTOCOL.into(),
+                message_type: "browser.status.result".into(),
+                nonce: status.nonce,
+                session: session_info.clone(),
+            })?;
+            timeout(HANDSHAKE_TIMEOUT, write_message(local, &frame))
+                .await
+                .map_err(|_| NativeBrowserError::Unavailable)??;
+            drop(lifecycle);
+            return Ok(None);
+        }
+    };
+    match &prepare {
+        LocalRequest::Prepare(request) => validate_prepare(request)?,
+        LocalRequest::Probe(request) => {
+            if request.protocol != INJECT_PROVIDER_PROTOCOL
+                || !valid_nonce(&request.nonce)
+                || !(1..=9_007_199_254_740_991).contains(&request.target_tab_id)
+                || validate_https_page_url(&request.target_url).is_err()
+            {
+                return Err(NativeBrowserError::InvalidMessage);
+            }
+        }
+    }
+    Ok(Some((local_session, prepare)))
+}
+
+async fn serve_prepared_client<R, W, F, G>(
+    local: &mut UnixStream,
+    local_session: &mut palladin_browser_bridge::local_transport::LocalSecureSession,
+    exchange: &mut exchange::BrowserExchange<'_, R, W>,
+    prepare: &OwnedPrepareRequest,
+    lifecycle_guard: &F,
+) -> Result<(), NativeBrowserError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+    F: Fn(Duration) -> Result<G, NativeBrowserError>,
+{
+    let lifecycle = lifecycle_guard(OPERATION_TIMEOUT)?;
+    let queued = exchange.enqueue(prepare, None)?;
+    let response: PrepareResponse = exchange.receive(queued, local).await?;
+    let prepared = decode_prepare_response(response, prepare)?;
     validate_prepare_result(&prepared, &prepare.nonce)?;
     let local_response = local_session.seal(&prepared)?;
-    timeout(
-        OPERATION_TIMEOUT,
-        write_message(&mut local, &local_response),
-    )
-    .await
-    .map_err(|_| NativeBrowserError::Unavailable)??;
+    timeout(OPERATION_TIMEOUT, write_message(local, &local_response))
+        .await
+        .map_err(|_| NativeBrowserError::Unavailable)??;
+    drop(lifecycle);
     if prepared.outcome != "ready" {
         return Ok(());
     }
-    drop(_lifecycle);
-
-    live_flow::serve_inject_flow(
-        &mut local,
-        &mut local_session,
-        &mut extension_session,
-        (&mut native_input, &mut native_output),
-        (&prepare, &prepared),
-        &lifecycle_guard,
+    live_flow::serve_inject_flow_with(
+        local,
+        local_session,
+        exchange,
+        (prepare, &prepared),
+        lifecycle_guard,
     )
     .await
 }
@@ -443,6 +665,7 @@ fn validate_prepare_result(result: &PrepareResult, nonce: &str) -> Result<(), Na
         "ready"
             | "provider-unavailable"
             | "target-tab-unavailable"
+            | "target-tab-busy"
             | "target-url-mismatch"
             | "invalid-request"
             | "unsupported-live-detection"
@@ -709,29 +932,20 @@ fn valid_identifier(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
+#[cfg(test)]
 async fn bind_local_listener(
     root: &Path,
 ) -> Result<(UnixListener, SocketGuard), NativeBrowserError> {
+    bind_listener_at(&local_socket_path(root))
+}
+
+fn bind_listener_at(path: &Path) -> Result<(UnixListener, SocketGuard), NativeBrowserError> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
-    let path = local_socket_path(root);
-    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-        if !metadata.file_type().is_socket()
-            || metadata.file_type().is_symlink()
-            || metadata.uid() != nix::unistd::geteuid().as_raw()
-        {
-            return Err(NativeBrowserError::UnsafeSocket);
-        }
-        if UnixStream::connect(&path).await.is_ok() {
-            return Err(NativeBrowserError::Unavailable);
-        }
-        std::fs::remove_file(&path).map_err(|_| NativeBrowserError::UnsafeSocket)?;
-    }
-    let listener = UnixListener::bind(&path).map_err(|_| NativeBrowserError::Unavailable)?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+    let listener = UnixListener::bind(path).map_err(|_| NativeBrowserError::Unavailable)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .map_err(|_| NativeBrowserError::UnsafeSocket)?;
-    let metadata =
-        std::fs::symlink_metadata(&path).map_err(|_| NativeBrowserError::UnsafeSocket)?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| NativeBrowserError::UnsafeSocket)?;
     if !metadata.file_type().is_socket()
         || metadata.file_type().is_symlink()
         || metadata.uid() != nix::unistd::geteuid().as_raw()
@@ -740,7 +954,7 @@ async fn bind_local_listener(
         return Err(NativeBrowserError::UnsafeSocket);
     }
     let guard = SocketGuard {
-        path,
+        path: path.to_owned(),
         inode: metadata.ino(),
     };
     Ok((listener, guard))

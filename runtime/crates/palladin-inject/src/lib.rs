@@ -41,7 +41,7 @@ use palladin_browser_bridge::secure_transport::INJECT_PROVIDER_PROTOCOL;
 #[cfg(target_os = "macos")]
 use palladin_browser_bridge::validate_https_page_url;
 #[cfg(target_os = "macos")]
-use transport::NativeBrowserError;
+pub use transport::NativeBrowserError;
 #[cfg(target_os = "macos")]
 use transport::{
     ExtensionClient, InjectFieldValue, InjectRequest, OPERATION_TIMEOUT, monotonic_not_after_ns,
@@ -66,6 +66,28 @@ pub struct InjectOperation<'a> {
 pub struct BrowserTarget<'a> {
     pub tab_id: u64,
     pub page_url: &'a str,
+    pub browser_session: Option<&'a str>,
+}
+
+pub async fn discover_browser_sessions<S: SecretStore + Sync>(
+    service: &RuntimeService<S>,
+) -> Result<palladin_browser_bridge::discovery::BrowserDiscovery, InjectServiceError> {
+    #[cfg(target_os = "macos")]
+    {
+        let authorization = service.browser_host_authorization()?;
+        let _lifecycle = service.browser_host_lifecycle_guard_within(
+            authorization.lifecycle_token(),
+            OPERATION_TIMEOUT,
+        )?;
+        transport::discover_browser_sessions(service.repository().root(), authorization.identity())
+            .await
+            .map_err(InjectServiceError::Transport)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = service;
+        Err(InjectServiceError::UnsupportedPlatform)
+    }
 }
 
 #[derive(Debug)]
@@ -131,7 +153,12 @@ where
     #[cfg(target_os = "macos")]
     {
         if let Some(target) = operation.target {
-            if target.tab_id == 0 || target.tab_id > 9_007_199_254_740_991 {
+            if target.tab_id == 0
+                || target.tab_id > 9_007_199_254_740_991
+                || target.browser_session.is_some_and(|id| {
+                    !palladin_browser_bridge::routing::valid_browser_session_id(id)
+                })
+            {
                 return Err(InjectServiceError::InvalidPage);
             }
             validate_https_page_url(target.page_url).map_err(InjectServiceError::Injection)?;
@@ -179,6 +206,7 @@ where
         "ready" => {}
         "unsupported-live-detection" => return Err(InjectServiceError::LiveDiscoveryUnsupported),
         "target-tab-unavailable" => return Err(InjectServiceError::TargetTabUnavailable),
+        "target-tab-busy" => return Err(InjectServiceError::TargetTabBusy),
         "target-url-mismatch" => return Err(InjectServiceError::TargetUrlMismatch),
         _ => return Err(InjectServiceError::ProviderNotReady),
     }
@@ -808,6 +836,8 @@ pub enum InjectServiceError {
     ProviderNotReady,
     #[error("the browser framework target tab is unavailable to the Palladin extension")]
     TargetTabUnavailable,
+    #[error("the target tab is busy with another Palladin operation; retry after it finishes")]
+    TargetTabBusy,
     #[error("the browser framework target URL no longer matches the live tab")]
     TargetUrlMismatch,
     #[error("the authenticated Palladin extension returned an invalid page")]

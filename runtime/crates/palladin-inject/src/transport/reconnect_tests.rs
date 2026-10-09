@@ -48,12 +48,134 @@ async fn connect(root: &Path) -> Result<(ExtensionClient, PrepareResult), Native
         Some(BrowserTarget {
             tab_id: 7,
             page_url: "https://example.test/login",
+            browser_session: None,
         }),
         true,
         Duration::from_secs(2),
         Duration::from_millis(5),
     )
     .await
+}
+
+#[tokio::test]
+async fn explicit_browser_session_routes_only_to_that_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let first_path = root.path().join(format!("b-{}.sock", "a".repeat(32)));
+    let second_id = "b".repeat(32);
+    let second_path = root.path().join(format!("b-{second_id}.sock"));
+    let first = UnixListener::bind(&first_path).unwrap();
+    let second = UnixListener::bind(&second_path).unwrap();
+    for path in [&first_path, &second_path] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let host = tokio::spawn(async move {
+        let (mut socket, mut session) = authenticate(&second).await;
+        let request = prepare(&mut socket, &mut session).await;
+        respond(&mut socket, &mut session, &request).await;
+    });
+    let connected = ExtensionClient::connect_prepared_with_budget(
+        root.path(),
+        &BrowserHostIdentity::from_secret_bytes([41; 32]),
+        &"A".repeat(64),
+        Some(BrowserTarget {
+            tab_id: 7,
+            page_url: "https://example.test/login",
+            browser_session: Some(&second_id),
+        }),
+        true,
+        Duration::from_secs(1),
+        Duration::from_millis(5),
+    )
+    .await;
+    assert!(
+        connected.is_ok(),
+        "explicit route must disambiguate profiles: {:?}",
+        connected.err()
+    );
+    assert!(
+        timeout(Duration::from_millis(30), first.accept())
+            .await
+            .is_err(),
+        "unselected profile must receive no request"
+    );
+    host.await.unwrap();
+}
+
+#[tokio::test]
+async fn crashed_profile_socket_does_not_hide_the_only_live_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let stale_path = root.path().join(format!("b-{}.sock", "a".repeat(32)));
+    let stale = UnixListener::bind(&stale_path).unwrap();
+    std::fs::set_permissions(&stale_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    drop(stale); // A killed host cannot run its socket guard.
+    let live = listener(root.path());
+    let host = tokio::spawn(async move {
+        let (mut stream, mut session) = authenticate(&live).await;
+        let request = prepare(&mut stream, &mut session).await;
+        respond(&mut stream, &mut session, &request).await;
+    });
+    let result = connect(root.path()).await;
+    assert!(
+        result.is_ok(),
+        "stale route must not create ambiguity: {:?}",
+        result.err()
+    );
+    assert!(
+        stale_path.exists(),
+        "discovery must not unlink another host's path"
+    );
+    host.await.unwrap();
+}
+
+#[tokio::test]
+async fn multiple_profiles_without_an_exact_target_are_rejected_before_handshake() {
+    let root = tempfile::tempdir().unwrap();
+    let first = listener(root.path());
+    let path = root.path().join(format!("b-{}.sock", "a".repeat(32)));
+    let second = UnixListener::bind(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(matches!(
+        ExtensionClient::connect(
+            root.path(),
+            &BrowserHostIdentity::from_secret_bytes([41; 32]),
+            None
+        )
+        .await,
+        Err(NativeBrowserError::AmbiguousBrowser)
+    ));
+    for listener in [first, second] {
+        // Either no connection or a closed, empty liveness connection is safe.
+        if let Ok(Ok((mut stream, _))) = timeout(Duration::from_millis(30), listener.accept()).await
+        {
+            use tokio::io::AsyncReadExt;
+            let mut byte = [0];
+            assert_eq!(
+                timeout(Duration::from_millis(30), stream.read(&mut byte))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                0
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn missing_explicit_profile_never_falls_back_to_another_live_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let other = listener(root.path());
+    let result = ExtensionClient::connect(
+        root.path(),
+        &BrowserHostIdentity::from_secret_bytes([41; 32]),
+        Some(&"a".repeat(32)),
+    )
+    .await;
+    assert!(matches!(result, Err(NativeBrowserError::Unavailable)));
+    assert!(
+        timeout(Duration::from_millis(30), other.accept())
+            .await
+            .is_err()
+    );
 }
 #[tokio::test]
 async fn closed_prepare_reconnects_without_credential_delivery() {
@@ -274,4 +396,110 @@ async fn incompatible_live_provider_is_terminal_without_reconnect() {
     let (_, prepared) = connect(root.path()).await.expect("semantic rejection");
     assert_eq!(prepared.outcome, "unsupported-live-detection");
     host.await.expect("host");
+}
+
+#[tokio::test]
+async fn absent_browser_session_selects_the_unique_exact_target_before_preparing() {
+    let root = tempfile::tempdir().unwrap();
+    let mut hosts = Vec::new();
+    for (id, matches) in [('a', false), ('b', true)] {
+        let path = root
+            .path()
+            .join(format!("b-{}.sock", id.to_string().repeat(32)));
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        hosts.push(tokio::spawn(async move {
+            let (mut socket, mut session) = authenticate(&listener).await;
+            let frame: LocalSecureFrame = read_message(&mut socket).await.unwrap();
+            let probe: Value = session.open(&frame).unwrap();
+            assert_eq!(probe["type"], "target.probe");
+            assert_eq!(probe["targetTabId"], 7);
+            assert_eq!(probe["targetUrl"], "https://example.test/login");
+            assert!(probe.get("values").is_none());
+            let reply = session
+                .seal(&json!({"protocol": INJECT_PROVIDER_PROTOCOL,
+                "type":"target.probe.result", "nonce":probe["nonce"],
+                "outcome": if matches {"match"} else {"no-match"}}))
+                .unwrap();
+            write_message(&mut socket, &reply).await.unwrap();
+            drop(socket);
+            if matches {
+                let (mut socket, mut session) = authenticate(&listener).await;
+                let request = prepare(&mut socket, &mut session).await;
+                respond(&mut socket, &mut session, &request).await;
+            } else {
+                assert!(
+                    timeout(Duration::from_millis(100), listener.accept())
+                        .await
+                        .is_err()
+                );
+            }
+        }));
+    }
+    let result = connect(root.path()).await;
+    assert!(
+        result.is_ok(),
+        "one exact matching profile should be usable: {:?}",
+        result.err()
+    );
+    for host in hosts {
+        host.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn target_resolution_never_guesses_when_matches_are_ambiguous_or_incomplete() {
+    for (outcomes, expected) in [
+        (["match", "match"], "ambiguous"),
+        (["no-match", "no-match"], "missing"),
+        (["match", "unavailable"], "incomplete"),
+        (["match", "wrong-nonce"], "invalid"),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut hosts = Vec::new();
+        for (index, outcome) in outcomes.into_iter().enumerate() {
+            let path = root.path().join(format!("b-{index:032x}.sock"));
+            let listener = UnixListener::bind(&path).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            hosts.push(tokio::spawn(async move {
+                let (mut socket, mut session) = authenticate(&listener).await;
+                let frame: LocalSecureFrame = read_message(&mut socket).await.unwrap();
+                let request: Value = session.open(&frame).unwrap();
+                assert_eq!(request["type"], "target.probe");
+                let nonce = if outcome == "wrong-nonce" {
+                    json!("b".repeat(64))
+                } else {
+                    request["nonce"].clone()
+                };
+                let reply = session
+                    .seal(
+                        &json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"target.probe.result",
+                    "nonce":nonce,"outcome":if outcome == "wrong-nonce" {"match"} else {outcome}}),
+                    )
+                    .unwrap();
+                write_message(&mut socket, &reply).await.unwrap();
+                drop(socket);
+                assert!(
+                    timeout(Duration::from_millis(100), listener.accept())
+                        .await
+                        .is_err(),
+                    "an unresolved target must never start credential preparation"
+                );
+            }));
+        }
+        let result = connect(root.path()).await;
+        assert!(matches!(
+            (result, expected),
+            (Err(NativeBrowserError::AmbiguousBrowser), "ambiguous")
+                | (Err(NativeBrowserError::TargetNotFound), "missing")
+                | (
+                    Err(NativeBrowserError::TargetResolutionUnavailable),
+                    "incomplete"
+                )
+                | (Err(NativeBrowserError::InvalidMessage), "invalid")
+        ));
+        for host in hosts {
+            host.await.unwrap();
+        }
+    }
 }
