@@ -547,11 +547,18 @@ jobs:
           smoke="$RUNNER_TEMP/live-policy-smoke"
           mkdir -p "$smoke"
           npm install --prefix "$smoke" --ignore-scripts --package-lock "$meta"
-          node "$smoke/node_modules/@palladin/cli/dist/bin/palladin.js" \
+          if ! node "$smoke/node_modules/@palladin/cli/dist/bin/palladin.js" \
             verify-release-policy --policy "$bundle" \
-            >"$RUNNER_TEMP/live-policy.stdout" 2>"$RUNNER_TEMP/live-policy.stderr"
-          test "$(cat "$RUNNER_TEMP/live-policy.stdout")" = 'Release signature verified.'
-          test ! -s "$RUNNER_TEMP/live-policy.stderr"
+            >"$RUNNER_TEMP/live-policy.stdout" 2>"$RUNNER_TEMP/live-policy.stderr"; then
+            sed -n '1,20p' "$RUNNER_TEMP/live-policy.stderr" >&2
+            echo '::error::Packaged CLI rejected the signed policy' >&2
+            exit 1
+          fi
+          if [[ "$(cat "$RUNNER_TEMP/live-policy.stdout")" != 'Release signature verified.' \
+            || -s "$RUNNER_TEMP/live-policy.stderr" ]]; then
+            echo '::error::Packaged CLI produced unexpected policy-verification output' >&2
+            exit 1
+          fi
           npm audit signatures --prefix "$smoke"
 
   approve-adversarial:
