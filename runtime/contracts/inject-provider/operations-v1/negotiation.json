@@ -1,0 +1,19 @@
+{
+  "syntheticOnly": true,
+  "hello": {
+    "protocol": "palladin.inject-provider.v1",
+    "type": "operation.hello",
+    "version": 1
+  },
+  "ready": {
+    "protocol": "palladin.inject-provider.v1",
+    "type": "operation.ready",
+    "version": 1
+  },
+  "legacyRejection": {
+    "protocol": "palladin.inject-provider.v1",
+    "type": "inject.result",
+    "transactionId": null,
+    "outcome": "rejected"
+  }
+}

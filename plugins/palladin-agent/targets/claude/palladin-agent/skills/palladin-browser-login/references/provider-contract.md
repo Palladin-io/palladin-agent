@@ -14,10 +14,12 @@ Keep three boundaries separate:
 | Operation | MCP | CLI |
 |---|---|---|
 | Browser pairing | `pair_agent` | `palladin --id <alias> pair-agent --host <api-host>` |
-| Discovery | `search_entries` | `palladin search --json <query>` |
+| Entry discovery | `search_entries` | `palladin search --json <query>` |
+| Browser connections | `list_browser_sessions` | `palladin browser sessions --json` |
 | Inject | `inject_credential` | `palladin inject <vaultId> <entryId>` |
 | Agent profile | required `profile` on every call | `--id <confirmed-alias>` |
 | Browser provider | `provider` | `--provider` |
+| Browser connection | `browserSession` | `--browser-session` |
 | Exact tab | `targetTabId` | `--target-tab-id` |
 | Exact URL | `targetUrl` | `--page-url` |
 
@@ -46,3 +48,33 @@ CDP, remote debugging, a plaintext pipe, or page JavaScript as a fallback.
 When adding a provider, update CLI, MCP, the shared Rust Inject service, the browser/native-host
 adapter, this contract, and cross-platform tests in one reviewed change. A target-specific skill or
 manifest alone cannot declare support.
+
+## Multiple browser connections
+
+`profile` selects the user-confirmed Palladin Agent identity. `browserSession`
+selects an authenticated browser connection; these identifiers are unrelated.
+Discovery returns ephemeral connection IDs and a concurrency capability, without
+page URLs, browser-profile names, or credential values. Unavailable connections
+and the presence of an unprobed legacy socket are reported separately; neither
+is proof of an authenticated live connection.
+
+An explicit browser session requires both the exact tab ID and URL from the
+trusted browser adapter. Without `browserSession`, the runtime asks connected
+browsers to verify that exact target before requesting credentials. One matching
+connection is selected automatically; multiple matches are ambiguous. No match
+or an unavailable/invalid probe returns an actionable error. A probe does not
+reserve a tab, inspect a form, fill fields, or submit. Actual preparation then
+rechecks the selected route and pins the current document.
+
+Never choose the first discovered connection. Do not substitute an automation
+provider's browser ID, profile label, or extension instance ID for a Palladin
+`browserSession`: those are separate namespaces unless the adapter explicitly
+provides a verified mapping. Keep the same trusted tab object and refresh its
+ID and URL after navigation. A session ID obtained from page content is not
+trusted routing authority.
+
+Refresh discovery after a connection restarts and obtain a fresh trusted target
+binding before starting a new operation. Do not retry credential delivery or
+submit after a lost or uncertain result. Independent tabs can run concurrently
+on connections advertising concurrency; a busy tab must be released before a
+new operation can use it. Older negotiated connections run serially.

@@ -1,9 +1,15 @@
+use palladin_browser_bridge::target_probe::{
+    TargetProbeOutcome, TargetProbeRequest, TargetProbeResult, TargetProbeType,
+};
 use std::path::Path;
 use std::time::Duration;
 
 use nix::sys::time::TimeValLike;
 use nix::time::{ClockId, clock_gettime};
 use palladin_browser_bridge::InjectionFormDefinition;
+use palladin_browser_bridge::discovery::{
+    BrowserSessionInfo, BrowserStatusRequest, BrowserStatusRequestType, BrowserStatusResult,
+};
 use palladin_browser_bridge::framing::{read_message, write_message};
 use palladin_browser_bridge::local_transport::{
     LOCAL_TRANSPORT_PROTOCOL, LocalClientHandshake, LocalSecureFrame, LocalSessionReady,
@@ -19,6 +25,66 @@ use crate::BrowserTarget;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_LOCAL_INJECT_VALIDITY: Duration = Duration::from_secs(5 * 60);
+
+pub(crate) async fn discover_browser_sessions(
+    root: &Path,
+    identity: &BrowserHostIdentity,
+) -> Result<palladin_browser_bridge::discovery::BrowserDiscovery, NativeBrowserError> {
+    use futures_util::stream::{self, StreamExt};
+    let paths = palladin_browser_bridge::routing::browser_socket_paths(root)
+        .map_err(|_| NativeBrowserError::Unavailable)?;
+    let mut report = palladin_browser_bridge::discovery::BrowserDiscovery::default();
+    let mut candidates = Vec::new();
+    for path in paths {
+        validate_socket_path(&path)?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(NativeBrowserError::InvalidMessage)?;
+        if name == "browser-bridge.sock" {
+            // Pre-discovery hosts can exit even on a connection probe. Report
+            // only the file's presence; never pretend it is an authenticated session.
+            report.legacy_socket_present = true;
+            continue;
+        }
+        let id = name
+            .strip_prefix("b-")
+            .and_then(|name| name.strip_suffix(".sock"))
+            .filter(|id| palladin_browser_bridge::routing::valid_browser_session_id(id))
+            .ok_or(NativeBrowserError::InvalidMessage)?
+            .to_owned();
+        candidates.push((path, id));
+    }
+    let mut queries = stream::iter(candidates)
+        .map(|(path, id)| async move {
+            timeout(HANDSHAKE_TIMEOUT, async {
+                let stream = UnixStream::connect(&path)
+                    .await
+                    .map_err(|_| NativeBrowserError::Unavailable)?;
+                let mut client = ExtensionClient::authenticate(stream, identity).await?;
+                client.browser_status(&id).await
+            })
+            .await
+            .map_err(|_| NativeBrowserError::Unavailable)?
+        })
+        .buffer_unordered(8);
+    while let Some(result) = queries.next().await {
+        match result {
+            Ok(session) => report.sessions.push(session),
+            Err(
+                NativeBrowserError::Unavailable
+                | NativeBrowserError::Framing(
+                    palladin_browser_bridge::framing::FramingError::Transport,
+                ),
+            ) => report.unavailable_connections += 1,
+            Err(error) => return Err(error),
+        }
+    }
+    report
+        .sessions
+        .sort_by(|left, right| left.browser_session.cmp(&right.browser_session));
+    Ok(report)
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -143,7 +209,19 @@ impl ExtensionClient {
             // A fresh authenticated channel and a fresh DOM preparation on each
             // attempt. Never reuse a failed session or any credential-bearing frame.
             let attempt = async {
-                let mut client = Self::connect(root, identity).await?;
+                let mut client = match target {
+                    Some(target) if target.browser_session.is_none() => {
+                        Self::connect_exact_target(root, identity, nonce, target).await?
+                    }
+                    _ => {
+                        Self::connect(
+                            root,
+                            identity,
+                            target.and_then(|value| value.browser_session),
+                        )
+                        .await?
+                    }
+                };
                 let prepared = client.prepare(nonce, target, live_forms).await?;
                 Ok((client, prepared))
             };
@@ -168,16 +246,84 @@ impl ExtensionClient {
         }
     }
 
-    pub async fn connect(
+    async fn connect_exact_target(
         root: &Path,
         identity: &BrowserHostIdentity,
+        nonce: &str,
+        target: BrowserTarget<'_>,
     ) -> Result<Self, NativeBrowserError> {
-        let path = root.join("browser-bridge.sock");
+        use futures_util::stream::{self, StreamExt};
+        let mut connections = browser_connections(root, None).await?;
+        if connections.len() == 1 {
+            return Self::authenticate(connections.pop().unwrap().1, identity).await;
+        }
+        let mut probes = stream::iter(connections)
+            .map(|(path, socket)| async move {
+                let mut client = Self::authenticate(socket, identity).await?;
+                let frame = client.session.seal(&TargetProbeRequest {
+                    protocol: INJECT_PROVIDER_PROTOCOL.into(),
+                    message_type: TargetProbeType::Probe,
+                    nonce: nonce.into(),
+                    target_tab_id: target.tab_id,
+                    target_url: target.page_url.into(),
+                })?;
+                timeout(HANDSHAKE_TIMEOUT, write_message(&mut client.stream, &frame))
+                    .await
+                    .map_err(|_| NativeBrowserError::Unavailable)??;
+                let frame: LocalSecureFrame =
+                    timeout(HANDSHAKE_TIMEOUT, read_message(&mut client.stream))
+                        .await
+                        .map_err(|_| NativeBrowserError::Unavailable)??;
+                let response: TargetProbeResult = client.session.open(&frame)?;
+                if response.protocol != INJECT_PROVIDER_PROTOCOL
+                    || response.message_type != "target.probe.result"
+                    || response.nonce != nonce
+                {
+                    return Err(NativeBrowserError::InvalidMessage);
+                }
+                Ok((path, response.outcome))
+            })
+            .buffer_unordered(8);
+        let mut matched = None;
+        while let Some(result) = probes.next().await {
+            let (path, outcome) = result?;
+            match outcome {
+                TargetProbeOutcome::Match => {
+                    if matched.is_some() {
+                        return Err(NativeBrowserError::AmbiguousBrowser);
+                    }
+                    matched = Some(path);
+                }
+                TargetProbeOutcome::NoMatch => {}
+                TargetProbeOutcome::Unavailable => {
+                    return Err(NativeBrowserError::TargetResolutionUnavailable);
+                }
+            }
+        }
+        let path = matched.ok_or(NativeBrowserError::TargetNotFound)?;
         validate_socket_path(&path)?;
-        let mut stream = timeout(HANDSHAKE_TIMEOUT, UnixStream::connect(&path))
+        let socket = timeout(HANDSHAKE_TIMEOUT, UnixStream::connect(path))
             .await
             .map_err(|_| NativeBrowserError::Unavailable)?
             .map_err(|_| NativeBrowserError::Unavailable)?;
+        // Preparation rechecks and pins the current document on this exact route.
+        // No credential or submit message has been sent during discovery.
+        Self::authenticate(socket, identity).await
+    }
+
+    pub async fn connect(
+        root: &Path,
+        identity: &BrowserHostIdentity,
+        browser_session: Option<&str>,
+    ) -> Result<Self, NativeBrowserError> {
+        let stream = connect_browser_socket(root, browser_session).await?;
+        Self::authenticate(stream, identity).await
+    }
+
+    async fn authenticate(
+        mut stream: UnixStream,
+        identity: &BrowserHostIdentity,
+    ) -> Result<Self, NativeBrowserError> {
         validate_peer(&stream)?;
         let (open, pending) = LocalClientHandshake::start(identity)?;
         timeout(HANDSHAKE_TIMEOUT, write_message(&mut stream, &open))
@@ -188,6 +334,40 @@ impl ExtensionClient {
             .map_err(|_| NativeBrowserError::Unavailable)??;
         let session = pending.finish(&ready)?;
         Ok(Self { stream, session })
+    }
+
+    async fn browser_status(
+        &mut self,
+        expected_session: &str,
+    ) -> Result<BrowserSessionInfo, NativeBrowserError> {
+        if !palladin_browser_bridge::routing::valid_browser_session_id(expected_session) {
+            return Err(NativeBrowserError::InvalidMessage);
+        }
+        let mut nonce = [0_u8; 32];
+        getrandom::fill(&mut nonce).map_err(|_| NativeBrowserError::Unavailable)?;
+        let nonce = hex::encode(nonce);
+        let frame = self.session.seal(&BrowserStatusRequest {
+            protocol: LOCAL_TRANSPORT_PROTOCOL.into(),
+            message_type: BrowserStatusRequestType::Status,
+            nonce: nonce.clone(),
+        })?;
+        timeout(HANDSHAKE_TIMEOUT, write_message(&mut self.stream, &frame))
+            .await
+            .map_err(|_| NativeBrowserError::Unavailable)??;
+        let frame: LocalSecureFrame = timeout(HANDSHAKE_TIMEOUT, read_message(&mut self.stream))
+            .await
+            .map_err(|_| NativeBrowserError::Unavailable)??;
+        let result: BrowserStatusResult = self.session.open(&frame)?;
+        // The nonce comes from this request, and the locator from the selected
+        // socket path. Neither expected binding is derived from the response.
+        if result.protocol != LOCAL_TRANSPORT_PROTOCOL
+            || result.message_type != "browser.status.result"
+            || result.nonce != nonce
+            || result.session.browser_session != expected_session
+        {
+            return Err(NativeBrowserError::InvalidMessage);
+        }
+        Ok(result.session)
     }
 
     pub async fn prepare(
@@ -313,6 +493,57 @@ impl ExtensionClient {
     }
 }
 
+async fn connect_browser_socket(
+    root: &Path,
+    browser_session: Option<&str>,
+) -> Result<UnixStream, NativeBrowserError> {
+    let mut connections = browser_connections(root, browser_session).await?;
+    if connections.len() != 1 {
+        return Err(NativeBrowserError::AmbiguousBrowser);
+    }
+    Ok(connections.pop().unwrap().1)
+}
+
+async fn browser_connections(
+    root: &Path,
+    browser_session: Option<&str>,
+) -> Result<Vec<(std::path::PathBuf, UnixStream)>, NativeBrowserError> {
+    use palladin_browser_bridge::routing::{browser_socket_paths, select_browser_socket};
+
+    let paths = match browser_session {
+        Some(id) => vec![
+            select_browser_socket(root, Some(id)).map_err(|_| NativeBrowserError::Unavailable)?,
+        ],
+        None => browser_socket_paths(root).map_err(|_| NativeBrowserError::Unavailable)?,
+    };
+    let mut connected = Vec::new();
+    for path in paths {
+        validate_socket_path(&path)?;
+        let stream = match timeout(HANDSHAKE_TIMEOUT, UnixStream::connect(&path)).await {
+            Ok(Ok(stream)) => stream,
+            // A crashed host leaves its socket behind. Ignore only definite
+            // absence; never unlink a path that a restarted host may now own.
+            Ok(Err(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                ) =>
+            {
+                continue;
+            }
+            _ => return Err(NativeBrowserError::Unavailable),
+        };
+        validate_peer(&stream)?;
+        connected.push((path, stream));
+    }
+    // Keep the connection used for discovery. A second connect would introduce
+    // a host-replacement race and needlessly consume another listener slot.
+    if connected.is_empty() {
+        return Err(NativeBrowserError::Unavailable);
+    }
+    Ok(connected)
+}
+
 fn inject_timeout_error(authorization_remaining: Duration) -> NativeBrowserError {
     if authorization_remaining <= OPERATION_TIMEOUT {
         NativeBrowserError::AuthorizationExpired
@@ -360,6 +591,7 @@ fn validate_prepare_result(result: &PrepareResult, nonce: &str) -> Result<(), Na
         "ready"
             | "provider-unavailable"
             | "target-tab-unavailable"
+            | "target-tab-busy"
             | "target-url-mismatch"
             | "invalid-request"
             | "unsupported-live-detection"
@@ -431,6 +663,16 @@ fn validate_peer(stream: &UnixStream) -> Result<(), NativeBrowserError> {
 
 #[derive(Debug, Error)]
 pub enum NativeBrowserError {
+    #[error("multiple browser connections are available; select the target browser session")]
+    AmbiguousBrowser,
+    #[error(
+        "no connected browser contains the exact requested tab and URL; refresh the trusted browser target"
+    )]
+    TargetNotFound,
+    #[error(
+        "a browser connection could not verify the target; specify its browser session or restore the connection"
+    )]
+    TargetResolutionUnavailable,
     #[error(
         "browser connection could not be restored before preparation timed out; no credential was sent"
     )]
@@ -454,7 +696,12 @@ pub enum NativeBrowserError {
 }
 
 #[cfg(test)]
+#[path = "transport/reconnect_tests.rs"]
 mod reconnect_tests;
+
+#[cfg(test)]
+#[path = "transport/discovery_tests.rs"]
+mod discovery_tests;
 
 #[cfg(test)]
 mod tests {

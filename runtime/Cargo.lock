@@ -1647,6 +1647,7 @@ dependencies = [
  "chacha20poly1305",
  "clap",
  "ed25519-dalek",
+ "futures-util",
  "getrandom 0.4.3",
  "hex",
  "hkdf",
@@ -1770,6 +1771,7 @@ dependencies = [
 name = "palladin-inject"
 version = "0.0.7"
 dependencies = [
+ "futures-util",
  "getrandom 0.4.3",
  "hex",
  "nix 0.31.3",

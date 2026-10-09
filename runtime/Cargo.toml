@@ -27,6 +27,7 @@ license = "Apache-2.0"
 repository = "https://github.com/Palladin-io/palladin-agent"
 
 [workspace.dependencies]
+futures-util = "0.3.33"
 base64 = "0.22.1"
 blake2 = "0.10.6"
 block2 = "0.6.2"

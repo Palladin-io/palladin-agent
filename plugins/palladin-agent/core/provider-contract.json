@@ -4,7 +4,10 @@
     "mcp": {
       "launch": {
         "command": "palladin",
-        "args": ["mcp", "serve"]
+        "args": [
+          "mcp",
+          "serve"
+        ]
       },
       "pair": "pair_agent",
       "search": "search_entries",
@@ -13,18 +16,37 @@
       "routing": {
         "provider": "provider",
         "targetTabId": "targetTabId",
-        "targetUrl": "targetUrl"
-      }
+        "targetUrl": "targetUrl",
+        "browserSession": "browserSession"
+      },
+      "browserSessions": "list_browser_sessions"
     },
     "cli": {
-      "pair": ["palladin", "pair-agent"],
-      "search": ["palladin", "search", "--json"],
-      "inject": ["palladin", "inject"],
+      "pair": [
+        "palladin",
+        "pair-agent"
+      ],
+      "search": [
+        "palladin",
+        "search",
+        "--json"
+      ],
+      "inject": [
+        "palladin",
+        "inject"
+      ],
       "routing": {
         "provider": "--provider",
         "targetTabId": "--target-tab-id",
-        "targetUrl": "--page-url"
-      }
+        "targetUrl": "--page-url",
+        "browserSession": "--browser-session"
+      },
+      "browserSessions": [
+        "palladin",
+        "browser",
+        "sessions",
+        "--json"
+      ]
     }
   },
   "agentHostProviders": [

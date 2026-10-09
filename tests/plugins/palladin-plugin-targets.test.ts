@@ -262,7 +262,7 @@ describe('Palladin plugin targets', () => {
       };
     };
     const mcpContract = JSON.parse(
-      await readFile(resolve(repositoryRoot, 'runtime/contracts/mcp/v2.0/mcp-tools.json'), 'utf8'),
+      await readFile(resolve(repositoryRoot, 'runtime/contracts/mcp/v2.1/mcp-tools.json'), 'utf8'),
     ) as {
       tools: Array<{
         name: string;
@@ -281,6 +281,7 @@ describe('Palladin plugin targets', () => {
       'exec_with_credential',
       'inject_credential',
       'report_credential_stale',
+      'list_browser_sessions',
     ]);
     expect(toolNames).toEqual(
       expect.arrayContaining([
@@ -309,7 +310,7 @@ describe('Palladin plugin targets', () => {
     ]);
     expect(cliArgs).toContain('Search(SearchArgs)');
     expect(cliArgs).toContain('pub json: bool');
-    expect(cliArgs).toContain('Inject(InjectArgs)');
+    expect(cliArgs).toContain('Inject(Box<InjectArgs>)');
 
     for (const provider of providerContract.browserProviders) {
       expect(provider.cliValue).toBe(provider.id);
