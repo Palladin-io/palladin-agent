@@ -7,11 +7,10 @@ The `@palladin/cli` package provides the `palladin` command and the local MCP se
 [Website and waitlist](https://palladin.io) · [MCP configuration](#mcp-configuration) · [Credential delivery methods](#credential-delivery-methods) · [Security reporting](SECURITY.md)
 
 > [!WARNING]
-> Palladin Agent is pre-production software and has not been published to npm. Do not use development builds with production credentials.
+> Palladin Agent is pre-production software. The first installable release is `@palladin/cli@0.0.9` for macOS Apple Silicon and Linux; first-release adversarial and physical lifecycle QA remains pending. Do not use development builds with production credentials.
 
-The repository contains the current native runtime and release engineering,
-but no public npm release is available yet. Installation commands below describe
-the intended signed release and will not work until the packages are published.
+The signed and notarized macOS ARM runtime and four Linux runtime packages are
+published alongside the CLI. Windows and macOS Intel remain outside this release.
 
 ## How agents use credentials
 
@@ -23,7 +22,7 @@ The approving user chooses which delivery methods a grant allows. Each method ha
 | `exec` | Uses approved fields in a child process. | The child receives the values; MCP withholds child stdout and stderr from the model. |
 | `inject` | Sends approved fields to the authenticated browser integration. | The target page receives the values; the tool returns a value-free outcome to the model. |
 
-Prefer `exec` or `inject` when an agent needs to use a credential without receiving its value. Browser injection is currently implemented for macOS Google Chrome; signed release acceptance remains gated. See [credential delivery methods](#credential-delivery-methods) and [browser providers](#browser-providers) for the complete boundaries and limitations.
+Prefer `exec` or `inject` when an agent needs to use a credential without receiving its value. Browser injection is currently implemented for macOS Google Chrome; installed-browser acceptance remains pending. See [credential delivery methods](#credential-delivery-methods) and [browser providers](#browser-providers) for the complete boundaries and limitations.
 
 ## Security boundary
 
@@ -54,9 +53,9 @@ For `0.0.9`, the product owner directed publication before the [first-release ad
 
 ## Installation
 
-The five platform packages for each version from `0.0.1` through `0.0.8` were published as candidates, but no matching CLI version was released. The `0.0.3` meta release stopped when its KMS signature file was decoded incorrectly; `0.0.4` stopped at the staging allowlist; `0.0.5` stopped because the Alpine smoke test mounted its installation directory with `noexec`; `0.0.6` stopped because the bundled-policy smoke tried to open unavailable OS secure storage; `0.0.7` stopped before its Alpine smoke when Docker Hub authentication timed out; and `0.0.8` passed all five registry smokes but stopped before CLI staging because the final job had not built its verifier module. Their tags and public platform artifacts remain unchanged. The next complete CLI candidate is `0.0.9`.
+`@palladin/cli@0.0.9` is the first public, installable CLI release. Its five platform packages and the CLI passed registry and public-install smoke tests. Earlier platform-only candidate versions remain unchanged, but should not be installed as a complete CLI.
 
-Once the release packages are available:
+Install the current release:
 
 ```bash
 npm install --global @palladin/cli
