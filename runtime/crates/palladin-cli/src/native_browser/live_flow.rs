@@ -1,7 +1,9 @@
 use super::*;
 use palladin_browser_bridge::local_transport::LocalSecureSession;
+#[cfg(test)]
 use palladin_browser_bridge::secure_transport::HostSecureSession;
 
+#[cfg(test)]
 pub(super) async fn serve_inject_flow<R, W, F, G>(
     local: &mut UnixStream,
     local_session: &mut LocalSecureSession,
@@ -15,7 +17,33 @@ where
     W: tokio::io::AsyncWrite + Unpin,
     F: Fn(Duration) -> Result<G, NativeBrowserError>,
 {
-    let (native_input, native_output) = native;
+    let mut exchange = super::exchange::BrowserExchange::Direct {
+        session: extension_session,
+        input: native.0,
+        output: native.1,
+    };
+    serve_inject_flow_with(
+        local,
+        local_session,
+        &mut exchange,
+        prepared,
+        lifecycle_guard,
+    )
+    .await
+}
+
+pub(super) async fn serve_inject_flow_with<R, W, F, G>(
+    local: &mut UnixStream,
+    local_session: &mut LocalSecureSession,
+    exchange: &mut super::exchange::BrowserExchange<'_, R, W>,
+    prepared: (&OwnedPrepareRequest, &PrepareResult),
+    lifecycle_guard: &F,
+) -> Result<(), NativeBrowserError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+    F: Fn(Duration) -> Result<G, NativeBrowserError>,
+{
     let (prepare, prepared) = prepared;
     let local_frame: LocalSecureFrame = timeout(GRANT_APPROVAL_TIMEOUT, read_message(local))
         .await
@@ -98,20 +126,11 @@ where
             );
         }
         authorization_remaining_until(&injection.not_after_monotonic_ns)?;
-        let extension_frame = extension_session.seal(&injection.request)?;
+        let queued =
+            exchange.enqueue(&injection.request, Some(&injection.not_after_monotonic_ns))?;
         let not_after_monotonic_ns = injection.not_after_monotonic_ns.clone();
         drop(injection);
-        let extension_deadline = write_authorized_extension_frame(
-            native_output,
-            &extension_frame,
-            &not_after_monotonic_ns,
-        )
-        .await?;
-        let extension_response: SecureFrame =
-            timeout_at(extension_deadline, read_message(native_input))
-                .await
-                .map_err(|_| NativeBrowserError::AuthorizationExpired)??;
-        let mut result: InjectResult = extension_session.open(&extension_response)?;
+        let mut result: InjectResult = exchange.receive(queued, local).await?;
         validate_inject_result(&result, &transaction_id)?;
         if result.outcome == "submit-ready" {
             let binding = pending_binding
@@ -119,11 +138,10 @@ where
                 .ok_or(NativeBrowserError::InvalidMessage)?;
             // Release the initial lifecycle guard before the caller reacquires authorization.
             drop(lifecycle.take());
-            result = super::deferred::finish(
+            result = super::deferred::finish_with(
                 local,
                 local_session,
-                extension_session,
-                (native_input, native_output),
+                exchange,
                 (binding, &result),
                 lifecycle_guard,
             )

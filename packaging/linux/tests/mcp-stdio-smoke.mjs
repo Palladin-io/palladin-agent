@@ -75,6 +75,7 @@ child.stdout.on('data', (chunk) => {
         'exec_with_credential',
         'inject_credential',
         'report_credential_stale',
+        'list_browser_sessions',
       ];
       if (message?.id !== 2 || JSON.stringify(names) !== JSON.stringify(expected)) {
         fail();

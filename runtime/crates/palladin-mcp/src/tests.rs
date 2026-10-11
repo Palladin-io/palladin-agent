@@ -1,3 +1,4 @@
+use crate::{BrowserSessionsInput, validate_profile};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,6 +11,23 @@ use tokio_util::sync::CancellationToken;
 
 use palladin_api::{CredentialAccess, CredentialMethod};
 use palladin_credential::access::access_message;
+
+#[cfg(target_os = "macos")]
+#[test]
+fn ambiguous_browser_connection_is_not_reported_as_an_unavailable_extension() {
+    let outcome = super::inject_failure(&palladin_inject::InjectServiceError::Transport(
+        palladin_inject::NativeBrowserError::AmbiguousBrowser,
+    ));
+    assert!(outcome.is_error);
+    assert!(
+        outcome.text.contains("multiple browser connections"),
+        "preserve the actual routing failure"
+    );
+    assert!(
+        outcome.text.contains("select"),
+        "tell the caller how to resolve ambiguity"
+    );
+}
 
 #[test]
 fn protected_totp_source_never_enters_mcp_get_result_or_inject_errors() {
@@ -86,6 +104,20 @@ struct FakeApplication {
 }
 
 impl McpApplication for FakeApplication {
+    fn list_browser_sessions<'a>(
+        &'a self,
+        input: BrowserSessionsInput,
+        _cancellation: CancellationToken,
+    ) -> ApplicationFuture<'a> {
+        Box::pin(async move {
+            self.profiles.lock().await.push(input.profile);
+            self.calls.lock().await.push("browser-sessions".to_owned());
+            pretty_result(
+                &json!({"sessions": [], "unavailableConnections": 0, "legacySocketPresent": false}),
+            )
+        })
+    }
+
     fn pair_agent<'a>(
         &'a self,
         input: PairAgentInput,
@@ -167,7 +199,7 @@ impl McpApplication for FakeApplication {
 }
 
 #[test]
-fn frozen_contract_exposes_pairing_and_exactly_five_legacy_tools() {
+fn frozen_contract_exposes_browser_discovery_and_existing_tools() {
     let tools = load_tools().expect("contract");
     assert_eq!(
         tools
@@ -181,6 +213,7 @@ fn frozen_contract_exposes_pairing_and_exactly_five_legacy_tools() {
             "exec_with_credential",
             "inject_credential",
             "report_credential_stale",
+            "list_browser_sessions",
         ]
     );
     for tool in &tools {
@@ -226,6 +259,10 @@ fn frozen_inject_contract_requires_the_trusted_inject_method() {
         Some(&json!(["profile", "vaultId", "entryId"]))
     );
     assert!(inject.input_schema["properties"].get("form").is_none());
+    assert_eq!(
+        inject.input_schema["properties"]["browserSession"]["type"],
+        "string"
+    );
     assert_eq!(
         inject.input_schema["properties"]["targetTabId"]["type"],
         "integer"
@@ -293,6 +330,26 @@ fn inject_browser_target_requires_a_tab_id_and_url_pair() {
         let input = parse_input::<InjectInput>(invalid).expect("structurally valid fixture");
         assert!(validate_inject(&input).is_err());
     }
+}
+
+#[test]
+fn inject_accepts_an_explicit_browser_session_only_with_an_exact_tab_target() {
+    let mut request = json!({
+        "profile": "fixture", "vaultId": "vault-1", "entryId": "entry-1",
+        "browserSession": "a".repeat(32), "targetTabId": 7,
+        "targetUrl": "https://login.example.com/start"
+    });
+    let input = parse_input::<InjectInput>(request.clone()).expect("explicit browser session");
+    validate_inject(&input).expect("valid exact browser target");
+    for invalid in ["../other", "", "ABCDEF", "a"] {
+        request["browserSession"] = json!(invalid);
+        let input = parse_input::<InjectInput>(request.clone()).unwrap();
+        assert!(validate_inject(&input).is_err());
+    }
+    request["browserSession"] = json!("a".repeat(32));
+    request.as_object_mut().unwrap().remove("targetTabId");
+    request.as_object_mut().unwrap().remove("targetUrl");
+    assert!(validate_inject(&parse_input::<InjectInput>(request).unwrap()).is_err());
 }
 
 #[test]
@@ -555,7 +612,7 @@ async fn declared_protocol_versions_complete_the_raw_stdio_lifecycle() {
         assert_eq!(listed["id"], 2);
         assert_eq!(
             listed["result"]["tools"].as_array().expect("tools").len(),
-            6
+            7
         );
 
         send(
@@ -1414,6 +1471,7 @@ async fn assert_connection_profiles(authorized_profile: Option<&str>) {
     )
     .await;
     let fixtures = [
+        ("list_browser_sessions", json!({})),
         ("pair_agent", json!({})),
         ("search_entries", json!({"query":"fixture"})),
         (
@@ -1526,4 +1584,18 @@ async fn overlapping_profile_request_cannot_change_an_in_flight_operation() {
     write.shutdown().await.expect("shutdown");
     drop(write);
     task.await.expect("server task").expect("server result");
+}
+
+#[test]
+fn browser_discovery_accepts_only_an_explicit_agent_profile() {
+    let input =
+        parse_input::<BrowserSessionsInput>(json!({"profile": "fixture"})).expect("profile");
+    validate_profile(&input.profile).expect("valid profile");
+    for invalid in [
+        json!({}),
+        json!({"profile":"fixture", "targetUrl":"https://example.test"}),
+        json!({"profile":"fixture", "token":"synthetic-canary"}),
+    ] {
+        assert!(parse_input::<BrowserSessionsInput>(invalid).is_err());
+    }
 }

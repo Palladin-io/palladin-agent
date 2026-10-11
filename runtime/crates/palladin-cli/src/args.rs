@@ -53,7 +53,7 @@ pub enum Commands {
     /// Run a command with a credential in a sanitized child environment.
     Exec(ExecArgs),
     /// Inject a granted credential into an authenticated browser provider session.
-    Inject(InjectArgs),
+    Inject(Box<InjectArgs>),
     /// Install and manage the authenticated Chrome Native Messaging host.
     Browser {
         #[command(subcommand)]
@@ -90,6 +90,11 @@ pub enum BrowserCommand {
     Install,
     /// Check the exact manifest and OS-secured host authorization.
     Status,
+    /// Discover authenticated browser connections without touching a page or credential.
+    Sessions {
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove the manifest and revoke active browser-host sessions.
     Uninstall {
         /// Required acknowledgement because active Agent Inject sessions are invalidated.
@@ -230,6 +235,9 @@ pub struct InjectArgs {
     /// Exact HTTPS page URL used only to select one live browser tab.
     #[arg(long, requires = "target_tab_id")]
     pub page_url: Option<String>,
+    /// Exact browser connection returned by browser status; disambiguates Chrome profiles.
+    #[arg(long, requires = "target_tab_id", value_parser = parse_browser_session)]
+    pub browser_session: Option<String>,
     /// Deprecated and rejected caller-controlled selector.
     #[arg(long)]
     pub username_selector: Option<String>,
@@ -342,4 +350,57 @@ pub enum McpCommand {
         #[arg(long, default_value = "https://api.palladin.io")]
         host: String,
     },
+}
+
+fn parse_browser_session(value: &str) -> Result<String, String> {
+    if palladin_browser_bridge::routing::valid_browser_session_id(value) {
+        Ok(value.to_owned())
+    } else {
+        Err("browser session must be a 32-character lowercase hexadecimal identifier".into())
+    }
+}
+
+#[cfg(test)]
+mod browser_session_tests {
+    use super::*;
+
+    #[test]
+    fn browser_sessions_supports_machine_readable_discovery() {
+        let parsed = Cli::try_parse_from(["palladin", "browser", "sessions", "--json"]);
+        assert!(
+            parsed.is_ok(),
+            "browser session discovery must be exposed by the CLI"
+        );
+    }
+
+    #[test]
+    fn inject_accepts_browser_session_with_an_exact_tab_target() {
+        let session = "a".repeat(32);
+        assert!(
+            Cli::try_parse_from([
+                "palladin",
+                "inject",
+                "vault",
+                "entry",
+                "--browser-session",
+                &session,
+                "--target-tab-id",
+                "7",
+                "--page-url",
+                "https://example.test/login"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "palladin",
+                "inject",
+                "vault",
+                "entry",
+                "--browser-session",
+                &session
+            ])
+            .is_err()
+        );
+    }
 }

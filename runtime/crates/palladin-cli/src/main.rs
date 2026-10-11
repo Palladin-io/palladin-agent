@@ -186,8 +186,8 @@ async fn main() -> ExitCode {
         Commands::Search(args) => search(&service, cli.id.as_deref(), args).await,
         Commands::Get(args) => get(&service, cli.id.as_deref(), args).await,
         Commands::Exec(args) => exec(&service, cli.id.as_deref(), args).await,
-        Commands::Inject(args) => inject(&service, cli.id.as_deref(), args).await,
-        Commands::Browser { command } => browser(&service, command),
+        Commands::Inject(args) => inject(&service, cli.id.as_deref(), *args).await,
+        Commands::Browser { command } => browser(&service, command).await,
         Commands::ReportStale(args) => report_stale(&service, cli.id.as_deref(), args).await,
         Commands::Mcp { command } => mcp(Arc::clone(&service), cli.id.clone(), command).await,
         Commands::Agents { command } => agents(&service, command, runtime_storage_tier),
@@ -254,8 +254,53 @@ async fn chrome_native_host_main(
     }
 }
 
-fn browser(service: &RuntimeService<RuntimeSecretStore>, command: BrowserCommand) -> ExitCode {
+async fn browser(
+    service: &RuntimeService<RuntimeSecretStore>,
+    command: BrowserCommand,
+) -> ExitCode {
     match command {
+        BrowserCommand::Sessions { json } => {
+            let report = match palladin_inject::discover_browser_sessions(service).await {
+                Ok(report) => report,
+                Err(error) => return fail(&error.to_string()),
+            };
+            if json {
+                match serde_json::to_string(&report) {
+                    Ok(encoded) => println!("{encoded}"),
+                    Err(_) => return fail("Could not encode browser session discovery."),
+                }
+            } else {
+                if report.sessions.is_empty() {
+                    println!("No authenticated browser sessions found.");
+                }
+                for session in &report.sessions {
+                    println!(
+                        "{} — {} operations",
+                        palladin_cli::shorten_identifier(&session.browser_session),
+                        if session.concurrent {
+                            "parallel"
+                        } else {
+                            "serial"
+                        }
+                    );
+                }
+                if report.unavailable_connections > 0 {
+                    println!(
+                        "Unavailable connections: {}",
+                        report.unavailable_connections
+                    );
+                }
+                if report.legacy_socket_present {
+                    println!(
+                        "Legacy host socket present; its connection was not probed. Update the native host for authenticated session discovery."
+                    );
+                }
+                println!(
+                    "Use --json for complete session identifiers to pass to inject --browser-session."
+                );
+            }
+            ExitCode::SUCCESS
+        }
         BrowserCommand::Install => {
             let provisioning = match service.provision_browser_host_authorization_locked() {
                 Ok(authorization) => authorization,
@@ -331,7 +376,9 @@ const fn browser_command_unsupported_on_platform(command: &Commands) -> bool {
         && matches!(
             command,
             Commands::Browser {
-                command: BrowserCommand::Install | BrowserCommand::Status,
+                command: BrowserCommand::Install
+                    | BrowserCommand::Status
+                    | BrowserCommand::Sessions { .. },
             }
         )
 }
@@ -1460,7 +1507,11 @@ async fn inject(
             target: args
                 .target_tab_id
                 .zip(args.page_url.as_deref())
-                .map(|(tab_id, page_url)| BrowserTarget { tab_id, page_url }),
+                .map(|(tab_id, page_url)| BrowserTarget {
+                    tab_id,
+                    page_url,
+                    browser_session: args.browser_session.as_deref(),
+                }),
             fallback_form: fallback_form.as_ref(),
         },
         &cancellation,

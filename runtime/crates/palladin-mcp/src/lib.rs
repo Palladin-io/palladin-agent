@@ -58,7 +58,7 @@ const UNSUPPORTED_VERSION_SENTINEL: &str = "palladin-unsupported-version";
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
     ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 const GET_EXPOSURE_WARNING: &str = "Note: this secret is now in the Agent's context. On a hosted LLM it may leave your machine. Prefer exec_with_credential or inject_credential when the credential only needs to authenticate another operation.";
-const CONTRACT_JSON: &str = include_str!("../../../contracts/mcp/v2.0/mcp-tools.json");
+const CONTRACT_JSON: &str = include_str!("../../../contracts/mcp/v2.1/mcp-tools.json");
 
 type ApplicationFuture<'a> = Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
 
@@ -69,6 +69,16 @@ pub trait McpApplication: Send + Sync + 'static {
         _cancellation: CancellationToken,
     ) -> ApplicationFuture<'a> {
         Box::pin(async { ToolOutcome::error("Browser pairing is unavailable in this runtime.") })
+    }
+
+    fn list_browser_sessions<'a>(
+        &'a self,
+        _input: BrowserSessionsInput,
+        _cancellation: CancellationToken,
+    ) -> ApplicationFuture<'a> {
+        Box::pin(async {
+            ToolOutcome::error("Browser session discovery is unavailable in this runtime.")
+        })
     }
 
     fn search<'a>(
@@ -139,6 +149,23 @@ impl<S> McpApplication for NativeApplication<S>
 where
     S: SecretStore + Send + Sync + 'static,
 {
+    fn list_browser_sessions<'a>(
+        &'a self,
+        _input: BrowserSessionsInput,
+        cancellation: CancellationToken,
+    ) -> ApplicationFuture<'a> {
+        Box::pin(async move {
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => ToolOutcome::error("Browser session discovery was cancelled."),
+                result = palladin_inject::discover_browser_sessions(&self.service) => match result {
+                    Ok(sessions) => pretty_result(&sessions),
+                    Err(error) => inject_failure(&error),
+                },
+            }
+        })
+    }
+
     fn pair_agent<'a>(
         &'a self,
         input: PairAgentInput,
@@ -462,10 +489,13 @@ where
                     reason: input.reason.as_deref(),
                     wait,
                     provider: &provider,
-                    target: input
-                        .target_tab_id
-                        .zip(input.target_url.as_deref())
-                        .map(|(tab_id, page_url)| BrowserTarget { tab_id, page_url }),
+                    target: input.target_tab_id.zip(input.target_url.as_deref()).map(
+                        |(tab_id, page_url)| BrowserTarget {
+                            tab_id,
+                            page_url,
+                            browser_session: input.browser_session.as_deref(),
+                        },
+                    ),
                     fallback_form: None,
                 },
                 &cancellation,
@@ -623,6 +653,13 @@ impl<A: McpApplication> PalladinMcpServer<A> {
             })
             .unwrap_or_else(|| context.ct.clone());
         let outcome = match request.name.as_ref() {
+            "list_browser_sessions" => {
+                let input = parse_input::<BrowserSessionsInput>(arguments)?;
+                validate_profile(&input.profile)?;
+                self.application
+                    .list_browser_sessions(input, cancellation)
+                    .await
+            }
             "pair_agent" => {
                 let input = parse_input::<PairAgentInput>(arguments)?;
                 validate_pair_agent(&input)?;
@@ -1366,7 +1403,7 @@ fn load_tools() -> Result<Vec<Tool>, ContractError> {
     let contract: ContractFile =
         serde_json::from_str(CONTRACT_JSON).map_err(|_| ContractError::Invalid)?;
     if contract.contract != "palladin-agent-mcp-tools"
-        || contract.version != "2.0.0"
+        || contract.version != "2.1.0"
         || contract.status != "frozen"
         || contract.server.name != "Palladin Agents"
         || contract.server.title != "Palladin Agent Runtime"
@@ -1391,6 +1428,7 @@ fn load_tools() -> Result<Vec<Tool>, ContractError> {
         ("exec_with_credential", Some("Exec")),
         ("inject_credential", Some("Inject")),
         ("report_credential_stale", None),
+        ("list_browser_sessions", None),
     ];
     if contract.tools.len() != expected.len()
         || !contract.tools.iter().zip(expected).all(|(tool, expected)| {
@@ -1548,6 +1586,10 @@ fn validate_inject(input: &InjectInput) -> Result<(), McpError> {
             .as_ref()
             .is_some_and(|value| exceeds_chars(value, 4096))
         || input.target_tab_id.is_some() != input.target_url.is_some()
+        || input.browser_session.as_deref().is_some_and(|session| {
+            input.target_tab_id.is_none()
+                || !palladin_browser_bridge::routing::valid_browser_session_id(session)
+        })
         || input
             .target_tab_id
             .is_some_and(|value| value == 0 || value > 9_007_199_254_740_991)
@@ -1572,6 +1614,12 @@ fn validate_report(input: &ReportStaleInput) -> Result<(), McpError> {
         ));
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BrowserSessionsInput {
+    pub profile: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1654,6 +1702,7 @@ pub struct InjectInput {
     pub reason: Option<String>,
     pub target_tab_id: Option<u64>,
     pub target_url: Option<String>,
+    pub browser_session: Option<String>,
     pub wait: Option<String>,
     pub no_wait: Option<bool>,
     pub poll_interval: Option<String>,
@@ -1890,6 +1939,9 @@ fn inject_failure(error: &InjectServiceError) -> ToolOutcome {
         InjectServiceError::TargetTabUnavailable => {
             "The browser framework target tab is unavailable to the Palladin extension."
         }
+        InjectServiceError::TargetTabBusy => {
+            "The target tab is busy with another Palladin operation. Retry after it finishes; no credential was sent."
+        }
         InjectServiceError::TargetUrlMismatch => {
             "The browser framework target URL no longer matches the live tab."
         }
@@ -1922,9 +1974,7 @@ fn inject_failure(error: &InjectServiceError) -> ToolOutcome {
             return runtime_failure(runtime);
         }
         #[cfg(target_os = "macos")]
-        InjectServiceError::Transport(_) => {
-            "The authenticated Palladin browser extension is unavailable."
-        }
+        InjectServiceError::Transport(error) => return ToolOutcome::error(error.to_string()),
         InjectServiceError::Randomness | InjectServiceError::InvalidProviderOutcome => {
             "Palladin could not complete Inject safely."
         }

@@ -1,8 +1,11 @@
 #![forbid(unsafe_code)]
+pub mod discovery;
+pub mod target_probe;
 
 pub mod framing;
 pub mod live_login;
 pub mod local_transport;
+pub mod routing;
 pub mod secure_transport;
 
 use std::{
