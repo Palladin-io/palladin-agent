@@ -7,11 +7,10 @@ The `@palladin/cli` package provides the `palladin` command and the local MCP se
 [Website and waitlist](https://palladin.io) · [MCP configuration](#mcp-configuration) · [Credential delivery methods](#credential-delivery-methods) · [Security reporting](SECURITY.md)
 
 > [!WARNING]
-> Palladin Agent is pre-production software and has not been published to npm. Do not use development builds with production credentials.
+> Palladin Agent is pre-production software. The first installable release is `@palladin/cli@0.0.9` for macOS Apple Silicon and Linux; first-release adversarial and physical lifecycle QA remains pending. Do not use development builds with production credentials.
 
-The repository contains the current native runtime and release engineering,
-but no public npm release is available yet. Installation commands below describe
-the intended signed release and will not work until the packages are published.
+The signed and notarized macOS ARM runtime and four Linux runtime packages are
+published alongside the CLI. Windows and macOS Intel remain outside this release.
 
 ## How agents use credentials
 
@@ -23,11 +22,11 @@ The approving user chooses which delivery methods a grant allows. Each method ha
 | `exec` | Uses approved fields in a child process. | The child receives the values; MCP withholds child stdout and stderr from the model. |
 | `inject` | Sends approved fields to the authenticated browser integration. | The target page receives the values; the tool returns a value-free outcome to the model. |
 
-Prefer `exec` or `inject` when an agent needs to use a credential without receiving its value. Browser injection is currently implemented for macOS Google Chrome; signed release acceptance remains gated. See [credential delivery methods](#credential-delivery-methods) and [browser providers](#browser-providers) for the complete boundaries and limitations.
+Prefer `exec` or `inject` when an agent needs to use a credential without receiving its value. Browser injection is currently implemented for macOS Google Chrome; installed-browser acceptance remains pending. See [credential delivery methods](#credential-delivery-methods) and [browser providers](#browser-providers) for the complete boundaries and limitations.
 
 ## Security boundary
 
-The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed executable from the exact platform npm package. The first complete `0.0.7` release builds and publishes only the Apple Silicon (ARM64) package; Intel support remains deferred. On Windows it verifies the exact Authenticode-signed `palladin-client.exe` against signed release policy, copies only that public executable into a version-and-hash-specific per-user cache, opens and re-verifies the cached file under a non-write/non-delete handle, and keeps that handle until the child exits. The child is started without a shell. This avoids locking `node_modules` while an MCP session remains active. The client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. On Linux the dispatcher reads only the `PT_INTERP` header of its own Node executable and selects the exact x64 or arm64 glibc or musl package; unknown libc loaders fail before package resolution. There is no TypeScript credential implementation, `PATH`, runtime download, cross-libc, or plaintext fallback.
+The npm package is a small Node.js dispatcher. It never reads, receives, or stores an API key or an Agent private key. On macOS it directly starts the signed executable from the exact platform npm package. The first complete `0.0.9` release builds and publishes only the Apple Silicon (ARM64) package; Intel support remains deferred. On Windows it verifies the exact Authenticode-signed `palladin-client.exe` against signed release policy, copies only that public executable into a version-and-hash-specific per-user cache, opens and re-verifies the cached file under a non-write/non-delete handle, and keeps that handle until the child exits. The child is started without a shell. This avoids locking `node_modules` while an MCP session remains active. The client activates the fixed `palladin-runtime-companion.exe` AppContainer alias and the companion talks to the packaged LocalService broker. On Linux the dispatcher reads only the `PT_INTERP` header of its own Node executable and selects the exact x64 or arm64 glibc or musl package; unknown libc loaders fail before package resolution. There is no TypeScript credential implementation, `PATH`, runtime download, cross-libc, or plaintext fallback.
 
 The native runtime keeps these concepts separate:
 
@@ -43,29 +42,29 @@ The Windows Hardened tier is under development and is not part of the first publ
 
 The [Code signing policy](CODE_SIGNING_POLICY.md) describes the proposed SignPath Foundation route for a later Windows release. No Windows package is currently released or signed by the Foundation.
 
-Linux Secret Service is always Convenience because it cannot distinguish two processes under the same UID. The first release installs through npm alone and requires a compatible Secret Service for secret operations. The separate Linux Hardened DEB/RPM broker is under development and is not distributed in `0.0.7`. See [the Linux runbook](packaging/linux/README.md).
+Linux Secret Service is always Convenience because it cannot distinguish two processes under the same UID. The first release installs through npm alone and requires a compatible Secret Service for secret operations. The separate Linux Hardened DEB/RPM broker is under development and is not distributed in `0.0.9`. See [the Linux runbook](packaging/linux/README.md).
 
-For `0.0.7`, the product owner directed publication before the [first-release adversarial matrix](security/adversarial/first-release-manifest.json) and [physical lifecycle workflow](.github/workflows/first-release-lifecycle.yml). These checks are pending and are not claimed as passed. Publication still requires signed and notarized macOS, exact native and npm artifact checks, KMS-signed policy, provenance, CI, and clean registry smoke tests. Physical lifecycle QA after publication covers installation, Agent enrollment, MCP use, concurrent use, repair, reinstall, purge, and uninstall; any fixes require a new version. Upgrade, downgrade, and forward rollback require a prior functional release and remain in the [later-version lifecycle gate](.github/workflows/platform-lifecycle.yml).
+For `0.0.9`, the product owner directed publication before the [first-release adversarial matrix](security/adversarial/first-release-manifest.json) and [physical lifecycle workflow](.github/workflows/first-release-lifecycle.yml). These checks are pending and are not claimed as passed. Publication still requires signed and notarized macOS, exact native and npm artifact checks, KMS-signed policy, provenance, CI, and clean registry smoke tests. Physical lifecycle QA after publication covers installation, Agent enrollment, MCP use, concurrent use, repair, reinstall, purge, and uninstall; any fixes require a new version. Upgrade, downgrade, and forward rollback require a prior functional release and remain in the [later-version lifecycle gate](.github/workflows/platform-lifecycle.yml).
 
 | Linux target | npm Convenience | Hardened |
 |---|---|---|
-| glibc x64/arm64 | Supported when a compatible Secret Service is available | Not published in `0.0.7` |
-| musl x64/arm64, including Alpine 3.22 | Supported when a compatible Secret Service is available | Not published in `0.0.7` |
+| glibc x64/arm64 | Supported when a compatible Secret Service is available | Not published in `0.0.9` |
+| musl x64/arm64, including Alpine 3.22 | Supported when a compatible Secret Service is available | Not published in `0.0.9` |
 
 ## Installation
 
-The five platform packages for each version from `0.0.1` through `0.0.6` were published as candidates, but no matching CLI version was released. The `0.0.3` meta release stopped when its KMS signature file was decoded incorrectly; `0.0.4` stopped at the staging allowlist; `0.0.5` stopped because the Alpine smoke test mounted its installation directory with `noexec`; and `0.0.6` stopped because the bundled-policy smoke tried to open unavailable OS secure storage. Their tags and public platform artifacts remain unchanged. The next complete CLI candidate is `0.0.7`.
+`@palladin/cli@0.0.9` is the first public, installable CLI release. Its five platform packages and the CLI passed registry and public-install smoke tests. Earlier platform-only candidate versions remain unchanged, but should not be installed as a complete CLI.
 
-Once the release packages are available:
+Install the current release:
 
 ```bash
 npm install --global @palladin/cli
 palladin doctor
 ```
 
-Windows runtime packages are not part of `0.0.7`; the CLI cannot run there yet.
+Windows runtime packages are not part of `0.0.9`; the CLI cannot run there yet.
 
-On Linux, npm alone installs the Convenience tier. It does not need administrator access or install a system service. The runtime fails closed if a compatible Secret Service is unavailable; another process running under the same user ID remains inside the trust boundary. The separate Hardened broker requires administrator installation and is deferred beyond `0.0.7`.
+On Linux, npm alone installs the Convenience tier. It does not need administrator access or install a system service. The runtime fails closed if a compatible Secret Service is unavailable; another process running under the same user ID remains inside the trust boundary. The separate Hardened broker requires administrator installation and is deferred beyond `0.0.9`.
 
 No package uses `preinstall`, `install`, `postinstall`, `preprepare`, `prepare`, or `postprepare`. npm installs the matching prebuilt platform package; it does not download or compile a binary during installation.
 
