@@ -253,10 +253,7 @@ impl ExtensionClient {
         target: BrowserTarget<'_>,
     ) -> Result<Self, NativeBrowserError> {
         use futures_util::stream::{self, StreamExt};
-        let mut connections = browser_connections(root, None).await?;
-        if connections.len() == 1 {
-            return Self::authenticate(connections.pop().unwrap().1, identity).await;
-        }
+        let connections = browser_connections(root, None).await?;
         let mut probes = stream::iter(connections)
             .map(|(path, socket)| async move {
                 let mut client = Self::authenticate(socket, identity).await?;

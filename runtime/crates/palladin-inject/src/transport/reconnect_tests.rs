@@ -21,6 +21,19 @@ async fn authenticate(listener: &UnixListener) -> (UnixStream, LocalSecureSessio
     write_message(&mut socket, &ready).await.expect("ready");
     (socket, session)
 }
+async fn authenticate_prepared(listener: &UnixListener) -> (UnixStream, LocalSecureSession) {
+    let (mut socket, mut session) = authenticate(listener).await;
+    let frame: LocalSecureFrame = read_message(&mut socket).await.unwrap();
+    let probe: Value = session.open(&frame).unwrap();
+    assert_eq!(probe["type"], "target.probe");
+    let reply = session
+        .seal(&json!({"protocol": INJECT_PROVIDER_PROTOCOL,
+        "type": "target.probe.result", "nonce": probe["nonce"], "outcome": "match"}))
+        .unwrap();
+    write_message(&mut socket, &reply).await.unwrap();
+    drop(socket);
+    authenticate(listener).await
+}
 async fn prepare(socket: &mut UnixStream, session: &mut LocalSecureSession) -> Value {
     let frame: LocalSecureFrame = read_message(socket).await.expect("prepare frame");
     let request: Value = session.open(&frame).expect("prepare");
@@ -110,7 +123,7 @@ async fn crashed_profile_socket_does_not_hide_the_only_live_profile() {
     drop(stale); // A killed host cannot run its socket guard.
     let live = listener(root.path());
     let host = tokio::spawn(async move {
-        let (mut stream, mut session) = authenticate(&live).await;
+        let (mut stream, mut session) = authenticate_prepared(&live).await;
         let request = prepare(&mut stream, &mut session).await;
         respond(&mut stream, &mut session, &request).await;
     });
@@ -182,10 +195,10 @@ async fn closed_prepare_reconnects_without_credential_delivery() {
     let root = tempfile::tempdir().expect("root");
     let socket = listener(root.path());
     let host = tokio::spawn(async move {
-        let (mut first, mut session) = authenticate(&socket).await;
+        let (mut first, mut session) = authenticate_prepared(&socket).await;
         prepare(&mut first, &mut session).await;
         drop(first);
-        let (mut second, mut session) = authenticate(&socket).await;
+        let (mut second, mut session) = authenticate_prepared(&socket).await;
         let request = prepare(&mut second, &mut session).await;
         respond(&mut second, &mut session, &request).await;
     });
@@ -202,7 +215,7 @@ async fn closed_handshake_reconnects() {
     let host = tokio::spawn(async move {
         let (first, _) = socket.accept().await.expect("first");
         drop(first);
-        let (mut second, mut session) = authenticate(&socket).await;
+        let (mut second, mut session) = authenticate_prepared(&socket).await;
         let request = prepare(&mut second, &mut session).await;
         respond(&mut second, &mut session, &request).await;
     });
@@ -216,7 +229,7 @@ async fn missing_socket_waits_for_extension_reconnect() {
     let host = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(25)).await;
         let socket = listener(&path);
-        let (mut stream, mut session) = authenticate(&socket).await;
+        let (mut stream, mut session) = authenticate_prepared(&socket).await;
         let request = prepare(&mut stream, &mut session).await;
         respond(&mut stream, &mut session, &request).await;
     });
@@ -228,7 +241,7 @@ async fn invalid_authenticated_response_is_not_retried() {
     let root = tempfile::tempdir().expect("root");
     let socket = listener(root.path());
     let host = tokio::spawn(async move {
-        let (mut stream, mut session) = authenticate(&socket).await;
+        let (mut stream, mut session) = authenticate_prepared(&socket).await;
         prepare(&mut stream, &mut session).await;
         let reply = session
             .seal(
@@ -297,7 +310,7 @@ async fn dropped_inject_response_is_never_replayed() {
     let root = tempfile::tempdir().expect("root");
     let socket = listener(root.path());
     let host = tokio::spawn(async move {
-        let (mut stream, mut session) = authenticate(&socket).await;
+        let (mut stream, mut session) = authenticate_prepared(&socket).await;
         let request = prepare(&mut stream, &mut session).await;
         respond(&mut stream, &mut session, &request).await;
         let frame: LocalSecureFrame = read_message(&mut stream).await.expect("inject frame");
@@ -348,7 +361,7 @@ async fn unauthenticated_host_response_is_not_retried() {
     let root = tempfile::tempdir().expect("root");
     let socket = listener(root.path());
     let host = tokio::spawn(async move {
-        let (mut stream, mut session) = authenticate(&socket).await;
+        let (mut stream, mut session) = authenticate_prepared(&socket).await;
         prepare(&mut stream, &mut session).await;
         let reply = session
             .seal(&json!({"type":"prepare.result"}))
@@ -379,7 +392,7 @@ async fn incompatible_live_provider_is_terminal_without_reconnect() {
     let root = tempfile::tempdir().expect("root");
     let socket = listener(root.path());
     let host = tokio::spawn(async move {
-        let (mut stream, mut session) = authenticate(&socket).await;
+        let (mut stream, mut session) = authenticate_prepared(&socket).await;
         let request = prepare(&mut stream, &mut session).await;
         let reply = session
             .seal(&json!({"protocol": INJECT_PROVIDER_PROTOCOL,
@@ -400,60 +413,65 @@ async fn incompatible_live_provider_is_terminal_without_reconnect() {
 
 #[tokio::test]
 async fn absent_browser_session_selects_the_unique_exact_target_before_preparing() {
-    let root = tempfile::tempdir().unwrap();
-    let mut hosts = Vec::new();
-    for (id, matches) in [('a', false), ('b', true)] {
-        let path = root
-            .path()
-            .join(format!("b-{}.sock", id.to_string().repeat(32)));
-        let listener = UnixListener::bind(&path).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        hosts.push(tokio::spawn(async move {
-            let (mut socket, mut session) = authenticate(&listener).await;
-            let frame: LocalSecureFrame = read_message(&mut socket).await.unwrap();
-            let probe: Value = session.open(&frame).unwrap();
-            assert_eq!(probe["type"], "target.probe");
-            assert_eq!(probe["targetTabId"], 7);
-            assert_eq!(probe["targetUrl"], "https://example.test/login");
-            assert!(probe.get("values").is_none());
-            let reply = session
-                .seal(&json!({"protocol": INJECT_PROVIDER_PROTOCOL,
+    for candidates in [vec![('b', true)], vec![('a', false), ('b', true)]] {
+        let root = tempfile::tempdir().unwrap();
+        let mut hosts = Vec::new();
+        for (id, matches) in candidates {
+            let path = root
+                .path()
+                .join(format!("b-{}.sock", id.to_string().repeat(32)));
+            let listener = UnixListener::bind(&path).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            hosts.push(tokio::spawn(async move {
+                let (mut socket, mut session) = authenticate(&listener).await;
+                let frame: LocalSecureFrame = read_message(&mut socket).await.unwrap();
+                let probe: Value = session.open(&frame).unwrap();
+                assert_eq!(probe["type"], "target.probe");
+                assert_eq!(probe["targetTabId"], 7);
+                assert_eq!(probe["targetUrl"], "https://example.test/login");
+                assert!(probe.get("values").is_none());
+                let reply = session
+                    .seal(&json!({"protocol": INJECT_PROVIDER_PROTOCOL,
                 "type":"target.probe.result", "nonce":probe["nonce"],
                 "outcome": if matches {"match"} else {"no-match"}}))
-                .unwrap();
-            write_message(&mut socket, &reply).await.unwrap();
-            drop(socket);
-            if matches {
-                let (mut socket, mut session) = authenticate(&listener).await;
-                let request = prepare(&mut socket, &mut session).await;
-                respond(&mut socket, &mut session, &request).await;
-            } else {
-                assert!(
-                    timeout(Duration::from_millis(100), listener.accept())
-                        .await
-                        .is_err()
-                );
-            }
-        }));
-    }
-    let result = connect(root.path()).await;
-    assert!(
-        result.is_ok(),
-        "one exact matching profile should be usable: {:?}",
-        result.err()
-    );
-    for host in hosts {
-        host.await.unwrap();
+                    .unwrap();
+                write_message(&mut socket, &reply).await.unwrap();
+                drop(socket);
+                if matches {
+                    let (mut socket, mut session) = authenticate(&listener).await;
+                    let request = prepare(&mut socket, &mut session).await;
+                    respond(&mut socket, &mut session, &request).await;
+                } else {
+                    assert!(
+                        timeout(Duration::from_millis(100), listener.accept())
+                            .await
+                            .is_err()
+                    );
+                }
+            }));
+        }
+        let result = connect(root.path()).await;
+        assert!(
+            result.is_ok(),
+            "one exact matching profile should be usable: {:?}",
+            result.err()
+        );
+        for host in hosts {
+            host.await.unwrap();
+        }
     }
 }
 
 #[tokio::test]
 async fn target_resolution_never_guesses_when_matches_are_ambiguous_or_incomplete() {
     for (outcomes, expected) in [
-        (["match", "match"], "ambiguous"),
-        (["no-match", "no-match"], "missing"),
-        (["match", "unavailable"], "incomplete"),
-        (["match", "wrong-nonce"], "invalid"),
+        (vec!["match", "match"], "ambiguous"),
+        (vec!["no-match", "no-match"], "missing"),
+        (vec!["no-match"], "missing"),
+        (vec!["unavailable"], "incomplete"),
+        (vec!["wrong-nonce"], "invalid"),
+        (vec!["match", "unavailable"], "incomplete"),
+        (vec!["match", "wrong-nonce"], "invalid"),
     ] {
         let root = tempfile::tempdir().unwrap();
         let mut hosts = Vec::new();
