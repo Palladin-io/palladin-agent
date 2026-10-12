@@ -77,6 +77,20 @@ No package uses `preinstall`, `install`, `postinstall`, `preprepare`, `prepare`,
 
 All three modes run the same script-free launcher and exact platform package. They do not change where native public state or OS-protected secrets live.
 
+### Test the `0.0.10` preview alongside an existing CLI
+
+On macOS or Linux, install the exact npm preview in its own user-owned prefix and expose it as `palladin_debug` without replacing an existing `palladin` command:
+
+```bash
+debug_prefix="$HOME/.local/opt/palladin-cli/0.0.10"
+mkdir -p "$HOME/.local/bin"
+npm install --global --prefix "$debug_prefix" --ignore-scripts @palladin/cli@0.0.10
+ln -s "$debug_prefix/bin/palladin" "$HOME/.local/bin/palladin_debug"
+palladin_debug --version
+```
+
+`$HOME/.local/bin` must be on `PATH`. The alias selects the preview executable only; it does not isolate Agent profiles, native public state, or OS-protected secrets from another Palladin installation under the same system user. Run state-changing acceptance tests under a separate OS test account. For a newer preview, install its exact version in a new prefix and repoint only the `palladin_debug` symlink after verifying it.
+
 An active MCP process keeps the native version it started with. Updating npm changes subsequent launches. Every npm launch verifies the immutable Ed25519-signed release manifest bundled with the CLI, including the exact package, version, source commit, client hash and worker hash. The native process independently verifies the actual worker image before opening identity. Linux measures `/proc/self/exe`; macOS also requires the exact Developer ID, identifier and Data Protection Keychain entitlements. Direct macOS launches rely on that independently enforced Apple signature and provisioning boundary. Windows additionally verifies Authenticode and uses its verified runtime cache.
 
 The manifest has no expiry, remote allowlist, minimum-version floor or renewal requirement. CLI startup never fetches a release policy. A correctly signed installed release continues to work when the release infrastructure is unavailable. We cannot remotely disable an already installed vulnerable release; security advisories and an explicit npm update are the recovery path. Linux Convenience does not protect against a same-user attacker replacing the launcher or removing its own checks. Native Hardened storage boundaries remain independently enforced. Linux Hardened packages, when released, must include the signed manifest at the root-owned `/usr/lib/palladin/runtime/release-signature.json`; the broker verifies its worker through an open descriptor and forwards the verified envelope to that same worker.
