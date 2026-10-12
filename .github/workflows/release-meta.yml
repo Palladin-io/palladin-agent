@@ -125,7 +125,7 @@ jobs:
           else
             echo 'policy_ready=false' >>"$GITHUB_OUTPUT"
           fi
-          if [[ "$VERSION" != 0.0.9 ]]; then
+          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.10 ]]; then
             for filename in adversarial-report.json adversarial-report.md; do
               test -f "$assets/$filename"
               test ! -L "$assets/$filename"
@@ -161,7 +161,7 @@ jobs:
             --artifacts "$assets" --version "$VERSION" --source-sha "$SOURCE_SHA" \
             --sbom "$assets/sbom-release.spdx.json" \
             --manifest "$assets/release-manifest.json" --checksums "$assets/SHA256SUMS"
-          if [[ "$VERSION" != 0.0.9 ]]; then
+          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.10 ]]; then
             node security/adversarial/report.mjs validate \
               --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
               --source-sha "$SOURCE_SHA" \
@@ -557,7 +557,7 @@ jobs:
   approve-adversarial:
     name: KMS-sign the owner-approved adversarial evidence
     needs: [authorize, smoke-native, smoke-musl]
-    if: inputs.version != '0.0.9'
+    if: inputs.version != '0.0.9' && inputs.version != '0.0.10'
     runs-on: ubuntu-latest
     environment: version-policy-signing
     timeout-minutes: 10
@@ -654,7 +654,7 @@ jobs:
   approve-lifecycle:
     name: KMS-sign the owner-approved platform lifecycle evidence
     needs: [authorize, prepare-meta]
-    if: inputs.version != '0.0.9' && needs.authorize.outputs.lifecycle_ready == 'true'
+    if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && needs.authorize.outputs.lifecycle_ready == 'true'
     runs-on: ubuntu-latest
     environment: version-policy-signing
     timeout-minutes: 15
@@ -949,7 +949,7 @@ jobs:
           retention-days: 30
 
       - name: Record the deferred physical lifecycle boundary
-        if: inputs.version != '0.0.9'
+        if: inputs.version != '0.0.9' && inputs.version != '0.0.10'
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
           The exact `@palladin/cli` candidate was attached to the draft release but was not published to npm.
@@ -963,7 +963,7 @@ jobs:
     if: >-
       !cancelled() && needs.authorize.result == 'success' && needs.prepare-meta.result == 'success'
       && needs.artifact-smoke.result == 'success'
-      && (inputs.version == '0.0.9'
+      && (inputs.version == '0.0.9' || inputs.version == '0.0.10'
         || (needs.approve-adversarial.result == 'success' && needs.approve-lifecycle.result == 'success'))
     runs-on: ubuntu-latest
     environment: npm-release
@@ -1008,7 +1008,7 @@ jobs:
             release-manifest.json version-policy-candidate.json; do
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
           done
-          if [[ "$INPUTS_VERSION" != 0.0.9 ]]; then
+          if [[ "$INPUTS_VERSION" != 0.0.9 && "$INPUTS_VERSION" != 0.0.10 ]]; then
             for pattern in adversarial-report.json adversarial-report.md adversarial-approval.json \
               lifecycle-report.json lifecycle-report.md lifecycle-approval.json; do
               gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
@@ -1040,7 +1040,7 @@ jobs:
           node packaging/npm/verify-version-policy-build.mjs \
             --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
             --bundle "$assets/version-policy-candidate.json" --version "$VERSION"
-          if [[ "$VERSION" != 0.0.9 ]]; then
+          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.10 ]]; then
             node security/adversarial/report.mjs validate \
               --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
               --source-sha "$SOURCE_SHA" --json "$assets/adversarial-report.json" \
@@ -1070,14 +1070,18 @@ jobs:
           for filename in palladin-cli-$VERSION.tgz release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json version-policy-candidate.json; do
             gh attestation verify "$assets/$filename" --repo "$GITHUB_REPOSITORY"
           done
-      - name: Stage the byte-identical meta-package under latest
-        run: npm stage publish "$RUNNER_TEMP/stage-assets/palladin-cli-${INPUTS_VERSION}.tgz" --tag latest --provenance --ignore-scripts
+      - name: Stage the byte-identical meta-package under its release channel
+        run: |
+          set -euo pipefail
+          dist_tag=latest
+          if [[ "$INPUTS_VERSION" == 0.0.10 ]]; then dist_tag=preview; fi
+          npm stage publish "$RUNNER_TEMP/stage-assets/palladin-cli-${INPUTS_VERSION}.tgz" --tag "$dist_tag" --provenance --ignore-scripts
         env:
           INPUTS_VERSION: ${{ inputs.version }}
       - name: Record the final manual npm approval boundary
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          `@palladin/cli` was staged after artifact, signature, provenance, and native smoke checks. For 0.0.9, adversarial and physical lifecycle QA is deferred by the product owner.
+          `@palladin/cli` was staged after artifact, signature, provenance, and native smoke checks. Version 0.0.10 is an opt-in npm `preview`; adversarial and physical lifecycle QA is pending and is not claimed as passed. Version 0.0.9 remains the documented `latest` QA deferral.
 
-          Patryk must inspect and approve this single npm stage with 2FA. Run `release-finalize.yml` only after the exact meta-package is public.
+          Patryk must inspect and approve this single npm stage with 2FA. Do not run `release-finalize.yml` for 0.0.10: it is a test preview, not an approved immutable release. Other versions require the exact meta-package to be public before finalization.
           SUMMARY

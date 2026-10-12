@@ -325,7 +325,9 @@ test('release workflows pin actions and do not permit direct or token-based npm 
   assert.doesNotMatch(platformRelease, /secrets:\s+inherit/);
   assert.match(platformRelease, /npm stage publish "\$package" --tag candidate/);
   assert.match(metaRelease, /INPUTS_VERSION: \$\{\{ inputs\.version \}\}/);
-  assert.match(metaRelease, /npm stage publish "\$RUNNER_TEMP\/stage-assets\/palladin-cli-\$\{INPUTS_VERSION\}\.tgz" --tag latest/);
+  assert.match(metaRelease, /npm stage publish "\$RUNNER_TEMP\/stage-assets\/palladin-cli-\$\{INPUTS_VERSION\}\.tgz" --tag "\$dist_tag"/);
+  assert.match(metaRelease, /dist_tag=latest/);
+  assert.match(metaRelease, /if \[\[ "\$INPUTS_VERSION" == 0\.0\.10 \]\]; then dist_tag=preview; fi/);
   for (const contents of [platformRelease, metaRelease, finalRelease]) {
     assert.match(contents, /github\.actor == 'patryk-roguszewski'/);
     assert.match(contents, /test "\$GITHUB_REF" = "refs\/tags\/\$RELEASE_TAG"/);
@@ -337,6 +339,7 @@ test('release workflows pin actions and do not permit direct or token-based npm 
 test('release finalization preserves the security gates except for the documented 0.0.9 QA deferral', () => {
   const workflow = readFileSync(resolve('.github/workflows/release-finalize.yml'), 'utf8');
   assert.match(workflow, /if: github\.actor == 'patryk-roguszewski'/);
+  assert.match(workflow, /test "\$VERSION" != 0\.0\.10/);
   assert.match(workflow, /needs: \[authorize, compatibility, smoke-native, smoke-musl\]/);
   assert.ok(workflow.includes('[[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]'));
   assert.match(workflow, /test -f "\$assets\/adversarial-report\.json"/);
@@ -373,7 +376,7 @@ test('release finalization preserves the security gates except for the documente
   );
 });
 
-test('meta-package staging preserves signed artifacts and makes the 0.0.9 QA deferral explicit', () => {
+test('meta-package staging preserves signed artifacts and limits 0.0.10 to preview', () => {
   const workflow = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8');
   const reportValidations = [...workflow.matchAll(/node security\/adversarial\/report\.mjs validate/g)];
   const artifactValidations = [
@@ -385,7 +388,7 @@ test('meta-package staging preserves signed artifacts and makes the 0.0.9 QA def
   const lifecycleArtifactValidations = [
     ...workflow.matchAll(/node security\/lifecycle\/verify-release-artifacts\.mjs/g),
   ];
-  const stageOffset = workflow.indexOf('npm stage publish "$RUNNER_TEMP/stage-assets/palladin-cli-${INPUTS_VERSION}.tgz" --tag latest');
+  const stageOffset = workflow.indexOf('npm stage publish "$RUNNER_TEMP/stage-assets/palladin-cli-${INPUTS_VERSION}.tgz" --tag "$dist_tag"');
 
   assert.equal(reportValidations.length, 3);
   assert.equal(artifactValidations.length, 3);
@@ -431,7 +434,8 @@ test('meta-package staging preserves signed artifacts and makes the 0.0.9 QA def
     /\n    needs: \[authorize, prepare-meta\]\r?\n/,
   );
   assert.match(workflow, /lifecycle_ready: \$\{\{ steps\.release_set\.outputs\.lifecycle_ready \}\}/);
-  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.9' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
+  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.9' && inputs\.version != '0\.0\.10' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
+  assert.match(workflow, /inputs\.version == '0\.0\.9' \|\| inputs\.version == '0\.0\.10'/);
   assert.match(workflow, /\[\[ \$lifecycle_count -eq 0 \|\| \$lifecycle_count -eq 2 \]\]/);
   const prepareOffset = workflow.indexOf('\n  prepare-meta:');
   const approveLifecycleOffset = workflow.indexOf('\n  approve-lifecycle:');
