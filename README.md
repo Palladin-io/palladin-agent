@@ -77,19 +77,19 @@ No package uses `preinstall`, `install`, `postinstall`, `preprepare`, `prepare`,
 
 All three modes run the same script-free launcher and exact platform package. They do not change where native public state or OS-protected secrets live.
 
-### Test the `0.0.10` preview alongside an existing CLI
+### Keep the npm CLI and a macOS development launcher side by side
 
-On macOS or Linux, install the exact npm preview in its own user-owned prefix and expose it as `palladin_debug` without replacing an existing `palladin` command:
+Install the exact `0.0.10` npm preview in a user-owned prefix and expose the published CLI as `palladin`:
 
 ```bash
-debug_prefix="$HOME/.local/opt/palladin-cli/0.0.10"
+release_prefix="$HOME/.local/opt/palladin-cli/0.0.10"
 mkdir -p "$HOME/.local/bin"
-npm install --global --prefix "$debug_prefix" --ignore-scripts @palladin/cli@0.0.10
-ln -s "$debug_prefix/bin/palladin" "$HOME/.local/bin/palladin_debug"
-palladin_debug --version
+npm install --global --prefix "$release_prefix" --ignore-scripts @palladin/cli@0.0.10
+ln -s "$release_prefix/bin/palladin" "$HOME/.local/bin/palladin"
+palladin --version
 ```
 
-`$HOME/.local/bin` must be on `PATH`. The alias selects the preview executable only; it does not isolate Agent profiles, native public state, or OS-protected secrets from another Palladin installation under the same system user. Run state-changing acceptance tests under a separate OS test account. For a newer preview, install its exact version in a new prefix and repoint only the `palladin_debug` symlink after verifying it.
+`$HOME/.local/bin` must be on `PATH`. Review an existing `palladin` launcher before replacing it. On macOS, install the source development launcher as `palladin_debug` using the command below. The two commands select different executables; they do not isolate Agent profiles, native public state, or OS-protected secrets under the same system user. Run state-changing acceptance tests under a separate OS test account. For a newer npm preview, install its exact version in a new prefix and repoint only `palladin` after verifying it.
 
 An active MCP process keeps the native version it started with. Updating npm changes subsequent launches. Every npm launch verifies the immutable Ed25519-signed release manifest bundled with the CLI, including the exact package, version, source commit, client hash and worker hash. The native process independently verifies the actual worker image before opening identity. Linux measures `/proc/self/exe`; macOS also requires the exact Developer ID, identifier and Data Protection Keychain entitlements. Direct macOS launches rely on that independently enforced Apple signature and provisioning boundary. Windows additionally verifies Authenticode and uses its verified runtime cache.
 
@@ -114,7 +114,7 @@ Requirement. Every later run verifies both signatures before it starts:
 
 ```bash
 ./packaging/macos/scripts/development-runtime.sh run -- doctor
-./packaging/macos/scripts/development-runtime.sh install-launcher ~/.local/bin/palladin
+./packaging/macos/scripts/development-runtime.sh install-launcher "$HOME/.local/bin/palladin_debug"
 ```
 
 An existing source installation needs one explicit authorization migration after
@@ -156,7 +156,7 @@ Literal HTTP loopback origins are available only in an explicitly compiled sourc
 ```bash
 ./packaging/macos/scripts/development-runtime.sh run --local-development -- connect --host http://127.0.0.1:5000
 # Or, after install-launcher on macOS:
-palladin --local-development connect --host http://127.0.0.1:5000
+palladin_debug --local-development connect --host http://127.0.0.1:5000
 
 # On other development platforms:
 cd runtime
