@@ -425,10 +425,16 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t assets < <(find "$RUNNER_TEMP/release-set" -type f -print | sort)
+          notes='Platform candidates are staged for owner approval. The meta-package is not staged by this workflow.'
+          if [[ "$INPUTS_VERSION" == 0.0.9 ]]; then
+            notes+=' Product-owner-directed physical lifecycle and adversarial QA will follow publication; these tests are not claimed as passed.'
+          elif [[ "$INPUTS_VERSION" == 0.0.10 ]]; then
+            notes+=' This version is an opt-in npm preview for installation testing. Physical lifecycle and adversarial QA are pending; do not finalize it as an immutable release.'
+          fi
           gh release create "${INPUTS_RELEASE_TAG}" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
             --title "Palladin Agent ${INPUTS_VERSION}" \
-            --notes "Platform candidates are staged for owner approval. The meta-package is not staged by this workflow. For 0.0.9, product-owner-directed physical lifecycle and adversarial QA will follow publication; these tests are not claimed as passed."
+            --notes "$notes"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

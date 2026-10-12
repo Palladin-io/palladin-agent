@@ -90,13 +90,15 @@ Configure the public `PALLADIN_VERSION_POLICY_PUBLIC_KEY` variable and the prote
 1. `release-platforms.yml` builds the five macOS ARM/Linux candidates, signs and notarizes macOS, and stages the exact platform packages.
 2. After owner acceptance of those candidates, `release-meta.yml` verifies their provenance and exact bytes, hashes each client and worker, and KMS-signs the deterministic manifest.
 3. Native artifact smokes verify the signature and exact source/version/worker hash. An installed CLI smoke verifies the bundled signature without contacting release infrastructure.
-4. The same signed manifest is embedded in the CLI and attached to the draft release. Retries must reuse its byte-identical artifact bindings. For releases after `0.0.9`, npm staging and finalization also require the owner-approved adversarial and physical lifecycle evidence.
+4. The same signed manifest is embedded in the CLI and attached to the draft release. Retries must reuse its byte-identical artifact bindings. For official releases after `0.0.9`, npm staging and finalization also require the owner-approved adversarial and physical lifecycle evidence. The opt-in `0.0.10` preview below is not an official release or a waiver of those finalization gates.
 
 An already installed correctly signed version is not remotely revocable. Publish a security advisory, deprecate affected npm versions and instruct users to update explicitly. Do not promise forced upgrades or immediate revocation. Existing package-manager downgrade checks and native identity/schema integrity remain independent safeguards; a signed release is not rejected solely because a newer release exists.
 
 ## Release order
 
 npm does not provide a multi-package transaction. Palladin uses the `@palladin/cli` meta package as the atomic consumer boundary: every supported native package becomes a verified candidate first, and the meta package is published last. The first complete CLI release candidate (`0.0.9`) supports five platforms: macOS ARM and Linux x64/ARM64 glibc and musl. The `0.0.1` through `0.0.8` platform packages remain candidate-only; no matching public CLI version exists. The `0.0.3` meta release stopped when its KMS signature file was decoded incorrectly; `0.0.4` stopped when the meta staging allowlist rejected exported contracts; `0.0.5` stopped because the Alpine smoke test mounted its installation directory with `noexec`; `0.0.6` stopped because the bundled-policy smoke tried to open unavailable OS secure storage; `0.0.7` stopped before its Alpine smoke when both runners timed out contacting Docker Hub authentication; and `0.0.8` passed all five registry smokes but stopped before CLI staging because its final job omitted the verifier build. Preserve these tags and public platform artifacts; publish the corrected pipeline under a fresh version.
+
+For `0.0.10` only, the product owner requested an installable npm preview before the adversarial and physical lifecycle matrix is available. Retain the reviewed source, signed and notarized macOS binary, KMS-signed release policy, exact tarball checks, provenance, attestations, and clean registry smokes. Stage the meta-package with the `preview` dist-tag, then have Patryk approve it with npm 2FA. Users opt in with `npm install -g @palladin/cli@0.0.10`; `latest` remains `0.0.9`. Keep the GitHub release as a draft and do not run `release-finalize.yml` for `0.0.10`. Its preview status and pending QA must be explicit; no physical or adversarial result may be claimed. A later official version must satisfy the full gates.
 
 ### 1. Prepare the release
 
@@ -152,22 +154,22 @@ An unresolved or accepted Critical/High finding, incomplete target, stale observ
 
 ### 5. Stage and approve the meta package
 
-For `0.0.9`, stage after all supported platform registry smokes and the retained cryptographic/artifact gates pass. For later versions, also require the adversarial and physical lifecycle gates:
+For `0.0.9`, stage `latest` after all supported platform registry smokes and the retained cryptographic/artifact gates pass. For `0.0.10`, the same retained gates permit only the opt-in `preview` channel described above. For later versions, also require the adversarial and physical lifecycle gates:
 
 1. Build the meta tarball from the same tag commit.
 2. Verify its package allowlist contains only the launcher, runtime metadata, documentation, and license files. It must not contain private source, keys, build caches, test fixtures, or lifecycle scripts.
 3. Verify every supported optional dependency uses exact `X.Y.Z` and no unsupported platform fallback exists.
 4. Generate and verify its checksum, manifest entry, SBOM, provenance, and attestations.
 5. Except for `0.0.9`, re-download and revalidate the approved adversarial reports and KMS-signed operator approval against the tagged source and exact platform release manifest.
-6. Stage the meta package through the protected OIDC workflow with `npm stage publish --tag latest`.
+6. Stage the meta package through the protected OIDC workflow with `npm stage publish --tag preview` for `0.0.10`, otherwise `--tag latest` after its applicable gates pass.
 7. Patryk downloads and inspects the staged tarball, verifies the digest and provenance, and, for releases after `0.0.9`, the recorded adversarial gate, then approves it with npm 2FA.
-8. Install `@palladin/cli@X.Y.Z` and `@palladin/cli@latest` from npm in clean runners for every supported platform and repeat the end-to-end smoke checks.
+8. Install `@palladin/cli@X.Y.Z` from npm in clean runners for every supported platform and repeat the end-to-end smoke checks. For an official release, also verify `@palladin/cli@latest`; the `0.0.10` preview must leave `latest` on `0.0.9`.
 
 Publishing the meta package is the consumer-visible commit point. Never approve it while a platform package, registry smoke test, attestation, applicable adversarial cell, or Critical/High release blocker is missing.
 
 ### 6. Finalize the immutable GitHub release
 
-After the public meta-package smoke tests pass, Patryk approves finalization. Create the GitHub release from the existing protected tag and attach only the already verified artifacts. For `0.0.9`, omit the deferred QA artifacts and state that omission in the release notes:
+After the public meta-package smoke tests pass, Patryk approves finalization for an official release. The `0.0.10` preview remains a draft and must not enter this step. Create an official GitHub release from the existing protected tag and attach only the already verified artifacts. For `0.0.9`, omit the deferred QA artifacts and state that omission in the release notes:
 
 - all npm tarballs
 - `SHA256SUMS`
@@ -191,7 +193,7 @@ The owner-only finalizer requires the exact version-specific draft asset set. Fo
 - **A signing or publishing credential may be compromised:** stop release workflows, reject all pending stages, remove trusted publisher access, revoke tokens, rotate affected signing credentials, preserve audit evidence, and follow the security incident process before releasing again.
 - **A published package is malicious or exposes secrets:** follow npm and GitHub security incident procedures immediately. Do not use routine unpublish as a substitute for coordinated revocation, advisory, and recovery.
 
-Every retry must be reproducible and attributable to a reviewed source commit. Never bypass a failed gate, weaken a policy, use a developer-built artifact, or introduce an emergency laptop publish path. The documented one-version `0.0.9` QA deferral is an explicit release decision, not a retry bypass.
+Every retry must be reproducible and attributable to a reviewed source commit. Never bypass a failed gate, weaken a policy, use a developer-built artifact, or introduce an emergency laptop publish path. The documented one-version `0.0.9` official-release QA deferral and opt-in `0.0.10` npm preview are explicit, version-bounded product-owner decisions, not retry bypasses.
 
 ## Post-release audit
 

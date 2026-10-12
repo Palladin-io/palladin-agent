@@ -55,6 +55,7 @@ jobs:
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "$RELEASE_TAG" = "v$VERSION"
+          test "$VERSION" != 0.0.10 # The npm preview must remain a draft, even if its dist-tag changes.
           source_sha=$(git rev-parse HEAD)
           test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
           test "$GITHUB_SHA" = "$source_sha"
