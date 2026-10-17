@@ -33,7 +33,7 @@ artifact-specific SPDX SBOM for every published native package.
 ## Apache-2.0 OR ISC OR MIT
 
 - [hyper-rustls 0.27.9](https://github.com/rustls/hyper-rustls)
-- [rustls 0.23.45](https://github.com/rustls/rustls)
+- [rustls 0.23.46](https://github.com/rustls/rustls)
 
 ## Apache-2.0 OR MIT
 
