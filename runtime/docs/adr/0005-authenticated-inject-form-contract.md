@@ -105,12 +105,16 @@ The operation has two distinct phases:
    HTTPS login surface, dismisses cookie/consent overlays, completes allowed public navigation,
    pauses for any human CAPTCHA, then inspects its visible controls and builds a complete bounded,
    value-free form definition. The CLI is not called until this preparation phase is complete.
-2. The native CLI/runtime first sends a value-free prepare request to the single host admitted by
-   the owner-only local socket. Only after that exact extension reports `ready` does it request or
-   consume the approved Inject grant, verify and decrypt only
-   the granted fields in native memory, and sends the definition plus those values to the selected
-   provider over its reviewed private transport. The provider validates and executes the definition,
-   then returns only a bounded result. The browser session remains available to the Agent.
+2. The native CLI/runtime requests the Inject grant and waits for approval before preparing
+   browser handles, so a human approval wait cannot exhaust their lifetime. Pending or denied
+   access returns without a browser connection. After granted delivery is verified and decrypted
+   in native memory, a value-free prepare request binds the authenticated provider to the supplied
+   exact tab/URL, or selects the active page for the compatibility path. Only after readiness,
+   authenticated domain and form validation, and the final authorization/lifecycle checks does
+   the runtime send the definition and granted values over the reviewed private transport.
+   The provider validates and executes the definition, then returns only a bounded result.
+   The browser session remains available to the Agent. A single-use grant can be consumed even
+   if subsequent preparation finds the browser unavailable or the target changed; it is not replayed.
 
 The provider-neutral definition contains a version and an ordered list of one or more steps. A step
 may contain:
