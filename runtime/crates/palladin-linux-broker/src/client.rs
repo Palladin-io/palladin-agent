@@ -242,49 +242,59 @@ async fn proxy(
 
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
-    loop {
-        let frame: ServerFrame = read_frame(&mut reader)
-            .await
-            .map_err(|_| ClientError::BrokerProtocol)?;
-        match &frame {
-            ServerFrame::Output {
-                request_id: received,
-                stream,
-                bytes,
-                ..
-            } if *received == request_id => match stream {
-                OutputStream::Stdout => stdout
-                    .write_all(bytes)
-                    .await
-                    .map_err(|_| ClientError::BrokerProtocol)?,
-                OutputStream::Stderr => stderr
-                    .write_all(bytes)
-                    .await
-                    .map_err(|_| ClientError::BrokerProtocol)?,
-            },
-            ServerFrame::OpenUrl {
-                request_id: received,
-                url,
-            } if *received == request_id => {
-                open_interactive_browser(url).await?;
-            }
-            ServerFrame::Exited {
-                request_id: received,
-                code,
-            } if *received == request_id => {
-                abort_input_task(&input_task);
-                return Ok(ExitCode::from(*code));
-            }
-            ServerFrame::Rejected { code, .. } => {
-                abort_input_task(&input_task);
-                return Err(ClientError::Rejected(*code));
-            }
-            _ => {
-                abort_input_task(&input_task);
-                return Err(ClientError::BrokerProtocol);
+    let result = async {
+        loop {
+            let frame: ServerFrame = read_frame(&mut reader)
+                .await
+                .map_err(|_| ClientError::BrokerProtocol)?;
+            match &frame {
+                ServerFrame::Output {
+                    request_id: received,
+                    stream,
+                    bytes,
+                    ..
+                } if *received == request_id => match stream {
+                    OutputStream::Stdout => stdout
+                        .write_all(bytes)
+                        .await
+                        .map_err(|_| ClientError::BrokerProtocol)?,
+                    OutputStream::Stderr => stderr
+                        .write_all(bytes)
+                        .await
+                        .map_err(|_| ClientError::BrokerProtocol)?,
+                },
+                ServerFrame::OpenUrl {
+                    request_id: received,
+                    url,
+                } if *received == request_id => {
+                    open_interactive_browser(url).await?;
+                }
+                ServerFrame::Exited {
+                    request_id: received,
+                    code,
+                } if *received == request_id => {
+                    return Ok(ExitCode::from(*code));
+                }
+                ServerFrame::Rejected { code, .. } => {
+                    return Err(ClientError::Rejected(*code));
+                }
+                _ => {
+                    return Err(ClientError::BrokerProtocol);
+                }
             }
         }
     }
+    .await;
+    abort_input_task(&input_task);
+    stdout
+        .flush()
+        .await
+        .map_err(|_| ClientError::BrokerProtocol)?;
+    stderr
+        .flush()
+        .await
+        .map_err(|_| ClientError::BrokerProtocol)?;
+    result
 }
 
 async fn open_interactive_browser(url: &str) -> Result<(), ClientError> {

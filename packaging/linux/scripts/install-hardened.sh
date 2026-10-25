@@ -16,6 +16,21 @@ supported_platform() {
   esac
 }
 
+install_verified_package() {
+  local format=$1 package=$2
+  case "$format" in
+    deb) apt-get install --yes --reinstall "$package" ;;
+    rpm)
+      local package_id operation=install
+      package_id=$(rpm -qp --qf '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}' "$package")
+      if rpm -q --quiet "$package_id" >/dev/null 2>&1; then operation=reinstall; fi
+      # Provenance authenticates this local package; repository dependency GPG checks remain enabled.
+      dnf "$operation" --assumeyes --setopt=localpkg_gpgcheck=0 "$package"
+      ;;
+    *) return 64 ;;
+  esac
+}
+
 main() {
   export PATH=/usr/sbin:/usr/bin:/sbin:/bin
   if [[ $# -ne 4 || ! $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! $2 =~ ^[0-9a-f]{40}$ ]]; then
@@ -43,9 +58,10 @@ main() {
   fi
   [[ $(basename "$package") == "$filename" ]] || { echo 'Error: package does not match the requested version and host architecture' >&2; return 65; }
   umask 077
-  local stage
+  local stage cleanup_command
   stage=$(mktemp -d /var/tmp/palladin-install.XXXXXX)
-  trap 'rm -rf "$stage"' EXIT
+  printf -v cleanup_command 'rm -rf -- %q' "$stage"
+  trap "$cleanup_command" EXIT
   install -m 0600 -- "$package" "$stage/$filename"
   install -m 0600 -- "$bundle" "$stage/attestation.jsonl"
   # Verify the root-owned snapshot, not the caller-writable download, before any package script runs.
@@ -53,12 +69,7 @@ main() {
     --bundle "$stage/attestation.jsonl" --repo Palladin-io/palladin-agent \
     --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
     --source-ref "refs/tags/v$version" --source-digest "$source_sha" --deny-self-hosted-runners
-  if [[ $format == deb ]]; then
-    apt-get install --yes "$stage/$filename"
-  else
-    # Local packages use the verified GitHub provenance signature; repository dependency GPG checks remain enabled.
-    dnf install --assumeyes --setopt=localpkg_gpgcheck=0 "$stage/$filename"
-  fi
+  install_verified_package "$format" "$stage/$filename"
   /usr/lib/palladin/runtime/verify-installation
   rm -rf "$stage"
   trap - EXIT

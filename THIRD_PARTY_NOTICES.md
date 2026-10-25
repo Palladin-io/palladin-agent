@@ -33,7 +33,7 @@ artifact-specific SPDX SBOM for every published native package.
 ## Apache-2.0 OR ISC OR MIT
 
 - [hyper-rustls 0.27.9](https://github.com/rustls/hyper-rustls)
-- [rustls 0.23.45](https://github.com/rustls/rustls)
+- [rustls 0.23.46](https://github.com/rustls/rustls)
 
 ## Apache-2.0 OR MIT
 
@@ -102,11 +102,11 @@ artifact-specific SPDX SBOM for every published native package.
 
 ## CDLA-Permissive-2.0
 
-- [webpki-roots 1.0.9](https://github.com/rustls/webpki-roots)
+- [webpki-roots 1.0.10](https://github.com/rustls/webpki-roots)
 
 ## ISC
 
-- [rustls-webpki 0.103.15](https://github.com/rustls/webpki)
+- [rustls-webpki 0.103.16](https://github.com/rustls/webpki)
 - [untrusted 0.9.0](https://github.com/briansmith/untrusted)
 
 ## MIT
@@ -139,7 +139,7 @@ artifact-specific SPDX SBOM for every published native package.
 - [synstructure 0.13.2](https://github.com/mystor/synstructure)
 - [tokio-macros 2.7.1](https://github.com/tokio-rs/tokio)
 - [tokio-util 0.7.19](https://github.com/tokio-rs/tokio)
-- [tokio 1.53.1](https://github.com/tokio-rs/tokio)
+- [tokio 1.53.3](https://github.com/tokio-rs/tokio)
 - [tower-http 0.6.11](https://github.com/tower-rs/tower-http)
 - [tower-layer 0.3.3](https://github.com/tower-rs/tower)
 - [tower-service 0.3.3](https://github.com/tower-rs/tower)

@@ -97,6 +97,7 @@ if $native; then
 fi
 
 if $native; then
+  installer_stages_before=$(find /var/tmp -maxdepth 1 -type d -name 'palladin-install.*' -printf '%f\n' | sort)
   invalid_bundle=$(mktemp /var/tmp/palladin-invalid-attestation.XXXXXX)
   printf '%s\n' '{"invalid":"test fixture"}' > "$invalid_bundle"
   package_version=$(dpkg-deb --field "$base_target" Version)
@@ -110,6 +111,7 @@ if $native; then
   else
     status=$?
   fi
+  [[ $(find /var/tmp -maxdepth 1 -type d -name 'palladin-install.*' -printf '%f\n' | sort) == "$installer_stages_before" ]]
   [[ $status -eq 1 ]] || { echo 'Installer failed before its provenance check' >&2; exit 1; }
   rm -f "$invalid_bundle"
   [[ ! -e /var/lib/palladin-runtime/v1/master.key ]]
@@ -207,6 +209,12 @@ esac
 
 target_exec /usr/lib/palladin/runtime/verify-installation
 verify_compatible_state
+target_exec rm /usr/lib/palladin/runtime/palladin-linux-client
+target_exec bash -c 'source "$1"; install_verified_package "$2" "$3"' -- \
+  "$source_target/packaging/linux/scripts/install-hardened.sh" "$extension" "$base_target"
+target_exec /usr/lib/palladin/runtime/verify-installation
+verify_compatible_state
+echo 'same-version-package-repair=passed identity=preserved'
 target_exec "$source_target/packaging/linux/tests/test-hardened-boundary.sh"
 
 case "$family" in

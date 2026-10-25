@@ -426,6 +426,50 @@ jobs:
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: ${{ runner.temp }}/system-release/*
+      - name: Exercise the authenticated administrator installation before staging
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+          REUSED: ${{ steps.reuse.outputs.ready }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/system-release"
+          bundle="$BUNDLE_PATH"
+          if [[ "$REUSED" == true ]]; then
+            release="$RUNNER_TEMP/reused-system-release"
+            bundle="$RUNNER_TEMP/system-existing.intoto.jsonl"
+          fi
+          deb_arch=amd64
+          [[ "$ARCHITECTURE" != arm64 ]] || deb_arch=arm64
+          filename="palladin-runtime_$VERSION-1_$deb_arch.deb"
+          tampered="$RUNNER_TEMP/tampered-system-release"
+          mkdir -m 700 "$tampered"
+          cp "$release/$filename" "$tampered/$filename"
+          printf 'tamper-test' >> "$tampered/$filename"
+          if sudo /bin/bash packaging/linux/scripts/install-hardened.sh \
+            "$VERSION" "$SOURCE_SHA" "$tampered/$filename" "$bundle"; then
+            echo '::error::Installer accepted modified package bytes' >&2
+            exit 1
+          fi
+          test ! -e /usr/lib/palladin/runtime/palladin-worker
+          sudo /bin/bash packaging/linux/scripts/install-hardened.sh \
+            "$VERSION" "$SOURCE_SHA" "$release/$filename" "$bundle"
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin palladin-release-smoke
+          sudo /usr/lib/palladin/runtime/palladin-manage-agent-uid \
+            authorize palladin-release-smoke release-smoke https://api.palladin.io --dedicated
+          sudo -u palladin-release-smoke /usr/lib/palladin/runtime/palladin-linux-client doctor
+          sudo -u palladin-release-smoke /usr/lib/palladin/runtime/palladin-linux-client init
+          sudo rm /usr/lib/palladin/runtime/palladin-linux-client
+          sudo /bin/bash packaging/linux/scripts/install-hardened.sh \
+            "$VERSION" "$SOURCE_SHA" "$release/$filename" "$bundle"
+          sudo -u palladin-release-smoke /usr/lib/palladin/runtime/palladin-linux-client init \
+            | grep -Fx 'Palladin already initialized: release-smoke'
+          sudo -u palladin-release-smoke "$(command -v node)" \
+            packaging/linux/tests/mcp-stdio-smoke.mjs /usr/lib/palladin/runtime/palladin-linux-client
+          sudo /usr/lib/palladin/runtime/palladin-manage-agent-uid \
+            revoke-purge palladin-release-smoke --confirm-purge
       - name: Attach immutable system packages and their verification bundle
         if: steps.reuse.outputs.ready != 'true'
         env:
