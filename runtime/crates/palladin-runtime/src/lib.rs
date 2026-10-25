@@ -6462,11 +6462,16 @@ fn validate_approval_url(
         && url.password().is_none();
     let valid_origin = match api_host {
         "https://api.palladin.io" => {
-            url.scheme() == "https" && url.host_str() == Some("palladin.io") && url.port().is_none()
+            url.scheme() == "https"
+                && matches!(url.host_str(), Some("panel.palladin.io" | "palladin.io"))
+                && url.port().is_none()
         }
         "https://api.stage.palladin.io" => {
             url.scheme() == "https"
-                && url.host_str() == Some("stage.palladin.io")
+                && matches!(
+                    url.host_str(),
+                    Some("panel.palladin.io" | "stage.palladin.io")
+                )
                 && url.port().is_none()
         }
         _ => {
@@ -6597,6 +6602,56 @@ mod tests {
             "https://palladin.io/agent-pairing/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         ] {
             assert!(validate_approval_url("https://api.palladin.io", invalid, pairing_id).is_err());
+        }
+    }
+
+    #[test]
+    fn panel_pairing_url_preserves_exact_origin_and_request_binding() {
+        let pairing_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        for api_host in ["https://api.palladin.io", "https://api.stage.palladin.io"] {
+            let path = format!("/agent-pairing/{pairing_id}");
+            assert!(
+                validate_approval_url(
+                    api_host,
+                    &format!("https://panel.palladin.io{path}"),
+                    pairing_id
+                )
+                .is_ok()
+            );
+            for invalid in [
+                format!("http://panel.palladin.io{path}"),
+                format!("https://panel.palladin.io:444{path}"),
+                format!("https://panel.palladin.io.evil.example{path}"),
+                format!("https://other.panel.palladin.io{path}"),
+                format!("https://user@panel.palladin.io{path}"),
+                format!("https://user:password@panel.palladin.io{path}"),
+                format!("https://panel.palladin.io{path}?value=1"),
+                format!("https://panel.palladin.io{path}#fragment"),
+                format!("https://panel.palladin.io{path}/extra"),
+                "https://panel.palladin.io/agent-pairing/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+                    .to_owned(),
+            ] {
+                assert!(
+                    validate_approval_url(api_host, &invalid, pairing_id).is_err(),
+                    "{invalid}"
+                );
+            }
+        }
+        for (api_host, origin, allowed) in [
+            ("https://api.palladin.io", "palladin.io", true),
+            ("https://api.stage.palladin.io", "stage.palladin.io", true),
+            ("https://api.palladin.io", "stage.palladin.io", false),
+            ("https://api.stage.palladin.io", "palladin.io", false),
+        ] {
+            assert_eq!(
+                validate_approval_url(
+                    api_host,
+                    &format!("https://{origin}/agent-pairing/{pairing_id}"),
+                    pairing_id
+                )
+                .is_ok(),
+                allowed
+            );
         }
     }
 
