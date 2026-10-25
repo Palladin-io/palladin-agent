@@ -200,9 +200,12 @@ fixtures must not be reported as actual API enrollment. Live staging enrollment,
 MCP and non-secret Exec remain separate acceptance requirements.
 
 After a successful owner-dispatched `Rust Runtime` run, its `linux-hardened-qa-x64` artifact retains
-only the tested DEB for one day. The owner can dispatch `Linux staging acceptance`
-from the same source revision, supplying that build run ID, an explicit staging
-API origin, and the Vault/Entry IDs of a fixture containing only fictional data.
+only the tested DEB for one day. The owner can dispatch the existing `Rust Runtime`
+workflow from the same source revision with `qa_build_run_id`, `qa_api_origin`,
+`qa_vault_id` and `qa_entry_id` (plus optional `qa_field`). A nonempty build ID
+routes directly to the reusable `Linux staging acceptance` job and skips rebuilding.
+This entry point works from a PR branch before the new reusable workflow is on main.
+Use an explicit staging API origin and a fixture containing only fictional data.
 The workflow verifies the successful build's repository, workflow and source SHA
 against its own revision before installing the package. PR merge builds are not
 accepted as exact-revision QA packages. A fork, failed build,

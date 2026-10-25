@@ -1,7 +1,7 @@
 name: Linux staging acceptance
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       build_run_id:
         description: Successful owner-dispatched Rust Runtime run of this same revision

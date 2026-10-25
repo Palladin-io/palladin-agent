@@ -4,16 +4,33 @@ on:
   pull_request:
   merge_group:
   workflow_dispatch:
+    inputs:
+      qa_build_run_id:
+        description: Optional successful exact-revision build to run staging QA instead of rebuilding
+        type: string
+      qa_api_origin:
+        description: Staging QA API origin
+        type: string
+      qa_vault_id:
+        description: Vault containing owner-approved fictional data
+        type: string
+      qa_entry_id:
+        description: Entry containing owner-approved fictional data
+        type: string
+      qa_field:
+        description: Optional fictional field label (defaults to primary value)
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: rust-runtime-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: rust-runtime-${{ github.event.pull_request.number || github.ref }}-${{ inputs.qa_build_run_id && 'staging-qa' || 'build' }}
+  cancel-in-progress: ${{ inputs.qa_build_run_id == '' }}
 
 jobs:
   apple:
+    if: inputs.qa_build_run_id == ''
     name: Build ${{ matrix.target }}
     timeout-minutes: 45
     strategy:
@@ -133,6 +150,7 @@ jobs:
           fi
 
   windows:
+    if: inputs.qa_build_run_id == ''
     name: Build ${{ matrix.target }}
     timeout-minutes: 30
     strategy:
@@ -235,6 +253,7 @@ jobs:
           }
 
   linux:
+    if: inputs.qa_build_run_id == ''
     name: Build ${{ matrix.gnu_target }} and ${{ matrix.musl_target }}
     timeout-minutes: 60
     strategy:
@@ -579,7 +598,7 @@ jobs:
 
   native-platform-gate:
     name: Native Platform Gate
-    if: always()
+    if: always() && inputs.qa_build_run_id == ''
     needs: [apple, windows, linux]
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -593,3 +612,16 @@ jobs:
           test "$APPLE" = success
           test "$WINDOWS" = success
           test "$LINUX" = success
+
+  staging-qa:
+    if: github.event_name == 'workflow_dispatch' && github.actor == 'patryk-roguszewski' && inputs.qa_build_run_id != ''
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/linux-staging-qa.yml
+    with:
+      build_run_id: ${{ inputs.qa_build_run_id }}
+      qa_api_origin: ${{ inputs.qa_api_origin }}
+      qa_vault_id: ${{ inputs.qa_vault_id }}
+      qa_entry_id: ${{ inputs.qa_entry_id }}
+      qa_field: ${{ inputs.qa_field }}
