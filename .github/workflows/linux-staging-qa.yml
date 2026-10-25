@@ -35,7 +35,7 @@ jobs:
   staging:
     if: github.actor == 'patryk-roguszewski'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Resolve the exact tested build
         env:
@@ -93,7 +93,7 @@ jobs:
           # Keep the existing browser-pairing process alive while publishing only its value-free approval URL.
           # shellcheck disable=SC2016
           nohup bash -c '
-            timeout 300 sudo -u palladin-staging-qa /usr/lib/palladin/runtime/palladin-linux-client \
+            timeout 1920 sudo -u palladin-staging-qa /usr/lib/palladin/runtime/palladin-linux-client \
               pair-agent --display-name "Linux Hardened QA $2" >"$1/pair.out" 2>"$1/pair.err"
             printf "%s\n" "$?" >"$1/pair.exit"
           ' -- "$state" "$GITHUB_RUN_ID" >/dev/null 2>&1 &
@@ -130,11 +130,17 @@ jobs:
         run: |
           set -euo pipefail
           state="$RUNNER_TEMP/linux-staging-qa"
-          for _ in $(seq 1 150); do
+          for _ in $(seq 1 965); do
             [[ ! -f "$state/pair.exit" ]] || break
             sleep 2
           done
-          test "$(cat "$state/pair.exit")" = 0
+          pair_exit=$(cat "$state/pair.exit")
+          [[ "$pair_exit" =~ ^(0|[1-9][0-9]{0,2})$ ]] || exit 1
+          (( pair_exit <= 255 )) || exit 1
+          if [[ "$pair_exit" != 0 ]]; then
+            echo "Pairing did not complete (exit status $pair_exit); private output withheld" >&2
+            exit 1
+          fi
           client=/usr/lib/palladin/runtime/palladin-linux-client
           sudo -u palladin-staging-qa "$client" status
           # Read the probe as the runner; the Agent UID cannot traverse its private checkout.

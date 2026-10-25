@@ -213,8 +213,10 @@ different workflow or mismatched commit is rejected. No release-environment
 secrets or signing authority are used.
 
 Start this short separate job when the approver is available. Download its
-`linux-staging-approval` artifact and open the value-free approval URL within five
-minutes. The current staging API alias shares the promoted backend and returns
+`linux-staging-approval` artifact and open the value-free approval URL before the
+request expires. The QA harness allows the runtime's existing 31-minute identity-only
+pairing lease to finish, with a 32-minute process cap; it does not extend server
+expiry or credential-operation authorization. The current staging API alias shares the promoted backend and returns
 `https://panel.palladin.io/agent-pairing/...`; only that exact panel origin is
 accepted by this QA handoff. Approve the new Agent in the intended organization, then approve
 its Exec request for the fixture. The test uses the existing primary-value mapping

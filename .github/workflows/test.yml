@@ -97,7 +97,7 @@ jobs:
           cache: npm
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.403
       - name: Verify frozen contract digests
         working-directory: runtime/contracts/v1
         run: sha256sum --check SOURCE.sha256
