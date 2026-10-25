@@ -31,9 +31,13 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n $version && -n $architecture && -d $binaries && -n $output ]] || usage
 [[ $revision =~ ^[1-9][0-9]*$ ]] || usage
-if [[ $loopback_policy == development && ! $version =~ (^|[.+~])dev[0-9A-Za-z.+~]*$ ]]; then
-  echo 'Error: development loopback packages require an explicitly .dev-labelled version' >&2
-  exit 64
+runtime_version=$version
+if [[ $loopback_policy == development ]]; then
+  if [[ ! $version =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev[0-9A-Za-z.]*$ ]]; then
+    echo 'Error: development loopback packages require an explicitly .dev-labelled version' >&2
+    exit 64
+  fi
+  runtime_version=${BASH_REMATCH[1]}
 fi
 [[ -f $release_manifest && -n $public_key && -n $source_sha ]] || usage
 case "$architecture" in x64) rpm_arch=x86_64 ;; arm64) rpm_arch=aarch64 ;; *) usage ;; esac
@@ -41,7 +45,7 @@ case "$architecture" in x64) rpm_arch=x86_64 ;; arm64) rpm_arch=aarch64 ;; *) us
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 node "$root/scripts/verify-runtime-manifest.mjs" \
   --manifest "$release_manifest" --public-key "$public_key" \
-  --version "$version" --source-sha "$source_sha" \
+  --version "$runtime_version" --source-sha "$source_sha" \
   --architecture "$architecture" --binaries "$binaries"
 top=$(mktemp -d)
 stage=$(mktemp -d)

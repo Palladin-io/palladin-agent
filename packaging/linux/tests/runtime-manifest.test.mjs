@@ -59,21 +59,23 @@ test('rejects absent manifest and invalid signature', (t) => {
   assert.notEqual(f.run().status, 0);
 });
 
-for (const format of ['deb', 'rpm']) {
-  test(`${format} contains the verified runtime manifest with root ownership`, { skip: process.platform !== 'linux' || process.env.PALLADIN_TEST_SYSTEM_PACKAGES !== '1' }, (t) => {
+for (const [format, development] of [['deb', false], ['rpm', false], ['deb', true], ['rpm', true]]) {
+  test(`${format}${development ? " development" : ""} contains the verified runtime manifest with root ownership`, { skip: process.platform !== 'linux' || process.env.PALLADIN_TEST_SYSTEM_PACKAGES !== '1' }, (t) => {
     const architecture = process.arch === 'arm64' ? 'arm64' : 'x64';
     const f = fixture(t, architecture);
     for (const name of ['palladin-linux-service', 'palladin-linux-executor', 'palladin-linux-admin-purge']) {
       writeFileSync(join(f.root, name), 'test executable');
     }
     const output = join(f.root, 'output');
+    const packageVersion = development ? '1.2.3.dev1' : '1.2.3';
     const result = spawnSync('bash', [resolve(`packaging/linux/${format}/build-${format}.sh`),
-      '--version', '1.2.3', '--architecture', architecture, '--binaries', f.root, '--output', output,
+      '--version', packageVersion, '--architecture', architecture, '--binaries', f.root, '--output', output,
       '--release-manifest', f.manifest, '--public-key', f.publicKey, '--source-sha', source,
+      ...(development ? ['--development-loopback'] : []),
     ], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     if (format === 'deb') {
-      const file = join(output, `palladin-runtime_1.2.3-1_${architecture === 'arm64' ? 'arm64' : 'amd64'}.deb`);
+      const file = join(output, `palladin-runtime_${packageVersion}-1_${architecture === 'arm64' ? 'arm64' : 'amd64'}.deb`);
       const listing = spawnSync('dpkg-deb', ['--contents', file], { encoding: 'utf8' });
       assert.equal(listing.status, 0, listing.stderr);
       assert.match(listing.stdout, /-rw-r--r-- root\/root .*\.\/usr\/lib\/palladin\/runtime\/release-signature\.json/);
@@ -81,7 +83,7 @@ for (const format of ['deb', 'rpm']) {
       assert.equal(spawnSync('dpkg-deb', ['--extract', file, extracted]).status, 0);
       assert.equal(readFileSync(join(extracted, 'usr/lib/palladin/runtime/release-signature.json'), 'utf8'), readFileSync(f.manifest, 'utf8'));
     } else {
-      const file = join(output, `palladin-runtime-1.2.3-1.${architecture === 'arm64' ? 'aarch64' : 'x86_64'}.rpm`);
+      const file = join(output, `palladin-runtime-${packageVersion}-1.${architecture === 'arm64' ? 'aarch64' : 'x86_64'}.rpm`);
       const listing = spawnSync('rpm', ['-qp', '--qf', '[%{FILENAMES} %{FILEUSERNAME} %{FILEGROUPNAME} %{FILEMODES:perms} %{FILEDIGESTS}\n]', file], { encoding: 'utf8' });
       assert.equal(listing.status, 0, listing.stderr);
       const digest = createHash('sha256').update(readFileSync(f.manifest)).digest('hex');
