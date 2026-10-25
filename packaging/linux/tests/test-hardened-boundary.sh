@@ -136,6 +136,37 @@ doctor=$(runuser -u "$agent" -- /usr/lib/palladin/runtime/palladin-linux-client 
 grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
 grep -F 'dedicated Agent UID' <<<"$doctor"
 
+manifest=/usr/lib/palladin/runtime/release-signature.json
+cp "$manifest" "$root/original-manifest.json"
+for corruption in missing writable signature; do
+  case "$corruption" in
+    missing) rm "$manifest" ;;
+    writable) chmod 0666 "$manifest" ;;
+    signature)
+      python3 - "$manifest" <<'PYCODE'
+import base64, json, sys
+path = sys.argv[1]
+with open(path) as stream:
+    envelope = json.load(stream)
+envelope['signature'] = base64.b64encode(bytes(64)).decode()
+with open(path, 'w') as stream:
+    json.dump(envelope, stream, separators=(',', ':'))
+PYCODE
+      ;;
+  esac
+  if /usr/lib/palladin/runtime/verify-installation; then
+    echo "Error: installation verification accepted $corruption release manifest" >&2
+    exit 1
+  fi
+  if runuser -u "$agent" -- /usr/lib/palladin/runtime/palladin-linux-client doctor; then
+    echo "Error: broker accepted $corruption release manifest" >&2
+    exit 1
+  fi
+  install -m 0644 -o root -g root "$root/original-manifest.json" "$manifest"
+done
+/usr/lib/palladin/runtime/verify-installation
+echo 'runtime-manifest=required root-owned signature-verified'
+
 chmod 0711 "$root"
 install -o root -g root -m 0555 \
   "$test_dir/process-scan-probe.mjs" "$root/process-scan-probe.mjs"

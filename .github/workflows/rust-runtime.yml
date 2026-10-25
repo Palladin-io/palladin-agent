@@ -441,19 +441,6 @@ jobs:
             if (JSON.stringify(manifest.libc) !== JSON.stringify(["glibc"])) process.exit(1);
             if (manifest.scripts !== undefined) process.exit(1);
           ' "$stage/package.json" "$ARCHITECTURE"
-          output="$RUNNER_TEMP/linux-packages/base"
-          version=$(node -p 'require("./package.json").version')
-          packaging/linux/deb/build-deb.sh \
-            --version "$version" --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
-          packaging/linux/rpm/build-rpm.sh \
-            --version "$version" --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
-          test "$(find "$output" -name '*.deb' | wc -l)" -eq 1
-          test "$(find "$output" -name '*.rpm' | wc -l)" -eq 1
-          output="$RUNNER_TEMP/linux-packages/upgrade"
-          packaging/linux/deb/build-deb.sh \
-            --version 0.1.1 --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
-          packaging/linux/rpm/build-rpm.sh \
-            --version 0.1.1 --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
       - name: Build and run the native musl npm package on Alpine
         working-directory: .
         shell: bash
@@ -486,6 +473,7 @@ jobs:
           done
           npm ci --ignore-scripts --workspaces=false
           npm run build
+          PALLADIN_TEST_SYSTEM_PACKAGES=1 node --test packaging/linux/tests/runtime-manifest.test.mjs packaging/linux/tests/install-host.test.mjs
           source_sha=${{ steps.ci_policy_key.outputs.source_sha }}
           version=$(node -p 'require("./package.json").version')
           policy="$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
@@ -495,6 +483,18 @@ jobs:
             --private-key "${{ steps.ci_policy_key.outputs.private_key }}" \
             --public-key "${{ steps.ci_policy_key.outputs.public_key_file }}" \
             --output-bundle "$policy"
+          gnu="runtime/target/${{ matrix.gnu_target }}/release"
+          for revision in 1 2; do
+            family=base
+            if [[ $revision -eq 2 ]]; then family=upgrade; fi
+            for format in deb rpm; do
+              "packaging/linux/$format/build-$format.sh" \
+                --version "$version" --revision "$revision" --architecture "$ARCHITECTURE" \
+                --binaries "$gnu" --output "$RUNNER_TEMP/linux-packages/$family" \
+                --release-manifest "$policy" --public-key "${{ steps.ci_policy_key.outputs.public_key }}" \
+                --source-sha "$source_sha"
+            done
+          done
           rm -f "${{ steps.ci_policy_key.outputs.private_key }}"
           node packaging/npm/configure-version-policy-build.mjs \
             --public-key "${{ steps.ci_policy_key.outputs.public_key }}" \
@@ -512,13 +512,15 @@ jobs:
               expected=${{ matrix.musl_target == 'x86_64-unknown-linux-musl' && 'x86_64' || 'aarch64' }}
               test "$(uname -m)" = "$expected"
               node dist/bin/palladin.js --version
-              node dist/bin/palladin.js doctor | grep -F "standalone-security-tier: Convenience"
-              node dist/bin/palladin.js doctor | grep -F \
-                "hardened-candidate: unsupported - Alpine/OpenRC Hardened is not available in the MVP"
+              if node dist/bin/palladin.js doctor >/tmp/doctor.out 2>/tmp/doctor.err; then
+                echo "Alpine unexpectedly accepted a Hardened operation" >&2
+                exit 1
+              fi
+              grep -F "Linux Hardened requires" /tmp/doctor.err
               export HOME=/tmp/palladin-home
               install -d -m 0700 "$HOME"
               if node dist/bin/palladin.js init >/tmp/init.out 2>/tmp/init.err; then
-                echo "init unexpectedly succeeded without Secret Service" >&2
+                echo "init unexpectedly succeeded without the Hardened broker" >&2
                 exit 1
               fi
               test ! -e "$HOME/.palladin/agent.key"
@@ -563,9 +565,6 @@ jobs:
           sudo sysctl -w kernel.yama.ptrace_scope=0
           deb=$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)
           sudo apt-get install --yes "$deb"
-          policy="$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
-          sudo install -m 0644 -o root -g root \
-            "$policy" /usr/lib/palladin/runtime/release-signature.json
           sudo packaging/linux/tests/test-hardened-boundary.sh
 
   native-platform-gate:

@@ -228,13 +228,13 @@ describe('Linux hardened package boundary', () => {
     const workflow = read('.github/workflows/rust-runtime.yml');
     expect(workflow).toContain('runner: ubuntu-24.04\n            gnu_target: x86_64-unknown-linux-gnu');
     expect(workflow).toContain('runner: ubuntu-24.04-arm\n            gnu_target: aarch64-unknown-linux-gnu');
-    expect(workflow).toContain('packaging/linux/deb/build-deb.sh');
-    expect(workflow).toContain('packaging/linux/rpm/build-rpm.sh');
+    expect(workflow).toContain('for format in deb rpm; do');
+    expect(workflow).toContain('packaging/linux/$format/build-$format.sh');
     expect(workflow).toContain('--libc musl');
     expect(workflow).toContain('node:22-alpine3.22');
     expect(workflow).toContain('unexpectedly needs a dynamic library');
     expect(workflow).toContain('node dist/bin/palladin.js doctor');
-    expect(workflow).toContain('init unexpectedly succeeded without Secret Service');
+    expect(workflow).toContain('init unexpectedly succeeded without the Hardened broker');
     expect(workflow).toContain('test-hardened-boundary.sh');
     expect(workflow).toContain('test-package-family.sh debian');
     expect(workflow).toContain('test-package-family.sh ubuntu');

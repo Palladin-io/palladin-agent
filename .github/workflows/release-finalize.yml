@@ -240,6 +240,26 @@ jobs:
           (cd "$assets" && sha256sum --check SHA256SUMS)
           (cd "$assets" && sha256sum --check SHA256SUMS-agent)
 
+          for architecture in x64 arm64; do
+            system="$RUNNER_TEMP/verify-linux-$architecture"
+            mkdir -m 700 "$system"
+            if [[ "$architecture" == x64 ]]; then deb_arch=amd64; rpm_arch=x86_64; else deb_arch=arm64; rpm_arch=aarch64; fi
+            for filename in "palladin-runtime_$VERSION-1_$deb_arch.deb" "palladin-runtime-$VERSION-1.$rpm_arch.rpm" \
+              "release-manifest-linux-system-$architecture.json" "SHA256SUMS-linux-system-$architecture" \
+              "sbom-linux-system-$architecture.spdx.json"; do
+              cp "$assets/$filename" "$system/$filename"
+              gh attestation verify "$system/$filename" --repo "$GITHUB_REPOSITORY" \
+                --bundle "$assets/linux-system-$architecture.intoto.jsonl" \
+                --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
+                --source-digest "$SOURCE_SHA" --source-ref "refs/tags/$RELEASE_TAG" --deny-self-hosted-runners
+            done
+            node packaging/npm/verify-release-manifest.mjs \
+              --artifacts "$system" --version "$VERSION" --source-sha "$SOURCE_SHA" \
+              --sbom "$system/sbom-linux-system-$architecture.spdx.json" \
+              --manifest "$system/release-manifest-linux-system-$architecture.json" \
+              --checksums "$system/SHA256SUMS-linux-system-$architecture"
+          done
+
           node - "$assets/release-manifest.json" "$assets/release-manifest-agent.json" <<'NODE'
           const fs = require('node:fs');
           const manifests = process.argv.slice(2).map((path) => JSON.parse(fs.readFileSync(path, 'utf8')));
@@ -250,6 +270,7 @@ jobs:
           NODE
 
           node - "$assets/release-manifest.json" "$assets/release-manifest-agent.json" \
+            "$assets/release-manifest-linux-system-x64.json" "$assets/release-manifest-linux-system-arm64.json" \
             >"$RUNNER_TEMP/expected-release-assets.txt" <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
@@ -260,6 +281,11 @@ jobs:
             'release-manifest-agent.json',
             'SHA256SUMS-agent',
             'version-policy-candidate.json',
+            ...['x64', 'arm64'].flatMap(architecture => [
+              `release-manifest-linux-system-${architecture}.json`,
+              `SHA256SUMS-linux-system-${architecture}`,
+              `linux-system-${architecture}.intoto.jsonl`,
+            ]),
           ]);
           if (process.env.VERSION !== '0.0.9') {
             for (const name of [
@@ -330,6 +356,7 @@ jobs:
             case "$filename" in
               adversarial-report.json|adversarial-report.md|adversarial-approval.json) continue ;;
               lifecycle-report.json|lifecycle-report.md|lifecycle-approval.json) continue ;;
+              linux-system-*.intoto.jsonl) continue ;;
             esac
             gh attestation verify "$assets/$filename" --repo "$GITHUB_REPOSITORY"
           done <"$RUNNER_TEMP/expected-release-assets.txt"

@@ -77,8 +77,7 @@ seed_compatible_state() {
   compat_uid=$(docker exec "$container" id -u "$compat_agent")
   compat_principal=$(docker exec "$container" sed -n 's/^principal=//p' "/etc/palladin/agents.d/$compat_uid")
   [[ $compat_principal =~ ^[0-9a-f]{32}$ ]]
-  docker exec "$container" install -m 0644 -o root -g root \
-    /version-policy.json /usr/lib/palladin/runtime/release-signature.json
+  docker exec "$container" cmp /version-policy.json /usr/lib/palladin/runtime/release-signature.json
   agents_root=/var/lib/palladin-runtime/v1/agents
   docker exec "$container" install -d -m 0700 -o palladin-runtime -g palladin-runtime "$agents_root"
   docker exec "$container" runuser -u "$compat_agent" -- \

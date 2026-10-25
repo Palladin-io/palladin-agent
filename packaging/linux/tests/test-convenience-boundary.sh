@@ -30,9 +30,13 @@ echo 'tier=Convenience secret-service-boundary=same-uid expected=not-process-iso
 cc -Wall -Wextra -Werror -shared -fPIC \
   -DPALLADIN_PROBE_DIRECTORY="\"$root\"" \
   "$(dirname "$0")/ld-preload-probe.c" -o "$root/preload.so"
-LD_PRELOAD="$root/preload.so" node "$launcher" doctor >/dev/null
+if LD_PRELOAD="$root/preload.so" node "$launcher" doctor >"$root/doctor.out" 2>"$root/doctor.err"; then
+  echo 'Error: an unprovisioned npm client unexpectedly opened the runtime' >&2
+  exit 1
+fi
+grep -F 'Linux Hardened requires' "$root/doctor.err"
 [[ -f $root/node.hit ]]
 [[ -f $root/client.hit ]]
 [[ ! -e $root/worker.hit ]]
-echo 'tier=Convenience ld-preload=node-and-client expected=same-uid-loader-control'
-echo 'tier=Convenience ld-preload=sealed-worker-denied expected=env-cleared-before-secret-bearing-worker'
+echo 'npm-client=unprivileged ld-preload=node-and-client expected=same-uid-loader-control'
+echo 'npm-client=fail-closed secret-worker=not-started'

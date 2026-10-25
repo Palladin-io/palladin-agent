@@ -1,6 +1,6 @@
 Name: palladin-runtime
 Version: @VERSION@
-Release: 1%{?dist}
+Release: @REVISION@%{?dist}
 Summary: Hardened native runtime broker for dedicated Palladin Agent UIDs
 License: Apache-2.0
 URL: https://palladin.io
