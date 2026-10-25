@@ -5525,11 +5525,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/rustls-webpki@0.103.15",
+      "bom-ref": "pkg:cargo/rustls-webpki@0.103.16",
       "type": "library",
       "name": "rustls-webpki",
-      "version": "0.103.15",
-      "purl": "pkg:cargo/rustls-webpki@0.103.15",
+      "version": "0.103.16",
+      "purl": "pkg:cargo/rustls-webpki@0.103.16",
       "licenses": [
         {
           "expression": "ISC"
@@ -6809,11 +6809,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/tokio@1.53.1",
+      "bom-ref": "pkg:cargo/tokio@1.53.3",
       "type": "library",
       "name": "tokio",
-      "version": "1.53.1",
-      "purl": "pkg:cargo/tokio@1.53.1",
+      "version": "1.53.3",
+      "purl": "pkg:cargo/tokio@1.53.3",
       "licenses": [
         {
           "expression": "MIT"
@@ -7649,11 +7649,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/webpki-roots@1.0.9",
+      "bom-ref": "pkg:cargo/webpki-roots@1.0.10",
       "type": "library",
       "name": "webpki-roots",
-      "version": "1.0.9",
-      "purl": "pkg:cargo/webpki-roots@1.0.9",
+      "version": "1.0.10",
+      "purl": "pkg:cargo/webpki-roots@1.0.10",
       "licenses": [
         {
           "expression": "CDLA-Permissive-2.0"

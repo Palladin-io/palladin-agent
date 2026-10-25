@@ -155,6 +155,66 @@ impl SecretStore for MemoryStore {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn pending_inject_does_not_prepare_expiring_browser_handles() {
+    let root = tempfile::tempdir().expect("isolated state");
+    let runtime = service(&root.path().join("state"), MemoryStore::default());
+    let api = ScriptedApi::start().await;
+    api.enqueue(MockResponse::active(AGENT_ID, "Synthetic Inject Agent"));
+    runtime
+        .connect(
+            Some("inject"),
+            OrganizationApiKey::new(ORGANIZATION_API_KEY.to_owned()),
+            ApiHost::parse(api.host()).unwrap(),
+            None,
+            None,
+            "e2e-host",
+            &operation_connection(),
+        )
+        .await
+        .expect("connect synthetic agent");
+    runtime
+        .provision_browser_host_identity()
+        .expect("isolated host identity");
+    api.enqueue(MockResponse::json(202,
+        r#"{"access":"pending","grantId":"grant-inject","created":true,"pollIntervalMs":5000,"maxWaitMs":30000}"#));
+    let connection = operation_connection();
+    let provider = palladin_browser_bridge::ProviderId::parse("extension").unwrap();
+    let result = palladin_inject::inject(
+        &runtime,
+        palladin_inject::InjectOperation {
+            surface: InvocationSurface::Cli,
+            profile: Some("inject"),
+            hostname: "e2e-host",
+            connection: &connection,
+            vault_id: VAULT_ID,
+            entry_id: ENTRY_ID,
+            reason: None,
+            wait: delivery_request(0).wait,
+            provider: &provider,
+            target: Some(palladin_inject::BrowserTarget {
+                tab_id: 7,
+                page_url: "https://signin.example.test/login",
+                browser_session: None,
+            }),
+            fallback_form: None,
+        },
+        &CancellationToken::new(),
+        |_| {},
+    )
+    .await;
+    assert!(
+        matches!(
+            result,
+            Ok(palladin_inject::InjectExecution::NotGranted(
+                CredentialAccess::Pending { .. }
+            ))
+        ),
+        "pending authorization must not require or reserve a browser form: {result:?}"
+    );
+}
+
 #[tokio::test]
 async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leaks() {
     let fixture = LegacyFixture::copy();
