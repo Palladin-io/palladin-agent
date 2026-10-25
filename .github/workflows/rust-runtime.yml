@@ -526,6 +526,21 @@ jobs:
               test ! -e "$HOME/.palladin/agent.key"
               test ! -e "$HOME/.palladin/config.json"
             '
+      - name: Verify native UID, ptrace, loader, and peer boundaries
+        working-directory: .
+        shell: bash
+        env:
+          ARCHITECTURE: ${{ matrix.gnu_target == 'x86_64-unknown-linux-gnu' && 'x64' || 'arm64' }}
+        run: |
+          set -euo pipefail
+          packaging/linux/tests/test-convenience-boundary.sh \
+            --launcher-root "$RUNNER_TEMP/alpine-launcher"
+          sudo sysctl -w kernel.yama.ptrace_scope=0
+          sudo packaging/linux/tests/test-package-family.sh native-ubuntu \
+            "$(find "$RUNNER_TEMP/linux-packages/base" -name '*.deb' -print -quit)" \
+            "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)" \
+            "runtime/target/${{ matrix.gnu_target }}/release/examples/package_state_fixture" \
+            "$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
       - name: Install, enroll, run MCP, update, roll back, reinstall, purge, and uninstall
         working-directory: .
         shell: bash
@@ -551,21 +566,6 @@ jobs:
           packaging/linux/tests/test-package-family.sh rocky9 \
             "$(find "$RUNNER_TEMP/linux-packages/base" -name '*.rpm' -print -quit)" \
             "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.rpm' -print -quit)" \
-            "runtime/target/${{ matrix.gnu_target }}/release/examples/package_state_fixture" \
-            "$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
-      - name: Verify native UID, ptrace, loader, and peer boundaries
-        working-directory: .
-        shell: bash
-        env:
-          ARCHITECTURE: ${{ matrix.gnu_target == 'x86_64-unknown-linux-gnu' && 'x64' || 'arm64' }}
-        run: |
-          set -euo pipefail
-          packaging/linux/tests/test-convenience-boundary.sh \
-            --launcher-root "$RUNNER_TEMP/alpine-launcher"
-          sudo sysctl -w kernel.yama.ptrace_scope=0
-          sudo packaging/linux/tests/test-package-family.sh native-ubuntu \
-            "$(find "$RUNNER_TEMP/linux-packages/base" -name '*.deb' -print -quit)" \
-            "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)" \
             "runtime/target/${{ matrix.gnu_target }}/release/examples/package_state_fixture" \
             "$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
 

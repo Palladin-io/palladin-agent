@@ -2,7 +2,7 @@ FROM rockylinux:9
 
 ENV container=docker
 RUN dnf install --assumeyes \
-        systemd polkit shadow-utils util-linux python3 gcc glibc-devel procps-ng findutils libcap \
+        systemd polkit shadow-utils util-linux python3 gcc glibc-devel procps-ng findutils diffutils libcap \
         nodejs openssl \
     && dnf clean all
 
