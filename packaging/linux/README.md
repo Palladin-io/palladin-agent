@@ -198,3 +198,15 @@ integration evidence; native hosted systemd jobs provide the distinct UID,
 ptrace, executor and authorization boundary evidence. Synthetic-state lifecycle
 fixtures must not be reported as actual API enrollment. Live staging enrollment,
 MCP and non-secret Exec remain separate acceptance requirements.
+
+The owner can dispatch `Rust Runtime` with `linux_staging_qa=true`, an explicit
+staging API origin, and the Vault ID, Entry ID and field label of a fixture known
+to contain only fictional data. This opt-in x64 test uses the same native CI
+packages and a fresh dedicated UID; it does not use release-environment secrets
+or change release protection. Download the `linux-staging-approval` artifact
+while the job is running and open its value-free approval URL within five
+minutes. Approve the new Agent in the intended staging organization, then approve
+its Exec request for that fixture. The test checks enrollment, CLI, MCP and a
+nonempty injected field without printing the value. It purges local authorization
+on exit; revoke the disposable backend Agent in the panel after the run. This is
+CI-build integration evidence, not production-signature or publication evidence.
