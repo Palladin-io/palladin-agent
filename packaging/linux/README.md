@@ -136,6 +136,10 @@ An existing MCP process must be restarted after an update.
 
 ## Update, reinstall and transition from Convenience
 
+Package replacement first stops the broker, its MCP workers and executor activation.
+A failed replacement leaves protected operations unavailable until the package is
+repaired. Existing Agent identities remain preserved.
+
 For an update, repeat the authenticated package download/install with the new
 release and update npm to the same version if used. Reinstallation uses the same
 verified package. Do not run `authorize` again: upgrades/reinstalls preserve the

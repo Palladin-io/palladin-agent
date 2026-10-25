@@ -705,7 +705,10 @@ jobs:
           smoke="$RUNNER_TEMP/live-policy-smoke"
           mkdir -p "$smoke"
           npm install --prefix "$smoke" --ignore-scripts --package-lock "$meta"
-          if ! node "$smoke/node_modules/@palladin/cli/dist/bin/palladin.js" \
+          node "$smoke/node_modules/@palladin/cli/dist/bin/palladin.js" --version \
+            >"$RUNNER_TEMP/live-policy.version"
+          test "$(cat "$RUNNER_TEMP/live-policy.version")" = "palladin $INPUTS_VERSION"
+          if ! "$smoke/node_modules/@palladin/runtime-linux-x64-gnu/bin/palladin-worker" \
             verify-release-policy --policy "$bundle" \
             >"$RUNNER_TEMP/live-policy.stdout" 2>"$RUNNER_TEMP/live-policy.stderr"; then
             sed -n '1,20p' "$RUNNER_TEMP/live-policy.stderr" >&2
