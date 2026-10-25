@@ -200,8 +200,9 @@ fixtures must not be reported as actual API enrollment. Live staging enrollment,
 MCP and non-secret Exec remain separate acceptance requirements.
 
 The owner can dispatch `Rust Runtime` with `linux_staging_qa=true`, an explicit
-staging API origin, and the Vault ID, Entry ID and field label of a fixture known
-to contain only fictional data. This opt-in x64 test uses the same native CI
+staging API origin, and the Vault ID and Entry ID of a fixture known to contain
+only fictional data. The test uses its primary value (`CLAW_SECRET`); an optional
+field label selects a different fictional field. This opt-in x64 test uses the same native CI
 packages and a fresh dedicated UID; it does not use release-environment secrets
 or change release protection. Download the `linux-staging-approval` artifact
 while the job is running and open its value-free approval URL within five

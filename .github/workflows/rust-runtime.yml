@@ -19,7 +19,7 @@ on:
         description: Entry containing only fictional values
         type: string
       qa_field:
-        description: Fictional field label to test without displaying its value
+        description: Optional fictional field label (defaults to the primary value)
         type: string
 
 permissions:
@@ -572,7 +572,6 @@ jobs:
           for identifier in "$QA_VAULT_ID" "$QA_ENTRY_ID"; do
             [[ "$identifier" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
           done
-          test -n "$QA_FIELD"
           test "${#QA_FIELD}" -le 128
           umask 077
           state="$RUNNER_TEMP/linux-staging-qa"
@@ -635,10 +634,16 @@ jobs:
           # shellcheck disable=SC2024
           sudo -u palladin-staging-qa "$(command -v node)" --input-type=module - "$client" \
             < packaging/linux/tests/mcp-stdio-smoke.mjs
+          mappings=()
+          probe_variable=CLAW_SECRET
+          if [[ -n "$QA_FIELD" ]]; then
+            mappings=(--env "PALLADIN_QA_FIXTURE=$QA_FIELD")
+            probe_variable=PALLADIN_QA_FIXTURE
+          fi
           sudo -u palladin-staging-qa "$client" exec "$QA_VAULT_ID" "$QA_ENTRY_ID" \
             --reason 'Owner-approved Linux Hardened QA on fictional data' \
-            --wait 5m --env "PALLADIN_QA_FIXTURE=$QA_FIELD" -- \
-            /usr/bin/python3 -I -c 'import os,sys; sys.exit(0 if os.environ.get("PALLADIN_QA_FIXTURE") else 1)'
+            --wait 5m "${mappings[@]}" -- \
+            /usr/bin/python3 -I -c 'import os,sys; sys.exit(0 if os.environ.get(sys.argv[1]) else 1)' "$probe_variable"
           echo 'staging-pairing-cli-mcp-exec=passed; credential-value-not-emitted'
       - name: Remove the disposable staging Agent local authorization
         if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_staging_qa && github.actor == 'patryk-roguszewski' && matrix.gnu_target == 'x86_64-unknown-linux-gnu'
