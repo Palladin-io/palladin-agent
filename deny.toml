@@ -6,6 +6,14 @@ all-features = true
 
 [advisories]
 ignore = [
+    # Owner-approved on 2026-10-25 for the existing Secret Service stack only.
+    # Hardened Linux uses the broker; explicit source-development and legacy
+    # cleanup retain these dependencies pending migration to maintained packages.
+    # scripts/check_cargo_exception_expiry.py rejects these on 2026-11-25 UTC.
+    # Run it before cargo-deny; CI and release finalization enforce the deadline.
+    { id = "RUSTSEC-2026-0370", reason = "Temporary owner-approved zvariant maintenance exception pending Secret Service migration" },
+    { id = "RUSTSEC-2026-0371", reason = "Temporary owner-approved zbus_names maintenance exception pending Secret Service migration" },
+    { id = "RUSTSEC-2026-0372", reason = "Temporary owner-approved zvariant_derive maintenance exception pending Secret Service migration" },
     # The runtime uses rsa only to parse public keys and verify PKCS#1 v1.5
     # consent signatures. Private-key operations exist only in local unit tests,
     # so the remote timing/key-recovery precondition does not exist here. Remove
