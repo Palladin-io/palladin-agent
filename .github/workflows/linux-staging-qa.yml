@@ -1,0 +1,164 @@
+name: Linux staging acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful owner-dispatched Rust Runtime run of this same revision
+        required: true
+        type: string
+      qa_api_origin:
+        description: Explicit staging API origin for the disposable test Agent
+        required: true
+        type: string
+      qa_vault_id:
+        description: Vault containing the owner-approved fictional fixture
+        required: true
+        type: string
+      qa_entry_id:
+        description: Entry containing only fictional values
+        required: true
+        type: string
+      qa_field:
+        description: Optional fictional field label (defaults to the primary value)
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: linux-staging-qa
+  cancel-in-progress: false
+
+jobs:
+  staging:
+    if: github.actor == 'patryk-roguszewski'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Resolve the exact tested build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID" > "$RUNNER_TEMP/build-run.json"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+      - name: Verify build authority and download only the tested package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_cargo_exception_expiry.py
+          node packaging/linux/tests/verify-qa-build.mjs "$RUNNER_TEMP/build-run.json" "$SOURCE_SHA" "$GITHUB_REPOSITORY"
+          gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name linux-hardened-qa-x64 --dir "$RUNNER_TEMP/linux-packages/base"
+      - name: Start owner-approved staging pairing
+        working-directory: .
+        env:
+          QA_API_ORIGIN: ${{ inputs.qa_api_origin }}
+          QA_VAULT_ID: ${{ inputs.qa_vault_id }}
+          QA_ENTRY_ID: ${{ inputs.qa_entry_id }}
+          QA_FIELD: ${{ inputs.qa_field }}
+        run: |
+          set -euo pipefail
+          test "$QA_API_ORIGIN" = https://api.stage.palladin.io
+          for identifier in "$QA_VAULT_ID" "$QA_ENTRY_ID"; do
+            [[ "$identifier" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+          done
+          test "${#QA_FIELD}" -le 128
+          umask 077
+          state="$RUNNER_TEMP/linux-staging-qa"
+          mkdir "$state"
+          shopt -s nullglob
+          packages=("$RUNNER_TEMP/linux-packages/base"/*.deb)
+          test "${#packages[@]}" -eq 1
+          test -f "${packages[0]}" && test ! -L "${packages[0]}"
+          sudo apt-get install --yes "${packages[0]}"
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin palladin-staging-qa
+          sudo /usr/lib/palladin/runtime/palladin-manage-agent-uid \
+            authorize palladin-staging-qa staging-qa "$QA_API_ORIGIN" --dedicated
+          # Pairing creates its fresh profile; the broker supplies the administrator-bound API host.
+          # Keep the existing browser-pairing process alive while publishing only its value-free approval URL.
+          # shellcheck disable=SC2016
+          nohup bash -c '
+            timeout 300 sudo -u palladin-staging-qa /usr/lib/palladin/runtime/palladin-linux-client \
+              pair-agent --display-name "Linux Hardened QA $2" >"$1/pair.out" 2>"$1/pair.err"
+            printf "%s\n" "$?" >"$1/pair.exit"
+          ' -- "$state" "$GITHUB_RUN_ID" >/dev/null 2>&1 &
+          python3 - "$state" <<'PYTHON'
+          import pathlib, re, sys, time
+          state = pathlib.Path(sys.argv[1])
+          pattern = re.compile(r'^Palladin approval page \(open manually if needed\): (https://stage\.palladin\.io/agent-pairing/[A-Za-z0-9_-]{1,128})$', re.M)
+          for _ in range(60):
+              path = state / 'pair.err'
+              if path.exists():
+                  match = pattern.search(path.read_text())
+                  if match:
+                      (state / 'approval-url.txt').write_text(match.group(1) + '\n')
+                      break
+              if (state / 'pair.exit').exists():
+                  raise SystemExit('Pairing failed before browser handoff; child output withheld')
+              time.sleep(1)
+          else:
+              raise SystemExit('Timed out waiting for staging pairing handoff')
+          PYTHON
+      - name: Publish the value-free staging approval link
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-staging-approval
+          path: ${{ runner.temp }}/linux-staging-qa/approval-url.txt
+          if-no-files-found: error
+          retention-days: 1
+      - name: Verify real staging enrollment, MCP and non-secret Exec
+        working-directory: .
+        env:
+          QA_VAULT_ID: ${{ inputs.qa_vault_id }}
+          QA_ENTRY_ID: ${{ inputs.qa_entry_id }}
+          QA_FIELD: ${{ inputs.qa_field }}
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/linux-staging-qa"
+          for _ in $(seq 1 150); do
+            [[ ! -f "$state/pair.exit" ]] || break
+            sleep 2
+          done
+          test "$(cat "$state/pair.exit")" = 0
+          client=/usr/lib/palladin/runtime/palladin-linux-client
+          sudo -u palladin-staging-qa "$client" status
+          # Read the probe as the runner; the Agent UID cannot traverse its private checkout.
+          # shellcheck disable=SC2024
+          sudo -u palladin-staging-qa "$(command -v node)" --input-type=module - "$client" \
+            < packaging/linux/tests/mcp-stdio-smoke.mjs
+          mappings=()
+          probe_variable=CLAW_SECRET
+          if [[ -n "$QA_FIELD" ]]; then
+            mappings=(--env "PALLADIN_QA_FIXTURE=$QA_FIELD")
+            probe_variable=PALLADIN_QA_FIXTURE
+          fi
+          sudo -u palladin-staging-qa "$client" exec "$QA_VAULT_ID" "$QA_ENTRY_ID" \
+            --reason 'Owner-approved Linux Hardened QA on fictional data' \
+            --wait 5m "${mappings[@]}" -- \
+            /usr/bin/python3 -I -c 'import os,sys; sys.exit(0 if os.environ.get(sys.argv[1]) else 1)' "$probe_variable"
+          echo 'staging-pairing-cli-mcp-exec=passed; credential-value-not-emitted'
+      - name: Remove the disposable staging Agent local authorization
+        if: always()
+        working-directory: .
+        run: |
+          set -euo pipefail
+          if id palladin-staging-qa >/dev/null 2>&1; then
+            sudo /usr/lib/palladin/runtime/palladin-manage-agent-uid revoke-purge palladin-staging-qa --confirm-purge
+            sudo userdel palladin-staging-qa
+          fi
+          echo 'The staging organization owner must revoke the disposable backend Agent after QA.'

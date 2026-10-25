@@ -199,15 +199,22 @@ ptrace, executor and authorization boundary evidence. Synthetic-state lifecycle
 fixtures must not be reported as actual API enrollment. Live staging enrollment,
 MCP and non-secret Exec remain separate acceptance requirements.
 
-The owner can dispatch `Rust Runtime` with `linux_staging_qa=true`, an explicit
-staging API origin, and the Vault ID and Entry ID of a fixture known to contain
-only fictional data. The test uses its primary value (`CLAW_SECRET`); an optional
-field label selects a different fictional field. This opt-in x64 test uses the same native CI
-packages and a fresh dedicated UID; it does not use release-environment secrets
-or change release protection. Download the `linux-staging-approval` artifact
-while the job is running and open its value-free approval URL within five
+After a successful owner-dispatched `Rust Runtime` run, its `linux-hardened-qa-x64` artifact retains
+only the tested DEB for one day. The owner can dispatch `Linux staging acceptance`
+from the same source revision, supplying that build run ID, an explicit staging
+API origin, and the Vault/Entry IDs of a fixture containing only fictional data.
+The workflow verifies the successful build's repository, workflow and source SHA
+against its own revision before installing the package. PR merge builds are not
+accepted as exact-revision QA packages. A fork, failed build,
+different workflow or mismatched commit is rejected. No release-environment
+secrets or signing authority are used.
+
+Start this short separate job when the approver is available. Download its
+`linux-staging-approval` artifact and open the value-free approval URL within five
 minutes. Approve the new Agent in the intended staging organization, then approve
-its Exec request for that fixture. The test checks enrollment, CLI, MCP and a
-nonempty injected field without printing the value. It purges local authorization
-on exit; revoke the disposable backend Agent in the panel after the run. This is
-CI-build integration evidence, not production-signature or publication evidence.
+its Exec request for the fixture. The test uses the existing primary-value mapping
+(`CLAW_SECRET`); an optional field label selects another fictional field. It
+checks CLI/MCP and nonempty injection without printing the value, then purges local
+authorization. Revoke any created disposable backend Agent in the panel after QA.
+A timed-out job cannot be resumed through its old approval URL. This is CI-build
+integration evidence, not production-signature or publication evidence.
