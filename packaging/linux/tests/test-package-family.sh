@@ -2,11 +2,18 @@
 set -euo pipefail
 
 usage() {
-  echo 'Usage: test-package-family.sh <ubuntu|debian|fedora|rocky9> BASE_PACKAGE UPGRADE_PACKAGE STATE_FIXTURE VERSION_POLICY' >&2
+  echo 'Usage: test-package-family.sh <ubuntu|debian|fedora|rocky9|native-ubuntu> BASE_PACKAGE UPGRADE_PACKAGE STATE_FIXTURE VERSION_POLICY' >&2
   exit 64
 }
 
 family=${1:-}
+native=false
+if [[ $family == native-ubuntu ]]; then
+  native=true
+  family=ubuntu
+  [[ $(id -u) -eq 0 && $(cat /proc/1/comm) == systemd ]] || usage
+  ! systemd-detect-virt --container --quiet || usage
+fi
 base=${2:-}
 upgrade=${3:-}
 state_fixture=${4:-}
@@ -21,6 +28,10 @@ extension=deb
 [[ $family == fedora || $family == rocky9 ]] && extension=rpm
 cleanup() {
   status=$?
+  if $native; then
+    userdel palladin-package-state >/dev/null 2>&1 || true
+    return "$status"
+  fi
   if [[ $status -ne 0 ]]; then
     docker exec "$container" journalctl --no-pager -n 200 2>/dev/null || true
   fi
@@ -30,6 +41,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+if ! $native; then
 docker build \
   --file "$root/packaging/linux/tests/containers/$family.Dockerfile" \
   --tag "$image" "$root/packaging/linux/tests/containers"
@@ -62,6 +74,28 @@ if [[ $state != running && $state != degraded ]]; then
   exit 1
 fi
 
+fi
+
+target_exec() {
+  if $native; then
+    "$@"
+  else
+    docker exec "$container" "$@"
+  fi
+}
+base_target=/packages/base.$extension
+upgrade_target=/packages/upgrade.$extension
+fixture_target=/state-fixture
+policy_target=/version-policy.json
+source_target=/source
+if $native; then
+  base_target=$(realpath "$base")
+  upgrade_target=$(realpath "$upgrade")
+  fixture_target=$(realpath "$state_fixture")
+  policy_target=$(realpath "$version_policy")
+  source_target=$root
+fi
+
 compat_agent=palladin-package-state
 compat_uid=
 compat_principal=
@@ -71,122 +105,120 @@ compat_policy_state_hash=
 
 seed_compatible_state() {
   local agents_root broker_gid broker_uid
-  docker exec "$container" useradd --system --no-create-home --shell /usr/sbin/nologin "$compat_agent"
-  docker exec "$container" /usr/lib/palladin/runtime/palladin-manage-agent-uid \
+  target_exec useradd --system --no-create-home --shell /usr/sbin/nologin "$compat_agent"
+  target_exec /usr/lib/palladin/runtime/palladin-manage-agent-uid \
     authorize "$compat_agent" package-state https://api.stage.palladin.io --dedicated
-  compat_uid=$(docker exec "$container" id -u "$compat_agent")
-  compat_principal=$(docker exec "$container" sed -n 's/^principal=//p' "/etc/palladin/agents.d/$compat_uid")
+  compat_uid=$(target_exec id -u "$compat_agent")
+  compat_principal=$(target_exec sed -n 's/^principal=//p' "/etc/palladin/agents.d/$compat_uid")
   [[ $compat_principal =~ ^[0-9a-f]{32}$ ]]
-  docker exec "$container" cmp /version-policy.json /usr/lib/palladin/runtime/release-signature.json
+  target_exec cmp "$policy_target" /usr/lib/palladin/runtime/release-signature.json
   agents_root=/var/lib/palladin-runtime/v1/agents
-  docker exec "$container" install -d -m 0700 -o palladin-runtime -g palladin-runtime "$agents_root"
-  docker exec "$container" runuser -u "$compat_agent" -- \
+  target_exec install -d -m 0700 -o palladin-runtime -g palladin-runtime "$agents_root"
+  target_exec runuser -u "$compat_agent" -- \
     /usr/lib/palladin/runtime/palladin-linux-client init \
     | grep -F 'Palladin initialized: package-state'
-  broker_uid=$(docker exec "$container" id -u palladin-runtime)
-  broker_gid=$(docker exec "$container" id -g palladin-runtime)
-  docker exec "$container" setpriv \
+  broker_uid=$(target_exec id -u palladin-runtime)
+  broker_gid=$(target_exec id -g palladin-runtime)
+  target_exec setpriv \
     --reuid "$broker_uid" --regid "$broker_gid" --clear-groups -- \
-    /state-fixture seed \
+    "$fixture_target" seed \
     "/var/lib/palladin-runtime/v1/agents/$compat_principal" \
     /var/lib/palladin-runtime/v1/master.key \
     "$compat_principal"
-  compat_master_hash=$(docker exec "$container" sha256sum /var/lib/palladin-runtime/v1/master.key | cut -d' ' -f1)
-  compat_state_hash=$(docker exec "$container" sh -c \
+  compat_master_hash=$(target_exec sha256sum /var/lib/palladin-runtime/v1/master.key | cut -d' ' -f1)
+  compat_state_hash=$(target_exec sh -c \
     "find '/var/lib/palladin-runtime/v1/agents/$compat_principal' -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1")
-  compat_policy_state_hash=$(docker exec "$container" sh -c \
+  compat_policy_state_hash=$(target_exec sh -c \
     "sha256sum /usr/lib/palladin/runtime/release-signature.json | cut -d' ' -f1")
 }
 
 verify_compatible_state() {
   local broker_gid broker_uid current_policy_state_hash current_state_hash
-  [[ $(docker exec "$container" id -u "$compat_agent") == "$compat_uid" ]]
-  [[ $(docker exec "$container" sed -n 's/^principal=//p' "/etc/palladin/agents.d/$compat_uid") == "$compat_principal" ]]
-  [[ $(docker exec "$container" sha256sum /var/lib/palladin-runtime/v1/master.key | cut -d' ' -f1) == "$compat_master_hash" ]]
-  docker exec "$container" runuser -u "$compat_agent" -- \
+  [[ $(target_exec id -u "$compat_agent") == "$compat_uid" ]]
+  [[ $(target_exec sed -n 's/^principal=//p' "/etc/palladin/agents.d/$compat_uid") == "$compat_principal" ]]
+  [[ $(target_exec sha256sum /var/lib/palladin-runtime/v1/master.key | cut -d' ' -f1) == "$compat_master_hash" ]]
+  target_exec runuser -u "$compat_agent" -- \
     /usr/lib/palladin/runtime/palladin-linux-client init \
     | grep -F 'Palladin already initialized: package-state'
-  broker_uid=$(docker exec "$container" id -u palladin-runtime)
-  broker_gid=$(docker exec "$container" id -g palladin-runtime)
-  docker exec "$container" setpriv \
+  broker_uid=$(target_exec id -u palladin-runtime)
+  broker_gid=$(target_exec id -g palladin-runtime)
+  target_exec setpriv \
     --reuid "$broker_uid" --regid "$broker_gid" --clear-groups -- \
-    /state-fixture verify \
+    "$fixture_target" verify \
     "/var/lib/palladin-runtime/v1/agents/$compat_principal" \
     /var/lib/palladin-runtime/v1/master.key \
     "$compat_principal"
-  current_state_hash=$(docker exec "$container" sh -c \
+  current_state_hash=$(target_exec sh -c \
     "find '/var/lib/palladin-runtime/v1/agents/$compat_principal' -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1")
   [[ $current_state_hash == "$compat_state_hash" ]]
-  current_policy_state_hash=$(docker exec "$container" sh -c \
+  current_policy_state_hash=$(target_exec sh -c \
     "sha256sum /usr/lib/palladin/runtime/release-signature.json | cut -d' ' -f1")
   [[ $current_policy_state_hash == "$compat_policy_state_hash" ]]
-  docker exec "$container" runuser -u "$compat_agent" -- \
-    node /source/packaging/linux/tests/mcp-stdio-smoke.mjs \
+  target_exec runuser -u "$compat_agent" -- \
+    node "$source_target/packaging/linux/tests/mcp-stdio-smoke.mjs" \
     /usr/lib/palladin/runtime/palladin-linux-client
 }
 
 case "$family" in
   ubuntu|debian)
-    docker exec "$container" apt-get install --yes /packages/base.deb
-    docker exec "$container" /usr/lib/palladin/runtime/verify-installation
+    target_exec apt-get install --yes "$base_target"
+    target_exec /usr/lib/palladin/runtime/verify-installation
     seed_compatible_state
-    docker exec "$container" apt-get install --yes /packages/upgrade.deb
-    docker exec "$container" /usr/lib/palladin/runtime/verify-installation
+    target_exec apt-get install --yes "$upgrade_target"
+    target_exec /usr/lib/palladin/runtime/verify-installation
     verify_compatible_state
-    docker exec "$container" apt-get install --yes --allow-downgrades /packages/base.deb
+    target_exec apt-get install --yes --allow-downgrades "$base_target"
     ;;
   fedora|rocky9)
-    docker exec "$container" dnf install --assumeyes /packages/base.rpm
-    docker exec "$container" /usr/lib/palladin/runtime/verify-installation
+    target_exec dnf install --assumeyes "$base_target"
+    target_exec /usr/lib/palladin/runtime/verify-installation
     seed_compatible_state
-    docker exec "$container" dnf upgrade --assumeyes /packages/upgrade.rpm
-    docker exec "$container" /usr/lib/palladin/runtime/verify-installation
+    target_exec dnf upgrade --assumeyes "$upgrade_target"
+    target_exec /usr/lib/palladin/runtime/verify-installation
     verify_compatible_state
-    docker exec "$container" rpm --upgrade --oldpackage --replacepkgs /packages/base.rpm
+    target_exec rpm --upgrade --oldpackage --replacepkgs "$base_target"
     ;;
 esac
 
-docker exec "$container" /usr/lib/palladin/runtime/verify-installation
+target_exec /usr/lib/palladin/runtime/verify-installation
 verify_compatible_state
-docker exec "$container" /source/packaging/linux/tests/test-hardened-boundary.sh
+target_exec "$source_target/packaging/linux/tests/test-hardened-boundary.sh"
 
 case "$family" in
   ubuntu|debian)
-    docker exec "$container" apt-get remove --yes palladin-runtime
-    docker exec "$container" test -f /var/lib/palladin-runtime/v1/master.key
-    docker exec "$container" apt-get install --yes /packages/upgrade.deb
+    target_exec apt-get remove --yes palladin-runtime
+    target_exec test -f /var/lib/palladin-runtime/v1/master.key
+    target_exec apt-get install --yes "$upgrade_target"
     ;;
   fedora|rocky9)
-    docker exec "$container" dnf remove --assumeyes palladin-runtime
-    docker exec "$container" test -f /var/lib/palladin-runtime/v1/master.key
-    docker exec "$container" dnf install --assumeyes /packages/upgrade.rpm
+    target_exec dnf remove --assumeyes palladin-runtime
+    target_exec test -f /var/lib/palladin-runtime/v1/master.key
+    target_exec dnf install --assumeyes "$upgrade_target"
     ;;
 esac
-docker exec "$container" /usr/lib/palladin/runtime/verify-installation
+target_exec /usr/lib/palladin/runtime/verify-installation
 verify_compatible_state
-docker exec "$container" /usr/lib/palladin/runtime/palladin-manage-agent-uid \
+target_exec /usr/lib/palladin/runtime/palladin-manage-agent-uid \
   revoke-purge "$compat_agent" --confirm-purge
-docker exec "$container" grep -Fxq 'status=revoked' "/etc/palladin/agents.d/$compat_uid"
-docker exec "$container" test ! -e "/var/lib/palladin-runtime/v1/agents/$compat_principal"
-# This fixture owns the public manifest; the unsigned test packages do not include it.
-docker exec "$container" rm /usr/lib/palladin/runtime/release-signature.json
+target_exec grep -Fxq 'status=revoked' "/etc/palladin/agents.d/$compat_uid"
+target_exec test ! -e "/var/lib/palladin-runtime/v1/agents/$compat_principal"
 case "$family" in
   ubuntu|debian)
-    docker exec "$container" apt-get purge --yes palladin-runtime
-    if docker exec "$container" dpkg-query --show palladin-runtime >/dev/null 2>&1; then
+    target_exec apt-get purge --yes palladin-runtime
+    if target_exec dpkg-query --show palladin-runtime >/dev/null 2>&1; then
       echo 'DEB remained installed after final purge' >&2
       exit 1
     fi
     ;;
   fedora|rocky9)
-    docker exec "$container" dnf remove --assumeyes palladin-runtime
-    if docker exec "$container" rpm --query --quiet palladin-runtime; then
+    target_exec dnf remove --assumeyes palladin-runtime
+    if target_exec rpm --query --quiet palladin-runtime; then
       echo 'RPM remained installed after final removal' >&2
       exit 1
     fi
     ;;
 esac
-docker exec "$container" systemctl daemon-reload
+target_exec systemctl daemon-reload
 for path in \
   /usr/lib/palladin/runtime \
   /usr/lib/systemd/system/palladin-runtime.service \
@@ -196,11 +228,11 @@ for path in \
   /usr/lib/tmpfiles.d/palladin-runtime.conf \
   /usr/share/polkit-1/actions/io.palladin.runtime.policy \
   /run/palladin-runtime/broker.sock; do
-  docker exec "$container" test ! -e "$path"
+  target_exec test ! -e "$path"
 done
 for unit in palladin-runtime.service palladin-executor.socket palladin-executor@uninstall-probe.service; do
-  [[ $(docker exec "$container" systemctl show --property=LoadState --value "$unit") == not-found ]]
+  [[ $(target_exec systemctl show --property=LoadState --value "$unit") == not-found ]]
 done
-docker exec "$container" test -d /var/lib/palladin-runtime
-docker exec "$container" test -d /etc/palladin
-echo "platform-lifecycle=$family install=passed enroll=synthetic-state mcp=passed update=passed rollback=passed reinstall=passed identity=preserved grants=preserved-by-agent-identity purge=passed uninstall=passed"
+target_exec test -d /var/lib/palladin-runtime
+target_exec test -d /etc/palladin
+echo "platform-lifecycle=$family native=$native install=passed enroll=synthetic-state mcp=passed update=passed rollback=passed reinstall=passed identity=preserved grants=preserved-by-agent-identity purge=passed uninstall=passed"

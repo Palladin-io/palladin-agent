@@ -563,9 +563,11 @@ jobs:
           packaging/linux/tests/test-convenience-boundary.sh \
             --launcher-root "$RUNNER_TEMP/alpine-launcher"
           sudo sysctl -w kernel.yama.ptrace_scope=0
-          deb=$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)
-          sudo apt-get install --yes "$deb"
-          sudo packaging/linux/tests/test-hardened-boundary.sh
+          sudo packaging/linux/tests/test-package-family.sh native-ubuntu \
+            "$(find "$RUNNER_TEMP/linux-packages/base" -name '*.deb' -print -quit)" \
+            "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)" \
+            "runtime/target/${{ matrix.gnu_target }}/release/examples/package_state_fixture" \
+            "$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
 
   native-platform-gate:
     name: Native Platform Gate

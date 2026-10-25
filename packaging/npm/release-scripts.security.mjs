@@ -423,7 +423,7 @@ test('meta-package staging preserves signed artifacts and limits 0.0.10 to previ
   assert.match(workflow, /--approval "\$approval\/adversarial-approval\.json"/);
   assert.match(workflow, /--approval "\$approval\/lifecycle-approval\.json"/);
   assert.match(workflow, /prepare-meta:[^]*needs: \[authorize, compatibility, smoke-native, smoke-musl\]/);
-  assert.match(workflow, /stage-meta:[^]*needs: \[authorize, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle\]/);
+  assert.match(workflow, /stage-meta:[^]*needs: \[authorize, linux-system, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle\]/);
   assert.match(workflow, /!cancelled\(\) && needs\.authorize\.result == 'success'/);
   assert.doesNotMatch(workflow.slice(workflow.indexOf('\n  stage-meta:')), /always\(\)/);
   const artifactSmokeOffset = workflow.indexOf('\n  artifact-smoke:');

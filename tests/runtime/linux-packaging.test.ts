@@ -235,7 +235,7 @@ describe('Linux hardened package boundary', () => {
     expect(workflow).toContain('unexpectedly needs a dynamic library');
     expect(workflow).toContain('node dist/bin/palladin.js doctor');
     expect(workflow).toContain('init unexpectedly succeeded without the Hardened broker');
-    expect(workflow).toContain('test-hardened-boundary.sh');
+    expect(workflow).toContain('test-package-family.sh native-ubuntu');
     expect(workflow).toContain('test-package-family.sh debian');
     expect(workflow).toContain('test-package-family.sh ubuntu');
     const mcpSmoke = read('packaging/linux/tests/mcp-stdio-smoke.mjs');
@@ -259,8 +259,8 @@ describe('Linux hardened package boundary', () => {
     const fixture = read(
       'runtime/crates/palladin-linux-broker/examples/package_state_fixture.rs',
     );
-    expect(lifecycle).toContain('/state-fixture seed');
-    expect(lifecycle).toContain('/state-fixture verify');
+    expect(lifecycle).toContain('"$fixture_target" seed');
+    expect(lifecycle).toContain('"$fixture_target" verify');
     expect(lifecycle).toContain('mcp-stdio-smoke.mjs');
     expect(lifecycle).toContain('revoke-purge "$compat_agent" --confirm-purge');
     expect(lifecycle).toContain('apt-get purge --yes palladin-runtime');

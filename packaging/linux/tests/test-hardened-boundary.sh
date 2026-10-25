@@ -14,6 +14,10 @@ stale_pid=
 scan_pid=
 scan_launcher=
 cleanup() {
+  if [[ -f $root/original-manifest.json ]]; then
+    install -m 0644 -o root -g root "$root/original-manifest.json" \
+      /usr/lib/palladin/runtime/release-signature.json
+  fi
   systemctl unset-environment LD_PRELOAD >/dev/null 2>&1 || true
   rm -f /run/palladin-runtime/ld-preload-hit
   [[ -z $stale_pid ]] || kill "$stale_pid" >/dev/null 2>&1 || true
