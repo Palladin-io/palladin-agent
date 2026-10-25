@@ -83,7 +83,10 @@ pub fn validate_broker_browser_open_url(url: &str) -> Result<(), BrokerBrowserEr
     }
     let parsed = url::Url::parse(url).map_err(|_| BrokerBrowserError::InvalidRequest)?;
     let production_origin = parsed.scheme() == "https"
-        && matches!(parsed.host_str(), Some("palladin.io" | "stage.palladin.io"))
+        && matches!(
+            parsed.host_str(),
+            Some("panel.palladin.io" | "palladin.io" | "stage.palladin.io")
+        )
         && parsed.port().is_none();
     let local_origin = parsed.scheme() == "http"
         && parsed.port().is_some_and(|port| port != 0)
@@ -151,6 +154,38 @@ mod tests {
         );
         assert!(
             validate_broker_browser_open_url("http://127.0.0.1:45173/agent-pairing/local-pairing")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn panel_pairing_url_passes_the_broker_without_relaxing_url_checks() {
+        let binding = "ab".repeat(BROKER_BROWSER_OPEN_BINDING_BYTES);
+        let url = "https://panel.palladin.io/agent-pairing/opaque";
+        let encoded = encode_broker_browser_open_request(&binding, url).unwrap();
+        assert_eq!(
+            decode_broker_browser_open_request(encoded.as_bytes(), &binding).unwrap(),
+            Some(url.to_owned())
+        );
+        for invalid in [
+            "http://panel.palladin.io/agent-pairing/opaque",
+            "https://panel.palladin.io:444/agent-pairing/opaque",
+            "https://panel.palladin.io.evil.example/agent-pairing/opaque",
+            "https://other.panel.palladin.io/agent-pairing/opaque",
+            "https://user@panel.palladin.io/agent-pairing/opaque",
+            "https://user:password@panel.palladin.io/agent-pairing/opaque",
+            "https://panel.palladin.io/agent-pairing/opaque?value=1",
+            "https://panel.palladin.io/agent-pairing/opaque#fragment",
+            "https://panel.palladin.io/agent-pairing/opaque/extra",
+            "https://panel.palladin.io/agent-pairing/",
+        ] {
+            assert!(
+                validate_broker_browser_open_url(invalid).is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(
+            validate_broker_browser_open_url("https://stage.palladin.io/agent-pairing/opaque")
                 .is_ok()
         );
     }

@@ -315,15 +315,16 @@ remaining-use limit, and records successful delivery in the audit trail. Script 
 - `exec` maps approved fields into a sanitized child process. Over MCP, child stdout and stderr are
   withheld and the tool returns only the exit status.
 - `inject` sends approved fields to an authenticated provider and returns a value-free outcome.
-  Unsupported or unauthenticated provider paths fail before credential delivery.
+  Unsupported providers fail before credential delivery; values are never forwarded to an unauthenticated provider.
 
 ## Security notes
 
 - Release origins are pinned to exactly `https://api.palladin.io` and `https://api.stage.palladin.io`; development HTTP accepts only literal `127.0.0.1` or `[::1]` with an explicit port.
+- Pairing approval URLs accept exactly `https://panel.palladin.io` for either API origin during the promotion in which both API names alias the same backend. The production API retains legacy `https://palladin.io`, and the staging alias retains legacy `https://stage.palladin.io`; the legacy origins are not interchangeable. The exact pairing path/ID and query, fragment, userinfo and port restrictions remain enforced. Remove the staging-to-panel transition mapping before provisioning an independent staging backend.
 - Native secret storage has no file or environment fallback.
 - The organization API key and private keys are never child-process environment variables.
 - `exec` uses no implicit shell, rebuilds the child environment from an allowlist, and supplies null stdin.
-- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. The Rust runtime resolves a verified global Form Discovery Map for MCP; only an explicit CLI `--form-json` caller may supply a bounded, value-free fallback definition. A browser framework passes a WebExtensions `targetTabId` together with its exact HTTPS URL snapshot; these are untrusted routing hints, not authorization. The macOS Chrome extension route authenticates both encrypted transport hops, resolves and pins that exact tab/document before the runtime requests a grant or decrypts a credential, then re-checks the same tab/document, HTTPS and the encrypted Entry domain before delivery.
+- Browser injection never accepts a caller-controlled CDP endpoint, executable script, arbitrary browser command, or secret-bearing argument. The Rust runtime resolves a verified global Form Discovery Map for MCP; only an explicit CLI `--form-json` caller may supply a bounded, value-free fallback definition. A browser framework passes a WebExtensions `targetTabId` together with its exact HTTPS URL snapshot; these are untrusted routing hints, not authorization. The macOS Chrome extension route authenticates both encrypted transport hops, resolves and pins that exact tab/document after granted delivery so approval waits cannot age its handles, then re-checks the same tab/document, HTTPS and the encrypted Entry domain before delivery.
 - The npm launcher has no third-party JavaScript runtime dependencies. Its only production dependency is the exact-version platform package.
 - Removing the npm package never deletes identity. Purge is always an explicit native command.
 

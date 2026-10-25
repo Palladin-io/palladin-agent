@@ -214,7 +214,9 @@ secrets or signing authority are used.
 
 Start this short separate job when the approver is available. Download its
 `linux-staging-approval` artifact and open the value-free approval URL within five
-minutes. Approve the new Agent in the intended staging organization, then approve
+minutes. The current staging API alias shares the promoted backend and returns
+`https://panel.palladin.io/agent-pairing/...`; only that exact panel origin is
+accepted by this QA handoff. Approve the new Agent in the intended organization, then approve
 its Exec request for the fixture. The test uses the existing primary-value mapping
 (`CLAW_SECRET`); an optional field label selects another fictional field. It
 checks CLI/MCP and nonempty injection without printing the value, then purges local

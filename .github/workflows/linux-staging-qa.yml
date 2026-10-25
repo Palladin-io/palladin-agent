@@ -60,7 +60,7 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          python3 scripts/check_cargo_exception_expiry.py
+          python3 -B packaging/check_advisory_expiry.py
           node packaging/linux/tests/verify-qa-build.mjs "$RUNNER_TEMP/build-run.json" "$SOURCE_SHA" "$GITHUB_REPOSITORY"
           gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --name linux-hardened-qa-x64 --dir "$RUNNER_TEMP/linux-packages/base"
@@ -100,7 +100,7 @@ jobs:
           python3 - "$state" <<'PYTHON'
           import pathlib, re, sys, time
           state = pathlib.Path(sys.argv[1])
-          pattern = re.compile(r'^Palladin approval page \(open manually if needed\): (https://stage\.palladin\.io/agent-pairing/[A-Za-z0-9_-]{1,128})$', re.M)
+          pattern = re.compile(r'^Palladin approval page \(open manually if needed\): (https://panel\.palladin\.io/agent-pairing/[A-Za-z0-9_-]{1,128})$', re.M)
           for _ in range(60):
               path = state / 'pair.err'
               if path.exists():

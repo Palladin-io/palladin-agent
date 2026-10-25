@@ -188,6 +188,40 @@ where
         return Err(InjectServiceError::LiveTargetRequired);
     }
     let authorization = service.browser_host_authorization()?;
+    let descriptor = OperationDescriptor::InjectCredential {
+        surface: operation.surface,
+        vault_id: operation.vault_id.to_owned(),
+        entry_id: operation.entry_id.to_owned(),
+        reason: operation.reason.map(str::to_owned),
+        wait: operation.wait,
+        provider: operation.provider.as_str().to_owned(),
+        output: CredentialOutputPolicy::TrustedInjectionProvider,
+    };
+    let session = service.open_session(
+        operation.profile,
+        operation.hostname,
+        operation.connection,
+        descriptor,
+    )?;
+    let delivery = session
+        .deliver_for_inject(
+            CredentialDeliveryRequest {
+                vault_id: operation.vault_id,
+                entry_id: operation.entry_id,
+                reason: operation.reason,
+                wait: operation.wait,
+            },
+            cancellation,
+            heartbeat,
+        )
+        .await?;
+    let delivered = match delivery {
+        CredentialDelivery::Granted(delivered) => delivered,
+        CredentialDelivery::NotGranted(access) => {
+            return Ok(InjectExecution::NotGranted(access));
+        }
+    };
+    // Approval can outlive DOM handles; bind the exact browser target only after delivery.
     let mut operation_nonce = [0_u8; 32];
     getrandom::fill(&mut operation_nonce).map_err(|_| InjectServiceError::Randomness)?;
     let nonce = hex::encode(operation_nonce);
@@ -224,39 +258,6 @@ where
                 .ok_or(InjectServiceError::InvalidLiveForm)?,
         )?;
     }
-    let descriptor = OperationDescriptor::InjectCredential {
-        surface: operation.surface,
-        vault_id: operation.vault_id.to_owned(),
-        entry_id: operation.entry_id.to_owned(),
-        reason: operation.reason.map(str::to_owned),
-        wait: operation.wait,
-        provider: operation.provider.as_str().to_owned(),
-        output: CredentialOutputPolicy::TrustedInjectionProvider,
-    };
-    let session = service.open_session(
-        operation.profile,
-        operation.hostname,
-        operation.connection,
-        descriptor,
-    )?;
-    let delivery = session
-        .deliver_for_inject(
-            CredentialDeliveryRequest {
-                vault_id: operation.vault_id,
-                entry_id: operation.entry_id,
-                reason: operation.reason,
-                wait: operation.wait,
-            },
-            cancellation,
-            heartbeat,
-        )
-        .await?;
-    let delivered = match delivery {
-        CredentialDelivery::Granted(delivered) => delivered,
-        CredentialDelivery::NotGranted(access) => {
-            return Ok(InjectExecution::NotGranted(access));
-        }
-    };
     let parsed = parse_secret(delivered.expose_for_authorized_operation())
         .map_err(|_| InjectServiceError::InvalidCredentialPayload)?;
     let target = resolve_authenticated_injection_target(
