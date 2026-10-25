@@ -96,6 +96,27 @@ if $native; then
   source_target=$root
 fi
 
+if $native; then
+  invalid_bundle=$(mktemp /var/tmp/palladin-invalid-attestation.XXXXXX)
+  printf '%s\n' '{"invalid":"test fixture"}' > "$invalid_bundle"
+  package_version=$(dpkg-deb --field "$base_target" Version)
+  package_version=${package_version%-*}
+  if "$source_target/packaging/linux/scripts/install-hardened.sh" \
+    "$package_version" "$(git -c safe.directory="$source_target" -C "$source_target" rev-parse HEAD)" \
+    "$base_target" "$invalid_bundle"; then
+    rm -f "$invalid_bundle"
+    echo 'Administrator installer accepted an invalid provenance bundle' >&2
+    exit 1
+  else
+    status=$?
+  fi
+  [[ $status -eq 1 ]] || { echo 'Installer failed before its provenance check' >&2; exit 1; }
+  rm -f "$invalid_bundle"
+  [[ ! -e /var/lib/palladin-runtime/v1/master.key ]]
+  [[ ! -e /usr/lib/palladin/runtime/palladin-worker ]]
+  echo 'administrator-installer=invalid-provenance-denied-before-package-execution'
+fi
+
 compat_agent=palladin-package-state
 compat_uid=
 compat_principal=
@@ -164,6 +185,8 @@ case "$family" in
     target_exec apt-get install --yes "$base_target"
     target_exec /usr/lib/palladin/runtime/verify-installation
     seed_compatible_state
+    target_exec "$source_target/packaging/linux/tests/test-upgrade-quiescence.sh" \
+      "$extension" "$upgrade_target" "$compat_agent"
     target_exec apt-get install --yes "$upgrade_target"
     target_exec /usr/lib/palladin/runtime/verify-installation
     verify_compatible_state
@@ -173,6 +196,8 @@ case "$family" in
     target_exec dnf install --assumeyes "$base_target"
     target_exec /usr/lib/palladin/runtime/verify-installation
     seed_compatible_state
+    target_exec "$source_target/packaging/linux/tests/test-upgrade-quiescence.sh" \
+      "$extension" "$upgrade_target" "$compat_agent"
     target_exec dnf upgrade --assumeyes "$upgrade_target"
     target_exec /usr/lib/palladin/runtime/verify-installation
     verify_compatible_state

@@ -52,7 +52,7 @@ trap 'rm -rf "$stage"' EXIT
 install -d "$stage/DEBIAN" "$stage/usr/lib/palladin/runtime" "$stage/usr/lib/systemd/system" \
   "$stage/usr/lib/sysusers.d" "$stage/usr/lib/tmpfiles.d" "$stage/usr/share/polkit-1/actions"
 sed -e "s/@VERSION@/${version}-${revision}/g" -e "s/@ARCHITECTURE@/$deb_arch/g" "$root/deb/control.in" > "$stage/DEBIAN/control"
-install -m 0755 "$root/deb/postinst" "$root/deb/prerm" "$root/deb/postrm" "$stage/DEBIAN/"
+install -m 0755 "$root/deb/preinst" "$root/deb/postinst" "$root/deb/prerm" "$root/deb/postrm" "$stage/DEBIAN/"
 install -m 0755 \
   "$binaries/palladin-linux-client" "$binaries/palladin-linux-service" \
   "$binaries/palladin-linux-executor" "$binaries/palladin-linux-admin-purge" \

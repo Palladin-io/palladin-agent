@@ -34,6 +34,20 @@ trap cleanup EXIT
 useradd --system --no-create-home --shell /usr/sbin/nologin "$agent"
 useradd --system --no-create-home --shell /usr/sbin/nologin "$attacker"
 useradd --create-home --shell /bin/bash "$login_user"
+runuser -u "$attacker" -- python3 <<'PYCODE'
+import subprocess
+with subprocess.Popen(
+    ['/usr/lib/palladin/runtime/palladin-linux-client', 'connect', '--api-key-stdin'],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+) as process:
+    try:
+        status = process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        raise AssertionError('unmapped caller waited for secret stdin') from None
+    assert status != 0, 'unmapped caller was accepted'
+PYCODE
+echo 'unmapped-connect=denied-before-stdin'
 if /usr/lib/palladin/runtime/palladin-manage-agent-uid \
   authorize "$login_user" login-agent https://api.stage.palladin.io --dedicated; then
   echo 'Error: a login-capable desktop account was authorized as Hardened' >&2
@@ -160,6 +174,10 @@ PYCODE
   esac
   if /usr/lib/palladin/runtime/verify-installation; then
     echo "Error: installation verification accepted $corruption release manifest" >&2
+    exit 1
+  fi
+  if /usr/lib/palladin/runtime/configure-package; then
+    echo "Error: package configuration accepted $corruption release manifest" >&2
     exit 1
   fi
   if runuser -u "$agent" -- /usr/lib/palladin/runtime/palladin-linux-client doctor; then
