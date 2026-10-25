@@ -580,14 +580,14 @@ jobs:
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin palladin-staging-qa
           sudo /usr/lib/palladin/runtime/palladin-manage-agent-uid \
             authorize palladin-staging-qa staging-qa "$QA_API_ORIGIN" --dedicated
-          sudo -u palladin-staging-qa /usr/lib/palladin/runtime/palladin-linux-client init
+          # Pairing creates its fresh profile; the broker supplies the administrator-bound API host.
           # Keep the existing browser-pairing process alive while publishing only its value-free approval URL.
           # shellcheck disable=SC2016
           nohup bash -c '
             timeout 300 sudo -u palladin-staging-qa /usr/lib/palladin/runtime/palladin-linux-client \
-              pair-agent --host "$2" --display-name "Linux Hardened QA $3" >"$1/pair.out" 2>"$1/pair.err"
+              pair-agent --display-name "Linux Hardened QA $2" >"$1/pair.out" 2>"$1/pair.err"
             printf "%s\n" "$?" >"$1/pair.exit"
-          ' -- "$state" "$QA_API_ORIGIN" "$GITHUB_RUN_ID" >/dev/null 2>&1 &
+          ' -- "$state" "$GITHUB_RUN_ID" >/dev/null 2>&1 &
           python3 - "$state" <<'PYTHON'
           import pathlib, re, sys, time
           state = pathlib.Path(sys.argv[1])
