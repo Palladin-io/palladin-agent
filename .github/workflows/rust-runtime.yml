@@ -631,7 +631,10 @@ jobs:
           test "$(cat "$state/pair.exit")" = 0
           client=/usr/lib/palladin/runtime/palladin-linux-client
           sudo -u palladin-staging-qa "$client" status
-          sudo -u palladin-staging-qa "$(command -v node)" packaging/linux/tests/mcp-stdio-smoke.mjs "$client"
+          # Read the probe as the runner; the Agent UID cannot traverse its private checkout.
+          # shellcheck disable=SC2024
+          sudo -u palladin-staging-qa "$(command -v node)" --input-type=module - "$client" \
+            < packaging/linux/tests/mcp-stdio-smoke.mjs
           sudo -u palladin-staging-qa "$client" exec "$QA_VAULT_ID" "$QA_ENTRY_ID" \
             --reason 'Owner-approved Linux Hardened QA on fictional data' \
             --wait 5m --env "PALLADIN_QA_FIXTURE=$QA_FIELD" -- \

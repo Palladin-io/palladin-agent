@@ -466,8 +466,11 @@ jobs:
             "$VERSION" "$SOURCE_SHA" "$release/$filename" "$bundle"
           sudo -u palladin-release-smoke /usr/lib/palladin/runtime/palladin-linux-client init \
             | grep -Fx 'Palladin already initialized: release-smoke'
+          # Read the probe as the runner; the Agent UID cannot traverse its private checkout.
+          # shellcheck disable=SC2024
           sudo -u palladin-release-smoke "$(command -v node)" \
-            packaging/linux/tests/mcp-stdio-smoke.mjs /usr/lib/palladin/runtime/palladin-linux-client
+            --input-type=module - /usr/lib/palladin/runtime/palladin-linux-client \
+            < packaging/linux/tests/mcp-stdio-smoke.mjs
           sudo /usr/lib/palladin/runtime/palladin-manage-agent-uid \
             revoke-purge palladin-release-smoke --confirm-purge
       - name: Attach immutable system packages and their verification bundle

@@ -177,9 +177,9 @@ verify_compatible_state() {
   current_policy_state_hash=$(target_exec sh -c \
     "sha256sum /usr/lib/palladin/runtime/release-signature.json | cut -d' ' -f1")
   [[ $current_policy_state_hash == "$compat_policy_state_hash" ]]
-  target_exec runuser -u "$compat_agent" -- \
-    node "$source_target/packaging/linux/tests/mcp-stdio-smoke.mjs" \
-    /usr/lib/palladin/runtime/palladin-linux-client
+  target_exec bash -c 'runuser -u "$1" -- node --input-type=module - "$2" < "$3"' -- \
+    "$compat_agent" /usr/lib/palladin/runtime/palladin-linux-client \
+    "$source_target/packaging/linux/tests/mcp-stdio-smoke.mjs"
 }
 
 case "$family" in
