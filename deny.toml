@@ -6,6 +6,13 @@ all-features = true
 
 [advisories]
 ignore = [
+    # Owner approved 2026-10-25 through 2026-11-23 UTC; CI fails from 2026-11-24.
+    # CVT-677 tracks removal. Published Secret Service adapters still require Zbus 5.
+    # Maintenance notices only; no vulnerability or unsoundness policy is relaxed.
+    # Enforced by packaging/check_advisory_expiry.py before cargo-deny in CI.
+    { id = "RUSTSEC-2026-0370", reason = "Temporary Zbus 5 maintenance exception; expires 2026-11-24 UTC; CVT-677" },
+    { id = "RUSTSEC-2026-0371", reason = "Temporary Zbus 5 maintenance exception; expires 2026-11-24 UTC; CVT-677" },
+    { id = "RUSTSEC-2026-0372", reason = "Temporary Zbus 5 maintenance exception; expires 2026-11-24 UTC; CVT-677" },
     # The runtime uses rsa only to parse public keys and verify PKCS#1 v1.5
     # consent signatures. Private-key operations exist only in local unit tests,
     # so the remote timing/key-recovery precondition does not exist here. Remove
