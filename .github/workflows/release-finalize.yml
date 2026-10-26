@@ -326,7 +326,9 @@ jobs:
             node security/adversarial/verify-release-artifacts.mjs \
               --report "$assets/adversarial-report.json" \
               --platform-manifest "$assets/release-manifest.json" \
-              --agent-manifest "$assets/release-manifest-agent.json"
+              --agent-manifest "$assets/release-manifest-agent.json" \
+              --system-x64-manifest "$assets/release-manifest-linux-system-x64.json" \
+              --system-arm64-manifest "$assets/release-manifest-linux-system-arm64.json"
             printf '%s' "$PUBLIC_KEY" > "$RUNNER_TEMP/adversarial-public-key.txt"
             node security/adversarial/operator-approval.mjs verify \
               --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
@@ -344,7 +346,9 @@ jobs:
             node security/lifecycle/verify-release-artifacts.mjs \
               --report "$assets/lifecycle-report.json" \
               --platform-manifest "$assets/release-manifest.json" \
-              --agent-manifest "$assets/release-manifest-agent.json"
+              --agent-manifest "$assets/release-manifest-agent.json" \
+              --system-x64-manifest "$assets/release-manifest-linux-system-x64.json" \
+              --system-arm64-manifest "$assets/release-manifest-linux-system-arm64.json"
             printf '%s' "$PUBLIC_KEY" > "$RUNNER_TEMP/lifecycle-public-key.txt"
             node security/lifecycle/operator-approval.mjs verify \
               --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \

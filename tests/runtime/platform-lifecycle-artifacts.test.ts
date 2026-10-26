@@ -48,7 +48,11 @@ const report = {
     target('alpine-3.22-x64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-x64-musl-1.2.3.tgz']]),
   ],
 };
-const platformManifest = { version, sourceSha, artifacts: platformArtifacts };
+const systemManifests = Object.fromEntries(['x64', 'arm64'].map((arch) => [arch, {
+  version, sourceSha, artifacts: platformArtifacts.filter((item) => item.filename.endsWith(arch === 'x64' ? '_amd64.deb' : '_arm64.deb')
+    || item.filename.endsWith(arch === 'x64' ? '.x86_64.rpm' : '.aarch64.rpm')),
+}]));
+const platformManifest = { version, sourceSha, artifacts: platformArtifacts.filter((item) => !/\.(deb|rpm)$/.test(item.filename)) };
 const agentManifest = { version, sourceSha, artifacts: [agent] };
 
 describe('platform lifecycle release artifact binding', () => {
@@ -83,22 +87,22 @@ describe('platform lifecycle release artifact binding', () => {
   });
 
   it('binds every role and digest to the exact platform and agent manifests', () => {
-    expect(verifyReleaseArtifactBindings({ report, platformManifest, agentManifest })).toBe(true);
+    expect(verifyReleaseArtifactBindings({ report, platformManifest, agentManifest, systemManifests })).toBe(true);
     const mislabeled = structuredClone(report);
     mislabeled.targets[0]!.artifacts[2]!.filename = 'palladin-runtime-darwin-universal.zip';
-    expect(() => verifyReleaseArtifactBindings({ report: mislabeled, platformManifest, agentManifest }))
+    expect(() => verifyReleaseArtifactBindings({ report: mislabeled, platformManifest, agentManifest, systemManifests }))
       .toThrow('artifact role is invalid');
   });
 
   it('rejects a digest from another artifact or a role from another target', () => {
     const wrongDigest = structuredClone(report);
     wrongDigest.targets[0]!.artifacts[1]!.sha256 = digest('9');
-    expect(() => verifyReleaseArtifactBindings({ report: wrongDigest, platformManifest, agentManifest }))
+    expect(() => verifyReleaseArtifactBindings({ report: wrongDigest, platformManifest, agentManifest, systemManifests }))
       .toThrow('does not match the staged release');
 
     const wrongRole = structuredClone(report);
     wrongRole.targets[1]!.artifacts[2]!.filename = 'palladin-runtime-setup-x64-1.2.3.zip';
-    expect(() => verifyReleaseArtifactBindings({ report: wrongRole, platformManifest, agentManifest }))
+    expect(() => verifyReleaseArtifactBindings({ report: wrongRole, platformManifest, agentManifest, systemManifests }))
       .toThrow('artifact role is invalid');
   });
 
@@ -113,10 +117,21 @@ describe('platform lifecycle release artifact binding', () => {
       expect(() => verifyReleaseArtifactBindings({
         report: { ...candidate, targets: [linux] },
         platformManifest: { ...platformManifest, artifacts: [...platformArtifacts, artifact(filename, digest('d'))] },
-        agentManifest,
+        agentManifest, systemManifests,
       })).toThrow('artifact role is invalid');
     },
   );
+
+  it('requires the independently source-bound system manifest for each package architecture', () => {
+    expect(() => verifyReleaseArtifactBindings({ report, platformManifest, agentManifest }))
+      .toThrow();
+    expect(() => verifyReleaseArtifactBindings({ report, platformManifest, agentManifest,
+      systemManifests: { ...systemManifests, x64: { ...systemManifests.x64, sourceSha: 'b'.repeat(40) } },
+    })).toThrow('release binding is invalid');
+    expect(() => verifyReleaseArtifactBindings({ report, platformManifest, agentManifest,
+      systemManifests: { x64: systemManifests.arm64, arm64: systemManifests.x64 },
+    })).toThrow('does not match');
+  });
 
   it('rejects foreign source manifests', () => {
     expect(() => verifyReleaseArtifactBindings({
@@ -127,7 +142,7 @@ describe('platform lifecycle release artifact binding', () => {
   });
 
   it('requires the exact candidate agent manifest', () => {
-    expect(() => verifyReleaseArtifactBindings({ report, platformManifest, agentManifest: undefined }))
+    expect(() => verifyReleaseArtifactBindings({ report, platformManifest, agentManifest: undefined, systemManifests }))
       .toThrow('agent manifest is required');
   });
 });

@@ -166,7 +166,7 @@ function expectedNames(target, version, firstRelease = false) {
     extraRole: 'deb', extra: `palladin-runtime_${version}-1_${arch === 'arm64' ? 'arm64' : 'amd64'}.deb`,
   };
 }
-function loadPhase(contract, target, phase, firstRelease = false) {
+export function loadPhase(contract, target, phase, firstRelease = false) {
   const entry = record(contract.phases[phase], `contract.phases.${phase}`);
   exactKeys(entry, ['version', 'sourceSha', 'directory'], `contract.phases.${phase}`);
   if (!VERSION.test(entry.version) || !SOURCE_SHA.test(entry.sourceSha)) fail(`contract.phases.${phase} is invalid`);
@@ -174,9 +174,12 @@ function loadPhase(contract, target, phase, firstRelease = false) {
   const platform = artifactMap(readJson(join(directory, 'release-manifest.json'), `${phase} platform manifest`), directory, entry.sourceSha, entry.version, `${phase} platform`);
   const agent = artifactMap(readJson(join(directory, 'release-manifest-agent.json'), `${phase} agent manifest`), directory, entry.sourceSha, entry.version, `${phase} agent`);
   const names = expectedNames(target, entry.version, firstRelease);
+  const system = ['deb', 'rpm'].includes(names.extraRole)
+    ? artifactMap(readJson(join(directory, `release-manifest-linux-system-${target.arch}.json`), `${phase} system manifest`),
+      directory, entry.sourceSha, entry.version, `${phase} system`) : platform;
   const required = [
     ['agent-npm', names.agent, agent], ['platform-npm', names.platform, platform],
-    ...(names.extra ? [[names.extraRole, names.extra, platform]] : []),
+    ...(names.extra ? [[names.extraRole, names.extra, system]] : []),
   ];
   const artifacts = required.map(([role, filename, source]) => {
     const found = source.get(filename); if (!found) fail(`${phase} ${role} is missing`);

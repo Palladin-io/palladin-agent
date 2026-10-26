@@ -130,13 +130,16 @@ jobs:
           else
             echo 'policy_ready=false' >>"$GITHUB_OUTPUT"
           fi
-          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.10 ]]; then
-            for filename in adversarial-report.json adversarial-report.md; do
+          adversarial_count=0
+          for filename in adversarial-report.json adversarial-report.md; do
+            if [[ -e "$assets/$filename" || -L "$assets/$filename" ]]; then
               test -f "$assets/$filename"
               test ! -L "$assets/$filename"
               mv "$assets/$filename" "$evidence/$filename"
-            done
-          fi
+              adversarial_count=$((adversarial_count + 1))
+            fi
+          done
+          [[ $adversarial_count -eq 0 || $adversarial_count -eq 2 ]]
           lifecycle_count=0
           for filename in lifecycle-report.json lifecycle-report.md; do
             if [[ -e "$assets/$filename" || -L "$assets/$filename" ]]; then
@@ -166,16 +169,8 @@ jobs:
             --artifacts "$assets" --version "$VERSION" --source-sha "$SOURCE_SHA" \
             --sbom "$assets/sbom-release.spdx.json" \
             --manifest "$assets/release-manifest.json" --checksums "$assets/SHA256SUMS"
-          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.10 ]]; then
-            node security/adversarial/report.mjs validate \
-              --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
-              --source-sha "$SOURCE_SHA" \
-              --json "$evidence/adversarial-report.json" \
-              --markdown "$evidence/adversarial-report.md"
-            node security/adversarial/verify-release-artifacts.mjs \
-              --report "$evidence/adversarial-report.json" \
-              --platform-manifest "$assets/release-manifest.json"
-          fi
+          # System-package evidence can only exist after linux-system builds the exact signed artifacts.
+          # Both complete evidence gates remain mandatory before stage-meta can publish a candidate.
           packages=(
             @palladin/runtime-darwin-arm64
             @palladin/runtime-linux-arm64-gnu
@@ -771,7 +766,7 @@ jobs:
 
   approve-adversarial:
     name: KMS-sign the owner-approved adversarial evidence
-    needs: [authorize, smoke-native, smoke-musl]
+    needs: [authorize, linux-system, smoke-native, smoke-musl]
     if: inputs.version != '0.0.9' && inputs.version != '0.0.10'
     runs-on: ubuntu-latest
     environment: version-policy-signing
@@ -821,6 +816,15 @@ jobs:
             --pattern adversarial-report.json \
             --pattern adversarial-report.md \
             --pattern release-manifest.json
+          for architecture in x64 arm64; do
+            filename="release-manifest-linux-system-$architecture.json"
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$approval" \
+              --pattern "$filename" --pattern "linux-system-$architecture.intoto.jsonl"
+            gh attestation verify "$approval/$filename" --repo "$GITHUB_REPOSITORY" \
+              --bundle "$approval/linux-system-$architecture.intoto.jsonl" \
+              --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
+              --source-digest "$SOURCE_SHA" --source-ref "refs/tags/$RELEASE_TAG" --deny-self-hosted-runners
+          done
           node security/adversarial/report.mjs validate \
             --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
             --source-sha "$SOURCE_SHA" \
@@ -828,7 +832,9 @@ jobs:
             --markdown "$approval/adversarial-report.md"
           node security/adversarial/verify-release-artifacts.mjs \
             --report "$approval/adversarial-report.json" \
-            --platform-manifest "$approval/release-manifest.json"
+            --platform-manifest "$approval/release-manifest.json" \
+            --system-x64-manifest "$approval/release-manifest-linux-system-x64.json" \
+            --system-arm64-manifest "$approval/release-manifest-linux-system-arm64.json"
           gcloud kms keys versions get-public-key "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
             --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
             --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
@@ -868,7 +874,7 @@ jobs:
 
   approve-lifecycle:
     name: KMS-sign the owner-approved platform lifecycle evidence
-    needs: [authorize, prepare-meta]
+    needs: [authorize, linux-system, prepare-meta]
     if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && needs.authorize.outputs.lifecycle_ready == 'true'
     runs-on: ubuntu-latest
     environment: version-policy-signing
@@ -920,6 +926,15 @@ jobs:
             --pattern lifecycle-report.md \
             --pattern release-manifest.json \
             --pattern release-manifest-agent.json
+          for architecture in x64 arm64; do
+            filename="release-manifest-linux-system-$architecture.json"
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$approval" \
+              --pattern "$filename" --pattern "linux-system-$architecture.intoto.jsonl"
+            gh attestation verify "$approval/$filename" --repo "$GITHUB_REPOSITORY" \
+              --bundle "$approval/linux-system-$architecture.intoto.jsonl" \
+              --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
+              --source-digest "$SOURCE_SHA" --source-ref "refs/tags/$RELEASE_TAG" --deny-self-hosted-runners
+          done
           node security/lifecycle/report.mjs validate \
             --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
             --source-sha "$SOURCE_SHA" \
@@ -928,7 +943,9 @@ jobs:
           node security/lifecycle/verify-release-artifacts.mjs \
             --report "$approval/lifecycle-report.json" \
             --platform-manifest "$approval/release-manifest.json" \
-            --agent-manifest "$approval/release-manifest-agent.json"
+            --agent-manifest "$approval/release-manifest-agent.json" \
+            --system-x64-manifest "$approval/release-manifest-linux-system-x64.json" \
+            --system-arm64-manifest "$approval/release-manifest-linux-system-arm64.json"
           gcloud kms keys versions get-public-key "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
             --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
             --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
@@ -1220,7 +1237,9 @@ jobs:
           mkdir -m 700 "$assets"
           for pattern in \
             "palladin-cli-${INPUTS_VERSION}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json \
-            release-manifest.json version-policy-candidate.json; do
+            release-manifest.json version-policy-candidate.json \
+            release-manifest-linux-system-x64.json release-manifest-linux-system-arm64.json \
+            linux-system-x64.intoto.jsonl linux-system-arm64.intoto.jsonl; do
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
           done
           if [[ "$INPUTS_VERSION" != 0.0.9 && "$INPUTS_VERSION" != 0.0.10 ]]; then
@@ -1232,6 +1251,7 @@ jobs:
       - name: Revalidate the exact candidate and applicable release gates
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
           OPERATOR: ${{ github.actor }}
           PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
           SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
@@ -1260,9 +1280,17 @@ jobs:
               --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
               --source-sha "$SOURCE_SHA" --json "$assets/adversarial-report.json" \
               --markdown "$assets/adversarial-report.md"
+            for architecture in x64 arm64; do
+              gh attestation verify "$assets/release-manifest-linux-system-$architecture.json" --repo "$GITHUB_REPOSITORY" \
+                --bundle "$assets/linux-system-$architecture.intoto.jsonl" \
+                --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
+                --source-digest "$SOURCE_SHA" --source-ref "refs/tags/$RELEASE_TAG" --deny-self-hosted-runners
+            done
             node security/adversarial/verify-release-artifacts.mjs \
               --report "$assets/adversarial-report.json" --platform-manifest "$assets/release-manifest.json" \
-              --agent-manifest "$assets/release-manifest-agent.json"
+              --agent-manifest "$assets/release-manifest-agent.json" \
+              --system-x64-manifest "$assets/release-manifest-linux-system-x64.json" \
+              --system-arm64-manifest "$assets/release-manifest-linux-system-arm64.json"
             printf '%s' "$PUBLIC_KEY" >"$RUNNER_TEMP/operator-public-key.txt"
             node security/adversarial/operator-approval.mjs verify \
               --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
@@ -1275,7 +1303,9 @@ jobs:
               --markdown "$assets/lifecycle-report.md"
             node security/lifecycle/verify-release-artifacts.mjs \
               --report "$assets/lifecycle-report.json" --platform-manifest "$assets/release-manifest.json" \
-              --agent-manifest "$assets/release-manifest-agent.json"
+              --agent-manifest "$assets/release-manifest-agent.json" \
+              --system-x64-manifest "$assets/release-manifest-linux-system-x64.json" \
+              --system-arm64-manifest "$assets/release-manifest-linux-system-arm64.json"
             node security/lifecycle/operator-approval.mjs verify \
               --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
               --report "$assets/lifecycle-report.json" --markdown "$assets/lifecycle-report.md" \

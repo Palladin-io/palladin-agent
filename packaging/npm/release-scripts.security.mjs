@@ -390,8 +390,8 @@ test('meta-package staging preserves signed artifacts and limits 0.0.10 to previ
   ];
   const stageOffset = workflow.indexOf('npm stage publish "$RUNNER_TEMP/stage-assets/palladin-cli-${INPUTS_VERSION}.tgz" --tag "$dist_tag"');
 
-  assert.equal(reportValidations.length, 3);
-  assert.equal(artifactValidations.length, 3);
+  assert.equal(reportValidations.length, 2);
+  assert.equal(artifactValidations.length, 2);
   assert.equal(lifecycleReportValidations.length, 2);
   assert.equal(lifecycleArtifactValidations.length, 2);
   assert.ok(stageOffset > 0);
@@ -400,8 +400,8 @@ test('meta-package staging preserves signed artifacts and limits 0.0.10 to previ
   assert.ok(lifecycleReportValidations.every((match) => match.index < stageOffset));
   assert.ok(lifecycleArtifactValidations.every((match) => match.index < stageOffset));
   assert.match(workflow, /test -f "\$assets\/\$filename"/);
-  assert.match(workflow, /--json "\$evidence\/adversarial-report\.json"/);
-  assert.match(workflow, /--markdown "\$evidence\/adversarial-report\.md"/);
+  assert.match(workflow, /--json "\$approval\/adversarial-report\.json"/);
+  assert.match(workflow, /--markdown "\$approval\/adversarial-report\.md"/);
   assert.match(workflow, /for filename in adversarial-report\.json adversarial-report\.md/);
   assert.match(workflow, /for filename in lifecycle-report\.json lifecycle-report\.md/);
   assert.match(workflow, /mv "\$assets\/\$filename" "\$evidence\/\$filename"/);
