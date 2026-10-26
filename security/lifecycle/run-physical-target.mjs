@@ -163,7 +163,7 @@ function expectedNames(target, version, firstRelease = false) {
   };
   return {
     agent: `palladin-cli-${version}.tgz`, platform: `palladin-runtime-linux-${arch}-gnu-${version}.tgz`,
-    extraRole: 'deb', extra: `palladin-runtime_${version}_${arch === 'arm64' ? 'arm64' : 'amd64'}.deb`,
+    extraRole: 'deb', extra: `palladin-runtime_${version}-1_${arch === 'arm64' ? 'arm64' : 'amd64'}.deb`,
   };
 }
 function loadPhase(contract, target, phase, firstRelease = false) {

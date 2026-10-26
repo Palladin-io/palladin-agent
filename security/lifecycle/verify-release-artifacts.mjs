@@ -53,7 +53,7 @@ function roleMatches(targetId, role, filename, version) {
   match = /^(?:ubuntu-24\.04|debian-13)-(arm64|x64)$/.exec(targetId);
   if (match) {
     if (role === 'platform-npm') return filename === `palladin-runtime-linux-${match[1]}-gnu-${version}.tgz`;
-    if (role === 'deb') return filename === `palladin-runtime_${version}_${match[1] === 'arm64' ? 'arm64' : 'amd64'}.deb`;
+    if (role === 'deb') return filename === `palladin-runtime_${version}-1_${match[1] === 'arm64' ? 'arm64' : 'amd64'}.deb`;
   }
   match = /^fedora-42-(arm64|x64)$/.exec(targetId);
   if (match) {
