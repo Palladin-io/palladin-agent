@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+if [ -f /usr/lib/systemd/system/palladin-runtime.service ]; then
+  systemctl stop palladin-runtime.service palladin-executor.socket
+fi

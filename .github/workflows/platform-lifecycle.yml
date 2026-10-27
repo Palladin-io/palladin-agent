@@ -146,6 +146,19 @@ jobs:
                 if (manifest.version !== version || manifest.sourceSha !== sourceSha || !Array.isArray(manifest.artifacts)) process.exit(1);
               }
             ' "$directory/release-manifest.json" "$directory/release-manifest-agent.json" "$version" "$source"
+            for architecture in x64 arm64; do
+              manifest="$directory/release-manifest-linux-system-$architecture.json"
+              gh attestation verify "$manifest" --repo "$GITHUB_REPOSITORY" \
+                --bundle "$directory/linux-system-$architecture.intoto.jsonl" \
+                --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
+                --source-digest "$source" --source-ref "refs/tags/$tag" --deny-self-hosted-runners
+              node -e '
+                const fs = require("node:fs");
+                const [path, version, sourceSha] = process.argv.slice(1);
+                const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+                if (manifest.version !== version || manifest.sourceSha !== sourceSha || !Array.isArray(manifest.artifacts)) process.exit(1);
+              ' "$manifest" "$version" "$source"
+            done
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

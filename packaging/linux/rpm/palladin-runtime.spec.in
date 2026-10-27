@@ -1,6 +1,6 @@
 Name: palladin-runtime
 Version: @VERSION@
-Release: 1%{?dist}
+Release: @REVISION@%{?dist}
 Summary: Hardened native runtime broker for dedicated Palladin Agent UIDs
 License: Apache-2.0
 URL: https://palladin.io
@@ -27,6 +27,11 @@ tar -xzf %{SOURCE0}
 %install
 mkdir -p %{buildroot}
 cp -a . %{buildroot}/
+
+%pre
+if [ -f /usr/lib/systemd/system/palladin-runtime.service ]; then
+  systemctl stop palladin-runtime.service palladin-executor.socket || exit 1
+fi
 
 %post
 systemd-sysusers /usr/lib/sysusers.d/palladin-runtime.conf

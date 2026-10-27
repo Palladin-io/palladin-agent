@@ -42,20 +42,20 @@ The Windows Hardened tier is under development and is not part of the first publ
 
 The [Code signing policy](CODE_SIGNING_POLICY.md) describes the proposed SignPath Foundation route for a later Windows release. No Windows package is currently released or signed by the Foundation.
 
-Linux Secret Service is always Convenience because it cannot distinguish two processes under the same UID. The first release installs through npm alone and requires a compatible Secret Service for secret operations. The separate Linux Hardened DEB/RPM broker is under development and is not distributed in `0.0.9`. See [the Linux runbook](packaging/linux/README.md).
+Linux Secret Service is Convenience because it cannot distinguish two processes under the same UID. Previously published npm-only Linux releases use that boundary. The official Hardened distribution requires an authenticated DEB/RPM, a non-root broker and a dedicated Agent account; npm alone is insufficient. The updated client and worker refuse secret operations without that boundary, with no automatic Convenience fallback. See [Linux installation and release status](packaging/linux/README.md).
 
 For `0.0.9`, the product owner directed publication before the [first-release adversarial matrix](security/adversarial/first-release-manifest.json) and [physical lifecycle workflow](.github/workflows/first-release-lifecycle.yml). These checks are pending and are not claimed as passed. Publication still requires signed and notarized macOS, exact native and npm artifact checks, KMS-signed policy, provenance, CI, and clean registry smoke tests. Physical lifecycle QA after publication covers installation, Agent enrollment, MCP use, concurrent use, repair, reinstall, purge, and uninstall; any fixes require a new version. Upgrade, downgrade, and forward rollback require a prior functional release and remain in the [later-version lifecycle gate](.github/workflows/platform-lifecycle.yml).
 
-| Linux target | npm Convenience | Hardened |
-|---|---|---|
-| glibc x64/arm64 | Supported when a compatible Secret Service is available | Not published in `0.0.9` |
-| musl x64/arm64, including Alpine 3.22 | Supported when a compatible Secret Service is available | Not published in `0.0.9` |
+| Linux target | Official Hardened path |
+|---|---|
+| Supported glibc/systemd x64/ARM64 host or VM | Verified system package and dedicated Agent UID; see the exact distro matrix and acceptance/publication status in the Linux runbook |
+| musl/Alpine, OpenRC, application containers | Unsupported; no automatic fallback |
 
 ## Installation
 
 `@palladin/cli@0.0.9` is the first public, installable CLI release. Its five platform packages and the CLI passed registry and public-install smoke tests. Earlier platform-only candidate versions remain unchanged, but should not be installed as a complete CLI.
 
-Install the current release:
+On macOS, install the current release:
 
 ```bash
 npm install --global @palladin/cli
@@ -64,7 +64,7 @@ palladin doctor
 
 Windows runtime packages are not part of `0.0.9`; the CLI cannot run there yet.
 
-On Linux, npm alone installs the Convenience tier. It does not need administrator access or install a system service. The runtime fails closed if a compatible Secret Service is unavailable; another process running under the same user ID remains inside the trust boundary. The separate Hardened broker requires administrator installation and is deferred beyond `0.0.9`.
+On Linux, follow the [Hardened system installation](packaging/linux/README.md) before using credentials. That runbook distinguishes prepared distribution from published artifacts; older npm-only releases are not Hardened. Administrator installation and dedicated-account authorization are explicit steps. npm never installs a system service or elevates privileges. Existing Convenience profiles remain untouched; the runbook provides an explicit new-enrollment transition.
 
 No package uses `preinstall`, `install`, `postinstall`, `preprepare`, `prepare`, or `postprepare`. npm installs the matching prebuilt platform package; it does not download or compile a binary during installation.
 
@@ -93,7 +93,7 @@ palladin --version
 
 An active MCP process keeps the native version it started with. Updating npm changes subsequent launches. Every npm launch verifies the immutable Ed25519-signed release manifest bundled with the CLI, including the exact package, version, source commit, client hash and worker hash. The native process independently verifies the actual worker image before opening identity. Linux measures `/proc/self/exe`; macOS also requires the exact Developer ID, identifier and Data Protection Keychain entitlements. Direct macOS launches rely on that independently enforced Apple signature and provisioning boundary. Windows additionally verifies Authenticode and uses its verified runtime cache.
 
-The manifest has no expiry, remote allowlist, minimum-version floor or renewal requirement. CLI startup never fetches a release policy. A correctly signed installed release continues to work when the release infrastructure is unavailable. We cannot remotely disable an already installed vulnerable release; security advisories and an explicit npm update are the recovery path. Linux Convenience does not protect against a same-user attacker replacing the launcher or removing its own checks. Native Hardened storage boundaries remain independently enforced. Linux Hardened packages, when released, must include the signed manifest at the root-owned `/usr/lib/palladin/runtime/release-signature.json`; the broker verifies its worker through an open descriptor and forwards the verified envelope to that same worker.
+The manifest has no expiry, remote allowlist, minimum-version floor or renewal requirement. CLI startup never fetches a release policy. A correctly signed installed release continues to work when the release infrastructure is unavailable. We cannot remotely disable an already installed vulnerable release; security advisories and an explicit npm update are the recovery path. Linux Convenience does not protect against a same-user attacker replacing the launcher or removing its own checks. Native Hardened storage boundaries remain independently enforced. Linux Hardened packages include the signed manifest at the root-owned `/usr/lib/palladin/runtime/release-signature.json`; the broker verifies its worker through an open descriptor and forwards the verified envelope to that same worker.
 
 Node.js 20.5 or newer and npm 9.7.1 or newer are required. Older npm versions do not reliably enforce the Linux `libc` package filter and are unsupported because they may install both glibc and musl optional packages. npm 9.7.0 is excluded because that release shipped an invalid executable manifest.
 
@@ -101,7 +101,7 @@ For source development, run the Rust CLI directly:
 
 ```bash
 cd runtime
-cargo run -p palladin-cli -- doctor
+cargo run -p palladin-cli --features local-development -- doctor
 ```
 
 On macOS, use the repository development launcher for commands that open local

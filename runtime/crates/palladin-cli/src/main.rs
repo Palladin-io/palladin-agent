@@ -504,7 +504,13 @@ fn runtime_secret_store(
     hardened_root: Option<&std::path::Path>,
 ) -> Result<RuntimeSecretStore, StoreError> {
     hardened_root.map_or_else(
-        || Ok(RuntimeSecretStore::Convenience(NativeSecretStore::default())),
+        || {
+            if cfg!(feature = "local-development") {
+                Ok(RuntimeSecretStore::Convenience(NativeSecretStore::default()))
+            } else {
+                Err(StoreError::Unavailable)
+            }
+        },
         |root| {
             LinuxBrokerSecretStore::new(
                 root,
@@ -2233,5 +2239,16 @@ mod mcp_profile_tests {
                 .as_str(),
             "first"
         );
+    }
+}
+
+#[cfg(all(test, target_os = "linux", not(feature = "local-development")))]
+mod linux_distribution_tests {
+    #[test]
+    fn standalone_worker_cannot_open_convenience_storage() {
+        assert!(matches!(
+            super::runtime_secret_store(None),
+            Err(super::StoreError::Unavailable)
+        ));
     }
 }

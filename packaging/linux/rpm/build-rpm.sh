@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo 'Usage: build-rpm.sh --version VERSION --architecture x64|arm64 --binaries DIR --output DIR [--development-loopback]' >&2
+  echo 'Usage: build-rpm.sh --version VERSION --architecture x64|arm64 --binaries DIR --output DIR --release-manifest FILE --public-key BASE64 --source-sha SHA [--revision NUMBER] [--development-loopback]' >&2
   exit 64
 }
 
@@ -10,25 +10,43 @@ version=''
 architecture=''
 binaries=''
 output=''
+release_manifest=''
+public_key=''
+source_sha=''
+revision=1
 loopback_policy=production
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) version=${2:-}; shift 2 ;;
+    --revision) revision=${2:-}; shift 2 ;;
     --architecture) architecture=${2:-}; shift 2 ;;
     --binaries) binaries=${2:-}; shift 2 ;;
     --output) output=${2:-}; shift 2 ;;
+    --release-manifest) release_manifest=${2:-}; shift 2 ;;
+    --public-key) public_key=${2:-}; shift 2 ;;
+    --source-sha) source_sha=${2:-}; shift 2 ;;
     --development-loopback) loopback_policy=development; shift ;;
     *) usage ;;
   esac
 done
 [[ -n $version && -n $architecture && -d $binaries && -n $output ]] || usage
-if [[ $loopback_policy == development && ! $version =~ (^|[.+~])dev[0-9A-Za-z.+~]*$ ]]; then
-  echo 'Error: development loopback packages require an explicitly .dev-labelled version' >&2
-  exit 64
+[[ $revision =~ ^[1-9][0-9]*$ ]] || usage
+runtime_version=$version
+if [[ $loopback_policy == development ]]; then
+  if [[ ! $version =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev[0-9A-Za-z.]*$ ]]; then
+    echo 'Error: development loopback packages require an explicitly .dev-labelled version' >&2
+    exit 64
+  fi
+  runtime_version=${BASH_REMATCH[1]}
 fi
+[[ -f $release_manifest && -n $public_key && -n $source_sha ]] || usage
 case "$architecture" in x64) rpm_arch=x86_64 ;; arm64) rpm_arch=aarch64 ;; *) usage ;; esac
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+node "$root/scripts/verify-runtime-manifest.mjs" \
+  --manifest "$release_manifest" --public-key "$public_key" \
+  --version "$runtime_version" --source-sha "$source_sha" \
+  --architecture "$architecture" --binaries "$binaries"
 top=$(mktemp -d)
 stage=$(mktemp -d)
 trap 'rm -rf "$top" "$stage"' EXIT
@@ -40,6 +58,7 @@ install -m 0755 \
   "$binaries/palladin-linux-executor" "$binaries/palladin-linux-admin-purge" \
   "$binaries/palladin-worker" \
   "$stage/usr/lib/palladin/runtime/"
+install -m 0644 "$release_manifest" "$stage/usr/lib/palladin/runtime/release-signature.json"
 install -m 0755 "$root/scripts/configure-package.sh" "$stage/usr/lib/palladin/runtime/configure-package"
 sed "s/@PALLADIN_LOOPBACK_POLICY@/$loopback_policy/g" \
   "$root/scripts/manage-agent-uid.sh" > "$stage/usr/lib/palladin/runtime/palladin-manage-agent-uid"
@@ -54,9 +73,9 @@ install -m 0644 "$root/sysusers.d/palladin-runtime.conf" "$stage/usr/lib/sysuser
 install -m 0644 "$root/tmpfiles.d/palladin-runtime.conf" "$stage/usr/lib/tmpfiles.d/"
 install -m 0644 "$root/polkit/io.palladin.runtime.policy" "$stage/usr/share/polkit-1/actions/"
 tar -C "$stage" -czf "$top/SOURCES/palladin-runtime-stage.tar.gz" .
-sed -e "s/@VERSION@/$version/g" -e "s/@ARCHITECTURE@/$rpm_arch/g" \
+sed -e "s/@VERSION@/$version/g" -e "s/@REVISION@/$revision/g" -e "s/@ARCHITECTURE@/$rpm_arch/g" \
   "$root/rpm/palladin-runtime.spec.in" > "$top/SPECS/palladin-runtime.spec"
-rpmbuild --define "_topdir $top" -bb "$top/SPECS/palladin-runtime.spec"
+rpmbuild --target "$rpm_arch" --define "_topdir $top" -bb "$top/SPECS/palladin-runtime.spec"
 mapfile -t packages < <(find "$top/RPMS" -type f -name '*.rpm')
 [[ ${#packages[@]} -eq 1 ]]
 package=${packages[0]}

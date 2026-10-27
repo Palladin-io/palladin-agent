@@ -3,12 +3,22 @@ set -euo pipefail
 
 fail() { echo "Error: $*" >&2; exit 1; }
 [[ $(id -u) -eq 0 ]] || fail 'verification must run as root'
+[[ $# -eq 0 || ( $# -eq 1 && $1 == --artifacts-only ) ]] \
+  || fail 'usage: verify-installation [--artifacts-only]'
 
 for binary in palladin-linux-client palladin-linux-service palladin-linux-executor palladin-linux-admin-purge palladin-worker; do
   path=/usr/lib/palladin/runtime/$binary
   [[ -f $path && ! -L $path && -x $path ]] || fail "$path is missing or not executable"
   [[ $(stat -c '%U:%G:%a:%h' "$path") == 'root:root:755:1' ]] || fail "$path permissions are invalid"
 done
+
+manifest=/usr/lib/palladin/runtime/release-signature.json
+[[ -f $manifest && ! -L $manifest ]] || fail 'release manifest is missing or invalid'
+[[ $(stat -c '%U:%G:%a:%h' "$manifest") == 'root:root:644:1' ]] \
+  || fail 'release manifest permissions are invalid'
+env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+  /usr/lib/palladin/runtime/palladin-worker verify-release-policy --policy "$manifest" \
+  || fail 'installed worker release signature is invalid'
 
 authorization_helper=/usr/lib/palladin/runtime/palladin-manage-agent-uid
 [[ -f $authorization_helper && ! -L $authorization_helper && -x $authorization_helper ]] \
@@ -19,6 +29,8 @@ origin_policy=$(sed -n "s/^readonly PALLADIN_LOOPBACK_POLICY='\(production\|deve
   "$authorization_helper")
 [[ $origin_policy == production || $origin_policy == development ]] \
   || fail 'authorization helper origin policy is unresolved or invalid'
+
+[[ ${1:-} != --artifacts-only ]] || exit 0
 
 [[ $(stat -c '%U:%G:%a:%h' /etc/palladin/runtime-v1) == 'root:root:644:1' ]] || fail 'install marker permissions are invalid'
 [[ $(stat -c '%U:%G:%a:%h:%s' /var/lib/palladin-runtime/v1/master.key) == 'palladin-runtime:palladin-runtime:400:1:32' ]] || fail 'master key permissions are invalid'

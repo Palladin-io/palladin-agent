@@ -18,8 +18,8 @@ const platformArtifacts = [
   artifact('palladin-runtime-linux-x64-gnu-1.2.3.tgz', digest('9')),
   artifact('palladin-runtime-linux-arm64-musl-1.2.3.tgz', digest('a')),
   artifact('palladin-runtime-linux-x64-musl-1.2.3.tgz', digest('b')),
-  artifact('palladin-runtime_1.2.3_arm64.deb', digest('c')),
-  artifact('palladin-runtime_1.2.3_amd64.deb', digest('d')),
+  artifact('palladin-runtime_1.2.3-1_arm64.deb', digest('c')),
+  artifact('palladin-runtime_1.2.3-1_amd64.deb', digest('d')),
   artifact('palladin-runtime-1.2.3-1.aarch64.rpm', digest('e')),
   artifact('palladin-runtime-1.2.3-1.x86_64.rpm', digest('f')),
 ];
@@ -38,17 +38,21 @@ const report = {
     target('macos-arm64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-darwin-arm64-1.2.3.tgz'], ['signed-runtime', 'palladin-runtime-darwin-arm64.zip']]),
     target('windows-arm64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-win32-arm64-1.2.3.tgz'], ['signed-installer', 'palladin-runtime-setup-arm64-1.2.3.zip']]),
     target('windows-x64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-win32-x64-1.2.3.tgz'], ['signed-installer', 'palladin-runtime-setup-x64-1.2.3.zip']]),
-    target('ubuntu-24.04-arm64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-arm64-gnu-1.2.3.tgz'], ['deb', 'palladin-runtime_1.2.3_arm64.deb']]),
-    target('ubuntu-24.04-x64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-x64-gnu-1.2.3.tgz'], ['deb', 'palladin-runtime_1.2.3_amd64.deb']]),
-    target('debian-13-arm64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-arm64-gnu-1.2.3.tgz'], ['deb', 'palladin-runtime_1.2.3_arm64.deb']]),
-    target('debian-13-x64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-x64-gnu-1.2.3.tgz'], ['deb', 'palladin-runtime_1.2.3_amd64.deb']]),
+    target('ubuntu-24.04-arm64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-arm64-gnu-1.2.3.tgz'], ['deb', 'palladin-runtime_1.2.3-1_arm64.deb']]),
+    target('ubuntu-24.04-x64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-x64-gnu-1.2.3.tgz'], ['deb', 'palladin-runtime_1.2.3-1_amd64.deb']]),
+    target('debian-13-arm64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-arm64-gnu-1.2.3.tgz'], ['deb', 'palladin-runtime_1.2.3-1_arm64.deb']]),
+    target('debian-13-x64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-x64-gnu-1.2.3.tgz'], ['deb', 'palladin-runtime_1.2.3-1_amd64.deb']]),
     target('fedora-42-arm64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-arm64-gnu-1.2.3.tgz'], ['rpm', 'palladin-runtime-1.2.3-1.aarch64.rpm']]),
     target('fedora-42-x64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-x64-gnu-1.2.3.tgz'], ['rpm', 'palladin-runtime-1.2.3-1.x86_64.rpm']]),
     target('alpine-3.22-arm64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-arm64-musl-1.2.3.tgz']]),
     target('alpine-3.22-x64', [['agent-npm', agent.filename], ['platform-npm', 'palladin-runtime-linux-x64-musl-1.2.3.tgz']]),
   ],
 };
-const platformManifest = { version, sourceSha, artifacts: platformArtifacts };
+const systemManifests = Object.fromEntries(['x64', 'arm64'].map((arch) => [arch, {
+  version, sourceSha, artifacts: platformArtifacts.filter((item) => item.filename.endsWith(arch === 'x64' ? '_amd64.deb' : '_arm64.deb')
+    || item.filename.endsWith(arch === 'x64' ? '.x86_64.rpm' : '.aarch64.rpm')),
+}]));
+const platformManifest = { version, sourceSha, artifacts: platformArtifacts.filter((item) => !/\.(deb|rpm)$/.test(item.filename)) };
 const agentManifest = { version, sourceSha, artifacts: [agent] };
 
 describe('platform lifecycle release artifact binding', () => {
@@ -83,23 +87,50 @@ describe('platform lifecycle release artifact binding', () => {
   });
 
   it('binds every role and digest to the exact platform and agent manifests', () => {
-    expect(verifyReleaseArtifactBindings({ report, platformManifest, agentManifest })).toBe(true);
+    expect(verifyReleaseArtifactBindings({ report, platformManifest, agentManifest, systemManifests })).toBe(true);
     const mislabeled = structuredClone(report);
     mislabeled.targets[0]!.artifacts[2]!.filename = 'palladin-runtime-darwin-universal.zip';
-    expect(() => verifyReleaseArtifactBindings({ report: mislabeled, platformManifest, agentManifest }))
+    expect(() => verifyReleaseArtifactBindings({ report: mislabeled, platformManifest, agentManifest, systemManifests }))
       .toThrow('artifact role is invalid');
   });
 
   it('rejects a digest from another artifact or a role from another target', () => {
     const wrongDigest = structuredClone(report);
     wrongDigest.targets[0]!.artifacts[1]!.sha256 = digest('9');
-    expect(() => verifyReleaseArtifactBindings({ report: wrongDigest, platformManifest, agentManifest }))
+    expect(() => verifyReleaseArtifactBindings({ report: wrongDigest, platformManifest, agentManifest, systemManifests }))
       .toThrow('does not match the staged release');
 
     const wrongRole = structuredClone(report);
     wrongRole.targets[1]!.artifacts[2]!.filename = 'palladin-runtime-setup-x64-1.2.3.zip';
-    expect(() => verifyReleaseArtifactBindings({ report: wrongRole, platformManifest, agentManifest }))
+    expect(() => verifyReleaseArtifactBindings({ report: wrongRole, platformManifest, agentManifest, systemManifests }))
       .toThrow('artifact role is invalid');
+  });
+
+  it.each(['palladin-runtime_1.2.3_amd64.deb', 'palladin-runtime_1.2.3-2_amd64.deb', 'palladin-runtime_1.2.3-1_arm64.deb'])(
+    'rejects a wrong DEB revision or architecture even with a matching manifest: %s', (filename) => {
+      const candidate = structuredClone(report);
+      const linux = candidate.targets.find((item) => item.targetId === 'ubuntu-24.04-x64');
+      if (!linux) throw new Error('missing Linux fixture');
+      const deb = linux.artifacts.find((item) => item.role === 'deb');
+      if (!deb) throw new Error('missing DEB fixture');
+      deb.filename = filename;
+      expect(() => verifyReleaseArtifactBindings({
+        report: { ...candidate, targets: [linux] },
+        platformManifest: { ...platformManifest, artifacts: [...platformArtifacts, artifact(filename, digest('d'))] },
+        agentManifest, systemManifests,
+      })).toThrow('artifact role is invalid');
+    },
+  );
+
+  it('requires the independently source-bound system manifest for each package architecture', () => {
+    expect(() => verifyReleaseArtifactBindings({ report, platformManifest, agentManifest }))
+      .toThrow();
+    expect(() => verifyReleaseArtifactBindings({ report, platformManifest, agentManifest,
+      systemManifests: { ...systemManifests, x64: { ...systemManifests.x64, sourceSha: 'b'.repeat(40) } },
+    })).toThrow('release binding is invalid');
+    expect(() => verifyReleaseArtifactBindings({ report, platformManifest, agentManifest,
+      systemManifests: { x64: systemManifests.arm64, arm64: systemManifests.x64 },
+    })).toThrow('does not match');
   });
 
   it('rejects foreign source manifests', () => {
@@ -111,7 +142,7 @@ describe('platform lifecycle release artifact binding', () => {
   });
 
   it('requires the exact candidate agent manifest', () => {
-    expect(() => verifyReleaseArtifactBindings({ report, platformManifest, agentManifest: undefined }))
+    expect(() => verifyReleaseArtifactBindings({ report, platformManifest, agentManifest: undefined, systemManifests }))
       .toThrow('agent manifest is required');
   });
 });

@@ -1,4 +1,4 @@
-FROM fedora:42
+FROM fedora:44
 
 ENV container=docker
 RUN dnf install --assumeyes \

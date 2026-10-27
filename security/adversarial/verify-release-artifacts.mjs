@@ -39,7 +39,7 @@ function parseArguments(argv) {
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
-    if (!['--report', '--platform-manifest', '--agent-manifest'].includes(flag)
+    if (!['--report', '--platform-manifest', '--agent-manifest', '--system-x64-manifest', '--system-arm64-manifest'].includes(flag)
       || !value || values.has(flag)) fail('invalid arguments');
     values.set(flag, value);
   }
@@ -81,7 +81,7 @@ function manifestArtifacts(manifest, label, expectedSourceSha, expectedVersion) 
   });
 }
 
-export function verifyReleaseArtifactBindings({ report, platformManifest, agentManifest }) {
+export function verifyReleaseArtifactBindings({ report, platformManifest, agentManifest, systemManifests = {} }) {
   if (!report || typeof report !== 'object' || Array.isArray(report)
     || !SOURCE_SHA.test(report.sourceSha) || !Array.isArray(report.coverage)) {
     fail('adversarial report release binding is invalid');
@@ -103,6 +103,10 @@ export function verifyReleaseArtifactBindings({ report, platformManifest, agentM
       platformManifest.version,
     ));
   }
+  const system = new Map(Object.entries(systemManifests).map(([arch, manifest]) => {
+    if (!['x64', 'arm64'].includes(arch)) fail('system manifest architecture is invalid');
+    return [arch, manifestArtifacts(manifest, `system ${arch} manifest`, report.sourceSha, platformManifest.version)];
+  }));
   const digestByTarget = new Map();
   for (const cell of report.coverage) {
     if (!cell || typeof cell !== 'object' || Array.isArray(cell)
@@ -118,7 +122,9 @@ export function verifyReleaseArtifactBindings({ report, platformManifest, agentM
   for (const [targetTierId, digest] of digestByTarget) {
     const selector = artifactSelector(targetTierId);
     if (selector === null) continue;
-    if (!artifacts.some((artifact) => selector(artifact.filename) && artifact.sha256 === digest)) {
+    const systemTarget = /^linux-gnu-(arm64|x64)-hardened-(?:deb|rpm)$/.exec(targetTierId);
+    const candidates = systemTarget ? system.get(systemTarget[1]) ?? [] : artifacts;
+    if (!candidates.some((artifact) => selector(artifact.filename) && artifact.sha256 === digest)) {
       fail(`report artifact digest does not match the staged target: ${targetTierId}`);
     }
   }
@@ -134,6 +140,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       agentManifest: values.has('--agent-manifest')
         ? readJson(values.get('--agent-manifest'), 'agent manifest')
         : undefined,
+      systemManifests: Object.fromEntries(['x64', 'arm64'].filter((arch) => values.has(`--system-${arch}-manifest`))
+        .map((arch) => [arch, readJson(values.get(`--system-${arch}-manifest`), `system ${arch} manifest`)])),
     });
   } catch (error) {
     process.stderr.write(`adversarial artifact binding failed: ${error instanceof Error ? error.message : 'unknown error'}\n`);

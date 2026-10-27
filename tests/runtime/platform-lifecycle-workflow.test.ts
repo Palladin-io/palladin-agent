@@ -100,6 +100,6 @@ describe('owner-only physical lifecycle workflow', () => {
     expect(release).toContain('- run: npm test');
     expect(release).toContain('node security/adversarial/operator-approval.mjs verify');
     expect(release).toContain('node security/lifecycle/operator-approval.mjs verify');
-    expect(release).toContain('needs: [authorize, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle]');
+    expect(release).toContain('needs: [authorize, linux-system, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle]');
   });
 });

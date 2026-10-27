@@ -12,6 +12,8 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 77
 fi
 
+/usr/lib/palladin/runtime/verify-installation --artifacts-only
+
 install -d -m 0755 -o root -g root /etc/palladin /etc/palladin/agents.d
 install -d -m 0700 -o palladin-runtime -g palladin-runtime /var/lib/palladin-runtime/v1
 

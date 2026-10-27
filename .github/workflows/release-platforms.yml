@@ -193,10 +193,10 @@ jobs:
             --target "${{ matrix.target }}.${GLIBC_BASELINE}" -p palladin-cli
           cargo zigbuild --release --locked \
             --target "${{ matrix.target }}.${GLIBC_BASELINE}" \
-            -p palladin-linux-broker --bin palladin-linux-client
+            -p palladin-linux-broker -p palladin-linux-executor --bins
           native="target/${{ matrix.target }}/release"
           cp "$native/palladin" "$native/palladin-worker"
-          for binary in palladin-linux-client palladin-worker; do
+          for binary in palladin-linux-client palladin-worker palladin-linux-service palladin-linux-executor palladin-linux-admin-purge; do
             maximum=$(readelf --version-info "$native/$binary" |
               sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' | sort -V | tail -n 1)
             if [[ -z $maximum ]] ||
@@ -228,7 +228,7 @@ jobs:
             fi
           done
 
-      - name: Package npm Convenience artifacts
+      - name: Package npm launchers and retain the matched system components
         run: |
           set -euo pipefail
           release="$RUNNER_TEMP/release-linux-${{ matrix.architecture }}"
@@ -243,6 +243,11 @@ jobs:
             --binaries "$musl" --output "$RUNNER_TEMP/npm-musl"
           npm pack "$RUNNER_TEMP/npm-gnu" --pack-destination "$release" >/dev/null
           npm pack "$RUNNER_TEMP/npm-musl" --pack-destination "$release" >/dev/null
+          if [[ "${{ matrix.architecture }}" == x64 ]]; then
+            install -m 0755 packaging/linux/scripts/install-hardened.sh "$release/install-hardened.sh"
+          fi
+          tar -C "$gnu" -czf "$release/palladin-linux-system-${{ matrix.architecture }}-${{ inputs.version }}.tar.gz" \
+            palladin-linux-client palladin-worker palladin-linux-service palladin-linux-executor palladin-linux-admin-purge
 
       - name: Generate the Linux release SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
@@ -273,9 +278,16 @@ jobs:
             --checksums "$release/SHA256SUMS"
 
       - name: Attest the Linux artifact set
+        id: linux_provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: ${{ runner.temp }}/release-linux-${{ matrix.architecture }}/*
+
+      - name: Retain the installer verification bundle
+        if: matrix.architecture == 'x64'
+        env:
+          BUNDLE_PATH: ${{ steps.linux_provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" "$RUNNER_TEMP/release-linux-x64/installer.intoto.jsonl"
 
       - name: Attest the Linux SBOM
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0

@@ -14,6 +14,10 @@ stale_pid=
 scan_pid=
 scan_launcher=
 cleanup() {
+  if [[ -f $root/original-manifest.json ]]; then
+    install -m 0644 -o root -g root "$root/original-manifest.json" \
+      /usr/lib/palladin/runtime/release-signature.json
+  fi
   systemctl unset-environment LD_PRELOAD >/dev/null 2>&1 || true
   rm -f /run/palladin-runtime/ld-preload-hit
   [[ -z $stale_pid ]] || kill "$stale_pid" >/dev/null 2>&1 || true
@@ -30,6 +34,20 @@ trap cleanup EXIT
 useradd --system --no-create-home --shell /usr/sbin/nologin "$agent"
 useradd --system --no-create-home --shell /usr/sbin/nologin "$attacker"
 useradd --create-home --shell /bin/bash "$login_user"
+runuser -u "$attacker" -- python3 <<'PYCODE'
+import subprocess
+with subprocess.Popen(
+    ['/usr/lib/palladin/runtime/palladin-linux-client', 'connect', '--api-key-stdin'],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+) as process:
+    try:
+        status = process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        raise AssertionError('unmapped caller waited for secret stdin') from None
+    assert status != 0, 'unmapped caller was accepted'
+PYCODE
+echo 'unmapped-connect=denied-before-stdin'
 if /usr/lib/palladin/runtime/palladin-manage-agent-uid \
   authorize "$login_user" login-agent https://api.stage.palladin.io --dedicated; then
   echo 'Error: a login-capable desktop account was authorized as Hardened' >&2
@@ -135,6 +153,41 @@ echo 'system-client-missing-mapping=fail-closed'
 doctor=$(runuser -u "$agent" -- /usr/lib/palladin/runtime/palladin-linux-client doctor)
 grep -F 'standalone-security-tier: Hardened' <<<"$doctor"
 grep -F 'dedicated Agent UID' <<<"$doctor"
+
+manifest=/usr/lib/palladin/runtime/release-signature.json
+cp "$manifest" "$root/original-manifest.json"
+for corruption in missing writable signature; do
+  case "$corruption" in
+    missing) rm "$manifest" ;;
+    writable) chmod 0666 "$manifest" ;;
+    signature)
+      python3 - "$manifest" <<'PYCODE'
+import base64, json, sys
+path = sys.argv[1]
+with open(path) as stream:
+    envelope = json.load(stream)
+envelope['signature'] = base64.b64encode(bytes(64)).decode()
+with open(path, 'w') as stream:
+    json.dump(envelope, stream, separators=(',', ':'))
+PYCODE
+      ;;
+  esac
+  if /usr/lib/palladin/runtime/verify-installation; then
+    echo "Error: installation verification accepted $corruption release manifest" >&2
+    exit 1
+  fi
+  if /usr/lib/palladin/runtime/configure-package; then
+    echo "Error: package configuration accepted $corruption release manifest" >&2
+    exit 1
+  fi
+  if runuser -u "$agent" -- /usr/lib/palladin/runtime/palladin-linux-client doctor; then
+    echo "Error: broker accepted $corruption release manifest" >&2
+    exit 1
+  fi
+  install -m 0644 -o root -g root "$root/original-manifest.json" "$manifest"
+done
+/usr/lib/palladin/runtime/verify-installation
+echo 'runtime-manifest=required root-owned signature-verified'
 
 chmod 0711 "$root"
 install -o root -g root -m 0555 \

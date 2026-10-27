@@ -1,6 +1,6 @@
 {
   "name": "@palladin/cli",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "Script-free launcher for Palladin CLI and its native MCP runtime",
   "author": "Patryk Roguszewski <patryk.roguszewski@palladin.io>",
   "private": true,
@@ -59,7 +59,7 @@
     "plugins:check": "node plugins/palladin-agent/scripts/generate-targets.mjs --check",
     "plugins:package:codex-skills-only": "python3 plugins/palladin-agent/scripts/package-codex-skills-only.py",
     "verify:form-maps": "PALLADIN_VERIFY_FORM_MAPS=1 vite-node scripts/verify-form-maps.ts",
-    "test:release": "node --test packaging/npm/release-scripts.security.mjs",
+    "test:release": "node --test packaging/npm/release-scripts.security.mjs packaging/linux/tests/runtime-manifest.test.mjs packaging/linux/tests/install-host.test.mjs packaging/linux/tests/verify-qa-build.test.mjs",
     "oss:generate": "node packaging/npm/generate-oss-metadata.mjs",
     "oss:check": "node packaging/npm/generate-oss-metadata.mjs --check",
     "test:watch": "vitest"
@@ -91,10 +91,10 @@
     "postcss": "8.5.26"
   },
   "optionalDependencies": {
-    "@palladin/runtime-darwin-arm64": "0.0.10",
-    "@palladin/runtime-linux-arm64-gnu": "0.0.10",
-    "@palladin/runtime-linux-arm64-musl": "0.0.10",
-    "@palladin/runtime-linux-x64-gnu": "0.0.10",
-    "@palladin/runtime-linux-x64-musl": "0.0.10"
+    "@palladin/runtime-darwin-arm64": "0.0.11",
+    "@palladin/runtime-linux-arm64-gnu": "0.0.11",
+    "@palladin/runtime-linux-arm64-musl": "0.0.11",
+    "@palladin/runtime-linux-x64-gnu": "0.0.11",
+    "@palladin/runtime-linux-x64-musl": "0.0.11"
   }
 }

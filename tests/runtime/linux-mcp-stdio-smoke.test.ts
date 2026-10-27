@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { expect, it } from 'vitest';
 
 it.skipIf(process.platform === 'win32').each([
@@ -29,7 +29,8 @@ createInterface({ input: process.stdin }).on('line', line => {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...response }) + '\\n');
 });
 `, { mode: 0o700 });
-    const result = spawnSync(process.execPath, [resolve('packaging/linux/tests/mcp-stdio-smoke.mjs'), client], {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-', client], {
+      input: readFileSync('packaging/linux/tests/mcp-stdio-smoke.mjs', 'utf8'),
       encoding: 'utf8', timeout: 15_000,
     });
     expect(result.status).toBe(exitCode);

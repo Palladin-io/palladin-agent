@@ -4,16 +4,33 @@ on:
   pull_request:
   merge_group:
   workflow_dispatch:
+    inputs:
+      qa_build_run_id:
+        description: Optional successful exact-revision build to run staging QA instead of rebuilding
+        type: string
+      qa_api_origin:
+        description: Staging QA API origin
+        type: string
+      qa_vault_id:
+        description: Vault containing owner-approved fictional data
+        type: string
+      qa_entry_id:
+        description: Entry containing owner-approved fictional data
+        type: string
+      qa_field:
+        description: Optional fictional field label (defaults to primary value)
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: rust-runtime-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: rust-runtime-${{ github.event.pull_request.number || github.ref }}-${{ inputs.qa_build_run_id && 'staging-qa' || 'build' }}
+  cancel-in-progress: ${{ inputs.qa_build_run_id == '' }}
 
 jobs:
   apple:
+    if: inputs.qa_build_run_id == ''
     name: Build ${{ matrix.target }}
     timeout-minutes: 45
     strategy:
@@ -133,6 +150,7 @@ jobs:
           fi
 
   windows:
+    if: inputs.qa_build_run_id == ''
     name: Build ${{ matrix.target }}
     timeout-minutes: 30
     strategy:
@@ -235,6 +253,7 @@ jobs:
           }
 
   linux:
+    if: inputs.qa_build_run_id == ''
     name: Build ${{ matrix.gnu_target }} and ${{ matrix.musl_target }}
     timeout-minutes: 60
     strategy:
@@ -441,19 +460,6 @@ jobs:
             if (JSON.stringify(manifest.libc) !== JSON.stringify(["glibc"])) process.exit(1);
             if (manifest.scripts !== undefined) process.exit(1);
           ' "$stage/package.json" "$ARCHITECTURE"
-          output="$RUNNER_TEMP/linux-packages/base"
-          version=$(node -p 'require("./package.json").version')
-          packaging/linux/deb/build-deb.sh \
-            --version "$version" --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
-          packaging/linux/rpm/build-rpm.sh \
-            --version "$version" --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
-          test "$(find "$output" -name '*.deb' | wc -l)" -eq 1
-          test "$(find "$output" -name '*.rpm' | wc -l)" -eq 1
-          output="$RUNNER_TEMP/linux-packages/upgrade"
-          packaging/linux/deb/build-deb.sh \
-            --version 0.1.1 --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
-          packaging/linux/rpm/build-rpm.sh \
-            --version 0.1.1 --architecture "$ARCHITECTURE" --binaries "$native" --output "$output"
       - name: Build and run the native musl npm package on Alpine
         working-directory: .
         shell: bash
@@ -486,6 +492,7 @@ jobs:
           done
           npm ci --ignore-scripts --workspaces=false
           npm run build
+          PALLADIN_TEST_SYSTEM_PACKAGES=1 node --test packaging/linux/tests/runtime-manifest.test.mjs packaging/linux/tests/install-host.test.mjs
           source_sha=${{ steps.ci_policy_key.outputs.source_sha }}
           version=$(node -p 'require("./package.json").version')
           policy="$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
@@ -495,6 +502,18 @@ jobs:
             --private-key "${{ steps.ci_policy_key.outputs.private_key }}" \
             --public-key "${{ steps.ci_policy_key.outputs.public_key_file }}" \
             --output-bundle "$policy"
+          gnu="runtime/target/${{ matrix.gnu_target }}/release"
+          for revision in 1 2; do
+            family=base
+            if [[ $revision -eq 2 ]]; then family=upgrade; fi
+            for format in deb rpm; do
+              "packaging/linux/$format/build-$format.sh" \
+                --version "$version" --revision "$revision" --architecture "$ARCHITECTURE" \
+                --binaries "$gnu" --output "$RUNNER_TEMP/linux-packages/$family" \
+                --release-manifest "$policy" --public-key "${{ steps.ci_policy_key.outputs.public_key }}" \
+                --source-sha "$source_sha"
+            done
+          done
           rm -f "${{ steps.ci_policy_key.outputs.private_key }}"
           node packaging/npm/configure-version-policy-build.mjs \
             --public-key "${{ steps.ci_policy_key.outputs.public_key }}" \
@@ -512,18 +531,35 @@ jobs:
               expected=${{ matrix.musl_target == 'x86_64-unknown-linux-musl' && 'x86_64' || 'aarch64' }}
               test "$(uname -m)" = "$expected"
               node dist/bin/palladin.js --version
-              node dist/bin/palladin.js doctor | grep -F "standalone-security-tier: Convenience"
-              node dist/bin/palladin.js doctor | grep -F \
-                "hardened-candidate: unsupported - Alpine/OpenRC Hardened is not available in the MVP"
+              if node dist/bin/palladin.js doctor >/tmp/doctor.out 2>/tmp/doctor.err; then
+                echo "Alpine unexpectedly accepted a Hardened operation" >&2
+                exit 1
+              fi
+              grep -F "Linux Hardened requires" /tmp/doctor.err
               export HOME=/tmp/palladin-home
               install -d -m 0700 "$HOME"
               if node dist/bin/palladin.js init >/tmp/init.out 2>/tmp/init.err; then
-                echo "init unexpectedly succeeded without Secret Service" >&2
+                echo "init unexpectedly succeeded without the Hardened broker" >&2
                 exit 1
               fi
               test ! -e "$HOME/.palladin/agent.key"
               test ! -e "$HOME/.palladin/config.json"
             '
+      - name: Verify native UID, ptrace, loader, and peer boundaries
+        working-directory: .
+        shell: bash
+        env:
+          ARCHITECTURE: ${{ matrix.gnu_target == 'x86_64-unknown-linux-gnu' && 'x64' || 'arm64' }}
+        run: |
+          set -euo pipefail
+          packaging/linux/tests/test-convenience-boundary.sh \
+            --launcher-root "$RUNNER_TEMP/alpine-launcher"
+          sudo sysctl -w kernel.yama.ptrace_scope=0
+          sudo packaging/linux/tests/test-package-family.sh native-ubuntu \
+            "$(find "$RUNNER_TEMP/linux-packages/base" -name '*.deb' -print -quit)" \
+            "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)" \
+            "runtime/target/${{ matrix.gnu_target }}/release/examples/package_state_fixture" \
+            "$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
       - name: Install, enroll, run MCP, update, roll back, reinstall, purge, and uninstall
         working-directory: .
         shell: bash
@@ -551,26 +587,18 @@ jobs:
             "$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.rpm' -print -quit)" \
             "runtime/target/${{ matrix.gnu_target }}/release/examples/package_state_fixture" \
             "$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
-      - name: Verify native UID, ptrace, loader, and peer boundaries
-        working-directory: .
-        shell: bash
-        env:
-          ARCHITECTURE: ${{ matrix.gnu_target == 'x86_64-unknown-linux-gnu' && 'x64' || 'arm64' }}
-        run: |
-          set -euo pipefail
-          packaging/linux/tests/test-convenience-boundary.sh \
-            --launcher-root "$RUNNER_TEMP/alpine-launcher"
-          sudo sysctl -w kernel.yama.ptrace_scope=0
-          deb=$(find "$RUNNER_TEMP/linux-packages/upgrade" -name '*.deb' -print -quit)
-          sudo apt-get install --yes "$deb"
-          policy="$RUNNER_TEMP/linux-$ARCHITECTURE-ci-version-policy.json"
-          sudo install -m 0644 -o root -g root \
-            "$policy" /usr/lib/palladin/runtime/release-signature.json
-          sudo packaging/linux/tests/test-hardened-boundary.sh
+      - name: Retain the tested x64 package for owner-dispatched staging QA
+        if: github.event_name == 'workflow_dispatch' && github.actor == 'patryk-roguszewski' && matrix.gnu_target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-hardened-qa-x64
+          path: ${{ runner.temp }}/linux-packages/base/*.deb
+          if-no-files-found: error
+          retention-days: 1
 
   native-platform-gate:
     name: Native Platform Gate
-    if: always()
+    if: always() && inputs.qa_build_run_id == ''
     needs: [apple, windows, linux]
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -584,3 +612,16 @@ jobs:
           test "$APPLE" = success
           test "$WINDOWS" = success
           test "$LINUX" = success
+
+  staging-qa:
+    if: github.event_name == 'workflow_dispatch' && github.actor == 'patryk-roguszewski' && inputs.qa_build_run_id != ''
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/linux-staging-qa.yml
+    with:
+      build_run_id: ${{ inputs.qa_build_run_id }}
+      qa_api_origin: ${{ inputs.qa_api_origin }}
+      qa_vault_id: ${{ inputs.qa_vault_id }}
+      qa_entry_id: ${{ inputs.qa_entry_id }}
+      qa_field: ${{ inputs.qa_field }}

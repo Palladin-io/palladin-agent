@@ -53,7 +53,7 @@ function roleMatches(targetId, role, filename, version) {
   match = /^(?:ubuntu-24\.04|debian-13)-(arm64|x64)$/.exec(targetId);
   if (match) {
     if (role === 'platform-npm') return filename === `palladin-runtime-linux-${match[1]}-gnu-${version}.tgz`;
-    if (role === 'deb') return filename === `palladin-runtime_${version}_${match[1] === 'arm64' ? 'arm64' : 'amd64'}.deb`;
+    if (role === 'deb') return filename === `palladin-runtime_${version}-1_${match[1] === 'arm64' ? 'arm64' : 'amd64'}.deb`;
   }
   match = /^fedora-42-(arm64|x64)$/.exec(targetId);
   if (match) {
@@ -65,7 +65,7 @@ function roleMatches(targetId, role, filename, version) {
   return false;
 }
 
-export function verifyReleaseArtifactBindings({ report: reportInput, platformManifest, agentManifest }) {
+export function verifyReleaseArtifactBindings({ report: reportInput, platformManifest, agentManifest, systemManifests = {} }) {
   const report = record(reportInput, 'lifecycle report');
   if (!SOURCE_SHA.test(report.sourceSha) || !Array.isArray(report.targets)) fail('lifecycle report binding is invalid');
   const platform = record(platformManifest, 'platform manifest');
@@ -74,6 +74,11 @@ export function verifyReleaseArtifactBindings({ report: reportInput, platformMan
   if (agentManifest === undefined) fail('agent manifest is required');
   artifacts.push(...manifestArtifacts(agentManifest, 'agent manifest', report.sourceSha, platform.version));
   const known = new Map(artifacts.map((artifact) => [artifact.filename, artifact.sha256]));
+  const system = new Map(Object.entries(systemManifests).map(([arch, manifest]) => {
+    if (!['x64', 'arm64'].includes(arch)) fail('system manifest architecture is invalid');
+    return [arch, new Map(manifestArtifacts(manifest, `system ${arch} manifest`, report.sourceSha, platform.version)
+      .map((artifact) => [artifact.filename, artifact.sha256]))];
+  }));
   for (const [targetIndex, targetInput] of report.targets.entries()) {
     const target = record(targetInput, `report.targets[${targetIndex}]`);
     if (typeof target.targetId !== 'string' || !Array.isArray(target.artifacts)) fail('report target is invalid');
@@ -86,7 +91,9 @@ export function verifyReleaseArtifactBindings({ report: reportInput, platformMan
         || !roleMatches(target.targetId, artifact.role, artifact.filename, platform.version)) {
         fail(`lifecycle report artifact role is invalid: ${target.targetId}`);
       }
-      if (known.get(artifact.filename) !== artifact.sha256) {
+      const authority = ['deb', 'rpm'].includes(artifact.role)
+        ? system.get(target.targetId.endsWith('-arm64') ? 'arm64' : 'x64') : known;
+      if (authority?.get(artifact.filename) !== artifact.sha256) {
         fail(`lifecycle report artifact does not match the staged release: ${target.targetId}/${artifact.role}`);
       }
     }
@@ -98,7 +105,7 @@ function parse(argv) {
   const values = new Map();
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index]; const value = argv[index + 1];
-    if (!['--report', '--platform-manifest', '--agent-manifest'].includes(flag)
+    if (!['--report', '--platform-manifest', '--agent-manifest', '--system-x64-manifest', '--system-arm64-manifest'].includes(flag)
       || !value || values.has(flag)) fail('invalid arguments');
     values.set(flag, value);
   }
@@ -114,6 +121,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       report: readJson(values.get('--report'), 'lifecycle report'),
       platformManifest: readJson(values.get('--platform-manifest'), 'platform manifest'),
       agentManifest: readJson(values.get('--agent-manifest'), 'agent manifest'),
+      systemManifests: Object.fromEntries(['x64', 'arm64'].filter((arch) => values.has(`--system-${arch}-manifest`))
+        .map((arch) => [arch, readJson(values.get(`--system-${arch}-manifest`), `system ${arch} manifest`)])),
     });
   } catch (error) {
     process.stderr.write(`lifecycle release artifact verification failed: ${error instanceof Error ? error.message : 'unknown error'}\n`);

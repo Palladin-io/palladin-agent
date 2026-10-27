@@ -77,6 +77,10 @@ const POLICY_ENVELOPE_ENVIRONMENT: &str = "PALLADIN_VERSION_POLICY_ENVELOPE_BASE
 
 pub async fn run(arguments: Vec<String>) -> Result<ExitCode, ClientError> {
     validate_arguments(&arguments).map_err(|_| ClientError::InvalidArguments)?;
+    if arguments == ["--version"] || arguments == ["-V"] {
+        println!("palladin {RELEASE_VERSION}");
+        return Ok(ExitCode::SUCCESS);
+    }
     let current = current_executable()?;
     let mapping = load_authorized_principal(Path::new("/etc/palladin/agents.d"), current_uid());
     let tier = select_tier(
@@ -238,49 +242,59 @@ async fn proxy(
 
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
-    loop {
-        let frame: ServerFrame = read_frame(&mut reader)
-            .await
-            .map_err(|_| ClientError::BrokerProtocol)?;
-        match &frame {
-            ServerFrame::Output {
-                request_id: received,
-                stream,
-                bytes,
-                ..
-            } if *received == request_id => match stream {
-                OutputStream::Stdout => stdout
-                    .write_all(bytes)
-                    .await
-                    .map_err(|_| ClientError::BrokerProtocol)?,
-                OutputStream::Stderr => stderr
-                    .write_all(bytes)
-                    .await
-                    .map_err(|_| ClientError::BrokerProtocol)?,
-            },
-            ServerFrame::OpenUrl {
-                request_id: received,
-                url,
-            } if *received == request_id => {
-                open_interactive_browser(url).await?;
-            }
-            ServerFrame::Exited {
-                request_id: received,
-                code,
-            } if *received == request_id => {
-                abort_input_task(&input_task);
-                return Ok(ExitCode::from(*code));
-            }
-            ServerFrame::Rejected { code, .. } => {
-                abort_input_task(&input_task);
-                return Err(ClientError::Rejected(*code));
-            }
-            _ => {
-                abort_input_task(&input_task);
-                return Err(ClientError::BrokerProtocol);
+    let result = async {
+        loop {
+            let frame: ServerFrame = read_frame(&mut reader)
+                .await
+                .map_err(|_| ClientError::BrokerProtocol)?;
+            match &frame {
+                ServerFrame::Output {
+                    request_id: received,
+                    stream,
+                    bytes,
+                    ..
+                } if *received == request_id => match stream {
+                    OutputStream::Stdout => stdout
+                        .write_all(bytes)
+                        .await
+                        .map_err(|_| ClientError::BrokerProtocol)?,
+                    OutputStream::Stderr => stderr
+                        .write_all(bytes)
+                        .await
+                        .map_err(|_| ClientError::BrokerProtocol)?,
+                },
+                ServerFrame::OpenUrl {
+                    request_id: received,
+                    url,
+                } if *received == request_id => {
+                    open_interactive_browser(url).await?;
+                }
+                ServerFrame::Exited {
+                    request_id: received,
+                    code,
+                } if *received == request_id => {
+                    return Ok(ExitCode::from(*code));
+                }
+                ServerFrame::Rejected { code, .. } => {
+                    return Err(ClientError::Rejected(*code));
+                }
+                _ => {
+                    return Err(ClientError::BrokerProtocol);
+                }
             }
         }
     }
+    .await;
+    abort_input_task(&input_task);
+    stdout
+        .flush()
+        .await
+        .map_err(|_| ClientError::BrokerProtocol)?;
+    stderr
+        .flush()
+        .await
+        .map_err(|_| ClientError::BrokerProtocol)?;
+    result
 }
 
 async fn open_interactive_browser(url: &str) -> Result<(), ClientError> {
@@ -462,7 +476,10 @@ fn select_tier<T>(
     if is_system_client || mapping.is_ok() {
         return RuntimeTier::Hardened;
     }
-    if matches!(mapping, Err(PeerError::UnauthorizedUid)) && !broker_group_member {
+    if cfg!(feature = "local-development")
+        && matches!(mapping, Err(PeerError::UnauthorizedUid))
+        && !broker_group_member
+    {
         RuntimeTier::Convenience
     } else {
         RuntimeTier::Hardened
@@ -617,7 +634,9 @@ pub enum ClientError {
     InvalidArguments,
     #[error("the dedicated Agent UID authorization is invalid or revoked")]
     AuthorizationConfiguration,
-    #[error("the Linux Hardened installation is missing or has unsafe permissions")]
+    #[error(
+        "Linux Hardened requires the signed palladin-runtime system package and an authorized dedicated Agent account. Install the matching DEB/RPM as an administrator, then authorize the account as described at https://github.com/Palladin-io/palladin-agent/blob/main/packaging/linux/README.md. The installation is missing or has unsafe permissions; npm does not install system services and no Convenience fallback is allowed"
+    )]
     Installation,
     #[error(
         "the Linux Hardened broker is unavailable; no Convenience fallback is allowed for this dedicated Agent UID"
@@ -676,12 +695,34 @@ mod tests {
         assert_eq!(select_tier(false, &revoked, false), RuntimeTier::Hardened);
     }
 
+    #[cfg(feature = "local-development")]
     #[test]
     fn only_never_designated_npm_client_uses_convenience() {
         let mapping: Result<(), PeerError> = Err(PeerError::UnauthorizedUid);
         assert_eq!(
             select_tier(false, &mapping, false),
             RuntimeTier::Convenience
+        );
+    }
+
+    #[cfg(not(feature = "local-development"))]
+    #[test]
+    fn npm_client_requires_hardened_even_before_first_system_installation() {
+        let mapping: Result<(), PeerError> = Err(PeerError::UnauthorizedUid);
+        assert_eq!(select_tier(false, &mapping, false), RuntimeTier::Hardened);
+    }
+
+    #[test]
+    fn invalid_authorization_never_uses_convenience() {
+        let mapping: Result<(), PeerError> = Err(PeerError::AuthorizationConfiguration);
+        assert_eq!(select_tier(false, &mapping, false), RuntimeTier::Hardened);
+    }
+
+    #[tokio::test]
+    async fn version_does_not_require_system_installation_or_identity() {
+        assert_eq!(
+            super::run(vec!["--version".to_owned()]).await.unwrap(),
+            std::process::ExitCode::SUCCESS
         );
     }
 

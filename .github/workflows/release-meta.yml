@@ -99,6 +99,11 @@ jobs:
           evidence="$RUNNER_TEMP/release-evidence"
           mkdir -m 700 "$evidence"
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$assets"
+          for artifact in "$assets"/*.deb "$assets"/*.rpm "$assets"/linux-system-*.intoto.jsonl \
+            "$assets"/release-manifest-linux-system-*.json "$assets"/SHA256SUMS-linux-system-* \
+            "$assets"/sbom-linux-system-*.spdx.json; do
+            [[ ! -e "$artifact" ]] || mv "$artifact" "$evidence/"
+          done
           meta_count=0
           for filename in \
             "palladin-cli-$VERSION.tgz" release-manifest-agent.json \
@@ -125,13 +130,16 @@ jobs:
           else
             echo 'policy_ready=false' >>"$GITHUB_OUTPUT"
           fi
-          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.10 ]]; then
-            for filename in adversarial-report.json adversarial-report.md; do
+          adversarial_count=0
+          for filename in adversarial-report.json adversarial-report.md; do
+            if [[ -e "$assets/$filename" || -L "$assets/$filename" ]]; then
               test -f "$assets/$filename"
               test ! -L "$assets/$filename"
               mv "$assets/$filename" "$evidence/$filename"
-            done
-          fi
+              adversarial_count=$((adversarial_count + 1))
+            fi
+          done
+          [[ $adversarial_count -eq 0 || $adversarial_count -eq 2 ]]
           lifecycle_count=0
           for filename in lifecycle-report.json lifecycle-report.md; do
             if [[ -e "$assets/$filename" || -L "$assets/$filename" ]]; then
@@ -161,16 +169,8 @@ jobs:
             --artifacts "$assets" --version "$VERSION" --source-sha "$SOURCE_SHA" \
             --sbom "$assets/sbom-release.spdx.json" \
             --manifest "$assets/release-manifest.json" --checksums "$assets/SHA256SUMS"
-          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.10 ]]; then
-            node security/adversarial/report.mjs validate \
-              --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
-              --source-sha "$SOURCE_SHA" \
-              --json "$evidence/adversarial-report.json" \
-              --markdown "$evidence/adversarial-report.md"
-            node security/adversarial/verify-release-artifacts.mjs \
-              --report "$evidence/adversarial-report.json" \
-              --platform-manifest "$assets/release-manifest.json"
-          fi
+          # System-package evidence can only exist after linux-system builds the exact signed artifacts.
+          # Both complete evidence gates remain mandatory before stage-meta can publish a candidate.
           packages=(
             @palladin/runtime-darwin-arm64
             @palladin/runtime-linux-arm64-gnu
@@ -284,6 +284,213 @@ jobs:
           path: ${{ runner.temp }}/version-policy/version-policy.json
           if-no-files-found: error
           retention-days: 1
+
+  linux-system:
+    name: Package signed Linux Hardened (${{ matrix.architecture }})
+    needs: authorize
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    environment: version-policy-signing
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: version-policy-${{ inputs.version }}-${{ needs.authorize.outputs.source_sha }}
+          path: ${{ runner.temp }}/version-policy
+      - run: npm ci --ignore-scripts --workspaces=false
+      - run: npx tsc
+      - run: sudo apt-get update && sudo apt-get install --yes rpm
+      - id: reuse
+        name: Reuse a complete previously attested system-package candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          existing="$RUNNER_TEMP/reused-system-release"
+          mkdir -m 700 "$existing"
+          if [[ "$ARCHITECTURE" == x64 ]]; then deb_arch=amd64; rpm_arch=x86_64; else deb_arch=arm64; rpm_arch=aarch64; fi
+          expected=("palladin-runtime_$VERSION-1_$deb_arch.deb" "palladin-runtime-$VERSION-1.$rpm_arch.rpm"
+            "release-manifest-linux-system-$ARCHITECTURE.json" "SHA256SUMS-linux-system-$ARCHITECTURE"
+            "sbom-linux-system-$ARCHITECTURE.spdx.json" "linux-system-$ARCHITECTURE.intoto.jsonl")
+          names=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name]')
+          count=0
+          for name in "${expected[@]}"; do
+            if jq -e --arg name "$name" 'index($name) != null' <<<"$names" >/dev/null; then count=$((count + 1)); fi
+          done
+          if [[ $count -eq 0 ]]; then echo 'ready=false' >> "$GITHUB_OUTPUT"; exit 0; fi
+          test "$count" -eq "${#expected[@]}" || { echo 'Incomplete system-package candidate; refusing to overwrite immutable release assets' >&2; exit 1; }
+          for name in "${expected[@]}"; do
+            gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir "$existing"
+          done
+          mv "$existing/linux-system-$ARCHITECTURE.intoto.jsonl" "$RUNNER_TEMP/system-existing.intoto.jsonl"
+          for artifact in "$existing"/*; do
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" \
+              --bundle "$RUNNER_TEMP/system-existing.intoto.jsonl" \
+              --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
+              --source-digest "$SOURCE_SHA" --source-ref "refs/tags/v$VERSION" --deny-self-hosted-runners
+          done
+          node packaging/npm/verify-release-manifest.mjs \
+            --artifacts "$existing" --version "$VERSION" --source-sha "$SOURCE_SHA" \
+            --sbom "$existing/sbom-linux-system-$ARCHITECTURE.spdx.json" \
+            --manifest "$existing/release-manifest-linux-system-$ARCHITECTURE.json" \
+            --checksums "$existing/SHA256SUMS-linux-system-$ARCHITECTURE"
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - name: Verify the attested component set before extracting
+        if: steps.reuse.outputs.ready != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          input="$RUNNER_TEMP/system-input"
+          mkdir -m 700 "$input" "$RUNNER_TEMP/system-binaries" "$RUNNER_TEMP/system-release"
+          archive="palladin-linux-system-$ARCHITECTURE-$VERSION.tar.gz"
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$archive" --dir "$input"
+          gh attestation verify "$input/$archive" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-platforms.yml \
+            --source-digest "$SOURCE_SHA" --source-ref "refs/tags/v$VERSION" --deny-self-hosted-runners
+          tar -xzf "$input/$archive" -C "$RUNNER_TEMP/system-binaries"
+      - name: Build packages containing the exact KMS-signed manifest
+        if: steps.reuse.outputs.ready != 'true'
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+          PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          for format in deb rpm; do
+            "packaging/linux/$format/build-$format.sh" \
+              --version "$VERSION" --architecture "$ARCHITECTURE" \
+              --binaries "$RUNNER_TEMP/system-binaries" --output "$RUNNER_TEMP/system-release" \
+              --release-manifest "$RUNNER_TEMP/version-policy/version-policy.json" \
+              --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA"
+          done
+      - name: Generate system-package SBOM
+        if: steps.reuse.outputs.ready != 'true'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: ${{ runner.temp }}/system-release
+          format: spdx-json
+          output-file: ${{ runner.temp }}/system-release/sbom-linux-system-${{ matrix.architecture }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+      - name: Bind package checksums to the exact source and version
+        if: steps.reuse.outputs.ready != 'true'
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/system-release"
+          for command in generate verify; do
+            node "packaging/npm/$command-release-manifest.mjs" \
+              --artifacts "$release" --version "$VERSION" --source-sha "$SOURCE_SHA" \
+              --sbom "$release/sbom-linux-system-$ARCHITECTURE.spdx.json" \
+              --manifest "$release/release-manifest-linux-system-$ARCHITECTURE.json" \
+              --checksums "$release/SHA256SUMS-linux-system-$ARCHITECTURE"
+          done
+      - id: provenance
+        if: steps.reuse.outputs.ready != 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/system-release/*
+      - name: Exercise the authenticated administrator installation before staging
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+          REUSED: ${{ steps.reuse.outputs.ready }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/system-release"
+          bundle="$BUNDLE_PATH"
+          if [[ "$REUSED" == true ]]; then
+            release="$RUNNER_TEMP/reused-system-release"
+            bundle="$RUNNER_TEMP/system-existing.intoto.jsonl"
+          fi
+          deb_arch=amd64
+          [[ "$ARCHITECTURE" != arm64 ]] || deb_arch=arm64
+          filename="palladin-runtime_$VERSION-1_$deb_arch.deb"
+          tampered="$RUNNER_TEMP/tampered-system-release"
+          mkdir -m 700 "$tampered"
+          cp "$release/$filename" "$tampered/$filename"
+          printf 'tamper-test' >> "$tampered/$filename"
+          if sudo /bin/bash packaging/linux/scripts/install-hardened.sh \
+            "$VERSION" "$SOURCE_SHA" "$tampered/$filename" "$bundle"; then
+            echo '::error::Installer accepted modified package bytes' >&2
+            exit 1
+          fi
+          test ! -e /usr/lib/palladin/runtime/palladin-worker
+          sudo /bin/bash packaging/linux/scripts/install-hardened.sh \
+            "$VERSION" "$SOURCE_SHA" "$release/$filename" "$bundle"
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin palladin-release-smoke
+          sudo /usr/lib/palladin/runtime/palladin-manage-agent-uid \
+            authorize palladin-release-smoke release-smoke https://api.palladin.io --dedicated
+          sudo -u palladin-release-smoke /usr/lib/palladin/runtime/palladin-linux-client doctor
+          sudo -u palladin-release-smoke /usr/lib/palladin/runtime/palladin-linux-client init
+          sudo rm /usr/lib/palladin/runtime/palladin-linux-client
+          sudo /bin/bash packaging/linux/scripts/install-hardened.sh \
+            "$VERSION" "$SOURCE_SHA" "$release/$filename" "$bundle"
+          sudo -u palladin-release-smoke /usr/lib/palladin/runtime/palladin-linux-client init \
+            | grep -Fx 'Palladin already initialized: release-smoke'
+          # Read the probe as the runner; the Agent UID cannot traverse its private checkout.
+          # shellcheck disable=SC2024
+          sudo -u palladin-release-smoke "$(command -v node)" \
+            --input-type=module - /usr/lib/palladin/runtime/palladin-linux-client \
+            < packaging/linux/tests/mcp-stdio-smoke.mjs
+          sudo /usr/lib/palladin/runtime/palladin-manage-agent-uid \
+            revoke-purge palladin-release-smoke --confirm-purge
+      - name: Attach immutable system packages and their verification bundle
+        if: steps.reuse.outputs.ready != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/system-release"
+          cp "$BUNDLE_PATH" "$release/linux-system-$ARCHITECTURE.intoto.jsonl"
+          existing="$RUNNER_TEMP/existing-system"
+          mkdir -m 700 "$existing"
+          names=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name]')
+          for artifact in "$release"/*; do
+            name=$(basename "$artifact")
+            if jq -e --arg name "$name" 'index($name) != null' <<<"$names" >/dev/null; then
+              gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir "$existing"
+              if [[ "$name" != *.intoto.jsonl ]]; then cmp --silent "$artifact" "$existing/$name"; fi
+            else
+              gh release upload "v$VERSION" "$artifact" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
 
   compatibility:
     name: Require client compatibility for the release source
@@ -540,7 +747,10 @@ jobs:
           smoke="$RUNNER_TEMP/live-policy-smoke"
           mkdir -p "$smoke"
           npm install --prefix "$smoke" --ignore-scripts --package-lock "$meta"
-          if ! node "$smoke/node_modules/@palladin/cli/dist/bin/palladin.js" \
+          node "$smoke/node_modules/@palladin/cli/dist/bin/palladin.js" --version \
+            >"$RUNNER_TEMP/live-policy.version"
+          test "$(cat "$RUNNER_TEMP/live-policy.version")" = "palladin $INPUTS_VERSION"
+          if ! "$smoke/node_modules/@palladin/runtime-linux-x64-gnu/bin/palladin-worker" \
             verify-release-policy --policy "$bundle" \
             >"$RUNNER_TEMP/live-policy.stdout" 2>"$RUNNER_TEMP/live-policy.stderr"; then
             sed -n '1,20p' "$RUNNER_TEMP/live-policy.stderr" >&2
@@ -556,7 +766,7 @@ jobs:
 
   approve-adversarial:
     name: KMS-sign the owner-approved adversarial evidence
-    needs: [authorize, smoke-native, smoke-musl]
+    needs: [authorize, linux-system, smoke-native, smoke-musl]
     if: inputs.version != '0.0.9' && inputs.version != '0.0.10'
     runs-on: ubuntu-latest
     environment: version-policy-signing
@@ -606,6 +816,15 @@ jobs:
             --pattern adversarial-report.json \
             --pattern adversarial-report.md \
             --pattern release-manifest.json
+          for architecture in x64 arm64; do
+            filename="release-manifest-linux-system-$architecture.json"
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$approval" \
+              --pattern "$filename" --pattern "linux-system-$architecture.intoto.jsonl"
+            gh attestation verify "$approval/$filename" --repo "$GITHUB_REPOSITORY" \
+              --bundle "$approval/linux-system-$architecture.intoto.jsonl" \
+              --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
+              --source-digest "$SOURCE_SHA" --source-ref "refs/tags/$RELEASE_TAG" --deny-self-hosted-runners
+          done
           node security/adversarial/report.mjs validate \
             --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
             --source-sha "$SOURCE_SHA" \
@@ -613,7 +832,9 @@ jobs:
             --markdown "$approval/adversarial-report.md"
           node security/adversarial/verify-release-artifacts.mjs \
             --report "$approval/adversarial-report.json" \
-            --platform-manifest "$approval/release-manifest.json"
+            --platform-manifest "$approval/release-manifest.json" \
+            --system-x64-manifest "$approval/release-manifest-linux-system-x64.json" \
+            --system-arm64-manifest "$approval/release-manifest-linux-system-arm64.json"
           gcloud kms keys versions get-public-key "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
             --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
             --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
@@ -653,7 +874,7 @@ jobs:
 
   approve-lifecycle:
     name: KMS-sign the owner-approved platform lifecycle evidence
-    needs: [authorize, prepare-meta]
+    needs: [authorize, linux-system, prepare-meta]
     if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && needs.authorize.outputs.lifecycle_ready == 'true'
     runs-on: ubuntu-latest
     environment: version-policy-signing
@@ -705,6 +926,15 @@ jobs:
             --pattern lifecycle-report.md \
             --pattern release-manifest.json \
             --pattern release-manifest-agent.json
+          for architecture in x64 arm64; do
+            filename="release-manifest-linux-system-$architecture.json"
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$approval" \
+              --pattern "$filename" --pattern "linux-system-$architecture.intoto.jsonl"
+            gh attestation verify "$approval/$filename" --repo "$GITHUB_REPOSITORY" \
+              --bundle "$approval/linux-system-$architecture.intoto.jsonl" \
+              --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
+              --source-digest "$SOURCE_SHA" --source-ref "refs/tags/$RELEASE_TAG" --deny-self-hosted-runners
+          done
           node security/lifecycle/report.mjs validate \
             --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
             --source-sha "$SOURCE_SHA" \
@@ -713,7 +943,9 @@ jobs:
           node security/lifecycle/verify-release-artifacts.mjs \
             --report "$approval/lifecycle-report.json" \
             --platform-manifest "$approval/release-manifest.json" \
-            --agent-manifest "$approval/release-manifest-agent.json"
+            --agent-manifest "$approval/release-manifest-agent.json" \
+            --system-x64-manifest "$approval/release-manifest-linux-system-x64.json" \
+            --system-arm64-manifest "$approval/release-manifest-linux-system-arm64.json"
           gcloud kms keys versions get-public-key "${{ vars.GCP_VERSION_POLICY_KEY_VERSION }}" \
             --key "${{ vars.GCP_VERSION_POLICY_KEY }}" \
             --keyring "${{ vars.GCP_VERSION_POLICY_KEYRING }}" \
@@ -959,9 +1191,9 @@ jobs:
 
   stage-meta:
     name: Stage the approved @palladin/cli candidate
-    needs: [authorize, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle]
+    needs: [authorize, linux-system, prepare-meta, artifact-smoke, approve-adversarial, approve-lifecycle]
     if: >-
-      !cancelled() && needs.authorize.result == 'success' && needs.prepare-meta.result == 'success'
+      !cancelled() && needs.authorize.result == 'success' && needs.linux-system.result == 'success' && needs.prepare-meta.result == 'success'
       && needs.artifact-smoke.result == 'success'
       && (inputs.version == '0.0.9' || inputs.version == '0.0.10'
         || (needs.approve-adversarial.result == 'success' && needs.approve-lifecycle.result == 'success'))
@@ -1005,7 +1237,9 @@ jobs:
           mkdir -m 700 "$assets"
           for pattern in \
             "palladin-cli-${INPUTS_VERSION}.tgz" release-manifest-agent.json SHA256SUMS-agent sbom-agent.spdx.json \
-            release-manifest.json version-policy-candidate.json; do
+            release-manifest.json version-policy-candidate.json \
+            release-manifest-linux-system-x64.json release-manifest-linux-system-arm64.json \
+            linux-system-x64.intoto.jsonl linux-system-arm64.intoto.jsonl; do
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
           done
           if [[ "$INPUTS_VERSION" != 0.0.9 && "$INPUTS_VERSION" != 0.0.10 ]]; then
@@ -1017,6 +1251,7 @@ jobs:
       - name: Revalidate the exact candidate and applicable release gates
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
           OPERATOR: ${{ github.actor }}
           PUBLIC_KEY: ${{ vars.PALLADIN_VERSION_POLICY_PUBLIC_KEY }}
           SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
@@ -1045,9 +1280,17 @@ jobs:
               --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
               --source-sha "$SOURCE_SHA" --json "$assets/adversarial-report.json" \
               --markdown "$assets/adversarial-report.md"
+            for architecture in x64 arm64; do
+              gh attestation verify "$assets/release-manifest-linux-system-$architecture.json" --repo "$GITHUB_REPOSITORY" \
+                --bundle "$assets/linux-system-$architecture.intoto.jsonl" \
+                --signer-workflow Palladin-io/palladin-agent/.github/workflows/release-meta.yml \
+                --source-digest "$SOURCE_SHA" --source-ref "refs/tags/$RELEASE_TAG" --deny-self-hosted-runners
+            done
             node security/adversarial/verify-release-artifacts.mjs \
               --report "$assets/adversarial-report.json" --platform-manifest "$assets/release-manifest.json" \
-              --agent-manifest "$assets/release-manifest-agent.json"
+              --agent-manifest "$assets/release-manifest-agent.json" \
+              --system-x64-manifest "$assets/release-manifest-linux-system-x64.json" \
+              --system-arm64-manifest "$assets/release-manifest-linux-system-arm64.json"
             printf '%s' "$PUBLIC_KEY" >"$RUNNER_TEMP/operator-public-key.txt"
             node security/adversarial/operator-approval.mjs verify \
               --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
@@ -1060,7 +1303,9 @@ jobs:
               --markdown "$assets/lifecycle-report.md"
             node security/lifecycle/verify-release-artifacts.mjs \
               --report "$assets/lifecycle-report.json" --platform-manifest "$assets/release-manifest.json" \
-              --agent-manifest "$assets/release-manifest-agent.json"
+              --agent-manifest "$assets/release-manifest-agent.json" \
+              --system-x64-manifest "$assets/release-manifest-linux-system-x64.json" \
+              --system-arm64-manifest "$assets/release-manifest-linux-system-arm64.json"
             node security/lifecycle/operator-approval.mjs verify \
               --manifest "$PALLADIN_LIFECYCLE_MANIFEST" \
               --report "$assets/lifecycle-report.json" --markdown "$assets/lifecycle-report.md" \
