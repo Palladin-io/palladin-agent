@@ -12,6 +12,22 @@ system packages below. Implementation, native-host acceptance and publication
 are separate release gates; the presence of this runbook is not evidence that a
 Hardened release has been published.
 
+## 0.0.11 AWS acceptance status
+
+The owner-selected next step is to produce the signed Linux candidate and then
+perform the complete installation acceptance on a supported AWS VM. This is not
+a claim that 0.0.11 is a finalized release. Keep the existing signature,
+provenance, package isolation and publication gates; do not promote the candidate
+to a fully accepted release before recording the required evidence.
+
+The legacy `platform-lifecycle.yml` Linux harness still uses the runner UID and
+scratch-HOME registry. It is not valid Hardened acceptance evidence and must not
+be used to certify this candidate. AWS acceptance must provision the dedicated
+account described below and exercise pairing, MCP, non-secret Exec, reinstall,
+identity continuity, revocation and cleanup through the broker boundary. Record
+the exact package/source and actual host distribution; no Windows acceptance is
+claimed by this Linux rollout.
+
 ## Platform contract
 
 The installer accepts these candidate targets on x64 and ARM64:

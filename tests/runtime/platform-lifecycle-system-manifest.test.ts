@@ -3,7 +3,23 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { loadPhase } from '../../security/lifecycle/run-physical-target.mjs';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
+
+function loadPhase(contract: unknown, target: unknown, phase: string) {
+  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', `
+    import { readFileSync } from 'node:fs';
+    const { loadPhase } = await import(process.argv[1]);
+    const { contract, target, phase } = JSON.parse(readFileSync(0, 'utf8'));
+    try { process.stdout.write(JSON.stringify(loadPhase(contract, target, phase))); }
+    catch (error) { process.stderr.write(error.message); process.exitCode = 1; }
+  `, pathToFileURL(resolve('security/lifecycle/run-physical-target.mjs')).href], {
+    input: JSON.stringify({ contract, target, phase }), encoding: 'utf8', timeout: 10000,
+  });
+  if (result.status !== 0) throw new Error(result.stderr || 'physical loader failed');
+  return JSON.parse(result.stdout) as { artifacts: Array<{ role: string; filename: string; sha256: string }> };
+}
 
 const sourceSha = 'a'.repeat(40);
 const version = '0.0.11';

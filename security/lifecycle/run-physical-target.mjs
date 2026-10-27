@@ -343,6 +343,10 @@ function assertNativeExtraAbsent(target, env) {
     assertLinuxNativePayloadAbsent();
   }
 }
+export function assertInstalledDebIdentity(result, version, architecture) {
+  const expected = `${version}-1\t${architecture === 'arm64' ? 'arm64' : 'amd64'}\tii `;
+  if (result.stdout !== expected || result.stderr !== '') fail('installed DEB identity is invalid');
+}
 function assertNativeExtraInstalled(target, phase, env) {
   if (target.os === 'windows') {
     bounded('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
@@ -353,9 +357,8 @@ function assertNativeExtraInstalled(target, phase, env) {
       const result = captureText(bounded('rpm', ['--query', '--queryformat', '%{VERSION}\t%{ARCH}', 'palladin-runtime'], { env }));
       if (result.stdout !== expected || result.stderr !== '') fail('installed RPM identity is invalid');
     } else {
-      const expected = `${phase.version}\t${target.arch === 'arm64' ? 'arm64' : 'amd64'}\tii `;
       const result = captureText(bounded('dpkg-query', ['--show', '--showformat=${Version}\t${Architecture}\t${db:Status-Abbrev}', 'palladin-runtime'], { env }));
-      if (result.stdout !== expected || result.stderr !== '') fail('installed DEB identity is invalid');
+      assertInstalledDebIdentity(result, phase.version, target.arch);
     }
     for (const path of ['/usr/lib/palladin/runtime', '/usr/lib/systemd/system/palladin-runtime.service',
       '/usr/lib/systemd/system/palladin-executor.socket', '/usr/lib/systemd/system/palladin-executor@.service']) {
