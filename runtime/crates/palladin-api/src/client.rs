@@ -19,6 +19,13 @@ use crate::types::{
     RegistrationBody, ReportCredentialStaleInput, StaleRequestBody, StartBrowserPairingBody,
 };
 
+mod submissions;
+
+pub use submissions::{
+    AgentSubmissionList, AgentSubmissionSummary, ApproverManifestsResponse, SubmissionAccepted,
+    SubmissionDecision, SubmissionRejection,
+};
+
 pub struct BrowserPairingClient<'a> {
     http: reqwest::Client,
     host: ApiHost,
@@ -955,6 +962,8 @@ pub enum ApiError {
     ScriptExpired,
     #[error("Script execution package is unavailable or invalid")]
     ScriptInvalidPackage,
+    #[error("Agent Submission was rejected")]
+    SubmissionRejected(SubmissionRejection),
 }
 
 #[cfg(test)]

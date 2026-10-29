@@ -1703,6 +1703,7 @@ dependencies = [
 name = "palladin-credential"
 version = "0.0.11"
 dependencies = [
+ "getrandom 0.4.3",
  "hmac",
  "palladin-api",
  "palladin-core",

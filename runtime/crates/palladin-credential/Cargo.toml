@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+getrandom.workspace = true
 hmac.workspace = true
 palladin-api = { path = "../palladin-api" }
 palladin-core = { path = "../palladin-core" }

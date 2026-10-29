@@ -3,7 +3,11 @@
 mod client;
 mod types;
 
-pub use client::{ApiClient, ApiError, BrowserPairingClient, SigningContext};
+pub use client::{
+    AgentSubmissionList, AgentSubmissionSummary, ApiClient, ApiError, ApproverManifestsResponse,
+    BrowserPairingClient, SigningContext, SubmissionAccepted, SubmissionDecision,
+    SubmissionRejection,
+};
 pub use palladin_browser_bridge::FormDiscoveryMap;
 pub use types::{
     AgentDiscoveryDeltaResponse, AgentDiscoveryEnvelope, AgentDiscoveryEnvelopeDescriptor,
