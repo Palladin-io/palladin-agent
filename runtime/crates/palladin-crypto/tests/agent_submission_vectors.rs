@@ -175,6 +175,11 @@ fn agent_authority<'a>(
             key_version: u32::try_from(fixture["context"]["agentKeyVersion"].as_u64().unwrap())
                 .unwrap(),
             identity,
+            access_epoch: fixture["context"]["agentAccessEpoch"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap(),
         },
     }
 }
@@ -224,7 +229,7 @@ fn vendored_contract_files_match_pinned_digests() {
     let digest = |bytes: &str| hex::encode(Sha256::digest(bytes.as_bytes()));
     assert_eq!(
         digest(CONTRACT),
-        "58995ee2a26c2b1dcb9c7248ee944aaeb62c4df44b9b7eaacd459ba89b12fb21"
+        "21a40ebb4366d3559deaeccd4675470e1b07ab384b9ca45d3004c509a97a246a"
     );
     assert_eq!(
         digest(FIXTURE),
@@ -425,6 +430,15 @@ fn fixture_submissions_round_trip_and_open_for_agent_and_approver() {
     assert_eq!(opened_as_value(&opened), fixture["expectedPlaintext"]);
 
     verify_rewrap(&first, &second, 2).expect("fixture re-wrap is accepted");
+    let mut stale_epoch = agent_authority(&fixture, &agent_key, &keys.agent_box);
+    if let SubmissionRecipient::Agent { access_epoch, .. } = &mut stale_epoch.recipient {
+        *access_epoch = 5;
+    }
+    expect_error(
+        open_agent_submission(&first, &stale_epoch),
+        "stale-access-epoch",
+        "pre-approval use after the access epoch advanced",
+    );
     expect_error(
         open_agent_submission(
             &second,
@@ -1164,6 +1178,13 @@ fn every_contract_negative_rewrap_case_fails_closed_with_its_code() {
         "recipient-key-mismatch",
         "re-wrap must target current key",
     );
+    let mut same_key = fixture["submissions"][0].clone();
+    same_key["submissionRevision"] = json!("2");
+    expect_error(
+        verify_rewrap(&first, &parse(&same_key).unwrap(), 1),
+        "recipient-key-mismatch",
+        "re-wrap without an approver key change",
+    );
 }
 
 #[test]
@@ -1231,9 +1252,22 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
         assert_eq!(opened.content.username(), Some("builder@example.invalid"));
     }
 
+    expect_error(
+        rewrap_agent_submission(
+            &built,
+            identity.agent_id,
+            5,
+            &keys.agent_box,
+            &agent_signing,
+            &pin_v2,
+        ),
+        "stale-access-epoch",
+        "a submission from an earlier access epoch is not re-wrapped",
+    );
     let rewrapped = rewrap_agent_submission(
         &built,
         identity.agent_id,
+        4,
         &keys.agent_box,
         &agent_signing,
         &pin_v2,
@@ -1267,6 +1301,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
         rewrap_agent_submission(
             &rewrapped,
             identity.agent_id,
+            4,
             &keys.agent_box,
             &agent_signing,
             &pin_v2,

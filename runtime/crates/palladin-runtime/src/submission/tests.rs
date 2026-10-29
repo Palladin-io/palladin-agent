@@ -68,6 +68,20 @@ fn manifests_response(manifests: &[Value]) -> String {
     .to_string()
 }
 
+/// Approver-manifest read used as the authority for the Agent's current access.
+fn current_access(agent_key_version: u32, agent_access_epoch: &str) -> Handler {
+    respond(
+        200,
+        json!({
+            "organizationId": ORGANIZATION_ID,
+            "agentKeyVersion": agent_key_version,
+            "agentAccessEpoch": agent_access_epoch,
+            "manifests": [],
+        })
+        .to_string(),
+    )
+}
+
 fn respond(status: u16, body: String) -> Handler {
     Box::new(move |_| (status, body))
 }
@@ -858,7 +872,11 @@ async fn status_rewraps_pending_submissions_for_a_continuity_verified_rotated_ke
 #[tokio::test]
 async fn submission_inject_delivers_only_a_verified_fresh_own_submission() {
     let stored = fixture()["submissions"][0].clone();
-    let (host, requests) = server(vec![respond(200, stored.to_string())]).await;
+    let (host, requests) = server(vec![
+        current_access(3, "4"),
+        respond(200, stored.to_string()),
+    ])
+    .await;
     let persistence = RecordingPersistence::default();
     let session = test_session(
         &host,
@@ -883,7 +901,9 @@ async fn submission_inject_delivers_only_a_verified_fresh_own_submission() {
         serde_json::from_slice(delivered.expose_for_authorized_operation()).unwrap();
     assert_eq!(plaintext["password"], "synthetic-Fixture-Only-9!q");
     assert!(!format!("{delivered:?}").contains("synthetic-Fixture"));
-    assert!(requests.lock().unwrap()[0].starts_with(&format!(
+    let requests = requests.lock().unwrap();
+    assert!(requests[0].starts_with("GET /api/agent/approver-manifests?afterRevision=1 "));
+    assert!(requests[1].starts_with(&format!(
         "GET /api/agent/submissions/{FIXTURE_SUBMISSION_ID} HTTP/1.1"
     )));
 }
@@ -911,7 +931,7 @@ async fn submission_inject_rejects_unusable_substituted_or_tampered_submissions(
         ),
     ];
     for (id, handler, expected) in cases {
-        let (host, _) = server(vec![handler]).await;
+        let (host, _) = server(vec![current_access(3, "4"), handler]).await;
         let persistence = RecordingPersistence::default();
         let session = test_session(
             &host,
@@ -1853,7 +1873,9 @@ async fn status_rewrap_failures_are_reported_without_touching_the_payload() {
 async fn every_submission_inject_fetches_the_submission_fresh() {
     let stored = fixture()["submissions"][0].clone();
     let (host, requests) = server(vec![
+        current_access(3, "4"),
         respond(200, stored.to_string()),
+        current_access(3, "4"),
         respond(403, json!({ "code": "submission-not-usable" }).to_string()),
     ])
     .await;
@@ -1884,7 +1906,12 @@ async fn every_submission_inject_fetches_the_submission_fresh() {
         Err(RuntimeError::SubmissionNotUsable)
     ));
     assert_eq!(
-        requests.lock().unwrap().len(),
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.starts_with("GET /api/agent/submissions/"))
+            .count(),
         2,
         "a trashed or suspended submission stops working immediately; nothing is cached"
     );
@@ -2070,7 +2097,11 @@ async fn noncanonical_server_encodings_that_bind_a_submission_are_rejected() {
         "{}=",
         noncanonical["agentKeyFingerprint"].as_str().unwrap()
     ));
-    let (host, _) = server(vec![respond(200, noncanonical.to_string())]).await;
+    let (host, _) = server(vec![
+        current_access(3, "4"),
+        respond(200, noncanonical.to_string()),
+    ])
+    .await;
     let persistence = RecordingPersistence::default();
     let session = test_session(
         &host,
@@ -2125,7 +2156,11 @@ async fn own_submission_with_an_invalid_payload_is_never_injected() {
     let signer = SigningKey::from_bytes(&seed("agentEd25519Seed"));
     tampered["agentSignature"] = json!(URL_SAFE_NO_PAD.encode(signer.sign(&input).to_bytes()));
 
-    let (host, _) = server(vec![respond(200, tampered.to_string())]).await;
+    let (host, _) = server(vec![
+        current_access(3, "4"),
+        respond(200, tampered.to_string()),
+    ])
+    .await;
     let persistence = RecordingPersistence::default();
     let session = test_session(
         &host,
@@ -2140,4 +2175,97 @@ async fn own_submission_with_an_invalid_payload_is_never_injected() {
             .await,
         Err(RuntimeError::Submission(SubmissionError::InvalidField))
     ));
+}
+
+#[tokio::test]
+async fn submission_inject_requires_the_current_access_epoch_and_agent_key() {
+    let stored = fixture()["submissions"][0].clone();
+    for (current, expected) in [
+        (current_access(3, "5"), "stale-access-epoch"),
+        (current_access(4, "4"), "recipient-key-mismatch"),
+    ] {
+        let (host, _) = server(vec![current, respond(200, stored.to_string())]).await;
+        let persistence = RecordingPersistence::default();
+        let session = test_session(
+            &host,
+            RuntimeOperation::InjectCredential,
+            &persistence,
+            Some(anchor_from_manifest(&manifest(0))),
+            None,
+        );
+        match session
+            .deliver_submission_for_inject(FIXTURE_SUBMISSION_ID)
+            .await
+        {
+            Err(RuntimeError::Submission(error)) => assert_eq!(error.code(), expected),
+            other => panic!("expected {expected}, got {other:?}"),
+        }
+    }
+
+    for unverifiable in [
+        respond(404, json!({ "code": "no-approvers" }).to_string()),
+        respond(200, manifests_response(&[re_bootstrap_manifest()])),
+    ] {
+        let (host, requests) = server(vec![unverifiable]).await;
+        let persistence = RecordingPersistence::default();
+        let session = test_session(
+            &host,
+            RuntimeOperation::InjectCredential,
+            &persistence,
+            Some(anchor_from_manifest(&manifest(0))),
+            None,
+        );
+        assert!(matches!(
+            session
+                .deliver_submission_for_inject(FIXTURE_SUBMISSION_ID)
+                .await,
+            Err(RuntimeError::SubmissionAccessUnverified)
+        ));
+        assert_eq!(
+            requests.lock().unwrap().len(),
+            1,
+            "the submission is never fetched"
+        );
+    }
+}
+
+#[tokio::test]
+async fn status_never_rewraps_a_submission_from_an_earlier_access_epoch() {
+    let stored = fixture()["submissions"][0].clone();
+    let (host, requests) = server(vec![
+        respond(
+            200,
+            list_response(&[summary(FIXTURE_SUBMISSION_ID, 1, 2, "pending")]),
+        ),
+        respond(
+            200,
+            json!({
+                "organizationId": ORGANIZATION_ID,
+                "agentKeyVersion": 3,
+                "agentAccessEpoch": "5",
+                "manifests": [manifest(1)],
+            })
+            .to_string(),
+        ),
+        respond(200, stored.to_string()),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmissionStatus,
+        &persistence,
+        Some(anchor_from_manifest(&manifest(0))),
+        None,
+    );
+    let items = session.submission_status(None).await.unwrap();
+    assert_eq!(items[0].rewrap, RewrapOutcome::Failed("stale-access-epoch"));
+    assert!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|request| !request.starts_with("PUT")),
+        "nothing is uploaded"
+    );
 }

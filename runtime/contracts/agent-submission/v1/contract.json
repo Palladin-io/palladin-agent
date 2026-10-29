@@ -193,7 +193,7 @@
     "idempotency": {
       "sameSubmissionIdIdenticalBytes": "return the stored submission",
       "sameSubmissionIdDifferentBytes": "409 submission-conflict",
-      "reWrap": "same identity and encodedPayload, submissionRevision == stored+1, approverKeyVersion == current approver key version; anything else is rejected"
+      "reWrap": "same identity and encodedPayload, submissionRevision == stored+1, approverKeyVersion == current approver key version and greater than the stored approverKeyVersion; anything else is rejected"
     }
   },
   "lifecycle": {

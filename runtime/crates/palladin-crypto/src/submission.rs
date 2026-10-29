@@ -113,6 +113,8 @@ pub enum SubmissionError {
     ContextMismatch,
     #[error("submission recipient key does not match the trusted key")]
     RecipientKeyMismatch,
+    #[error("submission was made for an earlier Agent access epoch")]
+    StaleAccessEpoch,
     #[error("submission key wrapper could not be opened")]
     WrapperOpenFailed,
     #[error("submission key wrapper context does not match")]
@@ -159,6 +161,7 @@ impl SubmissionError {
             Self::InvalidAgentSignature => "invalid-agent-signature",
             Self::ContextMismatch => "context-mismatch",
             Self::RecipientKeyMismatch => "recipient-key-mismatch",
+            Self::StaleAccessEpoch => "stale-access-epoch",
             Self::WrapperOpenFailed => "wrapper-open-failed",
             Self::WrapperContextMismatch => "wrapper-context-mismatch",
             Self::PayloadAuthFailed => "payload-auth-failed",
@@ -556,6 +559,8 @@ pub enum SubmissionRecipient<'a> {
     Agent {
         key_version: u32,
         identity: &'a X25519Identity,
+        /// The Agent's current access epoch from an authority other than this submission.
+        access_epoch: u64,
     },
     ApproverGroup {
         key_version: u32,
@@ -1035,6 +1040,7 @@ pub fn build_agent_submission(
 pub fn rewrap_agent_submission(
     stored: &AgentEntrySubmission,
     agent_id: Uuid,
+    current_access_epoch: u64,
     agent_encryption: &X25519Identity,
     agent_signing: &Ed25519Identity,
     approver: &PinnedApproverTrust,
@@ -1049,6 +1055,7 @@ pub fn rewrap_agent_submission(
         recipient: SubmissionRecipient::Agent {
             key_version: stored.agent_key_version,
             identity: agent_encryption,
+            access_epoch: current_access_epoch,
         },
     };
     let dek = open_dek(stored, &authority)?;
@@ -1080,7 +1087,10 @@ pub fn verify_rewrap(
     if Some(candidate.submission_revision) != stored.submission_revision.checked_add(1) {
         return Err(SubmissionError::RevisionReplay);
     }
-    if candidate.approver_key_version != current_approver_key_version {
+    // A re-wrap exists only for an approver key rotation, never to bump the revision alone.
+    if candidate.approver_key_version != current_approver_key_version
+        || candidate.approver_key_version <= stored.approver_key_version
+    {
         return Err(SubmissionError::RecipientKeyMismatch);
     }
     if candidate.encoded_payload != stored.encoded_payload || candidate.identity != stored.identity
@@ -1180,6 +1190,7 @@ fn open_dek(
             SubmissionRecipient::Agent {
                 key_version,
                 identity,
+                ..
             } => (
                 RecipientKeyKind::AgentX25519,
                 key_version,
@@ -1204,6 +1215,13 @@ fn open_dek(
     if declared_version != key_version || declared_fingerprint.ct_eq(&fingerprint).unwrap_u8() != 1
     {
         return Err(SubmissionError::RecipientKeyMismatch);
+    }
+    // The epoch is outside the AAD and wrapper context; only this comparison stops pre-approval
+    // use of a submission made before the Agent's access changed.
+    if let SubmissionRecipient::Agent { access_epoch, .. } = authority.recipient
+        && submission.agent_access_epoch != access_epoch
+    {
+        return Err(SubmissionError::StaleAccessEpoch);
     }
     let wrapped = SealedWrappedKey::from_bytes(wrapped.clone())
         .map_err(|_| SubmissionError::WrapperOpenFailed)?;

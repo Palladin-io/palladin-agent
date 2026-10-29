@@ -6473,6 +6473,10 @@ pub enum RuntimeError {
         "the submission is not usable; only this Agent's own pending, unsuspended submissions can be injected"
     )]
     SubmissionNotUsable,
+    #[error(
+        "the current Agent access could not be verified against the organization approver key; the submission was not used"
+    )]
+    SubmissionAccessUnverified,
 }
 
 impl From<PendingBrowserPairingStateError> for RuntimeError {

@@ -426,12 +426,15 @@ impl RuntimeSession<'_> {
     ) -> Result<DeliveredCredential, RuntimeError> {
         self.begin_operation(RuntimeOperation::InjectCredential)?;
         let requested = parse_uuid(submission_id)?;
-        let pin = self
-            .config
-            .approver_trust_anchor
-            .as_ref()
-            .ok_or(RuntimeError::UntrustedApproverManifest)
-            .and_then(pinned_approver)?;
+        // The current access epoch and Agent key version come from a fresh authenticated read
+        // that also re-verifies the approver chain, never from the submission being used.
+        let current = match self.trusted_approver().await {
+            Ok(current) => current,
+            Err(Failure::Runtime(error)) => return Err(error),
+            Err(Failure::NotSaved(_) | Failure::Reintroduction(_)) => {
+                return Err(RuntimeError::SubmissionAccessUnverified);
+            }
+        };
         let value = match self.api.get_submission(submission_id).await {
             Ok(value) => value,
             Err(ApiError::SubmissionRejected(SubmissionRejection::SubmissionNotUsable)) => {
@@ -445,17 +448,16 @@ impl RuntimeSession<'_> {
             return Err(RuntimeError::Submission(SubmissionError::ContextMismatch));
         }
         let signing_public_key = self.agent_signing_public_key()?;
-        // Our own signature covers the declared key version; the fingerprint is recomputed from
-        // the locally held X25519 key, so a substituted recipient cannot open.
         let opened = open_agent_submission(
             &submission,
             &SubmissionAuthority {
-                organization_id: pin.organization_id,
+                organization_id: current.pin.organization_id,
                 agent_id: self.agent_uuid()?,
                 agent_signing_public_key: &signing_public_key,
                 recipient: SubmissionRecipient::Agent {
-                    key_version: submission.agent_key_version,
+                    key_version: current.agent_key_version,
                     identity: &self.encryption,
+                    access_epoch: current.agent_access_epoch,
                 },
             },
         )?;
@@ -717,6 +719,7 @@ impl RuntimeSession<'_> {
             let candidate = rewrap_agent_submission(
                 &stored,
                 self.agent_uuid()?,
+                approver.agent_access_epoch,
                 &self.encryption,
                 signing,
                 &approver.pin,
