@@ -13,7 +13,7 @@
     "u16u32": "JSON integer within range; key versions are positive",
     "binary": "unpadded base64url whose decoding re-encodes to the same string; keys, fingerprints and digests 32 bytes, signatures 64 bytes, wrapped DEK 120 bytes",
     "instant": "YYYY-MM-DDTHH:mm:ss[.ffffff]Z",
-    "strings": "every payload string is UTF-8; the label is NFC"
+    "strings": "every payload string is non-empty, well-formed Unicode without unpaired surrogates and already NFC; Vault protocol 2 rejects non-NFC Entry strings, so producers reject non-NFC input before any request or site submission and readers reject it; nobody normalizes a secret"
   },
   "suite": "PLV2-XC20P-HKDF256-X25519-ED25519",
   "scope": {
@@ -104,7 +104,7 @@
     "agentTrust": {
       "firstIntroduction": "the authenticated backend response is authoritative for the organization's first approver manifest; the runtime verifies self-signature, organization binding and fingerprints, then pins signingKeyFingerprint, keyVersion and manifestRevision in its signed profile",
       "claimBoundary": "first introduction has the same trust-on-first-use boundary as Vault manifest introduction; it is not an independent attestation",
-      "sameKeyVersion": "accept only a strictly higher manifestRevision signed by the pinned signing key",
+      "sameKeyVersion": "accept only a strictly higher manifestRevision signed by the pinned signing key with unchanged signing and message key fingerprints; a different message key requires rotation to keyVersion+1",
       "newKeyVersion": "accept only keyVersion == pinned+1 whose continuitySignature verifies with the pinned signing key and whose previousSigningKeyFingerprint equals the pinned fingerprint; then re-pin; keyVersion == pinned+1 without continuity is a re-bootstrap and requires explicit operator re-trust",
       "sameKeyVersionContinuity": "a manifest of the pinned keyVersion that carries continuity fields is rejected",
       "rejections": ["unknown-organization", "rollback-revision", "skipped-key-version", "continuity-mismatch", "invalid-signature", "fingerprint-mismatch", "reintroduction-required"],

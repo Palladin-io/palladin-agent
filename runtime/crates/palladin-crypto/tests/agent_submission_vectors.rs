@@ -229,7 +229,7 @@ fn vendored_contract_files_match_pinned_digests() {
     let digest = |bytes: &str| hex::encode(Sha256::digest(bytes.as_bytes()));
     assert_eq!(
         digest(CONTRACT),
-        "21a40ebb4366d3559deaeccd4675470e1b07ab384b9ca45d3004c509a97a246a"
+        "dde6757dcb059e1a6a97e1254f153b5cdd79c559078ee0cb67380342b3224312"
     );
     assert_eq!(
         digest(FIXTURE),
@@ -677,6 +677,39 @@ fn every_contract_negative_submission_case_fails_closed_with_its_code() {
         expect_error(opened, code, case);
     }
 
+    // Raw JSON text, so a lone surrogate escape can be expressed (serde_json cannot emit one).
+    let reencrypt_text = |plaintext: &[u8]| {
+        let parsed = parse(&submission).unwrap();
+        let nonce = hex_24(
+            fixture["deterministicInputs"]["payloadNonce"]
+                .as_str()
+                .unwrap(),
+        );
+        let ciphertext = XChaCha20Poly1305::new(Key::from_slice(&seed(&fixture, "submissionDek")))
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: plaintext,
+                    aad: &parsed.identity.payload_aad().unwrap(),
+                },
+            )
+            .unwrap();
+        resign(
+            with(
+                "encodedPayload",
+                json!(b64(&[nonce.as_slice(), &ciphertext].concat())),
+            ),
+            &keys,
+        )
+    };
+    let unpaired_surrogate = {
+        let mut payload = fixture["expectedPlaintext"].clone();
+        payload["content"]["password"] = json!("SURROGATE-PLACEHOLDER");
+        let text = String::from_utf8(serde_jcs::to_vec(&payload).unwrap())
+            .unwrap()
+            .replace("SURROGATE-PLACEHOLDER", "a\\ud800b");
+        reencrypt_text(text.as_bytes())
+    };
     let reencrypt = |mutate: &dyn Fn(&mut Value)| {
         let mut payload = fixture["expectedPlaintext"].clone();
         mutate(&mut payload);
@@ -762,6 +795,11 @@ fn every_contract_negative_submission_case_fails_closed_with_its_code() {
             "password over 4096 bytes",
             reencrypt(&|payload| payload["content"]["password"] = json!("p".repeat(4097))),
             "field-too-large",
+        ),
+        (
+            "unpaired surrogate in password",
+            unpaired_surrogate.clone(),
+            "invalid-field",
         ),
         (
             "non-NFC password",
@@ -1076,6 +1114,16 @@ fn every_contract_negative_manifest_case_fails_closed_with_its_code() {
         verify_chain(&fixture, &[v1.clone(), same_version_with_continuity]),
         "manifest-continuity-invalid",
         "same key version must not carry continuity",
+    );
+    let mut substituted_message_key = added_approver.clone();
+    substituted_message_key["messagePublicKey"] = v2["messagePublicKey"].clone();
+    substituted_message_key["messageKeyFingerprint"] = v2["messageKeyFingerprint"].clone();
+    let substituted_message_key =
+        sign_manifest(substituted_message_key, &keys.approver_v1_sign, None);
+    expect_error(
+        verify_chain(&fixture, &[v1.clone(), substituted_message_key]),
+        "manifest-fingerprint-mismatch",
+        "same key version must keep its message key",
     );
 
     let pin_v1 = verify_chain(&fixture, std::slice::from_ref(&v1)).unwrap();

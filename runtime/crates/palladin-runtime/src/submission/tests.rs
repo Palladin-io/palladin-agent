@@ -2382,3 +2382,58 @@ async fn non_nfc_values_are_rejected_by_name_and_never_normalized() {
         "an NFC value is uploaded byte for byte"
     );
 }
+
+#[tokio::test]
+async fn same_version_manifest_cannot_substitute_the_pinned_message_key() {
+    let mut substituted = manifest(0);
+    let object = substituted.as_object_mut().unwrap();
+    object.remove("signature");
+    object.insert("manifestRevision".into(), json!("2"));
+    object.insert("approverSetRevision".into(), json!("2"));
+    object.insert(
+        "messagePublicKey".into(),
+        manifest(1)["messagePublicKey"].clone(),
+    );
+    object.insert(
+        "messageKeyFingerprint".into(),
+        manifest(1)["messageKeyFingerprint"].clone(),
+    );
+    let mut input = b"PLDNSUB1SIG:APPROVER-MANIFEST:\x00\x02".to_vec();
+    input.extend(serde_jcs::to_vec(&substituted).unwrap());
+    let signer = SigningKey::from_bytes(&seed("approverV1Ed25519Seed"));
+    substituted["signature"] = json!(URL_SAFE_NO_PAD.encode(signer.sign(&input).to_bytes()));
+
+    let (host, requests) = server(vec![respond(200, manifests_response(&[substituted]))]).await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        Some(anchor_from_manifest(&manifest(0))),
+        None,
+    );
+    let result = session
+        .submit_entry(
+            new_credential_request(),
+            SubmissionSecret::Generate(policy()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.outcome,
+        Err(SubmissionNotSaved::ApproverKeyUntrusted)
+    );
+    assert!(
+        result.hints.is_empty(),
+        "this is not a re-bootstrap that re-trust could accept"
+    );
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        1,
+        "no upload to the substituted key"
+    );
+    assert!(
+        persistence.anchors.lock().unwrap().is_empty(),
+        "the pin is unchanged"
+    );
+}

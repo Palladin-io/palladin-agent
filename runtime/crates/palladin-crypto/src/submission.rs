@@ -911,6 +911,10 @@ pub fn verify_approver_manifest_chain(
             if manifest.signing_key_fingerprint != pin.signing_key_fingerprint() || has_continuity {
                 return Err(SubmissionError::ManifestSignatureInvalid);
             }
+            // A different message key needs a rotation; it must never replace a pinned one.
+            if manifest.message_key_fingerprint != pin.message_key_fingerprint() {
+                return Err(SubmissionError::ManifestFingerprintMismatch);
+            }
         } else if Some(manifest.key_version) == pin.key_version.checked_add(1) {
             if !has_continuity {
                 return Err(SubmissionError::ManifestReintroductionRequired);
