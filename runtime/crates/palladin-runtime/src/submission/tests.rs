@@ -28,6 +28,7 @@ const AGENT_ID: &str = "0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b";
 const FIXTURE_SUBMISSION_ID: &str = "0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d";
 
 type Handler = Box<dyn FnOnce(&str) -> (u16, String) + Send>;
+const DROP_CONNECTION: u16 = 0;
 type TrustCase = (
     Vec<Handler>,
     Option<PublicApproverTrustAnchor>,
@@ -102,6 +103,10 @@ async fn server(handlers: Vec<Handler>) -> (String, Arc<Mutex<Vec<String>>>) {
             let request = read_request(&mut stream).await;
             let (status, body) = handler(&request);
             captured.lock().unwrap().push(request);
+            if status == DROP_CONNECTION {
+                // Simulates a network failure after the request reached the server.
+                continue;
+            }
             let response = format!(
                 "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -1498,4 +1503,390 @@ async fn update_without_username_carries_an_autofill_hint() {
         assert!(result.outcome.is_ok());
         assert_eq!(result.hints, expected);
     }
+}
+
+const ENTRY_ID_OTHER: &str = "1f1f1f1f-1f1f-4f1f-8f1f-1f1f1f1f1f1f";
+
+fn list_response(items: &[Value]) -> String {
+    json!({ "items": items }).to_string()
+}
+
+fn new_summary(id: &str) -> Value {
+    json!({
+        "submissionId": id, "submissionKind": 1, "entryType": 1,
+        "target": { "kind": "new" }, "state": "pending", "agentUseSuspended": false,
+        "submissionRevision": "1", "approverKeyVersion": 1,
+        "createdAt": "2026-10-29T08:00:00Z"
+    })
+}
+
+fn posted_ids(requests: &[String]) -> Vec<String> {
+    requests
+        .iter()
+        .filter(|request| request.starts_with("POST"))
+        .map(|request| {
+            request_body(request)["submissionId"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn network_failure_after_post_is_reconciled_without_a_second_submission() {
+    let posted = Arc::new(Mutex::new(String::new()));
+    let seen = Arc::clone(&posted);
+    let (host, requests) = server(vec![
+        respond(200, manifests_response(&[manifest(0)])),
+        Box::new(move |request| {
+            *seen.lock().unwrap() = request_body(request)["submissionId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            (DROP_CONNECTION, String::new())
+        }),
+        Box::new(move |_| (200, list_response(&[new_summary(&posted.lock().unwrap())]))),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        None,
+        None,
+    );
+    let result = session
+        .submit_entry(
+            new_credential_request(),
+            SubmissionSecret::Generate(policy()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.outcome.unwrap().state, "pending");
+    let requests = requests.lock().unwrap().clone();
+    let ids = posted_ids(&requests);
+    assert_eq!(ids.len(), 1, "a dropped POST is never resent");
+    assert_eq!(result.submission_id.as_deref(), Some(ids[0].as_str()));
+    assert!(requests[2].starts_with("GET /api/agent/submissions HTTP/1.1"));
+}
+
+#[tokio::test]
+async fn server_echo_of_another_submission_id_is_never_reported_as_saved() {
+    let (host, requests) = server(vec![
+        respond(200, manifests_response(&[manifest(0)])),
+        respond(
+            201,
+            json!({
+                "submissionId": "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d1d",
+                "state": "pending",
+                "submissionRevision": "1",
+            })
+            .to_string(),
+        ),
+        respond(
+            200,
+            list_response(&[new_summary("1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d1d")]),
+        ),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        None,
+        None,
+    );
+    let result = session
+        .submit_entry(
+            new_credential_request(),
+            SubmissionSecret::Generate(policy()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.outcome, Err(SubmissionNotSaved::ServiceUnavailable));
+    let requests = requests.lock().unwrap().clone();
+    assert_eq!(
+        result.submission_id.as_deref(),
+        Some(posted_ids(&requests)[0].as_str()),
+        "the locally chosen ID is the authority, not the server echo"
+    );
+    assert_eq!(posted_ids(&requests).len(), 1);
+}
+
+#[tokio::test]
+async fn manifests_for_another_organization_than_the_pin_are_untrusted() {
+    let (host, requests) = server(vec![respond(
+        200,
+        json!({
+            "organizationId": "1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a",
+            "agentKeyVersion": 3,
+            "agentAccessEpoch": "4",
+            "manifests": [],
+        })
+        .to_string(),
+    )])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        Some(anchor_from_manifest(&manifest(0))),
+        None,
+    );
+    let result = session
+        .submit_entry(
+            new_credential_request(),
+            SubmissionSecret::Generate(policy()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.outcome,
+        Err(SubmissionNotSaved::ApproverKeyUntrusted)
+    );
+    assert_eq!(requests.lock().unwrap().len(), 1, "no upload");
+    assert!(persistence.anchors.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn approver_key_rotation_is_retried_once_with_the_same_id_and_never_loops() {
+    let rotated = || respond(409, json!({ "code": "approver-key-rotated" }).to_string());
+    let (host, requests) = server(vec![
+        respond(200, manifests_response(&[manifest(0)])),
+        rotated(),
+        respond(200, manifests_response(&[manifest(1)])),
+        rotated(),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        None,
+        None,
+    );
+    let result = session
+        .submit_entry(
+            new_credential_request(),
+            SubmissionSecret::Generate(policy()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.outcome,
+        Err(SubmissionNotSaved::ApproverKeyUnavailable)
+    );
+    let requests = requests.lock().unwrap().clone();
+    let ids = posted_ids(&requests);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(
+        ids[0], ids[1],
+        "the retry reuses the Agent-chosen submission ID"
+    );
+    let passwords = requests
+        .iter()
+        .filter(|request| request.starts_with("POST"))
+        .zip([("approverV1X25519Seed", 1), ("approverV2X25519Seed", 2)])
+        .map(|(request, (seed, version))| approver_password(&request_body(request), seed, version))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        passwords[0], passwords[1],
+        "the retry never regenerates the secret"
+    );
+
+    let (host, requests) = server(vec![
+        respond(200, manifests_response(&[manifest(0)])),
+        rotated(),
+        respond(200, manifests_response(&[])),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        None,
+        None,
+    );
+    let result = session
+        .submit_entry(
+            new_credential_request(),
+            SubmissionSecret::Generate(policy()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.outcome,
+        Err(SubmissionNotSaved::ApproverKeyUnavailable)
+    );
+    assert_eq!(posted_ids(&requests.lock().unwrap()).len(), 1);
+}
+
+#[tokio::test]
+async fn status_reports_every_state_and_rewraps_only_usable_pending_submissions() {
+    let mut suspended = summary("2d2d2d2d-2d2d-4d2d-8d2d-2d2d2d2d2d2d", 1, 2, "pending");
+    suspended["agentUseSuspended"] = json!(true);
+    let mut approved = summary("3d3d3d3d-3d3d-4d3d-8d3d-3d3d3d3d3d3d", 1, 2, "approved");
+    approved["decision"] = json!({ "vaultId": VAULT_ID, "entryId": ENTRY_ID });
+    approved["decidedAt"] = json!("2026-10-30T08:00:00Z");
+    let (host, requests) = server(vec![respond(
+        200,
+        list_response(&[
+            summary("4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d", 1, 1, "pending"),
+            suspended,
+            approved,
+            summary("5d5d5d5d-5d5d-4d5d-8d5d-5d5d5d5d5d5d", 1, 2, "trashed"),
+            summary("6d6d6d6d-6d6d-4d6d-8d6d-6d6d6d6d6d6d", 1, 2, "purged"),
+        ]),
+    )])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmissionStatus,
+        &persistence,
+        Some(anchor_from_manifest(&manifest(0))),
+        None,
+    );
+    let items = session.submission_status(None).await.unwrap();
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.summary.state.as_str())
+            .collect::<Vec<_>>(),
+        ["pending", "pending", "approved", "trashed", "purged"]
+    );
+    assert!(
+        items
+            .iter()
+            .all(|item| item.rewrap == RewrapOutcome::NotRequired)
+    );
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        1,
+        "suspended, decided and trashed submissions are never fetched or re-wrapped"
+    );
+
+    let filtered_host = server(vec![respond(
+        200,
+        list_response(&[
+            summary("4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d", 1, 1, "pending"),
+            summary(FIXTURE_SUBMISSION_ID, 1, 1, "trashed"),
+        ]),
+    )])
+    .await
+    .0;
+    let session = test_session(
+        &filtered_host,
+        RuntimeOperation::SubmissionStatus,
+        &persistence,
+        None,
+        None,
+    );
+    let items = session
+        .submission_status(Some(FIXTURE_SUBMISSION_ID))
+        .await
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].summary.state, "trashed");
+}
+
+#[tokio::test]
+async fn status_rewrap_failures_are_reported_without_touching_the_payload() {
+    let stored = fixture()["submissions"][0].clone();
+    let cases: Vec<(Vec<Handler>, &str)> = vec![
+        (
+            vec![
+                respond(200, stored.to_string()),
+                respond(409, json!({ "code": "approver-key-rotated" }).to_string()),
+            ],
+            "approver-key-rotated",
+        ),
+        (
+            vec![respond(
+                200,
+                fixture()["submissions"][1].to_string().replace(
+                    FIXTURE_SUBMISSION_ID,
+                    "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d1d",
+                ),
+            )],
+            "context-mismatch",
+        ),
+        (
+            vec![respond(
+                200,
+                stored
+                    .to_string()
+                    .replace("0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f", ENTRY_ID_OTHER),
+            )],
+            "invalid-agent-signature",
+        ),
+    ];
+    for (handlers, expected) in cases {
+        let mut all = vec![
+            respond(
+                200,
+                list_response(&[summary(FIXTURE_SUBMISSION_ID, 1, 2, "pending")]),
+            ),
+            respond(200, manifests_response(&[manifest(1)])),
+        ];
+        all.extend(handlers);
+        let (host, _) = server(all).await;
+        let persistence = RecordingPersistence::default();
+        let session = test_session(
+            &host,
+            RuntimeOperation::SubmissionStatus,
+            &persistence,
+            Some(anchor_from_manifest(&manifest(0))),
+            None,
+        );
+        let items = session.submission_status(None).await.unwrap();
+        assert_eq!(items[0].rewrap, RewrapOutcome::Failed(expected));
+    }
+}
+
+#[tokio::test]
+async fn every_submission_inject_fetches_the_submission_fresh() {
+    let stored = fixture()["submissions"][0].clone();
+    let (host, requests) = server(vec![
+        respond(200, stored.to_string()),
+        respond(403, json!({ "code": "submission-not-usable" }).to_string()),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let anchor = Some(anchor_from_manifest(&manifest(0)));
+    let first = test_session(
+        &host,
+        RuntimeOperation::InjectCredential,
+        &persistence,
+        anchor.clone(),
+        None,
+    );
+    first
+        .deliver_submission_for_inject(FIXTURE_SUBMISSION_ID)
+        .await
+        .expect("first use");
+    let second = test_session(
+        &host,
+        RuntimeOperation::InjectCredential,
+        &persistence,
+        anchor,
+        None,
+    );
+    assert!(matches!(
+        second
+            .deliver_submission_for_inject(FIXTURE_SUBMISSION_ID)
+            .await,
+        Err(RuntimeError::SubmissionNotUsable)
+    ));
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        2,
+        "a trashed or suspended submission stops working immediately; nothing is cached"
+    );
 }

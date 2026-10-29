@@ -1037,17 +1037,7 @@ pub fn build_agent_submission(
         return Err(SubmissionError::InvalidInput);
     }
     content.validate(kind)?;
-    let mut payload = json!({
-        "schema": PAYLOAD_SCHEMA,
-        "identity": context.identity.to_value(),
-        "content": content.to_value(),
-    });
-    if let (Some(label), Value::Object(object)) = (label, &mut payload) {
-        object.insert("label".into(), json!(label));
-    }
-    let plaintext = canonical_json(&payload).map(Zeroizing::new);
-    zeroize_json(&mut payload);
-    let plaintext = plaintext?;
+    let plaintext = payload_plaintext(&context.identity, label, content)?;
     if plaintext.len() > PAYLOAD_PLAINTEXT_MAX_BYTES {
         return Err(SubmissionError::InvalidInput);
     }
@@ -1320,11 +1310,37 @@ fn seal_revision(
         &approver.message_public_key,
         &submission,
     )?;
+    sign_submission(&mut submission, agent_signing)?;
+    Ok(submission)
+}
+
+fn sign_submission(
+    submission: &mut AgentEntrySubmission,
+    agent_signing: &Ed25519Identity,
+) -> Result<(), SubmissionError> {
     let mut input = SignatureProfile::AgentSubmission.domain_prefix().to_vec();
     input.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
     input.extend_from_slice(&canonical_json(&submission.unsigned_value())?);
     submission.agent_signature = agent_signing.sign(&input);
-    Ok(submission)
+    Ok(())
+}
+
+fn payload_plaintext(
+    identity: &SubmissionIdentity,
+    label: Option<&str>,
+    content: &SubmissionContent,
+) -> Result<Zeroizing<Vec<u8>>, SubmissionError> {
+    let mut payload = json!({
+        "schema": PAYLOAD_SCHEMA,
+        "identity": identity.to_value(),
+        "content": content.to_value(),
+    });
+    if let (Some(label), Value::Object(object)) = (label, &mut payload) {
+        object.insert("label".into(), json!(label));
+    }
+    let plaintext = canonical_json(&payload).map(Zeroizing::new);
+    zeroize_json(&mut payload);
+    plaintext
 }
 
 fn canonical_json(value: &Value) -> Result<Vec<u8>, SubmissionError> {
@@ -1418,5 +1434,66 @@ fn zeroize_json(value: &mut Value) {
         Value::Array(items) => items.iter_mut().for_each(zeroize_json),
         Value::Object(object) => object.values_mut().for_each(zeroize_json),
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod builder_vector_tests {
+    use super::*;
+
+    const FIXTURE: &str = include_str!("../../../contracts/agent-submission/v1/fixture.json");
+
+    fn input(fixture: &Value, name: &str) -> Vec<u8> {
+        hex::decode(fixture["deterministicInputs"][name].as_str().unwrap()).unwrap()
+    }
+
+    /// The builder's own payload, AEAD and signing steps reproduce the fixture byte for byte when
+    /// fed the fixture's deterministic DEK, nonce and Agent key (wraps use fresh randomness).
+    #[test]
+    fn builder_steps_reproduce_fixture_bytes() {
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        let expected = &fixture["expectedPlaintext"];
+        let submission = AgentEntrySubmission::from_value(&fixture["submissions"][0]).unwrap();
+        let content = SubmissionContent::Credential {
+            username: Some(SecretString::from(
+                expected["content"]["username"].as_str().unwrap().to_owned(),
+            )),
+            password: SecretString::from(
+                expected["content"]["password"].as_str().unwrap().to_owned(),
+            ),
+            url: Some(expected["content"]["url"].as_str().unwrap().to_owned()),
+            notes: None,
+        };
+        let plaintext =
+            payload_plaintext(&submission.identity, expected["label"].as_str(), &content).unwrap();
+        assert_eq!(*plaintext, serde_jcs::to_vec(expected).unwrap());
+
+        let dek: [u8; 32] = input(&fixture, "submissionDek").try_into().unwrap();
+        let nonce: [u8; NONCE_BYTES] = input(&fixture, "payloadNonce").try_into().unwrap();
+        let encoded = encrypt_payload(
+            &submission.identity,
+            &SecretBox::new(Box::new(dek)),
+            &nonce,
+            &plaintext,
+        )
+        .unwrap();
+        assert_eq!(
+            URL_SAFE_NO_PAD.encode(encoded),
+            fixture["submissions"][0]["encodedPayload"]
+                .as_str()
+                .unwrap()
+        );
+
+        let signing = Ed25519Identity::from_seed(input(&fixture, "agentEd25519Seed")).unwrap();
+        for value in fixture["submissions"].as_array().unwrap() {
+            let mut resigned = AgentEntrySubmission::from_value(value).unwrap();
+            resigned.agent_signature = [0; 64];
+            sign_submission(&mut resigned, &signing).unwrap();
+            assert_eq!(
+                resigned.to_value(),
+                *value,
+                "Ed25519 signature is byte-identical"
+            );
+        }
     }
 }
