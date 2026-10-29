@@ -105,6 +105,7 @@ pub enum WrapperPurpose {
     GrantDek = 4,
     AgentVaultKey = 5,
     ScriptExecutionDek = 6,
+    SubmissionDek = 7,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,6 +116,8 @@ pub enum RecipientKeyKind {
     VaultSigningEd25519 = 3,
     VaultMessageX25519 = 4,
     MemberX25519 = 5,
+    OrganizationApproverX25519 = 6,
+    OrganizationApproverEd25519 = 7,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,7 +139,7 @@ impl WrapperContext {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, CryptoError> {
         validate_wrapper_context(self)?;
         let suite = self.wrapper_suite_id.as_bytes();
-        let bitmap = scope_bitmap(&self.scope);
+        let bitmap = wrapper_scope_bitmap(self);
         let mut encoded = Vec::with_capacity(192);
         encoded.extend_from_slice(WRAPPER_CONTEXT_MAGIC);
         push_u16(&mut encoded, self.protocol_version);
@@ -206,6 +209,13 @@ impl std::fmt::Debug for SealedWrappedKey {
 
 pub struct X25519SealedBoxSuite;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WrapperOpenError {
+    Descriptor(CryptoError),
+    Open,
+    ContextMismatch,
+}
+
 impl X25519SealedBoxSuite {
     pub fn wrap(
         key: &SecretBox<[u8; KEY_BYTES]>,
@@ -230,25 +240,40 @@ impl X25519SealedBoxSuite {
         recipient: &X25519Identity,
         context: &WrapperContext,
     ) -> Result<SecretBox<[u8; KEY_BYTES]>, CryptoError> {
-        verify_recipient(recipient.public_key(), context)?;
+        Self::unwrap_classified(wrapped, recipient, context).map_err(|error| match error {
+            WrapperOpenError::Descriptor(error) => error,
+            WrapperOpenError::Open | WrapperOpenError::ContextMismatch => {
+                CryptoError::AuthenticationFailed
+            }
+        })
+    }
+
+    /// Same checks as `unwrap`, but distinguishes a package that cannot be opened from one
+    /// that opened under a different wrapper context, as required by contract error codes.
+    pub(crate) fn unwrap_classified(
+        wrapped: &SealedWrappedKey,
+        recipient: &X25519Identity,
+        context: &WrapperContext,
+    ) -> Result<SecretBox<[u8; KEY_BYTES]>, WrapperOpenError> {
+        verify_recipient(recipient.public_key(), context).map_err(WrapperOpenError::Descriptor)?;
+        let expected_hash = wrapper_context_hash(context).map_err(WrapperOpenError::Descriptor)?;
         let secret = crypto_box::SecretKey::from_bytes(recipient.static_secret().to_bytes());
         let plaintext = Zeroizing::new(
             secret
                 .unseal(wrapped.as_bytes())
-                .map_err(|_| CryptoError::AuthenticationFailed)?,
+                .map_err(|_| WrapperOpenError::Open)?,
         );
         if plaintext.len() != WRAPPED_KEY_PLAINTEXT_BYTES
             || plaintext[..8].ct_eq(WRAPPED_KEY_MAGIC).unwrap_u8() != 1
         {
-            return Err(CryptoError::AuthenticationFailed);
+            return Err(WrapperOpenError::Open);
         }
-        let expected_hash = wrapper_context_hash(context)?;
         if plaintext[40..].ct_eq(&expected_hash).unwrap_u8() != 1 {
-            return Err(CryptoError::AuthenticationFailed);
+            return Err(WrapperOpenError::ContextMismatch);
         }
         let key: [u8; KEY_BYTES] = plaintext[8..40]
             .try_into()
-            .map_err(|_| CryptoError::InvalidLength)?;
+            .map_err(|_| WrapperOpenError::Open)?;
         Ok(SecretBox::new(Box::new(key)))
     }
 
@@ -366,6 +391,8 @@ impl CryptoSuiteRegistry {
 
 fn validate_wrapper_context(context: &WrapperContext) -> Result<(), CryptoError> {
     let suite = context.wrapper_suite_id.as_bytes();
+    // Agent Submission wrappers are organization-scoped: they have no Vault until a human decides.
+    let vault_less = context.purpose == WrapperPurpose::SubmissionDek;
     if context.protocol_version != PROTOCOL_VERSION
         || suite != X25519_WRAPPER_V1.as_bytes()
         || context.resource_revision == 0
@@ -373,13 +400,13 @@ fn validate_wrapper_context(context: &WrapperContext) -> Result<(), CryptoError>
         || context.recipient_key_version == 0
         || context.recipient_fingerprint == [0; 32]
         || context.scope.organization_id == [0; 16]
-        || context.scope.vault_id == [0; 16]
+        || (context.scope.vault_id == [0; 16]) != vault_less
     {
         return Err(CryptoError::InvalidDescriptor);
     }
     let vault_scope = SCOPE_ORGANIZATION | SCOPE_VAULT;
     let entry_agent_scope = vault_scope | SCOPE_ENTRY | SCOPE_GRANT_OR_REQUEST | SCOPE_AGENT;
-    let actual_scope = scope_bitmap(&context.scope);
+    let actual_scope = wrapper_scope_bitmap(context);
     let valid = match context.purpose {
         WrapperPurpose::MemberVaultKey => {
             actual_scope == vault_scope | SCOPE_MEMBER
@@ -414,6 +441,15 @@ fn validate_wrapper_context(context: &WrapperContext) -> Result<(), CryptoError>
         WrapperPurpose::ScriptExecutionDek => {
             actual_scope == entry_agent_scope
                 && context.recipient_key_kind == RecipientKeyKind::AgentX25519
+                && context.member_key_generation.is_none()
+                && context.parent_descriptor_hash.is_some()
+        }
+        WrapperPurpose::SubmissionDek => {
+            actual_scope == SCOPE_ORGANIZATION | SCOPE_GRANT_OR_REQUEST | SCOPE_AGENT
+                && matches!(
+                    context.recipient_key_kind,
+                    RecipientKeyKind::AgentX25519 | RecipientKeyKind::OrganizationApproverX25519
+                )
                 && context.member_key_generation.is_none()
                 && context.parent_descriptor_hash.is_some()
         }
@@ -672,6 +708,15 @@ fn validate_descriptor(descriptor: &EnvelopeDescriptor) -> Result<(), CryptoErro
         return Err(CryptoError::InvalidDescriptor);
     }
     Ok(())
+}
+
+fn wrapper_scope_bitmap(context: &WrapperContext) -> u16 {
+    let bitmap = scope_bitmap(&context.scope);
+    if context.purpose == WrapperPurpose::SubmissionDek {
+        bitmap & !SCOPE_VAULT
+    } else {
+        bitmap
+    }
 }
 
 fn scope_bitmap(scope: &EnvelopeScope) -> u16 {

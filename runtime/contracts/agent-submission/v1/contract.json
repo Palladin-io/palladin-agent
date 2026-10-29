@@ -1,0 +1,227 @@
+{
+  "contract": "palladin-agent-submission",
+  "contractVersion": 1,
+  "status": "accepted-implementation-pending",
+  "canonicalJson": "RFC8785",
+  "protocolVersion": 2,
+  "suite": "PLV2-XC20P-HKDF256-X25519-ED25519",
+  "scope": {
+    "purpose": "An active Agent proposes a new Entry or a new revision of an Entry it is granted, without the model, the backend or the Agent's operator seeing the secret; an authorized human decides the target Vault and access.",
+    "iteration": "envelope-without-browser: CLI submission with runtime-generated or protected-human-input secrets; browser fill and page-issued secrets reuse this envelope unchanged",
+    "secretSources": ["runtime-password-generator", "protected-human-input"],
+    "forbiddenSecretSources": ["tool-argument", "mcp-input", "environment-variable", "file-path-argument", "model-output", "stdout-of-another-process-started-by-the-model"],
+    "backendPlaintextVisibility": []
+  },
+  "registrations": {
+    "rule": "every id below is new; reuse of an id registered by vault-v2 or another contract is forbidden",
+    "payloadDomainSeparation": "the payload AEAD has its own AAD prefix ASCII(PLDNSUB1AAD) and a fresh per-submission key; it uses no Vault envelope purpose",
+    "x25519WrapperPurposes": [
+      { "id": 7, "name": "submission-dek", "wrappedKey": "SubmissionDEK" },
+      { "id": 8, "name": "approver-message-private-key", "wrappedKey": "approver-X25519-private-key" },
+      { "id": 9, "name": "approver-signing-private-key", "wrappedKey": "approver-Ed25519-seed" }
+    ],
+    "keyKinds": [
+      { "id": 6, "name": "organization-approver-x25519", "keyEncoding": "x25519-raw-rfc7748" },
+      { "id": 7, "name": "organization-approver-ed25519", "keyEncoding": "ed25519-raw-rfc8032" }
+    ],
+    "scopeBits": { "organization": 1, "vault": 2, "entry": 4, "grantOrRequest": 8, "agent": 16, "member": 32 },
+    "signatureDomains": [
+      { "type": "OrganizationApproverManifest", "field": "signature", "domainPrefixAscii": "PLDNSUB1SIG:APPROVER-MANIFEST:" },
+      { "type": "OrganizationApproverManifest", "field": "continuitySignature", "domainPrefixAscii": "PLDNSUB1SIG:APPROVER-CONTINUITY:" },
+      { "type": "AgentEntrySubmission", "field": "agentSignature", "domainPrefixAscii": "PLDNSUB1SIG:AGENT-SUBMISSION:" }
+    ],
+    "signatureInputEncoding": "domainPrefixAscii || u16be(protocolVersion) || RFC8785-UTF8(object-excluding-every-signature-field)"
+  },
+  "enums": {
+    "SubmissionKind": { "wireType": "u16", "values": [{ "id": 1, "name": "new" }, { "id": 2, "name": "update" }] },
+    "SubmissionState": { "wireType": "u16", "values": [{ "id": 1, "name": "pending" }, { "id": 2, "name": "approved" }, { "id": 3, "name": "trashed" }, { "id": 4, "name": "purged" }] },
+    "SubmissionEntryType": { "wireType": "u16", "refEnum": "vault-v2 EntryType", "allowed": [{ "id": 0, "name": "key" }, { "id": 1, "name": "credential" }], "rejected": [{ "id": 2, "name": "script", "reason": "Agent-authored executable content requires a separate reviewed contract" }] },
+    "unknownValues": "reject"
+  },
+  "approverKeySet": {
+    "meaning": "The organization's approver group: one versioned X25519 message key and one Ed25519 signing key shared by every current approver. It is the first concrete group key; recipients are described generically so later groups add a recipientKind instead of a new envelope format.",
+    "approvers": "current organization members whose effective permissions include GrantManage and who have a current Member X25519 key",
+    "keyVersion": "positive u32; 1 on bootstrap; incremented on every rotation",
+    "approverSetRevision": "positive u64 decimal string; incremented on every approver add, remove or Member key change",
+    "privateKeyDistribution": {
+      "wrapperSuite": "palladin-x25519-sealed-box-v1",
+      "messagePrivateKeyPurpose": 8,
+      "signingSeedPurpose": 9,
+      "scopeBitmap": 33,
+      "scope": ["organizationId", "memberId"],
+      "resourceRevision": "approverSetRevision",
+      "wrappedKeyVersion": "keyVersion",
+      "recipient": "current Member X25519 key (keyKind 5), exact version and fingerprint from the authoritative Identity key pointer",
+      "oneWrapPerApproverPerKind": true,
+      "producer": "an unlocked client of a current approver; the backend never creates or opens approver keys"
+    },
+    "bootstrap": {
+      "trigger": "a current approver unlocks a client and the organization has no approver key set",
+      "action": "generate keyVersion 1, wrap both private keys for every current approver, sign manifest revision 1",
+      "concurrency": "server challenge plus compare-and-swap on absent key set; the loser discards its keys from memory"
+    },
+    "addApprover": {
+      "rotation": false,
+      "action": "an existing approver client wraps the current private keys for the new approver and signs the next manifest revision with the current signing key",
+      "pendingUntilWrapped": "the new approver is not a recipient and cannot decide submissions until the wraps commit"
+    },
+    "removeApproverOrApproverKeyChange": {
+      "rotation": true,
+      "action": "a remaining approver client generates keyVersion+1, wraps it for every remaining approver, signs the new manifest with the new key and continuitySignature with the previous signing key",
+      "atomicity": "manifest, every remaining wrap and removal of every previous-version wrap commit together; partial commit is rejected",
+      "fence": "until rotation commits, the removed member's approver wraps are not served and the removed member cannot decide submissions",
+      "noRemainingApprover": "the key set becomes unavailable; new submissions fail with no-approvers; pending submissions stay encrypted to the last key version until a new bootstrap and Agent re-wrap",
+      "claimBoundary": "a removed approver who already opened a submission keeps that plaintext; rotation protects only later submissions and re-wrapped DEKs"
+    },
+    "manifest": {
+      "type": "OrganizationApproverManifest",
+      "requiredFields": ["schema", "contractVersion", "protocolVersion", "organizationId", "keyVersion", "manifestRevision", "approverSetRevision", "approverSetDigest", "messagePublicKey", "messageKeyFingerprint", "signingPublicKey", "signingKeyFingerprint", "issuedAt", "signature"],
+      "conditionalFields": { "continuitySignature": "required when keyVersion > 1, forbidden when keyVersion == 1", "previousSigningKeyFingerprint": "required when keyVersion > 1, forbidden when keyVersion == 1" },
+      "schema": "palladin.organization-approver-manifest.v1",
+      "manifestRevision": "positive u64 decimal string; strictly increasing across all key versions",
+      "approverSetDigest": "SHA-256(ASCII(PLDNSUB1SET) || for each approver in ascending memberId byte order: memberId[16] || u32be(memberKeyVersion) || memberKeyFingerprint[32])",
+      "issuedAt": "server-owned instant issued in the manifest challenge before signing",
+      "signature": "Ed25519 by signingPublicKey of this manifest",
+      "continuitySignature": "Ed25519 by the previous keyVersion signing key over the same unsigned manifest bytes"
+    },
+    "agentTrust": {
+      "firstIntroduction": "the authenticated backend response is authoritative for the organization's first approver manifest; the runtime verifies self-signature, organization binding and fingerprints, then pins signingKeyFingerprint, keyVersion and manifestRevision in its signed profile",
+      "claimBoundary": "first introduction has the same trust-on-first-use boundary as Vault manifest introduction; it is not an independent attestation",
+      "sameKeyVersion": "accept only a strictly higher manifestRevision signed by the pinned signing key",
+      "newKeyVersion": "accept only keyVersion == pinned+1 whose continuitySignature verifies with the pinned signing key and whose previousSigningKeyFingerprint equals the pinned fingerprint; then re-pin",
+      "rejections": ["unknown-organization", "rollback-revision", "skipped-key-version", "continuity-mismatch", "invalid-signature", "fingerprint-mismatch"],
+      "rejectionTiming": "before secret generation, before encryption and before any form submission"
+    }
+  },
+  "submission": {
+    "type": "AgentEntrySubmission",
+    "schema": "palladin.agent-entry-submission.v1",
+    "submissionId": "random lowercase RFC4122 UUID chosen by the Agent before encryption; idempotency key; never replaced by the backend",
+    "identityFields": ["contractVersion", "protocolVersion", "organizationId", "submissionId", "agentId", "submissionKind", "entryType", "target"],
+    "target": {
+      "new": { "requiredFields": ["kind"], "optionalFields": ["suggestedVaultId"], "kind": "new", "suggestedVaultId": "advisory only; never an authority for recipients or decision" },
+      "update": { "requiredFields": ["kind", "vaultId", "entryId", "expectedEntryRevision"], "kind": "update", "expectedEntryRevision": "u64 decimal string of the Entry revision the Agent's active grant delivered", "authorization": "the Agent must hold an active grant covering vaultId/entryId at submission time; checked by the backend against authenticated Agent and current grant state" }
+    },
+    "transportFields": ["schema", "contractVersion", "protocolVersion", "organizationId", "submissionId", "agentId", "submissionKind", "entryType", "target", "submissionRevision", "agentAccessEpoch", "agentKeyVersion", "agentKeyFingerprint", "approverKeyVersion", "approverMessageKeyFingerprint", "approverManifestRevision", "encodedPayload", "encodedAgentWrappedDek", "encodedApproverWrappedDek", "agentSignature"],
+    "submissionRevision": "positive u64 decimal string; 1 on create; incremented only when the Agent re-wraps the unchanged DEK for a new approver key version",
+    "payloadEncryption": {
+      "dek": "fresh random 32-byte SubmissionDEK per submission; never derived from VK, VDK, EntryDEK, API key or another submission",
+      "aead": "XChaCha20-Poly1305-IETF",
+      "encodedPayload": "unpadded base64url of nonce[24] || ciphertext || tag[16]",
+      "aad": "ASCII(PLDNSUB1AAD) || RFC8785-UTF8(identityFields-object)",
+      "aadExcludes": ["submissionRevision", "approver key fields", "agent key fields", "wrapped DEKs", "agentSignature"],
+      "reasonForExclusion": "re-wrapping for a rotated approver key must not re-encrypt or alter the secret payload",
+      "identityDescriptorHash": "SHA-256(ASCII(PLDNSUB1ID) || RFC8785-UTF8(identityFields-object))"
+    },
+    "dekWrapping": {
+      "wrapperSuite": "palladin-x25519-sealed-box-v1",
+      "decodedSealedPackageBytes": 120,
+      "openedPackageEncoding": "ASCII(PLDNX2K1)[8] || SubmissionDEK[32] || SHA-256(ASCII(PLDNX2CTX) || encodedWrapperContext)[32]",
+      "purpose": 7,
+      "scopeBitmap": 25,
+      "scope": ["organizationId", "submissionId as grantOrRequestId", "agentId"],
+      "resourceRevision": "submissionRevision",
+      "wrappedKeyVersion": 1,
+      "parentDescriptorHash": "identityDescriptorHash",
+      "recipients": [
+        { "recipientKind": "agent", "keyKind": 1, "version": "agentKeyVersion", "fingerprint": "agentKeyFingerprint", "field": "encodedAgentWrappedDek" },
+        { "recipientKind": "approver-group", "keyKind": 6, "version": "approverKeyVersion", "fingerprint": "approverMessageKeyFingerprint", "field": "encodedApproverWrappedDek" }
+      ],
+      "futureRecipientKinds": "a later contract version may add group recipient kinds; v1 readers reject any recipient not listed here"
+    },
+    "agentAuthentication": {
+      "signature": "agentSignature by the Agent's current Ed25519 key over every transport field except agentSignature",
+      "verifiers": ["backend before persistence", "approver client before opening the DEK"],
+      "approverVerificationKey": "authoritative Agent Ed25519 key and version from the Agent directory, matched to agentId"
+    },
+    "payload": {
+      "schema": "palladin.agent-submission-payload.v1",
+      "requiredFields": ["schema", "identity", "label", "content"],
+      "identity": "inner copy of identityFields; must equal the outer identity exactly after decryption",
+      "label": "NFC UTF-8, 1..256 bytes, Agent-proposed Entry name; the approver may change it",
+      "content": {
+        "key": { "requiredFields": ["value"], "optionalFields": ["url", "notes"], "maps": "key-content-v2 value/url/notes with fields []" },
+        "credential": { "requiredFields": ["username", "password"], "optionalFields": ["url", "notes"], "url": "absolute https URL", "maps": "credential-content-v2 username/password/url/notes with fields []" }
+      },
+      "additionalFields": "reject-at-every-object-level",
+      "excluded": ["totp", "custom fields", "agentVisibilityPolicy", "Vault metadata"]
+    },
+    "validationOrder": [
+      "verify transport schema, enums, limits and canonical encodings",
+      "verify agentSignature with the authoritative Agent key",
+      "build the expected wrapper context from authenticated organization, submission, Agent, revision and recipient key state",
+      "open the recipient's wrapped DEK and compare the embedded context hash",
+      "decrypt payload with the identity AAD",
+      "compare payload.identity with the outer identity"
+    ],
+    "idempotency": {
+      "sameSubmissionIdIdenticalBytes": "return the stored submission",
+      "sameSubmissionIdDifferentBytes": "409 submission-conflict",
+      "reWrap": "same identity and encodedPayload, submissionRevision == stored+1, approverKeyVersion == current approver key version; anything else is rejected"
+    }
+  },
+  "lifecycle": {
+    "states": ["pending", "approved", "trashed", "purged"],
+    "transitions": [
+      { "from": "pending", "to": "approved", "actor": "approver", "effect": "Entry write, optional grant and deletion of all submission ciphertext and wraps commit atomically" },
+      { "from": "pending", "to": "trashed", "actor": "approver", "effect": "Agent use stops immediately; ciphertext retained for restore" },
+      { "from": "trashed", "to": "pending", "actor": "approver", "effect": "restored for a later decision; agentUseSuspended stays true until approval" },
+      { "from": "trashed", "to": "purged", "actor": "system", "effect": "ciphertext and wraps are permanently deleted after trashRetentionDays; structural audit remains" }
+    ],
+    "trashRetentionDays": 30,
+    "pendingExpiry": "none",
+    "agentDeactivationOrDeletion": "Agent use stops; the submission stays for a human decision; approval cannot grant access to an inactive Agent",
+    "concurrentDecisions": "compare-and-swap on state; the loser receives 409 submission-already-decided"
+  },
+  "preApprovalUse": {
+    "who": "only the authoring Agent, with its current agentAccessEpoch",
+    "when": "state == pending and agentUseSuspended == false",
+    "methods": { "credential": ["inject"], "key": ["inject"] },
+    "forbiddenMethods": ["get"],
+    "expiryAndUseLimit": "none",
+    "delivery": "fetched fresh from the backend for every operation; no local plaintext or ciphertext cache that could outlive trash, suspension or deactivation",
+    "otherAgents": "never"
+  },
+  "decision": {
+    "approve": {
+      "requires": ["current GrantManage", "Vault membership and VaultManage on the selected Vault", "the approver key wrap for the current approverKeyVersion"],
+      "newEntry": "client builds a complete Vault protocol 2 Entry with a server-owned Entry ID from the existing creation challenge, plus the canonical default Agent Visibility Policy",
+      "update": "client builds the next revision of the target Entry; backend rejects when target currentRevision != expectedEntryRevision (409 stale-target-revision); the previous revision stays in immutable Entry history; existing grant envelopes are refreshed with the existing builders",
+      "approverMayRedirectUpdateToNewEntry": true,
+      "defaultAgentAccess": "GRANULAR grant for exactly this Entry, methods inject, no expiry and no use limit; the approver may narrow or disable it",
+      "existingFull": "a covering FULL grant is shown; disabling the new grant does not revoke FULL"
+    },
+    "deny": "moves to trashed",
+    "audit": "distinguishes the submitting Agent from the deciding Member"
+  },
+  "agentResult": {
+    "fields": ["submissionStatus", "siteStatus", "submissionId", "submissionState", "message"],
+    "submissionStatus": ["saved", "not-saved"],
+    "notSavedCodes": ["no-approvers", "approver-key-unavailable", "approver-key-untrusted", "update-not-granted", "invalid-input", "unsupported-entry-type", "password-policy-unsatisfiable", "submission-conflict", "service-unavailable"],
+    "siteStatus": ["not-attempted", "submitted-confirmed", "submitted-unconfirmed", "not-submitted"],
+    "siteRule": "a site form that changes or creates a credential is submitted only after submissionStatus == saved",
+    "messages": {
+      "updateSavedAndSiteConfirmed": "Password changed on {host} and saved to Palladin as a pending update ({submissionId}). The vault entry still holds the previous password until a reviewer approves it in Palladin Inbox. Until then use this submission for inject.",
+      "notSaved": "New password was NOT saved to Palladin; the form was not submitted. Nothing changed on {host}.",
+      "savedSiteUnconfirmed": "Password saved to Palladin ({submissionId}), but the site did not confirm the change. Verify the account before retrying; do not generate another password.",
+      "savedWithoutSite": "Saved to Palladin as a pending {kind} submission ({submissionId}). A reviewer must approve it in Palladin Inbox."
+    },
+    "forbiddenFields": ["secret", "password", "value", "payload", "dek", "ciphertext"]
+  },
+  "limits": {
+    "labelUtf8Bytes": 256,
+    "usernameUtf8Bytes": 1024,
+    "passwordUtf8Bytes": 4096,
+    "keyValueUtf8Bytes": 16384,
+    "urlUtf8Bytes": 2048,
+    "notesUtf8Bytes": 8192,
+    "payloadPlaintextBytes": 32768,
+    "approverCount": 256
+  },
+  "dataHandling": {
+    "memoryOnly": ["secret plaintext", "SubmissionDEK", "approver private keys", "decrypted payload"],
+    "forbiddenPersistence": ["logs", "auditPayload", "analytics", "telemetry", "crashReports", "localStorage", "sessionStorage", "IndexedDB", "SharedPreferences", "applicationDatabase", "local files"],
+    "auditAllowed": ["organizationId", "submissionId", "agentId", "submissionKind", "entryType", "targetVaultId", "targetEntryId", "decidingMemberId", "state", "outcomeCode", "occurredAt"],
+    "notificationPayload": "opaque submission reference only; no label, host, username or ciphertext"
+  }
+}

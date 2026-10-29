@@ -10,6 +10,7 @@ mod reason;
 mod runtime_totp;
 mod script_execution;
 mod signing;
+mod submission;
 mod suite;
 mod vault_v2;
 
@@ -54,6 +55,13 @@ pub use script_execution::{
 };
 pub use signing::{
     SignatureHeaders, body_sha256_base64, canonical_request, generate_nonce_base64, sign_request,
+};
+pub use submission::{
+    AgentEntrySubmission, OpenedSubmission, OrganizationApproverManifest, PinnedApproverTrust,
+    SubmissionAuthority, SubmissionBuildContext, SubmissionContent, SubmissionEntryType,
+    SubmissionError, SubmissionIdentity, SubmissionKind, SubmissionRecipient, SubmissionTarget,
+    build_agent_submission, open_agent_submission, rewrap_agent_submission,
+    verify_approver_manifest_chain, verify_rewrap,
 };
 pub use suite::{
     CryptoSuiteRegistry, EncodedSuitePayload, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose,
