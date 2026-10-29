@@ -1045,6 +1045,7 @@ pub fn rewrap_agent_submission(
     stored: &AgentEntrySubmission,
     agent_id: Uuid,
     current_access_epoch: u64,
+    current_agent_key_version: u32,
     agent_encryption: &X25519Identity,
     agent_signing: &Ed25519Identity,
     approver: &PinnedApproverTrust,
@@ -1057,7 +1058,7 @@ pub fn rewrap_agent_submission(
         agent_id,
         agent_signing_public_key: agent_signing.public_key(),
         recipient: SubmissionRecipient::Agent {
-            key_version: stored.agent_key_version,
+            key_version: current_agent_key_version,
             identity: agent_encryption,
             access_epoch: current_access_epoch,
         },

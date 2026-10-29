@@ -216,7 +216,14 @@
     "forbiddenMethods": ["get"],
     "expiryAndUseLimit": "none",
     "delivery": "fetched fresh from the backend for every operation; no local plaintext or ciphertext cache that could outlive trash, suspension or deactivation",
-    "otherAgents": "never"
+    "otherAgents": "never",
+    "reWrapSource": {
+      "route": "GET /api/agent/submissions/{submissionId}/rewrap-source",
+      "requires": "the authoring Agent at its current agentAccessEpoch, state == pending regardless of agentUseSuspended, and stored approverKeyVersion lower than the current approver key version",
+      "returns": "the stored AgentEntrySubmission",
+      "purpose": "re-wrapping the unchanged DEK for a rotated or re-bootstrapped approver key so a restored submission stays decidable; the runtime never injects or otherwise uses a submission obtained here",
+      "notAUse": "serving re-wrap material is audited separately and never counts as pre-approval use"
+    }
   },
   "decision": {
     "approve": {

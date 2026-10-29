@@ -388,8 +388,8 @@ impl RuntimeSession<'_> {
             if submission_id.is_some_and(|id| id != summary.submission_id) {
                 continue;
             }
+            // Suspension stops use, not decidability: a restored submission is re-wrapped too.
             let rewrap_required = summary.state == "pending"
-                && !summary.agent_use_suspended
                 && summary
                     .current_approver_key_version
                     .is_some_and(|current| current > summary.approver_key_version);
@@ -711,7 +711,10 @@ impl RuntimeSession<'_> {
                 .profile_signing
                 .as_ref()
                 .ok_or(RuntimeError::IntegrityViolation)?;
-            let value = self.api.get_submission(&summary.submission_id).await?;
+            let value = self
+                .api
+                .get_submission_rewrap_source(&summary.submission_id)
+                .await?;
             let stored = AgentEntrySubmission::from_value(&value)?;
             if stored.identity.submission_id.to_string() != summary.submission_id {
                 return Err(RuntimeError::Submission(SubmissionError::ContextMismatch));
@@ -720,6 +723,7 @@ impl RuntimeSession<'_> {
                 &stored,
                 self.agent_uuid()?,
                 approver.agent_access_epoch,
+                approver.agent_key_version,
                 &self.encryption,
                 signing,
                 &approver.pin,
@@ -742,6 +746,7 @@ impl RuntimeSession<'_> {
                     SubmissionRejection::ApproverKeyRotated => "approver-key-rotated",
                     SubmissionRejection::AgentKeyMismatch => "agent-key-mismatch",
                     SubmissionRejection::SubmissionNotPending => "submission-not-pending",
+                    SubmissionRejection::SubmissionNotUsable => "submission-not-usable",
                     _ => "service-unavailable",
                 })
             }

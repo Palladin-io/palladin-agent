@@ -1747,8 +1747,8 @@ async fn approver_key_rotation_is_retried_once_with_the_same_id_and_never_loops(
 }
 
 #[tokio::test]
-async fn status_reports_every_state_and_rewraps_only_usable_pending_submissions() {
-    let mut suspended = summary("2d2d2d2d-2d2d-4d2d-8d2d-2d2d2d2d2d2d", 1, 2, "pending");
+async fn status_reports_every_state_and_rewraps_only_pending_submissions_behind_the_key() {
+    let mut suspended = summary("2d2d2d2d-2d2d-4d2d-8d2d-2d2d2d2d2d2d", 1, 1, "pending");
     suspended["agentUseSuspended"] = json!(true);
     let mut approved = summary("3d3d3d3d-3d3d-4d3d-8d3d-3d3d3d3d3d3d", 1, 2, "approved");
     approved["decision"] = json!({ "vaultId": VAULT_ID, "entryId": ENTRY_ID });
@@ -1788,7 +1788,7 @@ async fn status_reports_every_state_and_rewraps_only_usable_pending_submissions(
     assert_eq!(
         requests.lock().unwrap().len(),
         1,
-        "suspended, decided and trashed submissions are never fetched or re-wrapped"
+        "current, decided, trashed and purged submissions are never fetched or re-wrapped"
     );
 
     let filtered_host = server(vec![respond(
@@ -2436,4 +2436,144 @@ async fn same_version_manifest_cannot_substitute_the_pinned_message_key() {
         persistence.anchors.lock().unwrap().is_empty(),
         "the pin is unchanged"
     );
+}
+
+fn rewrap_accepted() -> Handler {
+    Box::new(|request| {
+        let body = request_body(request);
+        (
+            200,
+            json!({
+                "submissionId": body["submissionId"],
+                "state": "pending",
+                "submissionRevision": body["submissionRevision"],
+            })
+            .to_string(),
+        )
+    })
+}
+
+#[tokio::test]
+async fn suspended_pending_submission_is_rewrapped_from_rewrap_source_for_a_rotated_key() {
+    let stored = fixture()["submissions"][0].clone();
+    let mut suspended = summary(FIXTURE_SUBMISSION_ID, 1, 2, "pending");
+    suspended["agentUseSuspended"] = json!(true);
+    let (host, requests) = server(vec![
+        respond(200, list_response(&[suspended])),
+        respond(200, manifests_response(&[manifest(1)])),
+        respond(200, stored.to_string()),
+        rewrap_accepted(),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmissionStatus,
+        &persistence,
+        Some(anchor_from_manifest(&manifest(0))),
+        None,
+    );
+    let items = session.submission_status(None).await.unwrap();
+    assert_eq!(
+        items[0].rewrap,
+        RewrapOutcome::Rewrapped {
+            submission_revision: 2
+        },
+        "a restored, suspended submission stays decidable after rotation"
+    );
+    let requests = requests.lock().unwrap();
+    assert!(requests[2].starts_with(&format!(
+        "GET /api/agent/submissions/{FIXTURE_SUBMISSION_ID}/rewrap-source HTTP/1.1"
+    )));
+    assert!(requests[3].starts_with(&format!(
+        "PUT /api/agent/submissions/{FIXTURE_SUBMISSION_ID}/wrap HTTP/1.1"
+    )));
+    let candidate = request_body(&requests[3]);
+    assert_eq!(candidate["submissionRevision"], "2");
+    assert_eq!(candidate["approverKeyVersion"], 2);
+    assert_eq!(
+        approver_password(&candidate, "approverV2X25519Seed", 2),
+        "synthetic-Fixture-Only-9!q"
+    );
+}
+
+#[tokio::test]
+async fn rewrap_needs_only_the_dek_and_never_opens_the_payload() {
+    // The stored payload ciphertext is corrupted yet validly signed: only a DEK-only re-wrap can
+    // succeed, and it must carry the ciphertext forward unchanged.
+    let mut stored = fixture()["submissions"][0].clone();
+    let mut payload = URL_SAFE_NO_PAD
+        .decode(stored["encodedPayload"].as_str().unwrap())
+        .unwrap();
+    let last = payload.len() - 1;
+    payload[last] ^= 1;
+    stored["encodedPayload"] = json!(URL_SAFE_NO_PAD.encode(&payload));
+    stored.as_object_mut().unwrap().remove("agentSignature");
+    let mut input = b"PLDNSUB1SIG:AGENT-SUBMISSION:\x00\x02".to_vec();
+    input.extend(serde_jcs::to_vec(&stored).unwrap());
+    let signer = SigningKey::from_bytes(&seed("agentEd25519Seed"));
+    stored["agentSignature"] = json!(URL_SAFE_NO_PAD.encode(signer.sign(&input).to_bytes()));
+
+    let (host, requests) = server(vec![
+        respond(
+            200,
+            list_response(&[summary(FIXTURE_SUBMISSION_ID, 1, 2, "pending")]),
+        ),
+        respond(200, manifests_response(&[manifest(1)])),
+        respond(200, stored.to_string()),
+        rewrap_accepted(),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmissionStatus,
+        &persistence,
+        Some(anchor_from_manifest(&manifest(0))),
+        None,
+    );
+    let items = session.submission_status(None).await.unwrap();
+    assert_eq!(
+        items[0].rewrap,
+        RewrapOutcome::Rewrapped {
+            submission_revision: 2
+        }
+    );
+    let candidate = request_body(&requests.lock().unwrap()[3]);
+    assert_eq!(candidate["encodedPayload"], stored["encodedPayload"]);
+}
+
+#[tokio::test]
+async fn rewrap_source_refusal_is_reported_once_without_retry() {
+    let (host, requests) = server(vec![
+        respond(
+            200,
+            list_response(&[summary(FIXTURE_SUBMISSION_ID, 1, 2, "pending")]),
+        ),
+        respond(200, manifests_response(&[manifest(1)])),
+        respond(403, json!({ "code": "submission-not-usable" }).to_string()),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmissionStatus,
+        &persistence,
+        Some(anchor_from_manifest(&manifest(0))),
+        None,
+    );
+    let items = session.submission_status(None).await.unwrap();
+    assert_eq!(
+        items[0].rewrap,
+        RewrapOutcome::Failed("submission-not-usable")
+    );
+    let requests = requests.lock().unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.contains("/rewrap-source "))
+            .count(),
+        1
+    );
+    assert!(requests.iter().all(|request| !request.starts_with("PUT")));
 }

@@ -178,6 +178,20 @@ impl ApiClient {
         decode(response, MAX_SUBMISSION_LIST_RESPONSE_BYTES).await
     }
 
+    /// Fetches a pending submission solely to re-wrap its DEK for a newer approver key. It is
+    /// served even while Agent use is suspended and must never be used for Inject.
+    pub async fn get_submission_rewrap_source(
+        &self,
+        submission_id: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        let path = format!(
+            "/api/agent/submissions/{}/rewrap-source",
+            encode_component(submission_id)
+        );
+        let response = self.send(Method::GET, &path, None, &[]).await?;
+        decode(response, MAX_SUBMISSION_RESPONSE_BYTES).await
+    }
+
     /// Fetches the complete transport object for a fresh pre-approval Inject. The caller decodes
     /// it strictly and verifies it before use; nothing is cached.
     pub async fn get_submission(&self, submission_id: &str) -> Result<serde_json::Value, ApiError> {

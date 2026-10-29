@@ -229,7 +229,7 @@ fn vendored_contract_files_match_pinned_digests() {
     let digest = |bytes: &str| hex::encode(Sha256::digest(bytes.as_bytes()));
     assert_eq!(
         digest(CONTRACT),
-        "dde6757dcb059e1a6a97e1254f153b5cdd79c559078ee0cb67380342b3224312"
+        "b769046407c05f33da6070c3a65af590864d524c342f63d89b84badc2d04916b"
     );
     assert_eq!(
         digest(FIXTURE),
@@ -1324,6 +1324,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
             &built,
             identity.agent_id,
             5,
+            3,
             &keys.agent_box,
             &agent_signing,
             &pin_v2,
@@ -1331,10 +1332,24 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
         "stale-access-epoch",
         "a submission from an earlier access epoch is not re-wrapped",
     );
+    expect_error(
+        rewrap_agent_submission(
+            &built,
+            identity.agent_id,
+            4,
+            4,
+            &keys.agent_box,
+            &agent_signing,
+            &pin_v2,
+        ),
+        "recipient-key-mismatch",
+        "the Agent key version comes from the current authenticated state",
+    );
     let rewrapped = rewrap_agent_submission(
         &built,
         identity.agent_id,
         4,
+        3,
         &keys.agent_box,
         &agent_signing,
         &pin_v2,
@@ -1369,6 +1384,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
             &rewrapped,
             identity.agent_id,
             4,
+            3,
             &keys.agent_box,
             &agent_signing,
             &pin_v2,
