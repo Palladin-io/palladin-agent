@@ -399,6 +399,9 @@ pub fn render_submission_result(result: &SubmissionResult, json: bool) -> Render
                     "The organization approver key was re-created without continuity from the pinned key. Verify signing key fingerprint {fingerprint} with a Palladin administrator, then run: palladin submit trust-approvers --fingerprint {fingerprint} --confirm"
                 ));
             }
+            SubmissionHint::InvalidInput { field, rule } => {
+                output.stderr_line(format_args!("Invalid input: {field} {rule}."));
+            }
             SubmissionHint::UsernameNeededForAutofill => output.stderr_line(
                 "Note: this update has no username. Login autofill with this submission needs one; resubmit with --username if the login form asks for it.",
             ),
@@ -669,6 +672,24 @@ mod submission_tests {
             ));
             assert!(!output.stdout.contains("trust-approvers"));
         }
+        let rejected = SubmissionResult {
+            kind: SubmissionKind::New,
+            outcome: Err(SubmissionNotSaved::InvalidInput),
+            submission_id: None,
+            hints: vec![SubmissionHint::InvalidInput {
+                field: "password",
+                rule: "must be 1 to 4096 bytes",
+            }],
+        };
+        let output = render_submission_result(&rejected, true);
+        assert_eq!(
+            output.stderr,
+            "Invalid input: password must be 1 to 4096 bytes.\n"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&output.stdout).unwrap()["code"],
+            "invalid-input"
+        );
         let updated = SubmissionResult {
             kind: SubmissionKind::Update,
             outcome: Ok(SubmissionSaved {

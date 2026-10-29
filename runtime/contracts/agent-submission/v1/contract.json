@@ -4,6 +4,17 @@
   "status": "accepted-implementation-pending",
   "canonicalJson": "RFC8785",
   "protocolVersion": 2,
+  "wireEncoding": {
+    "schema": "exact schema string of the object type; any other value is rejected",
+    "contractVersion": "JSON integer 1",
+    "protocolVersion": "JSON integer 2",
+    "uuid": "lowercase RFC4122 string 8-4-4-4-12",
+    "u64": "decimal string without sign or leading zeros, at most 2^64-1; fields described as positive reject 0",
+    "u16u32": "JSON integer within range; key versions are positive",
+    "binary": "unpadded base64url whose decoding re-encodes to the same string; keys, fingerprints and digests 32 bytes, signatures 64 bytes, wrapped DEK 120 bytes",
+    "instant": "YYYY-MM-DDTHH:mm:ss[.ffffff]Z",
+    "strings": "every payload string is UTF-8; the label is NFC"
+  },
   "suite": "PLV2-XC20P-HKDF256-X25519-ED25519",
   "scope": {
     "purpose": "An active Agent proposes a new Entry or a new revision of an Entry it is granted, without the model, the backend or the Agent's operator seeing the secret; an authorized human decides the target Vault and access.",
@@ -176,7 +187,8 @@
       "build the expected wrapper context from authenticated organization, submission, Agent, revision and recipient key state",
       "open the recipient's wrapped DEK and compare the embedded context hash",
       "decrypt payload with the identity AAD",
-      "compare payload.identity with the outer identity"
+      "compare payload.identity with the outer identity",
+      "verify payload schema, field types, NFC label, https URL, per-field limits and the plaintext limit before any use"
     ],
     "idempotency": {
       "sameSubmissionIdIdenticalBytes": "return the stored submission",

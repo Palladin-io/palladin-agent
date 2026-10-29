@@ -13,7 +13,7 @@ use palladin_crypto::{
     approver_reintroduction_candidate, build_agent_submission, open_agent_submission,
     reintroduce_approver_manifest, rewrap_agent_submission, verify_approver_manifest_chain,
 };
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
@@ -21,6 +21,9 @@ use uuid::Uuid;
 use crate::{DeliveredCredential, RuntimeError, RuntimeOperation, RuntimeSession};
 
 const LABEL_MAX_BYTES: usize = 256;
+const USERNAME_MAX_BYTES: usize = 1024;
+const PASSWORD_MAX_BYTES: usize = 4096;
+const KEY_VALUE_MAX_BYTES: usize = 16_384;
 
 /// The contract's value-free `notSavedCodes`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -130,6 +133,16 @@ pub enum SubmissionHint {
     ApproverReintroduction { signing_key_fingerprint: String },
     /// A saved credential update has no username, which login autofill may need.
     UsernameNeededForAutofill,
+    /// A field broke a contract rule; detected before any request or encryption.
+    InvalidInput {
+        field: &'static str,
+        rule: &'static str,
+    },
+}
+
+struct InputProblem {
+    field: &'static str,
+    rule: &'static str,
 }
 
 /// The approver key pinned by an explicit operator re-trust.
@@ -226,8 +239,14 @@ impl RuntimeSession<'_> {
                 None,
             ));
         }
-        if let Err(code) = validate_request(&request) {
-            return Ok(not_saved(code, None));
+        if let Err(problem) = validate_request(&request, &secret) {
+            return Ok(SubmissionResult {
+                hints: vec![SubmissionHint::InvalidInput {
+                    field: problem.field,
+                    rule: problem.rule,
+                }],
+                ..not_saved(SubmissionNotSaved::InvalidInput, None)
+            });
         }
         let submission_id = random_uuid()?;
         let approver = match self.trusted_approver().await {
@@ -668,7 +687,7 @@ impl RuntimeSession<'_> {
             .entry_revision
             .parse::<u64>()
             .ok()
-            .filter(|revision| revision.to_string() == target.entry_revision)
+            .filter(|revision| *revision > 0 && revision.to_string() == target.entry_revision)
             .ok_or(RuntimeError::Api(ApiError::InvalidResponse))?;
         Ok(Ok(SubmissionTarget::Update {
             vault_id: parse_uuid(vault_id)?,
@@ -780,50 +799,67 @@ impl RuntimeSession<'_> {
     }
 }
 
-fn validate_request(request: &SubmissionRequest<'_>) -> Result<(), SubmissionNotSaved> {
-    match request.target {
+/// Contract field rules checked before any request, so a rejection names the offending field.
+fn validate_request(
+    request: &SubmissionRequest<'_>,
+    secret: &SubmissionSecret,
+) -> Result<(), InputProblem> {
+    let problem = |field, rule| Err(InputProblem { field, rule });
+    let Some(entry_type) = request.entry_type else {
+        return problem("type", "is required");
+    };
+    let kind = match request.target {
         SubmissionRequestTarget::New { suggested_vault_id } => {
-            let entry_type = request.entry_type.ok_or(SubmissionNotSaved::InvalidInput)?;
-            let label = normalize_label(request.label.unwrap_or_default());
-            let url_valid = request.url.is_none_or(valid_https_url);
-            let username_valid = match entry_type {
-                SubmissionEntryType::Credential => request
-                    .username
-                    .is_some_and(|value| !value.trim().is_empty() && value.len() <= 1024),
-                SubmissionEntryType::Key => request.username.is_none(),
-            };
-            if label.is_empty()
-                || label.len() > LABEL_MAX_BYTES
-                || label.chars().any(char::is_control)
-                || !url_valid
-                || !username_valid
-                || suggested_vault_id.is_some_and(|id| parse_uuid(id).is_err())
-            {
-                return Err(SubmissionNotSaved::InvalidInput);
+            if suggested_vault_id.is_some_and(|id| parse_uuid(id).is_err()) {
+                return problem("suggested-vault", "must be a lowercase UUID");
             }
+            SubmissionKind::New
         }
         SubmissionRequestTarget::Update { vault_id, entry_id } => {
-            // The asserted type is required; every other field is an optional change merged by
-            // the approver.
-            let label_valid = request.label.is_none_or(|label| {
-                let label = normalize_label(label);
-                !label.is_empty()
-                    && label.len() <= LABEL_MAX_BYTES
-                    && !label.chars().any(char::is_control)
-            });
-            if parse_uuid(vault_id).is_err()
-                || parse_uuid(entry_id).is_err()
-                || request.entry_type.is_none()
-                || (request.entry_type == Some(SubmissionEntryType::Key)
-                    && request.username.is_some())
-                || !label_valid
-                || !request.url.is_none_or(valid_https_url)
-                || !request
-                    .username
-                    .is_none_or(|value| !value.trim().is_empty() && value.len() <= 1024)
-            {
-                return Err(SubmissionNotSaved::InvalidInput);
+            if parse_uuid(vault_id).is_err() || parse_uuid(entry_id).is_err() {
+                return problem("vault/entry", "must be lowercase UUIDs");
             }
+            SubmissionKind::Update
+        }
+    };
+    match request.label.map(normalize_label) {
+        None if kind == SubmissionKind::New => return problem("label", "is required"),
+        Some(label)
+            if label.is_empty()
+                || label.len() > LABEL_MAX_BYTES
+                || label.chars().any(char::is_control) =>
+        {
+            return problem("label", "must be 1 to 256 bytes without control characters");
+        }
+        _ => {}
+    }
+    if request.url.is_some_and(|url| !valid_https_url(url)) {
+        return problem("url", "must be an absolute https URL of at most 2048 bytes");
+    }
+    match (entry_type, request.username) {
+        (SubmissionEntryType::Key, Some(_)) => {
+            return problem("username", "is not part of a key entry");
+        }
+        (SubmissionEntryType::Credential, None) if kind == SubmissionKind::New => {
+            return problem("username", "is required for a new credential");
+        }
+        (_, Some(username))
+            if username.trim().is_empty() || username.len() > USERNAME_MAX_BYTES =>
+        {
+            return problem("username", "must be 1 to 1024 bytes");
+        }
+        _ => {}
+    }
+    if let SubmissionSecret::Provided(secret) = secret {
+        let (field, limit, rule) = match entry_type {
+            SubmissionEntryType::Credential => {
+                ("password", PASSWORD_MAX_BYTES, "must be 1 to 4096 bytes")
+            }
+            SubmissionEntryType::Key => ("value", KEY_VALUE_MAX_BYTES, "must be 1 to 16384 bytes"),
+        };
+        let length = secret.expose_secret().len();
+        if length == 0 || length > limit {
+            return problem(field, rule);
         }
     }
     Ok(())

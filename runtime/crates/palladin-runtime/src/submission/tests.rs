@@ -12,7 +12,6 @@ use palladin_core::secret::OrganizationApiKey;
 use palladin_credential::generator::{CharacterClass, PasswordPolicy};
 use palladin_crypto::{Ed25519Identity, X25519Identity, compute_key_fingerprint, verify_rewrap};
 use palladin_platform::secure_store::{OperationAuthorization, OperationLease, OperationScope};
-use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 use sha2::Sha512;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1889,4 +1888,256 @@ async fn every_submission_inject_fetches_the_submission_fresh() {
         2,
         "a trashed or suspended submission stops working immediately; nothing is cached"
     );
+}
+
+#[tokio::test]
+async fn contract_field_limits_are_named_and_enforced_before_any_request() {
+    let base = new_credential_request();
+    let long_label = "l".repeat(257);
+    let cases: Vec<(SubmissionRequest<'_>, SubmissionSecret, &str)> = vec![
+        (
+            SubmissionRequest {
+                label: Some(&long_label),
+                ..base
+            },
+            SubmissionSecret::Generate(policy()),
+            "label",
+        ),
+        (
+            base,
+            SubmissionSecret::Provided(SecretString::from("p".repeat(4097))),
+            "password",
+        ),
+        (
+            SubmissionRequest {
+                entry_type: Some(SubmissionEntryType::Key),
+                username: None,
+                ..base
+            },
+            SubmissionSecret::Provided(SecretString::from("k".repeat(16_385))),
+            "value",
+        ),
+        (
+            SubmissionRequest {
+                url: Some("https://"),
+                ..base
+            },
+            SubmissionSecret::Generate(policy()),
+            "url",
+        ),
+        (
+            update_request(SubmissionEntryType::Credential, None, None, Some(" ")),
+            SubmissionSecret::Generate(policy()),
+            "username",
+        ),
+    ];
+    for (request, secret, field) in cases {
+        let (host, requests) = server(Vec::new()).await;
+        let persistence = RecordingPersistence::default();
+        let session = test_session(
+            &host,
+            RuntimeOperation::SubmitEntry,
+            &persistence,
+            None,
+            None,
+        );
+        let result = session.submit_entry(request, secret).await.unwrap();
+        assert_eq!(
+            result.outcome,
+            Err(SubmissionNotSaved::InvalidInput),
+            "{field}"
+        );
+        assert!(
+            matches!(result.hints.as_slice(), [SubmissionHint::InvalidInput { field: named, .. }] if *named == field),
+            "{field}: {:?}",
+            result.hints
+        );
+        assert!(requests.lock().unwrap().is_empty(), "{field}");
+    }
+
+    let (host, requests) = server(vec![
+        respond(200, manifests_response(&[manifest(0)])),
+        accept_post(),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        None,
+        None,
+    );
+    let at_limit = session
+        .submit_entry(
+            SubmissionRequest {
+                label: Some(&"l".repeat(256)),
+                ..base
+            },
+            SubmissionSecret::Provided(SecretString::from("p".repeat(4096))),
+        )
+        .await
+        .unwrap();
+    assert!(at_limit.outcome.is_ok(), "exact limits are accepted");
+    assert_eq!(
+        approver_password(
+            &request_body(&requests.lock().unwrap()[1]),
+            "approverV1X25519Seed",
+            1
+        )
+        .len(),
+        4096
+    );
+}
+
+#[tokio::test]
+async fn noncanonical_server_encodings_that_bind_a_submission_are_rejected() {
+    for revision in ["07", "0", "+7", "18446744073709551616"] {
+        let (host, requests) = server(vec![
+            respond(200, manifests_response(&[manifest(0)])),
+            respond(200, submission_target(revision)),
+        ])
+        .await;
+        let persistence = RecordingPersistence::default();
+        let session = test_session(
+            &host,
+            RuntimeOperation::SubmitEntry,
+            &persistence,
+            None,
+            None,
+        );
+        let result = session
+            .submit_entry(
+                update_request(SubmissionEntryType::Credential, None, None, None),
+                SubmissionSecret::Generate(policy()),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(RuntimeError::Api(ApiError::InvalidResponse))),
+            "{revision}: {result:?}"
+        );
+        assert!(
+            requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|request| !request.starts_with("POST"))
+        );
+    }
+
+    for (organization, epoch) in [
+        ("0A0A0A0A-0A0A-4A0A-8A0A-0A0A0A0A0A0A", "4"),
+        (ORGANIZATION_ID, "04"),
+        (ORGANIZATION_ID, "0"),
+    ] {
+        let (host, requests) = server(vec![respond(
+            200,
+            json!({
+                "organizationId": organization,
+                "agentKeyVersion": 3,
+                "agentAccessEpoch": epoch,
+                "manifests": [manifest(0)],
+            })
+            .to_string(),
+        )])
+        .await;
+        let persistence = RecordingPersistence::default();
+        let session = test_session(
+            &host,
+            RuntimeOperation::SubmitEntry,
+            &persistence,
+            None,
+            None,
+        );
+        assert!(matches!(
+            session
+                .submit_entry(
+                    new_credential_request(),
+                    SubmissionSecret::Generate(policy())
+                )
+                .await,
+            Err(RuntimeError::Api(ApiError::InvalidResponse))
+        ));
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert!(
+            persistence.anchors.lock().unwrap().is_empty(),
+            "nothing is pinned"
+        );
+    }
+
+    let mut noncanonical = fixture()["submissions"][0].clone();
+    noncanonical["agentKeyFingerprint"] = json!(format!(
+        "{}=",
+        noncanonical["agentKeyFingerprint"].as_str().unwrap()
+    ));
+    let (host, _) = server(vec![respond(200, noncanonical.to_string())]).await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::InjectCredential,
+        &persistence,
+        Some(anchor_from_manifest(&manifest(0))),
+        None,
+    );
+    assert!(matches!(
+        session
+            .deliver_submission_for_inject(FIXTURE_SUBMISSION_ID)
+            .await,
+        Err(RuntimeError::Submission(SubmissionError::InvalidField))
+    ));
+}
+
+#[tokio::test]
+async fn own_submission_with_an_invalid_payload_is_never_injected() {
+    // Validly signed and encrypted by this Agent, but the payload breaks the contract rules.
+    let stored = fixture()["submissions"][0].clone();
+    let parsed = AgentEntrySubmission::from_value(&stored).unwrap();
+    let mut payload = fixture()["expectedPlaintext"].clone();
+    payload["content"]["url"] = json!("http://example.invalid/login");
+    let dek: [u8; 32] = seed("submissionDek");
+    let nonce: [u8; 24] = hex::decode(
+        fixture()["deterministicInputs"]["payloadNonce"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap()
+    .try_into()
+    .unwrap();
+    use chacha20poly1305::{
+        KeyInit,
+        aead::{Aead, Payload},
+    };
+    let ciphertext = chacha20poly1305::XChaCha20Poly1305::new(&dek.into())
+        .encrypt(
+            &nonce.into(),
+            Payload {
+                msg: &serde_jcs::to_vec(&payload).unwrap(),
+                aad: &parsed.identity.payload_aad().unwrap(),
+            },
+        )
+        .unwrap();
+    let mut tampered = stored.clone();
+    tampered["encodedPayload"] =
+        json!(URL_SAFE_NO_PAD.encode([nonce.as_slice(), &ciphertext].concat()));
+    tampered.as_object_mut().unwrap().remove("agentSignature");
+    let mut input = b"PLDNSUB1SIG:AGENT-SUBMISSION:\x00\x02".to_vec();
+    input.extend(serde_jcs::to_vec(&tampered).unwrap());
+    let signer = SigningKey::from_bytes(&seed("agentEd25519Seed"));
+    tampered["agentSignature"] = json!(URL_SAFE_NO_PAD.encode(signer.sign(&input).to_bytes()));
+
+    let (host, _) = server(vec![respond(200, tampered.to_string())]).await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::InjectCredential,
+        &persistence,
+        Some(anchor_from_manifest(&manifest(0))),
+        None,
+    );
+    assert!(matches!(
+        session
+            .deliver_submission_for_inject(FIXTURE_SUBMISSION_ID)
+            .await,
+        Err(RuntimeError::Submission(SubmissionError::InvalidField))
+    ));
 }

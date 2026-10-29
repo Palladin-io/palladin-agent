@@ -224,7 +224,7 @@ fn vendored_contract_files_match_pinned_digests() {
     let digest = |bytes: &str| hex::encode(Sha256::digest(bytes.as_bytes()));
     assert_eq!(
         digest(CONTRACT),
-        "998190ba37499981275679e2d40535816203062736fc5fcc4ede4fe3025aceba"
+        "58995ee2a26c2b1dcb9c7248ee944aaeb62c4df44b9b7eaacd459ba89b12fb21"
     );
     assert_eq!(
         digest(FIXTURE),
@@ -521,8 +521,90 @@ fn every_contract_negative_submission_case_fails_closed_with_its_code() {
         ),
         (
             "stale approver key version",
-            resign(with("approverKeyVersion", json!(0)), &keys),
+            resign(with("approverKeyVersion", json!(2)), &keys),
             "recipient-key-mismatch",
+        ),
+        (
+            "unknown transport schema",
+            resign(
+                with("schema", json!("palladin.agent-entry-submission.v2")),
+                &keys,
+            ),
+            "unsupported-version",
+        ),
+        (
+            "unknown contract version",
+            resign(with("contractVersion", json!(2)), &keys),
+            "unsupported-version",
+        ),
+        (
+            "noncanonical submission revision",
+            resign(with("submissionRevision", json!("01")), &keys),
+            "invalid-field",
+        ),
+        (
+            "zero access epoch",
+            resign(with("agentAccessEpoch", json!("0")), &keys),
+            "invalid-field",
+        ),
+        (
+            "noncanonical expected revision",
+            resign(target("expectedEntryRevision", json!("+7")), &keys),
+            "invalid-field",
+        ),
+        (
+            "u64 overflow",
+            resign(
+                with("approverManifestRevision", json!("18446744073709551616")),
+                &keys,
+            ),
+            "invalid-field",
+        ),
+        (
+            "uppercase submission id",
+            resign(
+                with(
+                    "submissionId",
+                    json!(submission["submissionId"].as_str().unwrap().to_uppercase()),
+                ),
+                &keys,
+            ),
+            "invalid-field",
+        ),
+        (
+            "string key version",
+            resign(with("agentKeyVersion", json!("3")), &keys),
+            "invalid-field",
+        ),
+        (
+            "padded base64 fingerprint",
+            resign(
+                with(
+                    "agentKeyFingerprint",
+                    json!(format!(
+                        "{}=",
+                        submission["agentKeyFingerprint"].as_str().unwrap()
+                    )),
+                ),
+                &keys,
+            ),
+            "invalid-field",
+        ),
+        (
+            "truncated wrapped DEK",
+            resign(
+                with("encodedApproverWrappedDek", {
+                    let wrap = submission["encodedApproverWrappedDek"].as_str().unwrap();
+                    json!(wrap[..wrap.len() - 4])
+                }),
+                &keys,
+            ),
+            "invalid-field",
+        ),
+        (
+            "target is not an object",
+            resign(with("target", json!("update")), &keys),
+            "invalid-field",
         ),
         (
             "revision replay inside wrapper",
@@ -627,6 +709,64 @@ fn every_contract_negative_submission_case_fails_closed_with_its_code() {
             }),
             "missing-field",
         ),
+        (
+            "unknown payload schema",
+            reencrypt(&|payload| payload["schema"] = json!("palladin.agent-submission-payload.v2")),
+            "invalid-field",
+        ),
+        (
+            "numeric url",
+            reencrypt(&|payload| payload["content"]["url"] = json!(42)),
+            "invalid-field",
+        ),
+        (
+            "http url",
+            reencrypt(&|payload| payload["content"]["url"] = json!("http://example.invalid/login")),
+            "invalid-field",
+        ),
+        (
+            "relative url",
+            reencrypt(&|payload| payload["content"]["url"] = json!("/login")),
+            "invalid-field",
+        ),
+        (
+            "numeric label",
+            reencrypt(&|payload| payload["label"] = json!(7)),
+            "invalid-field",
+        ),
+        (
+            "non-NFC label",
+            reencrypt(&|payload| payload["label"] = json!("Cafe\u{301}")),
+            "invalid-field",
+        ),
+        (
+            "label over 256 bytes",
+            reencrypt(&|payload| payload["label"] = json!("l".repeat(257))),
+            "field-too-large",
+        ),
+        (
+            "password over 4096 bytes",
+            reencrypt(&|payload| payload["content"]["password"] = json!("p".repeat(4097))),
+            "field-too-large",
+        ),
+        (
+            "empty optional username",
+            reencrypt(&|payload| payload["content"]["username"] = json!("")),
+            "invalid-field",
+        ),
+        (
+            "notes over 8192 bytes",
+            reencrypt(&|payload| payload["content"]["notes"] = json!("n".repeat(8193))),
+            "field-too-large",
+        ),
+        (
+            "plaintext over 32768 bytes",
+            reencrypt(&|payload| {
+                payload["content"]["notes"] = json!("n".repeat(8192));
+                payload["padding"] = json!("x".repeat(32768));
+            }),
+            "field-too-large",
+        ),
     ] {
         for recipient in [
             approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_box),
@@ -696,6 +836,100 @@ fn every_contract_negative_manifest_case_fails_closed_with_its_code() {
         changed[field] = value;
         changed
     };
+    let resign_v1 = |change: &dyn Fn(&mut serde_json::Map<String, Value>)| {
+        let mut candidate = v1.clone();
+        change(candidate.as_object_mut().unwrap());
+        sign_manifest(candidate, &keys.approver_v1_sign, None)
+    };
+    for (case, candidate, code) in [
+        (
+            "unknown manifest schema",
+            resign_v1(&|m| {
+                m.insert(
+                    "schema".into(),
+                    json!("palladin.organization-approver-manifest.v2"),
+                );
+            }),
+            "unsupported-version",
+        ),
+        (
+            "unknown manifest protocol version",
+            resign_v1(&|m| {
+                m.insert("protocolVersion".into(), json!(3));
+            }),
+            "unsupported-version",
+        ),
+        (
+            "additional manifest field",
+            resign_v1(&|m| {
+                m.insert("note".into(), json!("x"));
+            }),
+            "unknown-field",
+        ),
+        (
+            "missing approver set digest",
+            resign_v1(&|m| {
+                m.remove("approverSetDigest");
+            }),
+            "missing-field",
+        ),
+        (
+            "missing issuedAt",
+            resign_v1(&|m| {
+                m.remove("issuedAt");
+            }),
+            "missing-field",
+        ),
+        (
+            "malformed issuedAt",
+            resign_v1(&|m| {
+                m.insert("issuedAt".into(), json!("2026-10-29 08:00:00"));
+            }),
+            "invalid-field",
+        ),
+        (
+            "impossible issuedAt date",
+            resign_v1(&|m| {
+                m.insert("issuedAt".into(), json!("2026-02-30T08:00:00Z"));
+            }),
+            "invalid-field",
+        ),
+        (
+            "noncanonical manifest revision",
+            resign_v1(&|m| {
+                m.insert("manifestRevision".into(), json!("01"));
+            }),
+            "invalid-field",
+        ),
+        (
+            "zero key version",
+            resign_v1(&|m| {
+                m.insert("keyVersion".into(), json!(0));
+            }),
+            "invalid-field",
+        ),
+        (
+            "short approver set digest",
+            resign_v1(&|m| {
+                let short = m["signingKeyFingerprint"].as_str().unwrap()[..20].to_owned();
+                m.insert("approverSetDigest".into(), json!(short));
+            }),
+            "invalid-field",
+        ),
+    ] {
+        expect_error(verify_chain(&fixture, &[candidate]), code, case);
+    }
+    assert!(
+        verify_chain(
+            &fixture,
+            &[resign_v1(&|m| {
+                m.insert("issuedAt".into(), json!("2026-10-29T08:00:00.123456Z"));
+            })]
+        )
+        .is_ok(),
+        "a microsecond instant is valid"
+    );
+
     let mut skipped = v2.clone();
     skipped["keyVersion"] = json!(3);
     let skipped = sign_manifest(

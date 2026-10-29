@@ -41,6 +41,9 @@ const KEY_VALUE_MAX_BYTES: usize = 16_384;
 const URL_MAX_BYTES: usize = 2048;
 const NOTES_MAX_BYTES: usize = 8192;
 const PAYLOAD_PLAINTEXT_MAX_BYTES: usize = 32_768;
+const WRAPPED_DEK_BYTES: usize = 120;
+/// Decoding bound for hostile input; anything above the contract limit is rejected as too large.
+const MAX_TRANSPORT_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_ENCODED_PAYLOAD_BYTES: usize = PAYLOAD_PLAINTEXT_MAX_BYTES + NONCE_BYTES + TAG_BYTES;
 
 const TRANSPORT_FIELDS: [&str; 20] = [
@@ -88,8 +91,10 @@ const SIGNATURE_FIELDS: [&str; 3] = ["signature", "continuitySignature", "agentS
 /// Contract error codes. Every variant is value-free and safe to show to an operator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SubmissionError {
-    #[error("submission has an invalid encoding")]
-    InvalidEncoding,
+    #[error("submission has an invalid field value or encoding")]
+    InvalidField,
+    #[error("submission field exceeds its size limit")]
+    FieldTooLarge,
     #[error("submission has an unknown field")]
     UnknownField,
     #[error("submission is missing a required field")]
@@ -98,8 +103,8 @@ pub enum SubmissionError {
     InvalidTarget,
     #[error("submission entry type is not supported")]
     UnsupportedEntryType,
-    #[error("submission contract version is not supported")]
-    UnsupportedContract,
+    #[error("submission schema or contract version is not supported")]
+    UnsupportedVersion,
     #[error("submission input is invalid")]
     InvalidInput,
     #[error("submission Agent signature is invalid")]
@@ -143,12 +148,13 @@ impl SubmissionError {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
-            Self::InvalidEncoding => "invalid-encoding",
+            Self::InvalidField => "invalid-field",
+            Self::FieldTooLarge => "field-too-large",
             Self::UnknownField => "unknown-field",
             Self::MissingField => "missing-field",
             Self::InvalidTarget => "invalid-target",
             Self::UnsupportedEntryType => "unsupported-entry-type",
-            Self::UnsupportedContract => "unsupported-contract",
+            Self::UnsupportedVersion => "unsupported-version",
             Self::InvalidInput => "invalid-input",
             Self::InvalidAgentSignature => "invalid-agent-signature",
             Self::ContextMismatch => "context-mismatch",
@@ -348,29 +354,48 @@ impl AgentEntrySubmission {
     /// Strictly decodes a transport object: unknown or missing fields, unknown enum values and
     /// non-canonical encodings are rejected before any signature or key is used.
     pub fn from_value(value: &Value) -> Result<Self, SubmissionError> {
-        let object = value.as_object().ok_or(SubmissionError::InvalidEncoding)?;
+        let object = value.as_object().ok_or(SubmissionError::InvalidField)?;
         check_fields(object, &TRANSPORT_FIELDS, &[])?;
-        if text(object, "schema")? != SUBMISSION_SCHEMA
-            || number(object, "contractVersion")? != CONTRACT_VERSION
-            || number(object, "protocolVersion")? != u64::from(PROTOCOL_VERSION)
-        {
-            return Err(SubmissionError::UnsupportedContract);
+        check_header(object, SUBMISSION_SCHEMA)?;
+        let organization_id = uuid(object, "organizationId")?;
+        let submission_id = uuid(object, "submissionId")?;
+        let agent_id = uuid(object, "agentId")?;
+        let submission_revision = positive_decimal(object, "submissionRevision")?;
+        let agent_access_epoch = positive_decimal(object, "agentAccessEpoch")?;
+        let approver_manifest_revision = positive_decimal(object, "approverManifestRevision")?;
+        let agent_key_version = positive_u32(object, "agentKeyVersion")?;
+        let approver_key_version = positive_u32(object, "approverKeyVersion")?;
+        let agent_key_fingerprint = base64_array(object, "agentKeyFingerprint")?;
+        let approver_message_key_fingerprint =
+            base64_array(object, "approverMessageKeyFingerprint")?;
+        let agent_wrapped_dek = base64_exact(object, "encodedAgentWrappedDek", WRAPPED_DEK_BYTES)?;
+        let approver_wrapped_dek =
+            base64_exact(object, "encodedApproverWrappedDek", WRAPPED_DEK_BYTES)?;
+        let agent_signature = base64_array(object, "agentSignature")?;
+        let encoded_payload =
+            base64_bounded(object, "encodedPayload", MAX_TRANSPORT_PAYLOAD_BYTES)?;
+        if encoded_payload.len() < NONCE_BYTES + TAG_BYTES {
+            return Err(SubmissionError::InvalidField);
         }
-        let kind = match number(object, "submissionKind")? {
-            1 => SubmissionKind::New,
-            2 => SubmissionKind::Update,
-            _ => return Err(SubmissionError::InvalidTarget),
+        // Larger ciphertext cannot hold a plaintext within the contract limit.
+        if encoded_payload.len() > MAX_ENCODED_PAYLOAD_BYTES {
+            return Err(SubmissionError::FieldTooLarge);
+        }
+        let kind = match object.get("submissionKind").and_then(Value::as_u64) {
+            Some(1) => Some(SubmissionKind::New),
+            Some(2) => Some(SubmissionKind::Update),
+            _ => None,
         };
         let target_object = object
             .get("target")
             .and_then(Value::as_object)
+            .ok_or(SubmissionError::InvalidField)?;
+        let kind = kind
+            .filter(|kind| target_object.get("kind").and_then(Value::as_str) == Some(kind.name()))
             .ok_or(SubmissionError::InvalidTarget)?;
-        if target_object.get("kind").and_then(Value::as_str) != Some(kind.name()) {
-            return Err(SubmissionError::InvalidTarget);
-        }
-        let entry_type = match number(object, "entryType")? {
-            0 => SubmissionEntryType::Key,
-            1 => SubmissionEntryType::Credential,
+        let entry_type = match object.get("entryType").and_then(Value::as_u64) {
+            Some(0) => SubmissionEntryType::Key,
+            Some(1) => SubmissionEntryType::Credential,
             _ => return Err(SubmissionError::UnsupportedEntryType),
         };
         let target = match kind {
@@ -392,36 +417,32 @@ impl AgentEntrySubmission {
                 SubmissionTarget::Update {
                     vault_id: uuid(target_object, "vaultId")?,
                     entry_id: uuid(target_object, "entryId")?,
-                    expected_entry_revision: decimal(target_object, "expectedEntryRevision")?,
+                    expected_entry_revision: positive_decimal(
+                        target_object,
+                        "expectedEntryRevision",
+                    )?,
                 }
             }
         };
-        let submission_revision = decimal(object, "submissionRevision")?;
-        if submission_revision == 0 {
-            return Err(SubmissionError::InvalidEncoding);
-        }
         Ok(Self {
             identity: SubmissionIdentity {
-                organization_id: uuid(object, "organizationId")?,
-                submission_id: uuid(object, "submissionId")?,
-                agent_id: uuid(object, "agentId")?,
+                organization_id,
+                submission_id,
+                agent_id,
                 entry_type,
                 target,
             },
             submission_revision,
-            agent_access_epoch: decimal(object, "agentAccessEpoch")?,
-            agent_key_version: number_u32(object, "agentKeyVersion")?,
-            agent_key_fingerprint: base64_array(object, "agentKeyFingerprint")?,
-            approver_key_version: number_u32(object, "approverKeyVersion")?,
-            approver_message_key_fingerprint: base64_array(
-                object,
-                "approverMessageKeyFingerprint",
-            )?,
-            approver_manifest_revision: decimal(object, "approverManifestRevision")?,
-            encoded_payload: base64_bounded(object, "encodedPayload", MAX_ENCODED_PAYLOAD_BYTES)?,
-            agent_wrapped_dek: base64_bounded(object, "encodedAgentWrappedDek", 256)?,
-            approver_wrapped_dek: base64_bounded(object, "encodedApproverWrappedDek", 256)?,
-            agent_signature: base64_array(object, "agentSignature")?,
+            agent_access_epoch,
+            agent_key_version,
+            agent_key_fingerprint,
+            approver_key_version,
+            approver_message_key_fingerprint,
+            approver_manifest_revision,
+            encoded_payload,
+            agent_wrapped_dek,
+            approver_wrapped_dek,
+            agent_signature,
         })
     }
 
@@ -601,41 +622,6 @@ impl SubmissionContent {
         }
     }
 
-    fn validate(&self, kind: SubmissionKind) -> Result<(), SubmissionError> {
-        let (secret_ok, url, notes) = match self {
-            Self::Credential {
-                username,
-                password,
-                url,
-                notes,
-            } => (
-                match username {
-                    Some(username) => bounded_text(username.expose_secret(), USERNAME_MAX_BYTES),
-                    None => kind == SubmissionKind::Update,
-                } && bounded_text(password.expose_secret(), PASSWORD_MAX_BYTES),
-                url,
-                notes,
-            ),
-            Self::Key { value, url, notes } => (
-                bounded_text(value.expose_secret(), KEY_VALUE_MAX_BYTES),
-                url,
-                notes,
-            ),
-        };
-        let url_ok = url.as_deref().is_none_or(|url| {
-            bounded_text(url, URL_MAX_BYTES)
-                && (matches!(self, Self::Key { .. }) || url.starts_with("https://"))
-        });
-        let notes_ok = notes
-            .as_ref()
-            .is_none_or(|notes| bounded_text(notes.expose_secret(), NOTES_MAX_BYTES));
-        if secret_ok && url_ok && notes_ok {
-            Ok(())
-        } else {
-            Err(SubmissionError::InvalidInput)
-        }
-    }
-
     fn to_value(&self) -> Value {
         let mut content = Map::new();
         let (url, notes) = match self {
@@ -670,7 +656,7 @@ impl SubmissionContent {
         entry_type: SubmissionEntryType,
         value: &Value,
     ) -> Result<Self, SubmissionError> {
-        let object = value.as_object().ok_or(SubmissionError::MissingField)?;
+        let object = value.as_object().ok_or(SubmissionError::InvalidField)?;
         let (required, optional): (&[&str], &[&str]) = match (kind, entry_type) {
             (SubmissionKind::New, SubmissionEntryType::Credential) => {
                 (&["username", "password"], &["url", "notes"])
@@ -681,21 +667,25 @@ impl SubmissionContent {
             (_, SubmissionEntryType::Key) => (&["value"], &["url", "notes"]),
         };
         check_fields(object, required, optional)?;
+        for (key, value) in object {
+            payload_string(value, content_limit(key))?;
+        }
+        if entry_type == SubmissionEntryType::Credential
+            && let Some(url) = object.get("url").and_then(Value::as_str)
+            && !is_https_url(url)
+        {
+            return Err(SubmissionError::InvalidField);
+        }
         let required_text = |key: &str| -> Result<SecretString, SubmissionError> {
-            match object.get(key).and_then(Value::as_str) {
-                Some(value) if !value.is_empty() => Ok(SecretString::from(value.to_owned())),
-                _ => Err(SubmissionError::MissingField),
-            }
+            object
+                .get(key)
+                .and_then(Value::as_str)
+                .map(|value| SecretString::from(value.to_owned()))
+                .ok_or(SubmissionError::MissingField)
         };
-        let optional_text = |key: &str| -> Result<Option<String>, SubmissionError> {
-            match object.get(key) {
-                None => Ok(None),
-                Some(Value::String(value)) => Ok(Some(value.clone())),
-                Some(_) => Err(SubmissionError::InvalidEncoding),
-            }
-        };
-        let url = optional_text("url")?;
-        let notes = optional_text("notes")?.map(SecretString::from);
+        let optional_text = |key: &str| object.get(key).and_then(Value::as_str).map(str::to_owned);
+        let url = optional_text("url");
+        let notes = optional_text("notes").map(SecretString::from);
         Ok(match entry_type {
             SubmissionEntryType::Credential => Self::Credential {
                 username: object
@@ -738,7 +728,7 @@ impl OpenedSubmission {
     /// Converts the authenticated payload into the flat credential shape consumed by Inject.
     pub fn into_inject_credential(self) -> Result<DecryptedCredential, SubmissionError> {
         let mut value = self.content.to_value();
-        let plaintext = serde_json::to_vec(&value).map_err(|_| SubmissionError::InvalidEncoding);
+        let plaintext = serde_json::to_vec(&value).map_err(|_| SubmissionError::InvalidField);
         zeroize_json(&mut value);
         Ok(DecryptedCredential::from_authenticated_plaintext(
             SecretSlice::from(plaintext?),
@@ -791,28 +781,20 @@ pub struct OrganizationApproverManifest {
 
 impl OrganizationApproverManifest {
     pub fn from_value(value: &Value) -> Result<Self, SubmissionError> {
-        let object = value.as_object().ok_or(SubmissionError::InvalidEncoding)?;
+        let object = value.as_object().ok_or(SubmissionError::InvalidField)?;
         check_fields(
             object,
             &MANIFEST_REQUIRED_FIELDS,
             &MANIFEST_CONDITIONAL_FIELDS,
         )?;
-        if text(object, "schema")? != MANIFEST_SCHEMA
-            || number(object, "contractVersion")? != CONTRACT_VERSION
-            || number(object, "protocolVersion")? != u64::from(PROTOCOL_VERSION)
-        {
-            return Err(SubmissionError::UnsupportedContract);
-        }
-        let key_version = number_u32(object, "keyVersion")?;
-        let manifest_revision = decimal(object, "manifestRevision")?;
-        if key_version == 0
-            || manifest_revision == 0
-            || decimal(object, "approverSetRevision")? == 0
-        {
-            return Err(SubmissionError::InvalidEncoding);
-        }
+        check_header(object, MANIFEST_SCHEMA)?;
+        let key_version = positive_u32(object, "keyVersion")?;
+        let manifest_revision = positive_decimal(object, "manifestRevision")?;
+        positive_decimal(object, "approverSetRevision")?;
         base64_array::<32>(object, "approverSetDigest")?;
-        text(object, "issuedAt")?;
+        if !is_instant(text(object, "issuedAt")?) {
+            return Err(SubmissionError::InvalidField);
+        }
         let mut unsigned = object.clone();
         for field in SIGNATURE_FIELDS {
             unsigned.remove(field);
@@ -1023,20 +1005,6 @@ pub fn build_agent_submission(
     if context.identity.organization_id != context.approver.organization_id {
         return Err(SubmissionError::ContextMismatch);
     }
-    let kind = context.identity.kind();
-    let label_valid = match label {
-        Some(label) => {
-            !label.is_empty()
-                && label.len() <= LABEL_MAX_BYTES
-                && unicode_normalization::is_nfc(label)
-                && !label.chars().any(char::is_control)
-        }
-        None => kind == SubmissionKind::Update,
-    };
-    if !label_valid {
-        return Err(SubmissionError::InvalidInput);
-    }
-    content.validate(kind)?;
     let plaintext = payload_plaintext(&context.identity, label, content)?;
     if plaintext.len() > PAYLOAD_PLAINTEXT_MAX_BYTES {
         return Err(SubmissionError::InvalidInput);
@@ -1145,42 +1113,48 @@ pub fn open_agent_submission(
             )
             .map_err(|_| SubmissionError::PayloadAuthFailed)?,
     );
+    if plaintext.len() > PAYLOAD_PLAINTEXT_MAX_BYTES {
+        return Err(SubmissionError::FieldTooLarge);
+    }
     let mut payload: Value =
-        serde_json::from_slice(&plaintext).map_err(|_| SubmissionError::InvalidEncoding)?;
+        serde_json::from_slice(&plaintext).map_err(|_| SubmissionError::InvalidField)?;
     let opened = parse_payload(&payload, &submission.identity);
     zeroize_json(&mut payload);
     opened
 }
 
+/// The payload rules shared by the builder and every opener (`validationOrder`, last step).
 fn parse_payload(
     payload: &Value,
     identity: &SubmissionIdentity,
 ) -> Result<OpenedSubmission, SubmissionError> {
-    let object = payload
-        .as_object()
-        .ok_or(SubmissionError::InvalidEncoding)?;
+    let object = payload.as_object().ok_or(SubmissionError::InvalidField)?;
     check_fields(object, &["schema", "identity", "content"], &["label"])?;
-    if text(object, "schema")? != PAYLOAD_SCHEMA {
-        return Err(SubmissionError::UnsupportedContract);
+    if object.get("schema").and_then(Value::as_str) != Some(PAYLOAD_SCHEMA) {
+        return Err(SubmissionError::InvalidField);
     }
     let inner_identity = object
         .get("identity")
-        .ok_or(SubmissionError::MissingField)?;
+        .filter(|value| value.is_object())
+        .ok_or(SubmissionError::InvalidField)?;
+    let content = object
+        .get("content")
+        .filter(|value| value.is_object())
+        .ok_or(SubmissionError::InvalidField)?;
     let label = match object.get("label") {
         None if identity.kind() == SubmissionKind::New => {
             return Err(SubmissionError::MissingField);
         }
         None => None,
-        Some(Value::String(label)) if !label.is_empty() && label.len() <= LABEL_MAX_BYTES => {
-            Some(label.clone())
+        Some(label) => {
+            let label = payload_string(label, LABEL_MAX_BYTES)?;
+            if !unicode_normalization::is_nfc(label) {
+                return Err(SubmissionError::InvalidField);
+            }
+            Some(label.to_owned())
         }
-        Some(_) => return Err(SubmissionError::InvalidEncoding),
     };
-    let content = SubmissionContent::from_value(
-        identity.kind(),
-        identity.entry_type,
-        object.get("content").ok_or(SubmissionError::MissingField)?,
-    )?;
+    let content = SubmissionContent::from_value(identity.kind(), identity.entry_type, content)?;
     if canonical_json(inner_identity)? != identity.canonical()? {
         return Err(SubmissionError::IdentityMismatch);
     }
@@ -1338,13 +1312,16 @@ fn payload_plaintext(
     if let (Some(label), Value::Object(object)) = (label, &mut payload) {
         object.insert("label".into(), json!(label));
     }
+    // Build with exactly the rules every opener enforces, before anything is encrypted.
+    let valid = parse_payload(&payload, identity).map(|_| ());
     let plaintext = canonical_json(&payload).map(Zeroizing::new);
     zeroize_json(&mut payload);
+    valid.map_err(|_| SubmissionError::InvalidInput)?;
     plaintext
 }
 
 fn canonical_json(value: &Value) -> Result<Vec<u8>, SubmissionError> {
-    serde_jcs::to_vec(value).map_err(|_| SubmissionError::InvalidEncoding)
+    serde_jcs::to_vec(value).map_err(|_| SubmissionError::InvalidField)
 }
 
 fn check_fields(
@@ -1368,18 +1345,18 @@ fn text<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str, Submis
     object
         .get(key)
         .and_then(Value::as_str)
-        .ok_or(SubmissionError::InvalidEncoding)
+        .ok_or(SubmissionError::InvalidField)
 }
 
 fn number(object: &Map<String, Value>, key: &str) -> Result<u64, SubmissionError> {
     object
         .get(key)
         .and_then(Value::as_u64)
-        .ok_or(SubmissionError::InvalidEncoding)
+        .ok_or(SubmissionError::InvalidField)
 }
 
 fn number_u32(object: &Map<String, Value>, key: &str) -> Result<u32, SubmissionError> {
-    u32::try_from(number(object, key)?).map_err(|_| SubmissionError::InvalidEncoding)
+    u32::try_from(number(object, key)?).map_err(|_| SubmissionError::InvalidField)
 }
 
 fn decimal(object: &Map<String, Value>, key: &str) -> Result<u64, SubmissionError> {
@@ -1388,7 +1365,7 @@ fn decimal(object: &Map<String, Value>, key: &str) -> Result<u64, SubmissionErro
         .parse::<u64>()
         .ok()
         .filter(|parsed| parsed.to_string() == value)
-        .ok_or(SubmissionError::InvalidEncoding)
+        .ok_or(SubmissionError::InvalidField)
 }
 
 fn uuid(object: &Map<String, Value>, key: &str) -> Result<Uuid, SubmissionError> {
@@ -1396,7 +1373,7 @@ fn uuid(object: &Map<String, Value>, key: &str) -> Result<Uuid, SubmissionError>
     Uuid::parse_str(value)
         .ok()
         .filter(|parsed| parsed.to_string() == value)
-        .ok_or(SubmissionError::InvalidEncoding)
+        .ok_or(SubmissionError::InvalidField)
 }
 
 fn base64_bounded(
@@ -1406,13 +1383,13 @@ fn base64_bounded(
 ) -> Result<Vec<u8>, SubmissionError> {
     let value = text(object, key)?;
     if value.len() > max_bytes.div_ceil(3) * 4 {
-        return Err(SubmissionError::InvalidEncoding);
+        return Err(SubmissionError::InvalidField);
     }
     URL_SAFE_NO_PAD
         .decode(value)
         .ok()
         .filter(|decoded| decoded.len() <= max_bytes && URL_SAFE_NO_PAD.encode(decoded) == value)
-        .ok_or(SubmissionError::InvalidEncoding)
+        .ok_or(SubmissionError::InvalidField)
 }
 
 fn base64_array<const N: usize>(
@@ -1421,11 +1398,108 @@ fn base64_array<const N: usize>(
 ) -> Result<[u8; N], SubmissionError> {
     base64_bounded(object, key, N)?
         .try_into()
-        .map_err(|_| SubmissionError::InvalidEncoding)
+        .map_err(|_| SubmissionError::InvalidField)
 }
 
-fn bounded_text(value: &str, max_bytes: usize) -> bool {
-    !value.is_empty() && value.len() <= max_bytes
+fn check_header(object: &Map<String, Value>, schema: &str) -> Result<(), SubmissionError> {
+    if object.get("schema").and_then(Value::as_str) != Some(schema)
+        || object.get("contractVersion").and_then(Value::as_u64) != Some(CONTRACT_VERSION)
+        || object.get("protocolVersion").and_then(Value::as_u64)
+            != Some(u64::from(PROTOCOL_VERSION))
+    {
+        return Err(SubmissionError::UnsupportedVersion);
+    }
+    Ok(())
+}
+
+fn positive_decimal(object: &Map<String, Value>, key: &str) -> Result<u64, SubmissionError> {
+    match decimal(object, key)? {
+        0 => Err(SubmissionError::InvalidField),
+        value => Ok(value),
+    }
+}
+
+fn positive_u32(object: &Map<String, Value>, key: &str) -> Result<u32, SubmissionError> {
+    match number_u32(object, key)? {
+        0 => Err(SubmissionError::InvalidField),
+        value => Ok(value),
+    }
+}
+
+fn base64_exact(
+    object: &Map<String, Value>,
+    key: &str,
+    length: usize,
+) -> Result<Vec<u8>, SubmissionError> {
+    let decoded = base64_bounded(object, key, length)?;
+    if decoded.len() == length {
+        Ok(decoded)
+    } else {
+        Err(SubmissionError::InvalidField)
+    }
+}
+
+/// `YYYY-MM-DDTHH:mm:ss[.f{1,6}]Z` that is also a real calendar instant.
+fn is_instant(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let digits = |range: std::ops::Range<usize>| {
+        bytes
+            .get(range)
+            .is_some_and(|part| part.iter().all(u8::is_ascii_digit))
+    };
+    if bytes.len() < 20 {
+        return false;
+    }
+    let fixed = digits(0..4)
+        && bytes[4] == b'-'
+        && digits(5..7)
+        && bytes[7] == b'-'
+        && digits(8..10)
+        && bytes[10] == b'T'
+        && digits(11..13)
+        && bytes[13] == b':'
+        && digits(14..16)
+        && bytes[16] == b':'
+        && digits(17..19)
+        && bytes.last() == Some(&b'Z');
+    let fraction = &bytes[19..bytes.len() - 1];
+    let fraction_valid = fraction.is_empty()
+        || (fraction.len() >= 2
+            && fraction.len() <= 7
+            && fraction[0] == b'.'
+            && fraction[1..].iter().all(u8::is_ascii_digit));
+    fixed
+        && fraction_valid
+        && time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+            .is_ok()
+}
+
+fn is_https_url(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https" && url.host_str().is_some_and(|host| !host.is_empty())
+    })
+}
+
+/// A payload string is non-empty UTF-8 within its byte limit.
+fn payload_string(value: &Value, max_bytes: usize) -> Result<&str, SubmissionError> {
+    let text = value
+        .as_str()
+        .filter(|text| !text.is_empty())
+        .ok_or(SubmissionError::InvalidField)?;
+    if text.len() > max_bytes {
+        return Err(SubmissionError::FieldTooLarge);
+    }
+    Ok(text)
+}
+
+fn content_limit(key: &str) -> usize {
+    match key {
+        "username" => USERNAME_MAX_BYTES,
+        "password" => PASSWORD_MAX_BYTES,
+        "value" => KEY_VALUE_MAX_BYTES,
+        "url" => URL_MAX_BYTES,
+        _ => NOTES_MAX_BYTES,
+    }
 }
 
 fn zeroize_json(value: &mut Value) {
@@ -1494,6 +1568,37 @@ mod builder_vector_tests {
                 *value,
                 "Ed25519 signature is byte-identical"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod instant_tests {
+    use super::is_instant;
+
+    #[test]
+    fn instants_are_strict_and_never_panic_on_hostile_input() {
+        for valid in [
+            "2026-10-29T08:00:00Z",
+            "2026-10-29T08:00:00.1Z",
+            "2026-10-29T08:00:00.123456Z",
+        ] {
+            assert!(is_instant(valid), "{valid}");
+        }
+        for invalid in [
+            "",
+            "Z",
+            "2026-10-29 08:00:00",
+            "2026-10-29T08:00:00",
+            "2026-10-29T08:00:00+00:00",
+            "2026-10-29T08:00:00.Z",
+            "2026-10-29T08:00:00.1234567Z",
+            "2026-02-30T08:00:00Z",
+            "2026-10-29T25:00:00Z",
+            "2026-10-29t08:00:00z",
+            "2026-10-29T08:00:00.12éZ",
+        ] {
+            assert!(!is_instant(invalid), "{invalid}");
         }
     }
 }
