@@ -2,9 +2,12 @@
 
 Status: local implementation behind a process feature flag; not a production release.
 
-`PALLADIN_EXPERIMENTAL_LIVE_FORMS=1` selects live discovery for the shared native
-CLI/MCP Inject service. Unset or `0` keeps verified Form Discovery Maps and the
-existing reviewed CLI fallback. Other values fail. An exact tab ID and current
+Live discovery is the default for the shared native CLI/MCP Inject service
+(2026-10-29): unset or `PALLADIN_EXPERIMENTAL_LIVE_FORMS=1` selects it. `0` is the
+explicit rollback to verified Form Discovery Maps and the existing reviewed CLI
+fallback. Other values fail. A per-process opt-in made CLI and MCP behave
+differently for the same Entry and tab, so identical logins succeeded or stopped
+at a missing map depending on how the process was launched. An exact tab ID and current
 HTTPS URL are required in live mode; `--form-json` is incompatible.
 
 In live mode the runtime does not look up/cache/refresh maps or record candidates.

@@ -810,7 +810,7 @@ pub enum InjectServiceError {
     #[error("PALLADIN_EXPERIMENTAL_LIVE_FORMS must be 0 or 1")]
     InvalidLiveFlag,
     #[error(
-        "experimental live discovery requires an exact target tab and URL and cannot use --form-json"
+        "live discovery requires an exact target tab and URL and cannot use --form-json; set PALLADIN_EXPERIMENTAL_LIVE_FORMS=0 to use verified maps or --form-json"
     )]
     LiveTargetRequired,
     #[error(
