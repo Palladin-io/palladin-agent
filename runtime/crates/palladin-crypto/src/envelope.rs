@@ -1892,16 +1892,22 @@ fn allowed_access_modes(
         }
         "notes" => &["never", "onGrantValue", "onGrantRuntime"][..],
         custom if custom.starts_with("custom:") => {
-            let field_type = custom_fields
+            let field = custom_fields
                 .iter()
-                .find_map(|field| {
-                    let object = field.as_object()?;
-                    (object.get("id")?.as_str()? == custom)
-                        .then(|| object.get("type")?.as_str())
-                        .flatten()
-                })
+                .filter_map(Value::as_object)
+                .find(|object| object.get("id").and_then(Value::as_str) == Some(custom))
+                .ok_or(CryptoError::InvalidDescriptor)?;
+            let field_type = field
+                .get("type")
+                .and_then(Value::as_str)
                 .ok_or(CryptoError::InvalidDescriptor)?;
             match field_type {
+                SIGN_IN_FIELD_TYPE
+                    if entry_type == "credential"
+                        && is_sign_in_method_value(field.get("value")) =>
+                {
+                    &["never", "discovery"][..]
+                }
                 "totp" => &["never", "onGrantDerived"][..],
                 "text" | "multiline" | "concealed"
                     if matches!(entry_type, "script" | "creditCard") =>
@@ -1915,6 +1921,80 @@ fn allowed_access_modes(
         _ => return Err(CryptoError::InvalidDescriptor),
     };
     Ok(allowed)
+}
+
+const SIGN_IN_FIELD_TYPE: &str = "palladin.signin.v1";
+
+/// Mirrors `signInMethodValueSchema` in palladin-crypto: Discovery is allowed
+/// only for an exact, well-formed value; anything else stays `never`.
+fn is_sign_in_method_value(value: Option<&Value>) -> bool {
+    let Some(object) = value.and_then(Value::as_object) else {
+        return false;
+    };
+    if require_exact_keys(object, &["account", "entry", "provider"]).is_err() {
+        return false;
+    }
+    let provider_valid = matches!(
+        object.get("provider").and_then(Value::as_str),
+        Some("google" | "apple" | "microsoft" | "github" | "facebook")
+    );
+    let account_valid = match object.get("account") {
+        Some(Value::Null) => true,
+        Some(Value::String(account)) => is_sign_in_account(account),
+        _ => false,
+    };
+    let entry_valid = match object.get("entry") {
+        Some(Value::Null) => true,
+        Some(Value::Object(entry)) => {
+            require_exact_keys(entry, &["entryId", "vaultId"]).is_ok()
+                && ["entryId", "vaultId"].iter().all(|key| {
+                    entry
+                        .get(*key)
+                        .and_then(Value::as_str)
+                        .is_some_and(is_lowercase_versioned_uuid)
+                })
+        }
+        _ => false,
+    };
+    provider_valid && account_valid && entry_valid
+}
+
+fn is_sign_in_account(account: &str) -> bool {
+    use unicode_normalization::UnicodeNormalization;
+
+    let normalized = account.nfc().collect::<String>();
+    (1..=256).contains(&account.encode_utf16().count())
+        && normalized.trim_matches(is_ecmascript_whitespace) == account
+}
+
+/// The ECMAScript `String.prototype.trim` set used by the TypeScript schema; it
+/// differs from `char::is_whitespace` (U+FEFF is included, U+0085 is not).
+fn is_ecmascript_whitespace(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0009}'..='\u{000D}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+            | '\u{FEFF}'
+    )
+}
+
+fn is_lowercase_versioned_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            14 => (b'1'..=b'8').contains(byte),
+            19 => matches!(byte, b'8' | b'9' | b'a' | b'b'),
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(byte),
+        })
 }
 
 fn member_secret_field(
@@ -3038,6 +3118,158 @@ mod tests {
 
         assert_eq!(projected["username"], "fixture-user");
         assert_eq!(projected["password"], "fixture-password");
+    }
+
+    const SIGN_IN_FIELD: &str = "custom:22222222-2222-4222-8222-222222222222";
+
+    fn sign_in_member_secret(entry_type: &str, value: &Value, access: &str) -> String {
+        let (builtins, content) = if entry_type == "credential" {
+            (
+                serde_json::json!({
+                    "credential.password": "onGrantValue",
+                    "credential.totp": "never",
+                    "credential.url": "onGrantValue",
+                    "credential.urlDomain": "discovery",
+                    "credential.username": "onGrantValue",
+                }),
+                serde_json::json!({
+                    "notes": null,
+                    "password": "fixture-password",
+                    "totp": null,
+                    "url": "https://app.fixture.invalid/login",
+                    "urlDomain": "app.fixture.invalid",
+                    "username": "fixture-user",
+                }),
+            )
+        } else {
+            (
+                serde_json::json!({ "key.url": "never", "key.value": "onGrantValue" }),
+                serde_json::json!({ "notes": null, "url": null, "value": "fixture-key" }),
+            )
+        };
+        let mut access_map = serde_json::json!({
+            "agentLabel": "discovery",
+            "color": "never",
+            "description": "never",
+            "entryType": "discovery",
+            "icon": "never",
+            "memberLabel": "never",
+            "notes": "never",
+            SIGN_IN_FIELD: access,
+        });
+        let mut content = content;
+        for (key, mode) in builtins.as_object().expect("builtins") {
+            access_map[key] = mode.clone();
+        }
+        content["customFields"] = serde_json::json!([{
+            "id": SIGN_IN_FIELD,
+            "label": "Sign-in method",
+            "type": "palladin.signin.v1",
+            "value": value,
+        }]);
+        serde_json::to_string(&serde_json::json!({
+            "agentFieldAccess": access_map,
+            "agentLabel": "Fixture service",
+            "color": null,
+            "content": content,
+            "description": null,
+            "discoverable": true,
+            "entryType": entry_type,
+            "icon": null,
+            "memberLabel": "Member-only fixture label",
+            "schema": "palladin.member-secret.v1",
+        }))
+        .expect("canonical MemberSecret")
+    }
+
+    fn linked_sign_in() -> Value {
+        serde_json::json!({
+            "provider": "google",
+            "account": "work@corp.example",
+            "entry": {
+                "vaultId": "44444444-4444-4444-8444-444444444444",
+                "entryId": "55555555-5555-4555-8555-555555555555",
+            },
+        })
+    }
+
+    #[test]
+    fn full_projection_accepts_a_discoverable_sign_in_method_without_delivering_it() {
+        for value in [
+            linked_sign_in(),
+            serde_json::json!({ "provider": "apple", "account": null, "entry": null }),
+        ] {
+            for access in ["never", "discovery"] {
+                let plaintext = sign_in_member_secret("credential", &value, access);
+                let normalized = normalize_full_member_secret(plaintext.as_bytes(), 4, 0)
+                    .expect("sign-in method with an allowed policy");
+                let projected = String::from_utf8(normalized.plaintext.to_vec()).expect("UTF-8");
+                assert!(!projected.contains("work@corp.example"));
+                assert!(!projected.contains("google"));
+                assert!(!projected.contains(SIGN_IN_FIELD));
+            }
+        }
+    }
+
+    #[test]
+    fn sign_in_method_never_permits_on_grant_delivery() {
+        for access in ["onGrantValue", "onGrantDerived", "onGrantRuntime"] {
+            let plaintext = sign_in_member_secret("credential", &linked_sign_in(), access);
+            assert!(matches!(
+                normalize_full_member_secret(plaintext.as_bytes(), 4, 0),
+                Err(CryptoError::InvalidDescriptor)
+            ));
+        }
+    }
+
+    #[test]
+    fn sign_in_discovery_requires_a_well_formed_value_on_a_credential() {
+        let entry = linked_sign_in()["entry"].clone();
+        let malformed = [
+            serde_json::json!({ "provider": "myspace", "account": null, "entry": null }),
+            serde_json::json!({ "provider": "google", "account": null }),
+            serde_json::json!({ "provider": "google", "account": null, "entry": null, "token": "x" }),
+            serde_json::json!({ "provider": "google", "account": "", "entry": null }),
+            serde_json::json!({ "provider": "google", "account": " padded", "entry": null }),
+            serde_json::json!({ "provider": "google", "account": "\u{FEFF}bom", "entry": null }),
+            serde_json::json!({ "provider": "google", "account": "e\u{0301}", "entry": null }),
+            serde_json::json!({ "provider": "google", "account": "a".repeat(257), "entry": null }),
+            serde_json::json!({ "provider": "google", "account": null, "entry": {
+                "vaultId": entry["vaultId"], "entryId": "55555555-5555-4555-8555-55555555555A" } }),
+            serde_json::json!({ "provider": "google", "account": null, "entry": {
+                "vaultId": entry["vaultId"], "entryId": "55555555-5555-0555-8555-555555555555" } }),
+            serde_json::json!({ "provider": "google", "account": null, "entry": {
+                "vaultId": entry["vaultId"], "entryId": entry["entryId"], "x": 1 } }),
+            Value::String("google".to_owned()),
+        ];
+        for value in malformed {
+            let plaintext = sign_in_member_secret("credential", &value, "discovery");
+            assert!(
+                matches!(
+                    normalize_full_member_secret(plaintext.as_bytes(), 4, 0),
+                    Err(CryptoError::InvalidDescriptor)
+                ),
+                "{value}"
+            );
+            let private = sign_in_member_secret("credential", &value, "never");
+            normalize_full_member_secret(private.as_bytes(), 4, 0)
+                .expect("an unrecognized value stays preserved as never");
+        }
+        let account = serde_json::json!({
+            "provider": "github", "account": "a".repeat(256), "entry": null,
+        });
+        normalize_full_member_secret(
+            sign_in_member_secret("credential", &account, "discovery").as_bytes(),
+            4,
+            0,
+        )
+        .expect("account at the length limit");
+
+        let key = sign_in_member_secret("key", &linked_sign_in(), "discovery");
+        assert!(matches!(
+            normalize_full_member_secret(key.as_bytes(), 1, 0),
+            Err(CryptoError::InvalidDescriptor)
+        ));
     }
 
     #[test]
