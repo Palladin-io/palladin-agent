@@ -764,6 +764,25 @@ fn every_contract_negative_submission_case_fails_closed_with_its_code() {
             "field-too-large",
         ),
         (
+            "non-NFC password",
+            reencrypt(&|payload| payload["content"]["password"] = json!("Cafe\u{301}-9!q")),
+            "invalid-field",
+        ),
+        (
+            "non-NFC username",
+            reencrypt(&|payload| {
+                payload["content"]["username"] = json!("Cafe\u{301}@example.invalid")
+            }),
+            "invalid-field",
+        ),
+        (
+            "non-NFC url",
+            reencrypt(&|payload| {
+                payload["content"]["url"] = json!("https://example.invalid/Cafe\u{301}")
+            }),
+            "invalid-field",
+        ),
+        (
             "empty optional username",
             reencrypt(&|payload| payload["content"]["username"] = json!("")),
             "invalid-field",
@@ -1436,6 +1455,17 @@ fn builder_rejects_invalid_input_before_encryption() {
         ),
         "context-mismatch",
         "approver key must belong to the submission organization",
+    );
+    let non_nfc = SubmissionContent::Credential {
+        username: Some(SecretString::from("user".to_owned())),
+        password: SecretString::from("Cafe\u{301}".to_owned()),
+        url: None,
+        notes: None,
+    };
+    expect_error(
+        build(identity(org, cred), Some("Label"), &non_nfc),
+        "invalid-input",
+        "a non-NFC password is rejected, never normalized",
     );
     let oversized = SubmissionContent::Credential {
         username: Some(SecretString::from("user".to_owned())),

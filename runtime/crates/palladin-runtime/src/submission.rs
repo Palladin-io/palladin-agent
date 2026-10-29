@@ -15,7 +15,7 @@ use palladin_crypto::{
 };
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
-use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::is_nfc;
 use uuid::Uuid;
 
 use crate::{DeliveredCredential, RuntimeError, RuntimeOperation, RuntimeSession};
@@ -834,10 +834,19 @@ fn validate_request(
         {
             return problem("label", "must be 1 to 256 bytes without control characters");
         }
+        Some(label) if !is_nfc(&label) => {
+            return problem("label", "must be NFC-normalized Unicode");
+        }
         _ => {}
     }
     if request.url.is_some_and(|url| !valid_https_url(url)) {
         return problem("url", "must be an absolute https URL of at most 2048 bytes");
+    }
+    if request.url.is_some_and(|url| !is_nfc(url)) {
+        return problem("url", "must be NFC-normalized Unicode");
+    }
+    if request.username.is_some_and(|username| !is_nfc(username)) {
+        return problem("username", "must be NFC-normalized Unicode");
     }
     match (entry_type, request.username) {
         (SubmissionEntryType::Key, Some(_)) => {
@@ -864,6 +873,9 @@ fn validate_request(
         if length == 0 || length > limit {
             return problem(field, rule);
         }
+        if !is_nfc(secret.expose_secret()) {
+            return problem(field, "must be NFC-normalized Unicode");
+        }
     }
     Ok(())
 }
@@ -874,8 +886,9 @@ fn valid_https_url(value: &str) -> bool {
             .is_ok_and(|url| url.scheme() == "https" && url.host_str().is_some())
 }
 
+/// Trims surrounding whitespace only; Unicode normalization is never applied silently.
 fn normalize_label(value: &str) -> String {
-    value.trim().nfc().collect()
+    value.trim().to_owned()
 }
 
 fn rejection_code(rejection: SubmissionRejection) -> SubmissionNotSaved {

@@ -293,6 +293,36 @@ mod tests {
     }
 
     #[test]
+    fn every_allowed_alphabet_is_ascii_and_therefore_always_nfc() {
+        let every_symbol = (0x21_u8..=0x7e)
+            .map(char::from)
+            .filter(char::is_ascii_punctuation)
+            .collect::<String>();
+        let policy = PasswordPolicy {
+            length: 512,
+            symbols: every_symbol.clone(),
+            ..PasswordPolicy::default()
+        };
+        for class in ALL_CLASSES {
+            assert!(policy.alphabet(class).is_ascii(), "{class:?}");
+        }
+        for _ in 0..50 {
+            let password = generate_password(&policy).unwrap();
+            assert!(password.expose_secret().is_ascii());
+            assert!(unicode_normalization::is_nfc(password.expose_secret()));
+        }
+        assert_eq!(
+            generate_password(&PasswordPolicy {
+                symbols: "!\u{301}".to_owned(),
+                ..PasswordPolicy::default()
+            })
+            .map(|_| ()),
+            Err(PasswordPolicyError::Unsatisfiable),
+            "a combining mark is never an allowed symbol"
+        );
+    }
+
+    #[test]
     fn generated_passwords_do_not_repeat() {
         let policy = PasswordPolicy::default();
         let passwords = (0..2_000)

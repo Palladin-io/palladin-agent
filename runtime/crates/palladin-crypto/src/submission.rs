@@ -1156,13 +1156,7 @@ fn parse_payload(
             return Err(SubmissionError::MissingField);
         }
         None => None,
-        Some(label) => {
-            let label = payload_string(label, LABEL_MAX_BYTES)?;
-            if !unicode_normalization::is_nfc(label) {
-                return Err(SubmissionError::InvalidField);
-            }
-            Some(label.to_owned())
-        }
+        Some(label) => Some(payload_string(label, LABEL_MAX_BYTES)?.to_owned()),
     };
     let content = SubmissionContent::from_value(identity.kind(), identity.entry_type, content)?;
     if canonical_json(inner_identity)? != identity.canonical()? {
@@ -1498,7 +1492,8 @@ fn is_https_url(value: &str) -> bool {
     })
 }
 
-/// A payload string is non-empty UTF-8 within its byte limit.
+/// A payload string is non-empty NFC UTF-8 within its byte limit. Vault protocol 2 rejects
+/// non-NFC strings, so such a submission could never be approved; it is never normalized.
 fn payload_string(value: &Value, max_bytes: usize) -> Result<&str, SubmissionError> {
     let text = value
         .as_str()
@@ -1506,6 +1501,9 @@ fn payload_string(value: &Value, max_bytes: usize) -> Result<&str, SubmissionErr
         .ok_or(SubmissionError::InvalidField)?;
     if text.len() > max_bytes {
         return Err(SubmissionError::FieldTooLarge);
+    }
+    if !unicode_normalization::is_nfc(text) {
+        return Err(SubmissionError::InvalidField);
     }
     Ok(text)
 }

@@ -23,3 +23,6 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+unicode-normalization.workspace = true

@@ -2269,3 +2269,116 @@ async fn status_never_rewraps_a_submission_from_an_earlier_access_epoch() {
         "nothing is uploaded"
     );
 }
+
+#[tokio::test]
+async fn non_nfc_values_are_rejected_by_name_and_never_normalized() {
+    let base = new_credential_request();
+    let decomposed = "Cafe\u{301}";
+    let url = "https://example.invalid/Cafe\u{301}";
+    let cases: Vec<(SubmissionRequest<'_>, SubmissionSecret, &str)> = vec![
+        (
+            base,
+            SubmissionSecret::Provided(SecretString::from(decomposed.to_owned())),
+            "password",
+        ),
+        (
+            SubmissionRequest {
+                entry_type: Some(SubmissionEntryType::Key),
+                username: None,
+                ..base
+            },
+            SubmissionSecret::Provided(SecretString::from(decomposed.to_owned())),
+            "value",
+        ),
+        (
+            SubmissionRequest {
+                username: Some(decomposed),
+                ..base
+            },
+            SubmissionSecret::Generate(policy()),
+            "username",
+        ),
+        (
+            SubmissionRequest {
+                url: Some(url),
+                ..base
+            },
+            SubmissionSecret::Generate(policy()),
+            "url",
+        ),
+        (
+            SubmissionRequest {
+                label: Some(decomposed),
+                ..base
+            },
+            SubmissionSecret::Generate(policy()),
+            "label",
+        ),
+        (
+            update_request(SubmissionEntryType::Credential, None, None, None),
+            SubmissionSecret::Provided(SecretString::from(decomposed.to_owned())),
+            "password",
+        ),
+    ];
+    for (request, secret, field) in cases {
+        let (host, requests) = server(Vec::new()).await;
+        let persistence = RecordingPersistence::default();
+        let session = test_session(
+            &host,
+            RuntimeOperation::SubmitEntry,
+            &persistence,
+            None,
+            None,
+        );
+        let result = session.submit_entry(request, secret).await.unwrap();
+        assert_eq!(
+            result.outcome,
+            Err(SubmissionNotSaved::InvalidInput),
+            "{field}"
+        );
+        assert_eq!(
+            result.hints,
+            vec![SubmissionHint::InvalidInput {
+                field,
+                rule: "must be NFC-normalized Unicode",
+            }],
+            "{field}"
+        );
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "{field}: no request of any kind"
+        );
+    }
+
+    let (host, requests) = server(vec![
+        respond(200, manifests_response(&[manifest(0)])),
+        accept_post(),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        None,
+        None,
+    );
+    let composed = "Caf\u{e9}-NFC-9!q";
+    let result = session
+        .submit_entry(
+            base,
+            SubmissionSecret::Provided(SecretString::from(composed.to_owned())),
+        )
+        .await
+        .unwrap();
+    assert!(result.outcome.is_ok());
+    assert_eq!(
+        approver_password(
+            &request_body(&requests.lock().unwrap()[1]),
+            "approverV1X25519Seed",
+            1
+        ),
+        composed,
+        "an NFC value is uploaded byte for byte"
+    );
+}
