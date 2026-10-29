@@ -453,6 +453,7 @@ async fn invalid_new_requests_are_rejected_before_any_request() {
                 vault_id: "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
                 entry_id: "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
             },
+            entry_type: None,
             ..base
         },
     ];
@@ -985,17 +986,17 @@ fn request_digest_binds_every_non_secret_field_and_the_secret_source() {
 const VAULT_ID: &str = "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e";
 const ENTRY_ID: &str = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
 
-fn submission_target(entry_type: u16, entry_revision: &str) -> String {
+fn submission_target(entry_revision: &str) -> String {
     json!({
         "vaultId": VAULT_ID,
         "entryId": ENTRY_ID,
-        "entryType": entry_type,
         "entryRevision": entry_revision,
     })
     .to_string()
 }
 
 fn update_request<'a>(
+    entry_type: SubmissionEntryType,
     label: Option<&'a str>,
     url: Option<&'a str>,
     username: Option<&'a str>,
@@ -1005,7 +1006,7 @@ fn update_request<'a>(
             vault_id: VAULT_ID,
             entry_id: ENTRY_ID,
         },
-        entry_type: None,
+        entry_type: Some(entry_type),
         label,
         url,
         username,
@@ -1072,7 +1073,7 @@ fn assert_never_requested_credential_delivery(requests: &[String]) {
 async fn update_with_generated_secret_uploads_only_the_new_password() {
     let (host, requests) = server(vec![
         respond(200, manifests_response(&[manifest(0)])),
-        respond(200, submission_target(1, "7")),
+        respond(200, submission_target("7")),
         accept_post(),
     ])
     .await;
@@ -1086,7 +1087,7 @@ async fn update_with_generated_secret_uploads_only_the_new_password() {
     );
     let result = session
         .submit_entry(
-            update_request(None, None, None),
+            update_request(SubmissionEntryType::Credential, None, None, None),
             SubmissionSecret::Generate(policy()),
         )
         .await
@@ -1126,7 +1127,7 @@ async fn update_with_generated_secret_uploads_only_the_new_password() {
 async fn update_with_prompted_secret_carries_only_the_provided_optional_fields() {
     let (host, requests) = server(vec![
         respond(200, manifests_response(&[manifest(0)])),
-        respond(200, submission_target(1, "12")),
+        respond(200, submission_target("12")),
         accept_post(),
     ])
     .await;
@@ -1141,6 +1142,7 @@ async fn update_with_prompted_secret_carries_only_the_provided_optional_fields()
     let result = session
         .submit_entry(
             update_request(
+                SubmissionEntryType::Credential,
                 Some("Renamed Account"),
                 Some("https://example.invalid/new-login"),
                 Some("renamed@example.invalid"),
@@ -1168,10 +1170,10 @@ async fn update_with_prompted_secret_carries_only_the_provided_optional_fields()
 }
 
 #[tokio::test]
-async fn update_uses_the_target_entry_type_for_a_key() {
+async fn update_of_a_key_uses_the_asserted_type() {
     let (host, requests) = server(vec![
         respond(200, manifests_response(&[manifest(0)])),
-        respond(200, submission_target(0, "3")),
+        respond(200, submission_target("3")),
         accept_post(),
     ])
     .await;
@@ -1185,7 +1187,7 @@ async fn update_uses_the_target_entry_type_for_a_key() {
     );
     let result = session
         .submit_entry(
-            update_request(None, None, None),
+            update_request(SubmissionEntryType::Key, None, None, None),
             SubmissionSecret::Provided(SecretString::from("new-api-token".to_owned())),
         )
         .await
@@ -1211,17 +1213,20 @@ async fn update_target_failures_never_upload_or_deliver_a_credential() {
                 403,
                 json!({ "code": "update-not-granted" }).to_string(),
             )],
-            update_request(None, None, None),
+            update_request(SubmissionEntryType::Credential, None, None, None),
             Err(SubmissionNotSaved::UpdateNotGranted),
         ),
         (
-            vec![respond(200, submission_target(2, "4"))],
-            update_request(None, None, None),
-            Err(SubmissionNotSaved::UnsupportedEntryType),
+            Vec::new(),
+            update_request(SubmissionEntryType::Key, None, None, Some("not-for-a-key")),
+            Err(SubmissionNotSaved::InvalidInput),
         ),
         (
-            vec![respond(200, submission_target(0, "4"))],
-            update_request(None, None, Some("not-for-a-key")),
+            Vec::new(),
+            SubmissionRequest {
+                entry_type: None,
+                ..update_request(SubmissionEntryType::Credential, None, None, None)
+            },
             Err(SubmissionNotSaved::InvalidInput),
         ),
     ];
@@ -1247,7 +1252,7 @@ async fn update_target_failures_never_upload_or_deliver_a_credential() {
         assert_never_requested_credential_delivery(&requests);
     }
 
-    let mut other = serde_json::from_str::<Value>(&submission_target(1, "4")).unwrap();
+    let mut other = serde_json::from_str::<Value>(&submission_target("4")).unwrap();
     other["entryId"] = json!("1f1f1f1f-1f1f-4f1f-8f1f-1f1f1f1f1f1f");
     let (host, requests) = server(vec![
         respond(200, manifests_response(&[manifest(0)])),
@@ -1265,7 +1270,7 @@ async fn update_target_failures_never_upload_or_deliver_a_credential() {
     assert!(matches!(
         session
             .submit_entry(
-                update_request(None, None, None),
+                update_request(SubmissionEntryType::Credential, None, None, None),
                 SubmissionSecret::Generate(policy())
             )
             .await,
@@ -1471,7 +1476,7 @@ async fn update_without_username_carries_an_autofill_hint() {
     ] {
         let (host, _) = server(vec![
             respond(200, manifests_response(&[manifest(0)])),
-            respond(200, submission_target(1, "7")),
+            respond(200, submission_target("7")),
             accept_post(),
         ])
         .await;
@@ -1485,7 +1490,7 @@ async fn update_without_username_carries_an_autofill_hint() {
         );
         let result = session
             .submit_entry(
-                update_request(None, None, username),
+                update_request(SubmissionEntryType::Credential, None, None, username),
                 SubmissionSecret::Generate(policy()),
             )
             .await

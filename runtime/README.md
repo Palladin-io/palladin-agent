@@ -92,9 +92,10 @@ a rolled-back or substituted pin fails integrity verification.
 Each submission uses a fresh random DEK and nonce, an identity-bound AAD, and DEK
 wraps for this Agent and the pinned approver key, signed with the Agent's Ed25519 key.
 A POST is sent once; an ambiguous result is reconciled by the Agent-chosen submission
-ID, never by resending different bytes. `palladin submit update` reads the expected
-revision and entry type only from the side-effect-free `submission-target` endpoint,
-never from a credential delivery, and uploads only the changed fields (a credential
+ID, never by resending different bytes. `palladin submit update --type credential|key` reads the
+expected revision only from the side-effect-free `submission-target` endpoint, never from
+a credential delivery; the reviewer's client rejects an asserted type that differs from
+the decrypted Entry, and uploads only the changed fields (a credential
 needs only the new password); the reviewer's client merges them into that revision.
 `palladin submit status` re-wraps the unchanged
 DEK and payload of pending submissions after a continuity-verified approver rotation.

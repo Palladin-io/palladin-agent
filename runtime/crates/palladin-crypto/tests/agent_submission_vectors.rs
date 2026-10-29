@@ -224,7 +224,7 @@ fn vendored_contract_files_match_pinned_digests() {
     let digest = |bytes: &str| hex::encode(Sha256::digest(bytes.as_bytes()));
     assert_eq!(
         digest(CONTRACT),
-        "02e159c7c0de6b5cc72cab940e961d673656ac89d5c7705cb43e724976592be9"
+        "998190ba37499981275679e2d40535816203062736fc5fcc4ede4fe3025aceba"
     );
     assert_eq!(
         digest(FIXTURE),

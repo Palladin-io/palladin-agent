@@ -58,7 +58,7 @@ pub enum SubmissionRequestTarget<'a> {
     New {
         suggested_vault_id: Option<&'a str>,
     },
-    /// The revision and entry type come from the side-effect-free submission target.
+    /// The revision comes from the side-effect-free submission target; the type is asserted.
     Update {
         vault_id: &'a str,
         entry_id: &'a str,
@@ -235,15 +235,15 @@ impl RuntimeSession<'_> {
             Err(failure) => return failure.into_result(kind),
         };
         self.ensure_authorized()?;
-        let (target, entry_type) = match request.target {
-            SubmissionRequestTarget::New { suggested_vault_id } => (
-                SubmissionTarget::New {
-                    suggested_vault_id: suggested_vault_id.map(parse_uuid).transpose()?,
-                },
-                request
-                    .entry_type
-                    .ok_or(RuntimeError::Submission(SubmissionError::InvalidInput))?,
-            ),
+        // The Agent asserts the type for both kinds; for an update the approver client rejects
+        // it when it differs from the decrypted target Entry.
+        let entry_type = request
+            .entry_type
+            .ok_or(RuntimeError::Submission(SubmissionError::InvalidInput))?;
+        let target = match request.target {
+            SubmissionRequestTarget::New { suggested_vault_id } => SubmissionTarget::New {
+                suggested_vault_id: suggested_vault_id.map(parse_uuid).transpose()?,
+            },
             SubmissionRequestTarget::Update { vault_id, entry_id } => {
                 match self.update_target(vault_id, entry_id).await? {
                     Ok(target) => target,
@@ -645,14 +645,13 @@ impl RuntimeSession<'_> {
         self.ensure_authorized()
     }
 
-    /// Reads the granted Entry's current revision and type from the side-effect-free
-    /// submission-target endpoint; never from a credential delivery.
+    /// Reads the granted Entry's current revision from the side-effect-free submission-target
+    /// endpoint; never from a credential delivery.
     async fn update_target(
         &self,
         vault_id: &str,
         entry_id: &str,
-    ) -> Result<Result<(SubmissionTarget, SubmissionEntryType), SubmissionNotSaved>, RuntimeError>
-    {
+    ) -> Result<Result<SubmissionTarget, SubmissionNotSaved>, RuntimeError> {
         let target = match self.api.get_submission_target(vault_id, entry_id).await {
             Ok(target) => target,
             Err(ApiError::SubmissionRejected(SubmissionRejection::UpdateNotGranted)) => {
@@ -665,25 +664,17 @@ impl RuntimeSession<'_> {
         if target.vault_id != vault_id || target.entry_id != entry_id {
             return Err(RuntimeError::Api(ApiError::InvalidResponse));
         }
-        let entry_type = match target.entry_type {
-            0 => SubmissionEntryType::Key,
-            1 => SubmissionEntryType::Credential,
-            _ => return Ok(Err(SubmissionNotSaved::UnsupportedEntryType)),
-        };
         let expected_entry_revision = target
             .entry_revision
             .parse::<u64>()
             .ok()
             .filter(|revision| revision.to_string() == target.entry_revision)
             .ok_or(RuntimeError::Api(ApiError::InvalidResponse))?;
-        Ok(Ok((
-            SubmissionTarget::Update {
-                vault_id: parse_uuid(vault_id)?,
-                entry_id: parse_uuid(entry_id)?,
-                expected_entry_revision,
-            },
-            entry_type,
-        )))
+        Ok(Ok(SubmissionTarget::Update {
+            vault_id: parse_uuid(vault_id)?,
+            entry_id: parse_uuid(entry_id)?,
+            expected_entry_revision,
+        }))
     }
 
     async fn rewrap(
@@ -812,8 +803,8 @@ fn validate_request(request: &SubmissionRequest<'_>) -> Result<(), SubmissionNot
             }
         }
         SubmissionRequestTarget::Update { vault_id, entry_id } => {
-            // The entry type comes from the submission target; every other field is an optional
-            // change merged by the approver.
+            // The asserted type is required; every other field is an optional change merged by
+            // the approver.
             let label_valid = request.label.is_none_or(|label| {
                 let label = normalize_label(label);
                 !label.is_empty()
@@ -822,7 +813,9 @@ fn validate_request(request: &SubmissionRequest<'_>) -> Result<(), SubmissionNot
             });
             if parse_uuid(vault_id).is_err()
                 || parse_uuid(entry_id).is_err()
-                || request.entry_type.is_some()
+                || request.entry_type.is_none()
+                || (request.entry_type == Some(SubmissionEntryType::Key)
+                    && request.username.is_some())
                 || !label_valid
                 || !request.url.is_none_or(valid_https_url)
                 || !request

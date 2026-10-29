@@ -110,7 +110,8 @@
       "update": { "requiredFields": ["kind", "vaultId", "entryId", "expectedEntryRevision"], "kind": "update", "expectedEntryRevision": "u64 decimal string of the Entry revision the Agent's active grant delivered", "authorization": "the Agent must hold an active grant covering vaultId/entryId at submission time; checked by the backend against authenticated Agent and current grant state",
         "revisionSource": {
           "route": "GET /api/agent/vaults/{vaultId}/entries/{entryId}/submission-target",
-          "returns": ["vaultId", "entryId", "entryType", "entryRevision"],
+          "returns": ["vaultId", "entryId", "entryRevision"],
+          "entryTypeAuthority": "the backend never knows an Entry type; the Agent asserts entryType for an update and the approver client rejects approval as update when it differs from the decrypted target Entry type",
           "requires": "an active grant of the authenticated Agent covering the Entry at the current agentAccessEpoch",
           "sideEffects": "none: never creates a grant or access request, never consumes a grant use, never emits a credential-accessed event",
           "neverReturns": ["any field value", "username", "url", "label", "ciphertext"]
@@ -209,7 +210,7 @@
     "approve": {
       "requires": ["current GrantManage", "Vault membership and VaultManage on the selected Vault", "the approver key wrap for the current approverKeyVersion"],
       "newEntry": "client builds a complete Vault protocol 2 Entry with a server-owned Entry ID from the existing creation challenge, plus the canonical default Agent Visibility Policy",
-      "update": "client builds the next revision of the target Entry; backend rejects when target currentRevision != expectedEntryRevision (409 stale-target-revision); the previous revision stays in immutable Entry history; existing grant envelopes are refreshed with the existing builders",
+      "update": "client decrypts the target Entry, rejects approval as update when submission entryType differs from the decrypted Entry type (the approver may approve as a new Entry instead), then builds the next revision; backend rejects when target currentRevision != expectedEntryRevision (409 stale-target-revision); the previous revision stays in immutable Entry history; existing grant envelopes are refreshed with the existing builders",
       "approverMayRedirectUpdateToNewEntry": true,
       "defaultAgentAccess": "GRANULAR grant for exactly this Entry, methods inject, no expiry and no use limit; the approver may narrow or disable it",
       "existingFull": "a covering FULL grant is shown; disabling the new grant does not revoke FULL"

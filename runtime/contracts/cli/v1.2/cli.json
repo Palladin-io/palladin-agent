@@ -48,6 +48,8 @@
         "codex",
         "submit",
         "update",
+        "--type",
+        "credential",
         "--vault",
         "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
         "--entry",

@@ -100,13 +100,13 @@ pub struct AgentSubmissionSummary {
     pub decided_at: Option<String>,
 }
 
-/// Side-effect-free view of an Entry covered by the Agent's active grant.
+/// Side-effect-free view of an Entry covered by the Agent's active grant. It never carries the
+/// Entry type: the backend does not know it, and the approver client verifies the Agent's claim.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubmissionTargetResponse {
     pub vault_id: String,
     pub entry_id: String,
-    pub entry_type: u16,
     pub entry_revision: String,
 }
 

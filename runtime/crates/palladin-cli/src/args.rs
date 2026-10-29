@@ -338,6 +338,9 @@ pub struct SubmitNewArgs {
 
 #[derive(Debug, Args)]
 pub struct SubmitUpdateArgs {
+    /// Type of the target Entry; the reviewer's client rejects a mismatch.
+    #[arg(long = "type", value_enum)]
+    pub entry_type: SubmitEntryTypeArg,
     #[arg(long)]
     pub vault: String,
     #[arg(long)]
@@ -565,6 +568,8 @@ mod submit_tests {
             parse(&[
                 "submit",
                 "update",
+                "--type",
+                "credential",
                 "--vault",
                 "v",
                 "--entry",
@@ -597,6 +602,8 @@ mod submit_tests {
         let update = [
             "submit",
             "update",
+            "--type",
+            "credential",
             "--vault",
             "v",
             "--entry",
@@ -618,8 +625,17 @@ mod submit_tests {
             assert!(parse(&[&update[..], &[secret_flag, "hunter2"]].concat()).is_err());
         }
         assert!(
-            parse(&[&update[..], &["--type", "key"]].concat()).is_err(),
-            "the entry type comes from the submission target"
+            parse(&[
+                "submit",
+                "update",
+                "--vault",
+                "v",
+                "--entry",
+                "e",
+                "--generate"
+            ])
+            .is_err(),
+            "the update asserts the target Entry type"
         );
     }
 

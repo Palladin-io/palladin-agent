@@ -1855,7 +1855,6 @@ async fn submission_router() -> (String, Arc<Mutex<Vec<String>>>) {
                 serde_json::json!({
                     "vaultId": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
                     "entryId": "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
-                    "entryType": 1,
                     "entryRevision": "7",
                 })
                 .to_string()
@@ -2050,7 +2049,7 @@ async fn generated_submission_pins_the_approver_in_signed_profile_and_never_reve
             vault_id: "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
             entry_id: "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
         },
-        entry_type: None,
+        entry_type: Some(SubmissionEntryType::Credential),
         label: None,
         url: None,
         username: None,

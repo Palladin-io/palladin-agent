@@ -1627,10 +1627,7 @@ async fn submit(
                 target: SubmissionRequestTarget::New {
                     suggested_vault_id: args.suggested_vault.as_deref(),
                 },
-                entry_type: Some(match args.entry_type {
-                    SubmitEntryTypeArg::Credential => SubmissionEntryType::Credential,
-                    SubmitEntryTypeArg::Key => SubmissionEntryType::Key,
-                }),
+                entry_type: Some(entry_type(args.entry_type)),
                 label: Some(&args.label),
                 url: args.url.as_deref(),
                 username: args.username.as_deref(),
@@ -1643,7 +1640,7 @@ async fn submit(
                     vault_id: &args.vault,
                     entry_id: &args.entry,
                 },
-                entry_type: None,
+                entry_type: Some(entry_type(args.entry_type)),
                 label: args.label.as_deref(),
                 url: args.url.as_deref(),
                 username: args.username.as_deref(),
@@ -1658,6 +1655,13 @@ async fn submit(
             fingerprint,
             confirm,
         } => trust_approvers(service, profile, &fingerprint, confirm).await,
+    }
+}
+
+const fn entry_type(value: SubmitEntryTypeArg) -> SubmissionEntryType {
+    match value {
+        SubmitEntryTypeArg::Credential => SubmissionEntryType::Credential,
+        SubmitEntryTypeArg::Key => SubmissionEntryType::Key,
     }
 }
 
