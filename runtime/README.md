@@ -73,8 +73,9 @@ Vault creation, onboarding, and recovery materially more complex.
 under the [`palladin-agent-submission` v1](contracts/agent-submission/README.md)
 contract. The secret comes only from the native CSPRNG generator (`--generate`,
 honoring explicit length, class and symbol constraints; an unsatisfiable policy fails
-before anything else) or from a masked, confirmed prompt or protected standard input
-(`--from-prompt`). It is never accepted in argv or environment variables, printed,
+before anything else) or from a masked, confirmed prompt on an interactive terminal
+(`--from-prompt`; piped or redirected stdin is refused because it could carry model
+output, an environment variable or a file). It is never accepted in argv or environment variables, printed,
 logged, returned to MCP, or persisted.
 
 Before any secret is generated or encrypted, the runtime verifies the organization's

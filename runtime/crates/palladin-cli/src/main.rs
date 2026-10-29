@@ -59,8 +59,8 @@ use palladin_platform::secure_store::{
 };
 use palladin_runtime::{
     BrowserPairingMetadata, CredentialOutputPolicy, InvocationSurface, OperationConnection,
-    OperationDescriptor, SubmissionNotSaved, SubmissionRequest, SubmissionRequestTarget,
-    SubmissionResult, SubmissionSecret, open_system_browser,
+    OperationDescriptor, SubmissionHint, SubmissionNotSaved, SubmissionRequest,
+    SubmissionRequestTarget, SubmissionResult, SubmissionSecret, open_system_browser,
 };
 #[cfg(windows)]
 use palladin_windows_broker::BrokerSecretStore;
@@ -105,6 +105,10 @@ async fn main() -> ExitCode {
     }
     let environment = EnvironmentReport::inspect_current();
     let cli = Cli::parse();
+
+    if let Some(refused) = refuse_non_interactive_prompt(&cli.command) {
+        return refused;
+    }
 
     if browser_command_unsupported_on_platform(&cli.command) {
         return fail(&BrowserInstallError::UnsupportedPlatform.to_string());
@@ -1815,31 +1819,55 @@ fn password_policy(args: &SubmitSecretArgs) -> PasswordPolicy {
     }
 }
 
-/// Reads the secret from a masked, confirmed terminal prompt or one line of protected stdin.
+/// `--from-prompt` accepts only a human at an interactive terminal. A pipe or file on stdin could
+/// carry model output, an environment variable or a file, which the submission contract forbids
+/// as secret sources; it is refused before any profile access or read.
+fn refuse_non_interactive_prompt(command: &Commands) -> Option<ExitCode> {
+    let (kind, secret, json) = match command {
+        Commands::Submit {
+            command: SubmitCommand::New(args),
+        } => (SubmissionKind::New, &args.secret, args.json),
+        Commands::Submit {
+            command: SubmitCommand::Update(args),
+        } => (SubmissionKind::Update, &args.secret, args.json),
+        _ => return None,
+    };
+    if !secret.from_prompt || io::stdin().is_terminal() {
+        return None;
+    }
+    Some(emit_output(render_submission_result(
+        &SubmissionResult {
+            kind,
+            outcome: Err(SubmissionNotSaved::InvalidInput),
+            submission_id: None,
+            hints: vec![SubmissionHint::InvalidInput {
+                field: "--from-prompt",
+                rule: "requires an interactive terminal; use --generate or run it in a terminal",
+            }],
+        },
+        json,
+    )))
+}
+
+/// Reads the secret twice from the masked controlling terminal (`/dev/tty`, `CONIN$`), never
+/// from stdin.
 fn read_submission_secret() -> Result<secrecy::SecretString, String> {
     const MAX_SECRET_BYTES: usize = 16_384;
-    let mut value = if io::stdin().is_terminal() {
-        let first = Zeroizing::new(
-            rpassword::prompt_password("New secret: ")
-                .map_err(|_| "could not read the secret from the masked prompt".to_owned())?,
-        );
-        let confirmation = Zeroizing::new(
-            rpassword::prompt_password("Confirm secret: ")
-                .map_err(|_| "could not read the secret from the masked prompt".to_owned())?,
-        );
-        if *first != *confirmation {
-            return Err("the secrets do not match; nothing was submitted".to_owned());
-        }
-        first
-    } else {
-        let mut input = Zeroizing::new(String::new());
-        io::stdin()
-            .lock()
-            .take(MAX_SECRET_BYTES as u64 + 1)
-            .read_line(&mut input)
-            .map_err(|_| "could not read the secret from standard input".to_owned())?;
-        input
-    };
+    if !io::stdin().is_terminal() {
+        return Err("--from-prompt requires an interactive terminal".to_owned());
+    }
+    let first = Zeroizing::new(
+        rpassword::prompt_password("New secret: ")
+            .map_err(|_| "could not read the secret from the masked prompt".to_owned())?,
+    );
+    let confirmation = Zeroizing::new(
+        rpassword::prompt_password("Confirm secret: ")
+            .map_err(|_| "could not read the secret from the masked prompt".to_owned())?,
+    );
+    if *first != *confirmation {
+        return Err("the secrets do not match; nothing was submitted".to_owned());
+    }
+    let mut value = first;
     while value.ends_with(['\r', '\n']) {
         value.pop();
     }

@@ -7,7 +7,8 @@ use serde::Serialize;
 
 use crate::{CreatedProfile, LegacyCleanupOutcome, LegacyCutoverOutcome};
 use palladin_runtime::{
-    ReTrustedApproverKey, RewrapOutcome, SubmissionHint, SubmissionResult, SubmissionStatusItem,
+    ReTrustedApproverKey, RewrapOutcome, SubmissionHint, SubmissionNotSaved, SubmissionResult,
+    SubmissionStatusItem,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -387,6 +388,15 @@ pub fn render_submission_result(result: &SubmissionResult, json: bool) -> Render
         output.stdout_line(&agent_result.message);
     } else {
         output.stderr_line(format_args!("Error: {}", agent_result.message));
+        // An unconfirmed save may exist under this ID; retrying blindly could create a second one.
+        if let (Err(SubmissionNotSaved::ServiceUnavailable), Some(id)) =
+            (&result.outcome, result.submission_id.as_deref())
+        {
+            let id = safe_terminal_text(id);
+            output.stderr_line(format_args!(
+                "Submission ID: {id}. Palladin did not confirm whether it was saved; check `palladin submit status {id}` before retrying."
+            ));
+        }
     }
     // Hints are operator guidance on stderr; they never extend the contract result.
     for hint in &result.hints {
@@ -556,7 +566,7 @@ pub fn render_submission_status(items: &[SubmissionStatusItem], json: bool) -> R
 #[cfg(test)]
 mod submission_tests {
     use palladin_crypto::SubmissionKind;
-    use palladin_runtime::{SubmissionNotSaved, SubmissionSaved};
+    use palladin_runtime::SubmissionSaved;
 
     use super::render_approver_retrust;
 
@@ -632,6 +642,38 @@ mod submission_tests {
                 assert!(value.get(field).is_none());
             }
         }
+    }
+
+    #[test]
+    fn unconfirmed_save_prints_the_id_and_a_status_check_in_text_mode() {
+        let result = SubmissionResult {
+            kind: SubmissionKind::Update,
+            outcome: Err(SubmissionNotSaved::ServiceUnavailable),
+            submission_id: Some("0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d".to_owned()),
+            hints: Vec::new(),
+        };
+        let human = render_submission_result(&result, false);
+        assert_eq!(human.exit_code, 1);
+        assert!(human.stdout.is_empty());
+        assert_eq!(
+            human.stderr,
+            "Error: Not saved to Palladin (service-unavailable). Nothing was submitted to any site.\n\
+             Submission ID: 0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d. Palladin did not confirm whether it was saved; check `palladin submit status 0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d` before retrying.\n"
+        );
+        let json = render_submission_result(&result, true);
+        assert!(
+            json.stderr.is_empty(),
+            "the JSON agentResult already carries the ID"
+        );
+
+        let definite = SubmissionResult {
+            submission_id: None,
+            ..result
+        };
+        assert_eq!(
+            render_submission_result(&definite, false).stderr,
+            "Error: Not saved to Palladin (service-unavailable). Nothing was submitted to any site.\n"
+        );
     }
 
     #[test]

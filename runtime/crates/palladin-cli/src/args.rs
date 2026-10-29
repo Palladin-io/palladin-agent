@@ -371,7 +371,7 @@ pub struct SubmitSecretArgs {
         conflicts_with = "from_prompt"
     )]
     pub generate: bool,
-    /// Read the secret from a masked terminal prompt or protected standard input.
+    /// Read the secret from a masked, confirmed prompt on an interactive terminal; never stdin.
     #[arg(long)]
     pub from_prompt: bool,
     /// Generated password length (default 24).
