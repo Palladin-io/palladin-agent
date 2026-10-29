@@ -170,6 +170,7 @@ pub enum AuthorizationPrompt {
     InjectCredential,
     ExecWithCredential,
     ReportCredentialStale,
+    SubmitEntry,
     IdentityManagement,
     DestructiveIdentityManagement,
 }
@@ -188,6 +189,7 @@ impl AuthorizationPrompt {
             }
             Self::ExecWithCredential => "Allow Palladin to run a command with a credential",
             Self::ReportCredentialStale => "Allow Palladin to report a stale credential",
+            Self::SubmitEntry => "Allow Palladin to submit a credential for review",
             Self::IdentityManagement => "Allow Palladin to manage this Agent identity",
             Self::DestructiveIdentityManagement => "Allow Palladin to remove this Agent identity",
         }

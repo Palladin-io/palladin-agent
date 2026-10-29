@@ -1917,6 +1917,7 @@ dependencies = [
  "reqwest",
  "secrecy",
  "serde",
+ "serde_jcs",
  "serde_json",
  "sha2",
  "subtle",

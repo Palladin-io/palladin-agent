@@ -834,8 +834,14 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
         assert_eq!(opened.content.username(), Some("builder@example.invalid"));
     }
 
-    let rewrapped =
-        rewrap_agent_submission(&built, &keys.agent_box, &agent_signing, &pin_v2).expect("rewrap");
+    let rewrapped = rewrap_agent_submission(
+        &built,
+        identity.agent_id,
+        &keys.agent_box,
+        &agent_signing,
+        &pin_v2,
+    )
+    .expect("rewrap");
     verify_rewrap(&built, &rewrapped, 2).unwrap();
     assert_eq!(rewrapped.submission_revision, 2);
     assert_eq!(rewrapped.approver_manifest_revision, 2);
@@ -861,7 +867,13 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
         "previous approver key cannot open the re-wrap",
     );
     expect_error(
-        rewrap_agent_submission(&rewrapped, &keys.agent_box, &agent_signing, &pin_v2),
+        rewrap_agent_submission(
+            &rewrapped,
+            identity.agent_id,
+            &keys.agent_box,
+            &agent_signing,
+            &pin_v2,
+        ),
         "recipient-key-mismatch",
         "re-wrap requires a newer approver key",
     );

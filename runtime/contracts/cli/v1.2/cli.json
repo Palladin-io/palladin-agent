@@ -1,0 +1,84 @@
+{
+  "contract": "native-cli-v2",
+  "version": "1.2.0",
+  "status": "frozen",
+  "syntheticOnly": true,
+  "compatibilityBase": "../v1.1/cli.json",
+  "additionalCommands": [
+    {
+      "argv": [
+        "--id",
+        "codex",
+        "submit",
+        "new",
+        "--type",
+        "credential",
+        "--label",
+        "Example account",
+        "--url",
+        "https://example.test/login",
+        "--username",
+        "agent@example.test",
+        "--generate",
+        "--length",
+        "32"
+      ],
+      "name": "submit",
+      "secretOutput": false
+    },
+    {
+      "argv": [
+        "--id",
+        "codex",
+        "submit",
+        "new",
+        "--type",
+        "key",
+        "--label",
+        "Example token",
+        "--from-prompt",
+        "--json"
+      ],
+      "name": "submit",
+      "secretOutput": false
+    },
+    {
+      "argv": [
+        "--id",
+        "codex",
+        "submit",
+        "update",
+        "--vault",
+        "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
+        "--entry",
+        "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
+        "--generate"
+      ],
+      "name": "submit",
+      "secretOutput": false
+    },
+    {
+      "argv": [
+        "--id",
+        "codex",
+        "submit",
+        "status",
+        "0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d",
+        "--json"
+      ],
+      "name": "submit",
+      "secretOutput": false
+    },
+    {
+      "argv": [
+        "--id",
+        "codex",
+        "inject",
+        "--submission",
+        "0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d"
+      ],
+      "name": "inject",
+      "secretOutput": false
+    }
+  ]
+}

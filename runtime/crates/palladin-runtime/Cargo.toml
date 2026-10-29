@@ -41,6 +41,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
+serde_jcs.workspace = true
 palladin-core = { path = "../palladin-core", features = ["local-development"] }
 
 [build-dependencies]

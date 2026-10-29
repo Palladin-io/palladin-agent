@@ -67,6 +67,33 @@ or transparency mechanism. Palladin deliberately does not add that trust chain
 because it does not protect existing credential confidentiality and would make
 Vault creation, onboarding, and recovery materially more complex.
 
+## Agent Submissions
+
+`palladin submit new|update` proposes an Entry, or a new secret for a granted Entry,
+under the [`palladin-agent-submission` v1](contracts/agent-submission/README.md)
+contract. The secret comes only from the native CSPRNG generator (`--generate`,
+honoring explicit length, class and symbol constraints; an unsatisfiable policy fails
+before anything else) or from a masked, confirmed prompt or protected standard input
+(`--from-prompt`). It is never accepted in argv or environment variables, printed,
+logged, returned to MCP, or persisted.
+
+Before any secret is generated or encrypted, the runtime verifies the organization's
+approver manifest chain. The first manifest is a trust-on-first-use introduction from
+the authenticated backend, with the same boundary as a first Vault manifest; its
+organization must match every paired Vault anchor. Afterwards only manifests signed by
+the pinned key, or the next key version with a continuity signature by it, are
+accepted. The pin is bound into the signed profile and its secure-store checkpoint, so
+a rolled-back or substituted pin fails integrity verification.
+
+Each submission uses a fresh random DEK and nonce, an identity-bound AAD, and DEK
+wraps for this Agent and the pinned approver key, signed with the Agent's Ed25519 key.
+A POST is sent once; an ambiguous result is reconciled by the Agent-chosen submission
+ID, never by resending different bytes. `palladin submit status` re-wraps the unchanged
+DEK and payload of pending submissions after a continuity-verified approver rotation.
+`palladin inject --submission <id>` fetches the Agent's own pending submission fresh,
+verifies its signature and bindings, and injects it through the same authenticated
+browser route as a granted credential; `get` and `exec` never accept a submission.
+
 ## Identity ownership
 
 Browser pairing creates a fresh local profile or resumes its matching signed pending record;

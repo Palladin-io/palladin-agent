@@ -53,12 +53,12 @@ pub struct SubmissionAccepted {
     pub submission_revision: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubmissionDecision {
     pub vault_id: String,
     pub entry_id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant_id: Option<String>,
 }
 

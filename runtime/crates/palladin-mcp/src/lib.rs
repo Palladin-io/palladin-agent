@@ -486,6 +486,7 @@ where
                     connection: &self.connection,
                     vault_id: input.vault_id.trim(),
                     entry_id: input.entry_id.trim(),
+                    submission_id: None,
                     reason: input.reason.as_deref(),
                     wait,
                     provider: &provider,

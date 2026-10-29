@@ -629,6 +629,7 @@ mod tests {
             signing_public_key: Some(STANDARD.encode([4_u8; 32])),
             vault_trust_anchors: Vec::new(),
             discovery_cache: None,
+            approver_trust_anchor: None,
             binding_signature: STANDARD.encode([5_u8; 64]),
         };
         let registry = PublicRegistry {

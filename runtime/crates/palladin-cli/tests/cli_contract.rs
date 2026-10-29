@@ -137,6 +137,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Inject(_) => "inject",
         Commands::Browser { .. } => "browser",
         Commands::ReportStale(_) => "report-stale",
+        Commands::Submit { .. } => "submit",
         Commands::Mcp { .. } => "mcp",
         Commands::Agents { .. } => "agents",
         Commands::Security { .. } => "security",
@@ -206,6 +207,28 @@ fn pairing_contract_extension_is_additive_and_parses_every_command() {
             .unwrap_or_else(|error| panic!("contract case {} did not parse: {error}", case.name));
         assert_eq!(command_name(&parsed.command), case.name);
         assert!(!case.secret_output, "pairing commands never emit secrets");
+    }
+}
+
+#[test]
+fn submission_contract_extension_is_additive_and_never_emits_secrets() {
+    let extension: CliContractExtension =
+        serde_json::from_str(include_str!("../../../contracts/cli/v1.2/cli.json"))
+            .expect("submission CLI contract extension");
+    assert_eq!(extension.contract, "native-cli-v2");
+    assert_eq!(extension.version, "1.2.0");
+    assert_eq!(extension.status, "frozen");
+    assert_eq!(extension.compatibility_base, "../v1.1/cli.json");
+    for case in extension.additional_commands {
+        let mut argv = vec!["palladin".to_owned()];
+        argv.extend(case.argv);
+        let parsed = Cli::try_parse_from(argv)
+            .unwrap_or_else(|error| panic!("contract case {} did not parse: {error}", case.name));
+        assert_eq!(command_name(&parsed.command), case.name);
+        assert!(
+            !case.secret_output,
+            "submission commands never emit secrets"
+        );
     }
 }
 

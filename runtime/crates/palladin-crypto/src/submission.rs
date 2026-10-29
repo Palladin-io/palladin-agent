@@ -981,21 +981,22 @@ pub fn build_agent_submission(
 }
 
 /// Re-wraps the unchanged DEK and payload of a stored submission for a rotated approver key.
+///
+/// The organization comes from the pinned approver key and `agent_id` from the local profile,
+/// never from the stored envelope being re-wrapped.
 pub fn rewrap_agent_submission(
     stored: &AgentEntrySubmission,
+    agent_id: Uuid,
     agent_encryption: &X25519Identity,
     agent_signing: &Ed25519Identity,
     approver: &PinnedApproverTrust,
 ) -> Result<AgentEntrySubmission, SubmissionError> {
-    if approver.organization_id != stored.identity.organization_id {
-        return Err(SubmissionError::ContextMismatch);
-    }
     if approver.key_version <= stored.approver_key_version {
         return Err(SubmissionError::RecipientKeyMismatch);
     }
     let authority = SubmissionAuthority {
-        organization_id: stored.identity.organization_id,
-        agent_id: stored.identity.agent_id,
+        organization_id: approver.organization_id,
+        agent_id,
         agent_signing_public_key: agent_signing.public_key(),
         recipient: SubmissionRecipient::Agent {
             key_version: stored.agent_key_version,

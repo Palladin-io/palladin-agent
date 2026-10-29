@@ -1808,3 +1808,272 @@ async fn mcp_requests_bind_each_profile_to_its_saved_host_and_identity_without_c
         );
     }
 }
+
+const SUBMISSION_FIXTURE: &str =
+    include_str!("../../../contracts/agent-submission/v1/fixture.json");
+
+/// Routes the Agent API by request line so connect and submission share the saved profile host.
+async fn submission_router() -> (String, Arc<Mutex<Vec<String>>>) {
+    const AGENT: &str = "0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b";
+    let fixture: serde_json::Value = serde_json::from_str(SUBMISSION_FIXTURE).expect("fixture");
+    let manifests = serde_json::json!({
+        "organizationId": "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a",
+        "agentKeyVersion": 1,
+        "agentAccessEpoch": "1",
+        "manifests": [fixture["approverManifests"][0]],
+    })
+    .to_string();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&requests);
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).await.expect("read");
+                bytes.extend_from_slice(&buffer[..read]);
+                let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                let length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .map_or(0, |value| value.trim().parse::<usize>().expect("length"));
+                if bytes.len() >= end + 4 + length || read == 0 {
+                    break;
+                }
+            }
+            let request = String::from_utf8(bytes).expect("UTF-8 request");
+            let body = if request.starts_with("GET /api/agent/me ") {
+                format!(r#"{{"agentId":"{AGENT}","name":null,"status":"active"}}"#)
+            } else if request.starts_with("GET /api/agent/approver-manifests") {
+                manifests.clone()
+            } else if request.starts_with("POST /api/agent/submissions ") {
+                let submitted: serde_json::Value =
+                    serde_json::from_str(request.split_once("\r\n\r\n").expect("body").1)
+                        .expect("submission JSON");
+                serde_json::json!({
+                    "submissionId": submitted["submissionId"],
+                    "state": "pending",
+                    "submissionRevision": "1",
+                })
+                .to_string()
+            } else {
+                panic!(
+                    "unexpected request: {}",
+                    request.lines().next().unwrap_or_default()
+                );
+            };
+            captured.lock().expect("requests").push(request);
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(wire.as_bytes()).await.expect("write");
+        }
+    });
+    (format!("http://{address}"), requests)
+}
+
+#[tokio::test]
+async fn generated_submission_pins_the_approver_in_signed_profile_and_never_reveals_the_secret() {
+    use base64::Engine as _;
+    use palladin_credential::generator::PasswordPolicy;
+    use palladin_crypto::{
+        AgentEntrySubmission, SubmissionAuthority, SubmissionContent, SubmissionEntryType,
+        SubmissionRecipient, open_agent_submission,
+    };
+    use palladin_runtime::{SubmissionRequest, SubmissionRequestTarget, SubmissionSecret};
+    use sha2::Digest as _;
+
+    let root = tempfile::tempdir().expect("root");
+    let service = service(root.path(), MemoryStore::default());
+    service.create_profile("build", None).expect("profile");
+    let (host, requests) = submission_router().await;
+    service
+        .connect(
+            Some("build"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            ApiHost::parse(&host).expect("host"),
+            None,
+            None,
+            "fixture-host",
+            &operation_connection(),
+        )
+        .await
+        .expect("connect");
+    let request = SubmissionRequest {
+        target: SubmissionRequestTarget::New {
+            suggested_vault_id: None,
+        },
+        entry_type: Some(SubmissionEntryType::Credential),
+        label: Some("Example Account"),
+        url: Some("https://example.invalid/login"),
+        username: Some("agent@example.invalid"),
+    };
+    let session = service
+        .open_session(
+            Some("build"),
+            "fixture-host",
+            &operation_connection(),
+            OperationDescriptor::SubmitEntry {
+                surface: InvocationSurface::Cli,
+                request_digest: request.digest(true),
+            },
+        )
+        .expect("session");
+    let signing_public_key: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(session.config().signing_public_key.as_deref().expect("key"))
+        .expect("base64")
+        .try_into()
+        .expect("32 bytes");
+    let result = session
+        .submit_entry(
+            request,
+            SubmissionSecret::Generate(PasswordPolicy::default()),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("submission");
+    drop(session);
+    assert!(result.outcome.is_ok());
+
+    let post = requests
+        .lock()
+        .expect("requests")
+        .iter()
+        .find(|request| request.starts_with("POST /api/agent/submissions "))
+        .cloned()
+        .expect("submission POST");
+    let fixture: serde_json::Value = serde_json::from_str(SUBMISSION_FIXTURE).expect("fixture");
+    let seed = hex::decode(
+        fixture["deterministicInputs"]["approverV1X25519Seed"]
+            .as_str()
+            .expect("seed"),
+    )
+    .expect("hex");
+    let approver =
+        X25519Identity::from_private_bytes(sha2::Sha512::digest(seed)[..32].to_vec()).unwrap();
+    let submission = AgentEntrySubmission::from_value(
+        &serde_json::from_str(post.split_once("\r\n\r\n").expect("body").1).expect("JSON"),
+    )
+    .expect("strict transport");
+    let opened = open_agent_submission(
+        &submission,
+        &SubmissionAuthority {
+            organization_id: submission.identity.organization_id,
+            agent_id: submission.identity.agent_id,
+            agent_signing_public_key: &signing_public_key,
+            recipient: SubmissionRecipient::ApproverGroup {
+                key_version: 1,
+                identity: &approver,
+            },
+        },
+    )
+    .expect("approver opens");
+    let SubmissionContent::Credential { password, .. } = opened.content else {
+        panic!("credential");
+    };
+    let password = password.expose_secret().to_owned();
+    assert_eq!(password.len(), 24);
+
+    for json in [false, true] {
+        let output = palladin_cli::output::render_submission_result(&result, json);
+        assert_eq!(output.exit_code, 0);
+        assert!(!output.stdout.contains(&password) && !output.stderr.contains(&password));
+        if json {
+            let value: serde_json::Value = serde_json::from_str(&output.stdout).expect("JSON");
+            let keys = value
+                .as_object()
+                .expect("object")
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                keys,
+                [
+                    "message",
+                    "siteStatus",
+                    "submissionId",
+                    "submissionState",
+                    "submissionStatus"
+                ]
+            );
+            assert_eq!(value["submissionStatus"], "saved");
+            assert_eq!(value["siteStatus"], "not-attempted");
+        }
+    }
+    for request in requests.lock().expect("requests").iter() {
+        assert!(!request.contains(&password));
+    }
+    let public = read_public_files(root.path());
+    assert!(!public.contains(&password));
+    assert!(public.contains("approverTrustAnchor"));
+
+    let reopened = service
+        .open_session(
+            Some("build"),
+            "fixture-host",
+            &operation_connection(),
+            OperationDescriptor::SubmissionStatus {
+                surface: InvocationSurface::Cli,
+                submission_id: None,
+            },
+        )
+        .expect("pinned profile verifies");
+    let anchor = reopened
+        .config()
+        .approver_trust_anchor
+        .clone()
+        .expect("approver pin committed to the signed profile");
+    assert_eq!(anchor.key_version, 1);
+    assert_eq!(anchor.manifest_revision, "1");
+    drop(reopened);
+
+    let config_path =
+        find_file_containing(root.path(), "approverTrustAnchor").expect("pinned config");
+    let original = std::fs::read(&config_path).expect("config");
+    let mut rolled_back: serde_json::Value = serde_json::from_slice(&original).expect("JSON");
+    rolled_back
+        .as_object_mut()
+        .expect("config")
+        .remove("approverTrustAnchor");
+    std::fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&rolled_back).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        service
+            .open_session(
+                Some("build"),
+                "fixture-host",
+                &operation_connection(),
+                OperationDescriptor::SubmissionStatus {
+                    surface: InvocationSurface::Cli,
+                    submission_id: None,
+                },
+            )
+            .is_err(),
+        "removing the pin is a rollback and must fail integrity verification"
+    );
+}
+
+fn find_file_containing(path: &std::path::Path, needle: &str) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(path)
+        .expect("directory")
+        .find_map(|entry| {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                find_file_containing(&path, needle)
+            } else {
+                std::fs::read_to_string(&path)
+                    .is_ok_and(|text| text.contains(needle))
+                    .then_some(path)
+            }
+        })
+}
