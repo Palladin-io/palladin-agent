@@ -224,7 +224,7 @@ fn vendored_contract_files_match_pinned_digests() {
     let digest = |bytes: &str| hex::encode(Sha256::digest(bytes.as_bytes()));
     assert_eq!(
         digest(CONTRACT),
-        "5a128f5e13c7178a2b09c16aa4481a81656e3b7fde7f56e687de1db00ef90403"
+        "02e159c7c0de6b5cc72cab940e961d673656ac89d5c7705cb43e724976592be9"
     );
     assert_eq!(
         digest(FIXTURE),
@@ -760,13 +760,131 @@ fn every_contract_negative_manifest_case_fails_closed_with_its_code() {
             "manifest-continuity-invalid",
         ),
         (
-            "rotated manifest needs continuity",
+            "continuity fields come as a pair",
             vec![without_continuity],
             "manifest-continuity-invalid",
         ),
     ] {
         expect_error(verify_chain(&fixture, &chain), code, case);
     }
+
+    let mut re_bootstrap = v2.clone();
+    re_bootstrap
+        .as_object_mut()
+        .unwrap()
+        .remove("previousSigningKeyFingerprint");
+    let re_bootstrap = sign_manifest(re_bootstrap, &keys.approver_v2_sign, None);
+    expect_error(
+        verify_chain(&fixture, &[v1.clone(), re_bootstrap.clone()]),
+        "manifest-reintroduction-required",
+        "re-bootstrap needs explicit operator re-trust",
+    );
+    assert_eq!(
+        verify_chain(&fixture, std::slice::from_ref(&re_bootstrap))
+            .unwrap()
+            .key_version,
+        2,
+        "explicit re-trust re-pins from first introduction"
+    );
+    let mut added_approver = v1.clone();
+    added_approver["manifestRevision"] = json!("2");
+    added_approver["approverSetRevision"] = json!("2");
+    let added_approver = sign_manifest(added_approver, &keys.approver_v1_sign, None);
+    assert_eq!(
+        verify_chain(&fixture, &[v1.clone(), added_approver.clone()])
+            .unwrap()
+            .manifest_revision,
+        2,
+        "same key version needs no continuity"
+    );
+    let mut same_version_with_continuity = added_approver.clone();
+    same_version_with_continuity["previousSigningKeyFingerprint"] =
+        v1["signingKeyFingerprint"].clone();
+    let same_version_with_continuity = sign_manifest(
+        same_version_with_continuity,
+        &keys.approver_v1_sign,
+        Some(&keys.approver_v1_sign),
+    );
+    expect_error(
+        verify_chain(&fixture, &[v1.clone(), same_version_with_continuity]),
+        "manifest-continuity-invalid",
+        "same key version must not carry continuity",
+    );
+
+    let pin_v1 = verify_chain(&fixture, std::slice::from_ref(&v1)).unwrap();
+    let re_bootstrap_fingerprint: [u8; 32] =
+        unb64(re_bootstrap["signingKeyFingerprint"].as_str().unwrap())
+            .try_into()
+            .unwrap();
+    let org = organization(&fixture);
+    assert_eq!(
+        palladin_crypto::approver_reintroduction_candidate(
+            &manifests(std::slice::from_ref(&re_bootstrap)).unwrap(),
+            Some(&pin_v1)
+        ),
+        Some(re_bootstrap_fingerprint)
+    );
+    let mut later_re_bootstrap = re_bootstrap.clone();
+    later_re_bootstrap["manifestRevision"] = json!("3");
+    let later_re_bootstrap = sign_manifest(later_re_bootstrap, &keys.approver_v2_sign, None);
+    expect_error(
+        palladin_crypto::reintroduce_approver_manifest(
+            &manifests(&[added_approver.clone(), re_bootstrap.clone()]).unwrap(),
+            org,
+            &pin_v1,
+            &re_bootstrap_fingerprint,
+        ),
+        "manifest-reintroduction-required",
+        "a re-bootstrap must advance the manifest revision",
+    );
+    let re_pinned = palladin_crypto::reintroduce_approver_manifest(
+        &manifests(&[added_approver.clone(), later_re_bootstrap]).unwrap(),
+        org,
+        &pin_v1,
+        &re_bootstrap_fingerprint,
+    )
+    .expect("confirmed re-bootstrap re-pins");
+    assert_eq!(re_pinned.key_version, 2);
+    assert_eq!(
+        &re_pinned.message_public_key,
+        keys.approver_v2_box.public_key()
+    );
+    for (case, chain, fingerprint) in [
+        (
+            "an unconfirmed fingerprint is never re-trusted",
+            vec![re_bootstrap.clone()],
+            pin_v1.signing_key_fingerprint(),
+        ),
+        (
+            "a continuity-signed rotation is not a re-bootstrap",
+            vec![v2.clone()],
+            <[u8; 32]>::try_from(unb64(v2["signingKeyFingerprint"].as_str().unwrap())).unwrap(),
+        ),
+    ] {
+        expect_error(
+            palladin_crypto::reintroduce_approver_manifest(
+                &manifests(&chain).unwrap(),
+                org,
+                &pin_v1,
+                &fingerprint,
+            ),
+            "manifest-reintroduction-required",
+            case,
+        );
+    }
+    let mut skipped_bootstrap = re_bootstrap.clone();
+    skipped_bootstrap["keyVersion"] = json!(3);
+    let skipped_bootstrap = sign_manifest(skipped_bootstrap, &keys.approver_v2_sign, None);
+    expect_error(
+        palladin_crypto::reintroduce_approver_manifest(
+            &manifests(&[skipped_bootstrap]).unwrap(),
+            org,
+            &pin_v1,
+            &re_bootstrap_fingerprint,
+        ),
+        "manifest-reintroduction-required",
+        "a re-bootstrap must be exactly the next key version",
+    );
 
     let pin_v2 = verify_chain(&fixture, &[v1.clone(), v2.clone()]).unwrap();
     expect_error(

@@ -70,13 +70,19 @@
       "action": "a remaining approver client generates keyVersion+1, wraps it for every remaining approver, signs the new manifest with the new key and continuitySignature with the previous signing key",
       "atomicity": "manifest, every remaining wrap and removal of every previous-version wrap commit together; partial commit is rejected",
       "fence": "until rotation commits, the removed member's approver wraps are not served and the removed member cannot decide submissions",
-      "noRemainingApprover": "the key set becomes unavailable; new submissions fail with no-approvers; pending submissions stay encrypted to the last key version until a new bootstrap and Agent re-wrap",
+      "noRemainingApprover": "the key set becomes unavailable; new submissions fail with approver-key-unavailable; pending submissions stay encrypted to the last key version until re-bootstrap and Agent re-wrap",
       "claimBoundary": "a removed approver who already opened a submission keeps that plaintext; rotation protects only later submissions and re-wrapped DEKs"
+    },
+    "reBootstrap": {
+      "when": "no current approver holds a wrap for their current Member key, e.g. the only approver reset their key pair",
+      "action": "a current approver generates keyVersion = last+1 without continuity and wraps it for every current approver; the backend accepts it only while the key set is unavailable",
+      "agentAcceptance": "never automatic: a keyVersion+1 manifest without continuity yields approver-key-untrusted until the Agent operator explicitly re-trusts the new signing key fingerprint through a local command; this restarts the trust-on-first-use boundary",
+      "pendingSubmissions": "after re-trust the runtime re-wraps every pending submission from its own DEK wrap for the new key; no secret is regenerated"
     },
     "manifest": {
       "type": "OrganizationApproverManifest",
       "requiredFields": ["schema", "contractVersion", "protocolVersion", "organizationId", "keyVersion", "manifestRevision", "approverSetRevision", "approverSetDigest", "messagePublicKey", "messageKeyFingerprint", "signingPublicKey", "signingKeyFingerprint", "issuedAt", "signature"],
-      "conditionalFields": { "continuitySignature": "required when keyVersion > 1, forbidden when keyVersion == 1", "previousSigningKeyFingerprint": "required when keyVersion > 1, forbidden when keyVersion == 1" },
+      "conditionalFields": { "continuitySignature": "present only on the manifest that introduces a keyVersion by rotation; absent on bootstrap, re-bootstrap and every later manifest of the same keyVersion", "previousSigningKeyFingerprint": "present exactly when continuitySignature is present" },
       "schema": "palladin.organization-approver-manifest.v1",
       "manifestRevision": "positive u64 decimal string; strictly increasing across all key versions",
       "approverSetDigest": "SHA-256(ASCII(PLDNSUB1SET) || for each approver in ascending memberId byte order: memberId[16] || u32be(memberKeyVersion) || memberKeyFingerprint[32])",
@@ -88,8 +94,9 @@
       "firstIntroduction": "the authenticated backend response is authoritative for the organization's first approver manifest; the runtime verifies self-signature, organization binding and fingerprints, then pins signingKeyFingerprint, keyVersion and manifestRevision in its signed profile",
       "claimBoundary": "first introduction has the same trust-on-first-use boundary as Vault manifest introduction; it is not an independent attestation",
       "sameKeyVersion": "accept only a strictly higher manifestRevision signed by the pinned signing key",
-      "newKeyVersion": "accept only keyVersion == pinned+1 whose continuitySignature verifies with the pinned signing key and whose previousSigningKeyFingerprint equals the pinned fingerprint; then re-pin",
-      "rejections": ["unknown-organization", "rollback-revision", "skipped-key-version", "continuity-mismatch", "invalid-signature", "fingerprint-mismatch"],
+      "newKeyVersion": "accept only keyVersion == pinned+1 whose continuitySignature verifies with the pinned signing key and whose previousSigningKeyFingerprint equals the pinned fingerprint; then re-pin; keyVersion == pinned+1 without continuity is a re-bootstrap and requires explicit operator re-trust",
+      "sameKeyVersionContinuity": "a manifest of the pinned keyVersion that carries continuity fields is rejected",
+      "rejections": ["unknown-organization", "rollback-revision", "skipped-key-version", "continuity-mismatch", "invalid-signature", "fingerprint-mismatch", "reintroduction-required"],
       "rejectionTiming": "before secret generation, before encryption and before any form submission"
     }
   },

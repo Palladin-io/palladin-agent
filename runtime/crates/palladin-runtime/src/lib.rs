@@ -18,8 +18,9 @@ use browser_pairing::{
     PendingBrowserPairingStateError,
 };
 pub use submission::{
-    RewrapOutcome, SubmissionNotSaved, SubmissionRequest, SubmissionRequestTarget,
-    SubmissionResult, SubmissionSaved, SubmissionSecret, SubmissionStatusItem,
+    ReTrustedApproverKey, RewrapOutcome, SubmissionHint, SubmissionNotSaved, SubmissionRequest,
+    SubmissionRequestTarget, SubmissionResult, SubmissionSaved, SubmissionSecret,
+    SubmissionStatusItem,
 };
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -220,6 +221,7 @@ pub enum RuntimeOperation {
     ReportCredentialStale,
     SubmitEntry,
     SubmissionStatus,
+    TrustApprovers,
     PairVaults,
     VerifyIdentity,
     DeleteProfile,
@@ -241,6 +243,7 @@ impl RuntimeOperation {
             Self::ReportCredentialStale => "report_credential_stale",
             Self::SubmitEntry => "submit_entry",
             Self::SubmissionStatus => "submission_status",
+            Self::TrustApprovers => "trust_approvers",
             Self::PairVaults => "pair_vaults",
             Self::VerifyIdentity => "verify_identity",
             Self::DeleteProfile => "delete_profile",
@@ -262,6 +265,7 @@ impl RuntimeOperation {
             Self::ReportCredentialStale => AuthorizationPrompt::ReportCredentialStale,
             Self::SubmitEntry => AuthorizationPrompt::SubmitEntry,
             Self::SubmissionStatus => AuthorizationPrompt::Status,
+            Self::TrustApprovers => AuthorizationPrompt::IdentityManagement,
             Self::VerifyIdentity | Self::UpgradeSecurity | Self::PairVaults => {
                 AuthorizationPrompt::IdentityManagement
             }
@@ -353,6 +357,11 @@ pub enum OperationDescriptor {
         surface: InvocationSurface,
         submission_id: Option<String>,
     },
+    /// Explicit operator re-trust of a re-created approver key. It has no invocation surface
+    /// because only the interactive CLI constructs it; MCP has no path to it.
+    TrustApprovers {
+        signing_key_fingerprint: String,
+    },
     /// Inject of the Agent's own pending submission; authorized as an Inject operation.
     InjectSubmission {
         surface: InvocationSurface,
@@ -394,6 +403,7 @@ impl OperationDescriptor {
             Self::ReportCredentialStale { .. } => RuntimeOperation::ReportCredentialStale,
             Self::SubmitEntry { .. } => RuntimeOperation::SubmitEntry,
             Self::SubmissionStatus { .. } => RuntimeOperation::SubmissionStatus,
+            Self::TrustApprovers { .. } => RuntimeOperation::TrustApprovers,
             Self::InjectSubmission { .. } => RuntimeOperation::InjectCredential,
             Self::PairVaults { .. } => RuntimeOperation::PairVaults,
             Self::VerifyIdentity => RuntimeOperation::VerifyIdentity,
@@ -531,6 +541,9 @@ impl OperationDescriptor {
                 encoder.surface(*surface);
                 encoder.optional(submission_id.as_deref());
             }
+            Self::TrustApprovers {
+                signing_key_fingerprint,
+            } => encoder.field(signing_key_fingerprint.as_bytes()),
             Self::InjectSubmission {
                 surface,
                 submission_id,
@@ -6450,6 +6463,10 @@ pub enum RuntimeError {
     InvalidScriptExecutionPackage,
     #[error("Agent Submission verification failed: {0}")]
     Submission(#[from] palladin_crypto::SubmissionError),
+    #[error(
+        "no re-created organization approver key with this fingerprint awaits re-trust; nothing was changed"
+    )]
+    ApproverReintroductionNotPending,
     #[error("the organization approver key is not bound to the pinned local trust anchor")]
     UntrustedApproverManifest,
     #[error(

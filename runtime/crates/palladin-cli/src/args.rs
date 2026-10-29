@@ -295,6 +295,15 @@ pub enum SubmitCommand {
     New(SubmitNewArgs),
     /// Propose a new secret for an Entry this Agent holds an active grant for.
     Update(SubmitUpdateArgs),
+    /// Re-trust a re-created organization approver key after verifying its fingerprint.
+    TrustApprovers {
+        /// Signing key fingerprint shown in the approver-key-untrusted hint.
+        #[arg(long)]
+        fingerprint: String,
+        /// Required acknowledgement that the fingerprint was verified with an administrator.
+        #[arg(long)]
+        confirm: bool,
+    },
     /// Show this Agent's submissions and re-wrap pending ones after an approver key rotation.
     Status {
         submission_id: Option<String>,
@@ -612,6 +621,31 @@ mod submit_tests {
             parse(&[&update[..], &["--type", "key"]].concat()).is_err(),
             "the entry type comes from the submission target"
         );
+    }
+
+    #[test]
+    fn approver_re_trust_requires_an_explicit_fingerprint() {
+        let parsed = parse(&[
+            "submit",
+            "trust-approvers",
+            "--fingerprint",
+            "CddpQldl…ksknV0",
+            "--confirm",
+        ])
+        .expect("re-trust");
+        let Commands::Submit {
+            command:
+                SubmitCommand::TrustApprovers {
+                    fingerprint,
+                    confirm,
+                },
+        } = parsed.command
+        else {
+            panic!("trust-approvers");
+        };
+        assert_eq!(fingerprint, "CddpQldl…ksknV0");
+        assert!(confirm);
+        assert!(parse(&["submit", "trust-approvers", "--confirm"]).is_err());
     }
 
     #[test]

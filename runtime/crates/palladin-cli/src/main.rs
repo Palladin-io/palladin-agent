@@ -19,9 +19,10 @@ use palladin_cli::browser::{
 };
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
-    render_agent_list, render_connect, render_init, render_legacy_cleanup, render_legacy_cutover,
-    render_live_flow, render_profile_created, render_report_stale, render_search_human,
-    render_security_upgrade, render_status, render_submission_result, render_submission_status,
+    render_agent_list, render_approver_retrust, render_connect, render_init, render_legacy_cleanup,
+    render_legacy_cutover, render_live_flow, render_profile_created, render_report_stale,
+    render_search_human, render_security_upgrade, render_status, render_submission_result,
+    render_submission_status,
 };
 use palladin_cli::{
     CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
@@ -1653,6 +1654,10 @@ async fn submit(
             submission_id,
             json,
         } => submission_status(service, profile, submission_id, json).await,
+        SubmitCommand::TrustApprovers {
+            fingerprint,
+            confirm,
+        } => trust_approvers(service, profile, &fingerprint, confirm).await,
     }
 }
 
@@ -1673,6 +1678,7 @@ async fn submit_entry(
                 kind,
                 outcome: Err(code),
                 submission_id: None,
+                hints: Vec::new(),
             },
             json,
         ))
@@ -1741,6 +1747,38 @@ async fn submission_status(
     };
     match session.submission_status(submission_id.as_deref()).await {
         Ok(items) => emit_output(render_submission_status(&items, json)),
+        Err(error) => fail(&error.to_string()),
+    }
+}
+
+async fn trust_approvers(
+    service: &RuntimeService<RuntimeSecretStore>,
+    profile: Option<&str>,
+    fingerprint: &str,
+    confirm: bool,
+) -> ExitCode {
+    if !confirm {
+        return fail(
+            "re-trusting an organization approver key requires --confirm after verifying its fingerprint with a Palladin administrator; nothing was changed",
+        );
+    }
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let descriptor = OperationDescriptor::TrustApprovers {
+        signing_key_fingerprint: fingerprint.to_owned(),
+    };
+    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
+    match session.trust_approvers(fingerprint).await {
+        Ok(key) => emit_output(render_approver_retrust(&key)),
         Err(error) => fail(&error.to_string()),
     }
 }

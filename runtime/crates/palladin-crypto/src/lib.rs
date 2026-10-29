@@ -60,8 +60,9 @@ pub use submission::{
     AgentEntrySubmission, OpenedSubmission, OrganizationApproverManifest, PinnedApproverTrust,
     SubmissionAuthority, SubmissionBuildContext, SubmissionContent, SubmissionEntryType,
     SubmissionError, SubmissionIdentity, SubmissionKind, SubmissionRecipient, SubmissionTarget,
-    build_agent_submission, open_agent_submission, rewrap_agent_submission,
-    verify_approver_manifest_chain, verify_rewrap,
+    approver_reintroduction_candidate, build_agent_submission, open_agent_submission,
+    reintroduce_approver_manifest, rewrap_agent_submission, verify_approver_manifest_chain,
+    verify_rewrap,
 };
 pub use suite::{
     CryptoSuiteRegistry, EncodedSuitePayload, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose,

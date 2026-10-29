@@ -73,6 +73,19 @@
       "argv": [
         "--id",
         "codex",
+        "submit",
+        "trust-approvers",
+        "--fingerprint",
+        "CddpQldl…ksknV0",
+        "--confirm"
+      ],
+      "name": "submit",
+      "secretOutput": false
+    },
+    {
+      "argv": [
+        "--id",
+        "codex",
         "inject",
         "--submission",
         "0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d"

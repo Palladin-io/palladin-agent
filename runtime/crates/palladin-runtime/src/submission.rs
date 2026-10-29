@@ -10,8 +10,8 @@ use palladin_crypto::{
     AgentEntrySubmission, OrganizationApproverManifest, PinnedApproverTrust, SubmissionAuthority,
     SubmissionBuildContext, SubmissionContent, SubmissionEntryType, SubmissionError,
     SubmissionIdentity, SubmissionKind, SubmissionRecipient, SubmissionTarget,
-    build_agent_submission, open_agent_submission, rewrap_agent_submission,
-    verify_approver_manifest_chain,
+    approver_reintroduction_candidate, build_agent_submission, open_agent_submission,
+    reintroduce_approver_manifest, rewrap_agent_submission, verify_approver_manifest_chain,
 };
 use secrecy::SecretString;
 use sha2::{Digest, Sha256};
@@ -120,6 +120,24 @@ pub struct SubmissionResult {
     pub outcome: Result<SubmissionSaved, SubmissionNotSaved>,
     /// Present whenever an ID was chosen, including an unconfirmed attempt the operator can check.
     pub submission_id: Option<String>,
+    /// Value-free operator guidance; never part of the contract `agentResult`.
+    pub hints: Vec<SubmissionHint>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SubmissionHint {
+    /// The approver key was re-created without continuity; only the operator can re-trust it.
+    ApproverReintroduction { signing_key_fingerprint: String },
+    /// A saved credential update has no username, which login autofill may need.
+    UsernameNeededForAutofill,
+}
+
+/// The approver key pinned by an explicit operator re-trust.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReTrustedApproverKey {
+    pub key_version: u32,
+    pub manifest_revision: u64,
+    pub signing_key_fingerprint: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -148,7 +166,31 @@ struct TrustedApprover {
 
 enum Failure {
     NotSaved(SubmissionNotSaved),
+    Reintroduction([u8; 32]),
     Runtime(RuntimeError),
+}
+
+impl Failure {
+    fn into_result(self, kind: SubmissionKind) -> Result<SubmissionResult, RuntimeError> {
+        let (code, hints) = match self {
+            Self::NotSaved(code) => (code, Vec::new()),
+            Self::Reintroduction(fingerprint) => (
+                SubmissionNotSaved::ApproverKeyUntrusted,
+                vec![SubmissionHint::ApproverReintroduction {
+                    signing_key_fingerprint: shorten_identifier(
+                        &URL_SAFE_NO_PAD.encode(fingerprint),
+                    ),
+                }],
+            ),
+            Self::Runtime(error) => return Err(error),
+        };
+        Ok(SubmissionResult {
+            kind,
+            outcome: Err(code),
+            submission_id: None,
+            hints,
+        })
+    }
 }
 
 impl From<RuntimeError> for Failure {
@@ -174,6 +216,7 @@ impl RuntimeSession<'_> {
             kind,
             outcome: Err(code),
             submission_id: submission_id.map(Uuid::to_string),
+            hints: Vec::new(),
         };
         if let SubmissionSecret::Generate(policy) = &secret
             && policy.validate().is_err()
@@ -189,8 +232,7 @@ impl RuntimeSession<'_> {
         let submission_id = random_uuid()?;
         let approver = match self.trusted_approver().await {
             Ok(approver) => approver,
-            Err(Failure::NotSaved(code)) => return Ok(not_saved(code, None)),
-            Err(Failure::Runtime(error)) => return Err(error),
+            Err(failure) => return failure.into_result(kind),
         };
         self.ensure_authorized()?;
         let (target, entry_type) = match request.target {
@@ -281,8 +323,7 @@ impl RuntimeSession<'_> {
                         Ok(_) => {
                             return Ok(not_saved(SubmissionNotSaved::ApproverKeyUnavailable, None));
                         }
-                        Err(Failure::NotSaved(code)) => return Ok(not_saved(code, None)),
-                        Err(Failure::Runtime(error)) => return Err(error),
+                        Err(failure) => return failure.into_result(kind),
                     };
                     continue;
                 }
@@ -294,11 +335,20 @@ impl RuntimeSession<'_> {
                 }
                 Err(_) => self.reconcile(&submission_id).await,
             };
+            let username_missing = matches!(
+                &content,
+                SubmissionContent::Credential { username: None, .. }
+            );
             return Ok(match outcome {
                 Ok(saved) => SubmissionResult {
                     kind,
                     outcome: Ok(saved),
                     submission_id: Some(submission_id.to_string()),
+                    hints: if username_missing {
+                        vec![SubmissionHint::UsernameNeededForAutofill]
+                    } else {
+                        Vec::new()
+                    },
                 },
                 Err(_) => not_saved(SubmissionNotSaved::ServiceUnavailable, Some(&submission_id)),
             });
@@ -329,7 +379,9 @@ impl RuntimeSession<'_> {
                     approver = Some(self.trusted_approver().await.map_err(
                         |failure| match failure {
                             Failure::NotSaved(code) => code.code(),
-                            Failure::Runtime(_) => "approver-key-untrusted",
+                            Failure::Reintroduction(_) | Failure::Runtime(_) => {
+                                "approver-key-untrusted"
+                            }
                         },
                     ));
                 }
@@ -471,7 +523,17 @@ impl RuntimeSession<'_> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| Failure::NotSaved(SubmissionNotSaved::ApproverKeyUntrusted))?;
         let pin = verify_approver_manifest_chain(&manifests, organization_id, pinned.as_ref())
-            .map_err(|_| Failure::NotSaved(SubmissionNotSaved::ApproverKeyUntrusted))?
+            .map_err(|error| {
+                match (
+                    error,
+                    approver_reintroduction_candidate(&manifests, pinned.as_ref()),
+                ) {
+                    (SubmissionError::ManifestReintroductionRequired, Some(fingerprint)) => {
+                        Failure::Reintroduction(fingerprint)
+                    }
+                    _ => Failure::NotSaved(SubmissionNotSaved::ApproverKeyUntrusted),
+                }
+            })?
             .ok_or(Failure::NotSaved(
                 SubmissionNotSaved::ApproverKeyUnavailable,
             ))?;
@@ -482,6 +544,63 @@ impl RuntimeSession<'_> {
             pin,
             agent_key_version: response.agent_key_version,
             agent_access_epoch,
+        })
+    }
+
+    /// Explicit, CLI-only operator re-trust of a re-created approver key. It re-pins only the
+    /// manifest whose signing key fingerprint the operator confirmed, and only when ordinary
+    /// verification refused it as a re-bootstrap; it never runs implicitly.
+    pub async fn trust_approvers(
+        &self,
+        confirmed_fingerprint: &str,
+    ) -> Result<ReTrustedApproverKey, RuntimeError> {
+        self.begin_operation(RuntimeOperation::TrustApprovers)?;
+        let stored = self
+            .current_approver_anchor()
+            .ok_or(RuntimeError::ApproverReintroductionNotPending)?;
+        let pinned = pinned_approver(&stored)?;
+        let response = self
+            .api
+            .list_approver_manifests(Some(pinned.manifest_revision))
+            .await?;
+        self.ensure_authorized()?;
+        if response.organization_id != pinned.organization_id.to_string()
+            || self
+                .config
+                .vault_trust_anchors
+                .iter()
+                .any(|anchor| anchor.organization_id != response.organization_id)
+        {
+            return Err(RuntimeError::UntrustedApproverManifest);
+        }
+        let manifests = response
+            .manifests
+            .iter()
+            .map(OrganizationApproverManifest::from_value)
+            .collect::<Result<Vec<_>, _>>()?;
+        let fingerprint = manifests
+            .iter()
+            .map(OrganizationApproverManifest::signing_key_fingerprint)
+            .find(|fingerprint| {
+                let encoded = URL_SAFE_NO_PAD.encode(fingerprint);
+                confirmed_fingerprint == encoded
+                    || confirmed_fingerprint == shorten_identifier(&encoded)
+            })
+            .ok_or(RuntimeError::ApproverReintroductionNotPending)?;
+        let pin = reintroduce_approver_manifest(
+            &manifests,
+            pinned.organization_id,
+            &pinned,
+            &fingerprint,
+        )
+        .map_err(|_| RuntimeError::ApproverReintroductionNotPending)?;
+        self.persist_approver_pin(Some(&stored), &pin)?;
+        Ok(ReTrustedApproverKey {
+            key_version: pin.key_version,
+            manifest_revision: pin.manifest_revision,
+            signing_key_fingerprint: shorten_identifier(
+                &URL_SAFE_NO_PAD.encode(pin.signing_key_fingerprint()),
+            ),
         })
     }
 

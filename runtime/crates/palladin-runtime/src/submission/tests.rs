@@ -1280,3 +1280,217 @@ async fn update_target_failures_never_upload_or_deliver_a_credential() {
         "a target for another Entry is never used"
     );
 }
+
+/// The fixture's v2 key re-bootstrapped: same key, no continuity from v1.
+fn re_bootstrap_manifest() -> Value {
+    let mut manifest = manifest(1);
+    let object = manifest.as_object_mut().unwrap();
+    for field in [
+        "signature",
+        "continuitySignature",
+        "previousSigningKeyFingerprint",
+    ] {
+        object.remove(field);
+    }
+    let mut input = b"PLDNSUB1SIG:APPROVER-MANIFEST:\x00\x02".to_vec();
+    input.extend(serde_jcs::to_vec(&manifest).unwrap());
+    let signer = SigningKey::from_bytes(&seed("approverV2Ed25519Seed"));
+    manifest["signature"] = json!(URL_SAFE_NO_PAD.encode(signer.sign(&input).to_bytes()));
+    manifest
+}
+
+fn short_fingerprint(manifest: &Value) -> String {
+    palladin_core::terminal::shorten_identifier(manifest["signingKeyFingerprint"].as_str().unwrap())
+}
+
+#[tokio::test]
+async fn re_bootstrapped_approver_key_is_never_accepted_automatically() {
+    let (host, requests) = server(vec![respond(
+        200,
+        manifests_response(&[re_bootstrap_manifest()]),
+    )])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        Some(anchor_from_manifest(&manifest(0))),
+        None,
+    );
+    let result = session
+        .submit_entry(
+            new_credential_request(),
+            SubmissionSecret::Generate(policy()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.outcome,
+        Err(SubmissionNotSaved::ApproverKeyUntrusted)
+    );
+    assert_eq!(
+        result.hints,
+        vec![SubmissionHint::ApproverReintroduction {
+            signing_key_fingerprint: short_fingerprint(&re_bootstrap_manifest()),
+        }]
+    );
+    assert_eq!(requests.lock().unwrap().len(), 1, "no upload");
+    assert!(persistence.anchors.lock().unwrap().is_empty(), "no re-pin");
+}
+
+#[tokio::test]
+async fn explicit_re_trust_pins_only_the_confirmed_re_bootstrap() {
+    let v1 = anchor_from_manifest(&manifest(0));
+    let fingerprint = short_fingerprint(&re_bootstrap_manifest());
+
+    let rejected: [(Value, &str); 3] = [
+        (re_bootstrap_manifest(), "AAAAAAAA…AAAAAA"),
+        (manifest(1), fingerprint.as_str()),
+        (manifest(1), &short_fingerprint(&manifest(1))),
+    ];
+    for (offered, confirmed) in rejected {
+        let (host, _) = server(vec![respond(200, manifests_response(&[offered]))]).await;
+        let persistence = RecordingPersistence::default();
+        let session = test_session(
+            &host,
+            RuntimeOperation::TrustApprovers,
+            &persistence,
+            Some(v1.clone()),
+            None,
+        );
+        assert!(matches!(
+            session.trust_approvers(confirmed).await,
+            Err(RuntimeError::ApproverReintroductionNotPending)
+        ));
+        assert!(persistence.anchors.lock().unwrap().is_empty());
+    }
+
+    let (host, requests) = server(vec![respond(
+        200,
+        manifests_response(&[re_bootstrap_manifest()]),
+    )])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::TrustApprovers,
+        &persistence,
+        Some(v1.clone()),
+        None,
+    );
+    let key = session
+        .trust_approvers(&fingerprint)
+        .await
+        .expect("re-trust");
+    assert_eq!(key.key_version, 2);
+    assert_eq!(key.signing_key_fingerprint, fingerprint);
+    assert!(
+        requests.lock().unwrap()[0]
+            .starts_with("GET /api/agent/approver-manifests?afterRevision=1 ")
+    );
+    assert_eq!(
+        *persistence.anchors.lock().unwrap(),
+        vec![(Some(v1), anchor_from_manifest(&re_bootstrap_manifest()))]
+    );
+
+    let (host, requests) = server(Vec::new()).await;
+    let persistence = RecordingPersistence::default();
+    for (operation, anchor) in [
+        (RuntimeOperation::TrustApprovers, None),
+        (
+            RuntimeOperation::SubmitEntry,
+            Some(anchor_from_manifest(&manifest(0))),
+        ),
+    ] {
+        let session = test_session(&host, operation, &persistence, anchor, None);
+        assert!(matches!(
+            session.trust_approvers(&fingerprint).await,
+            Err(RuntimeError::ApproverReintroductionNotPending
+                | RuntimeError::OperationAuthorizationMismatch)
+        ));
+    }
+    assert!(
+        requests.lock().unwrap().is_empty(),
+        "first introduction is automatic and other operations cannot re-trust"
+    );
+}
+
+#[tokio::test]
+async fn status_after_re_trust_rewraps_pending_submissions_for_the_new_key() {
+    let stored = fixture()["submissions"][0].clone();
+    let (host, requests) = server(vec![
+        respond(
+            200,
+            json!({ "items": [summary(FIXTURE_SUBMISSION_ID, 1, 2, "pending")] }).to_string(),
+        ),
+        respond(200, manifests_response(&[])),
+        respond(200, stored.to_string()),
+        Box::new(|request| {
+            let body = request_body(request);
+            (
+                200,
+                json!({
+                    "submissionId": body["submissionId"],
+                    "state": "pending",
+                    "submissionRevision": body["submissionRevision"],
+                })
+                .to_string(),
+            )
+        }),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmissionStatus,
+        &persistence,
+        Some(anchor_from_manifest(&re_bootstrap_manifest())),
+        None,
+    );
+    let items = session.submission_status(None).await.expect("status");
+    assert_eq!(
+        items[0].rewrap,
+        RewrapOutcome::Rewrapped {
+            submission_revision: 2
+        }
+    );
+    let body = request_body(&requests.lock().unwrap()[3]);
+    assert_eq!(
+        approver_password(&body, "approverV2X25519Seed", 2),
+        "synthetic-Fixture-Only-9!q",
+        "the Agent's own DEK wrap re-encrypts nothing and regenerates no secret"
+    );
+}
+
+#[tokio::test]
+async fn update_without_username_carries_an_autofill_hint() {
+    for (username, expected) in [
+        (None, vec![SubmissionHint::UsernameNeededForAutofill]),
+        (Some("agent@example.invalid"), Vec::new()),
+    ] {
+        let (host, _) = server(vec![
+            respond(200, manifests_response(&[manifest(0)])),
+            respond(200, submission_target(1, "7")),
+            accept_post(),
+        ])
+        .await;
+        let persistence = RecordingPersistence::default();
+        let session = test_session(
+            &host,
+            RuntimeOperation::SubmitEntry,
+            &persistence,
+            None,
+            None,
+        );
+        let result = session
+            .submit_entry(
+                update_request(None, None, username),
+                SubmissionSecret::Generate(policy()),
+            )
+            .await
+            .unwrap();
+        assert!(result.outcome.is_ok());
+        assert_eq!(result.hints, expected);
+    }
+}

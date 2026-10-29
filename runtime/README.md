@@ -82,7 +82,11 @@ approver manifest chain. The first manifest is a trust-on-first-use introduction
 the authenticated backend, with the same boundary as a first Vault manifest; its
 organization must match every paired Vault anchor. Afterwards only manifests signed by
 the pinned key, or the next key version with a continuity signature by it, are
-accepted. The pin is bound into the signed profile and its secure-store checkpoint, so
+accepted. A re-bootstrapped key (the next key version without continuity) is never
+accepted automatically: submissions fail with `approver-key-untrusted` and print the new
+signing key fingerprint, and only the operator can re-pin that exact manifest with
+`palladin submit trust-approvers --fingerprint <fingerprint> --confirm`, a CLI-only
+command with no MCP path. The pin is bound into the signed profile and its secure-store checkpoint, so
 a rolled-back or substituted pin fails integrity verification.
 
 Each submission uses a fresh random DEK and nonce, an identity-bound AAD, and DEK

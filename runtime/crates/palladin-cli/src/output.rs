@@ -6,7 +6,9 @@ use palladin_core::terminal::{safe_terminal_text, shorten_identifier};
 use serde::Serialize;
 
 use crate::{CreatedProfile, LegacyCleanupOutcome, LegacyCutoverOutcome};
-use palladin_runtime::{RewrapOutcome, SubmissionResult, SubmissionStatusItem};
+use palladin_runtime::{
+    ReTrustedApproverKey, RewrapOutcome, SubmissionHint, SubmissionResult, SubmissionStatusItem,
+};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RenderedOutput {
@@ -386,9 +388,37 @@ pub fn render_submission_result(result: &SubmissionResult, json: bool) -> Render
     } else {
         output.stderr_line(format_args!("Error: {}", agent_result.message));
     }
+    // Hints are operator guidance on stderr; they never extend the contract result.
+    for hint in &result.hints {
+        match hint {
+            SubmissionHint::ApproverReintroduction {
+                signing_key_fingerprint,
+            } => {
+                let fingerprint = safe_terminal_text(signing_key_fingerprint);
+                output.stderr_line(format_args!(
+                    "The organization approver key was re-created without continuity from the pinned key. Verify signing key fingerprint {fingerprint} with a Palladin administrator, then run: palladin submit trust-approvers --fingerprint {fingerprint} --confirm"
+                ));
+            }
+            SubmissionHint::UsernameNeededForAutofill => output.stderr_line(
+                "Note: this update has no username. Login autofill with this submission needs one; resubmit with --username if the login form asks for it.",
+            ),
+        }
+    }
     if agent_result.code.is_some() {
         output.exit_code = 1;
     }
+    output
+}
+
+#[must_use]
+pub fn render_approver_retrust(key: &ReTrustedApproverKey) -> RenderedOutput {
+    let mut output = RenderedOutput::default();
+    output.stdout_line(format_args!(
+        "Re-trusted organization approver key {} (key version {}, manifest revision {}). Run palladin submit status to re-wrap pending submissions.",
+        safe_terminal_text(&key.signing_key_fingerprint),
+        key.key_version,
+        key.manifest_revision
+    ));
     output
 }
 
@@ -525,6 +555,8 @@ mod submission_tests {
     use palladin_crypto::SubmissionKind;
     use palladin_runtime::{SubmissionNotSaved, SubmissionSaved};
 
+    use super::render_approver_retrust;
+
     use super::*;
 
     const FORBIDDEN_FIELDS: [&str; 6] = [
@@ -544,6 +576,7 @@ mod submission_tests {
                 state: "pending".to_owned(),
             }),
             submission_id: Some("0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d".to_owned()),
+            hints: Vec::new(),
         };
         let human = render_submission_result(&result, false);
         assert_eq!(human.exit_code, 0);
@@ -575,6 +608,7 @@ mod submission_tests {
                 kind: SubmissionKind::New,
                 outcome: Err(code),
                 submission_id: None,
+                hints: Vec::new(),
             };
             let human = render_submission_result(&result, false);
             assert_eq!(human.exit_code, 1);
@@ -603,6 +637,7 @@ mod submission_tests {
             kind: SubmissionKind::New,
             outcome: Err(SubmissionNotSaved::ServiceUnavailable),
             submission_id: Some("0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d".to_owned()),
+            hints: Vec::new(),
         };
         let output = render_submission_result(&result, true);
         let value: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
@@ -615,6 +650,51 @@ mod submission_tests {
             "0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d"
         );
         assert_eq!(value["code"], "service-unavailable");
+    }
+
+    #[test]
+    fn hints_go_to_stderr_and_never_into_the_contract_result() {
+        let result = SubmissionResult {
+            kind: SubmissionKind::New,
+            outcome: Err(SubmissionNotSaved::ApproverKeyUntrusted),
+            submission_id: None,
+            hints: vec![SubmissionHint::ApproverReintroduction {
+                signing_key_fingerprint: "CddpQldl…ksknV0".to_owned(),
+            }],
+        };
+        for json in [false, true] {
+            let output = render_submission_result(&result, json);
+            assert!(output.stderr.contains(
+                "palladin submit trust-approvers --fingerprint CddpQldl…ksknV0 --confirm"
+            ));
+            assert!(!output.stdout.contains("trust-approvers"));
+        }
+        let updated = SubmissionResult {
+            kind: SubmissionKind::Update,
+            outcome: Ok(SubmissionSaved {
+                state: "pending".to_owned(),
+            }),
+            submission_id: Some("0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d".to_owned()),
+            hints: vec![SubmissionHint::UsernameNeededForAutofill],
+        };
+        let output = render_submission_result(&updated, true);
+        assert_eq!(output.exit_code, 0);
+        assert!(
+            output
+                .stderr
+                .contains("Login autofill with this submission needs one")
+        );
+        let value: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 5);
+        assert!(
+            render_approver_retrust(&ReTrustedApproverKey {
+                key_version: 2,
+                manifest_revision: 2,
+                signing_key_fingerprint: "CddpQldl…ksknV0".to_owned(),
+            })
+            .stdout
+            .contains("Run palladin submit status to re-wrap pending submissions")
+        );
     }
 
     #[test]

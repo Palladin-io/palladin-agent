@@ -126,6 +126,8 @@ pub enum SubmissionError {
     ManifestContinuityInvalid,
     #[error("approver manifest skips a key version")]
     ManifestKeyVersionSkip,
+    #[error("the approver key was re-created and requires explicit operator re-trust")]
+    ManifestReintroductionRequired,
     #[error("approver manifest revision does not advance")]
     ManifestRollback,
     #[error("submission re-wrap does not advance the revision by one")]
@@ -160,6 +162,7 @@ impl SubmissionError {
             Self::ManifestSignatureInvalid => "manifest-signature-invalid",
             Self::ManifestContinuityInvalid => "manifest-continuity-invalid",
             Self::ManifestKeyVersionSkip => "manifest-key-version-skip",
+            Self::ManifestReintroductionRequired => "manifest-reintroduction-required",
             Self::ManifestRollback => "manifest-rollback",
             Self::RevisionReplay => "revision-replay",
             Self::RewrapChangedPayload => "rewrap-changed-payload",
@@ -177,6 +180,7 @@ impl SubmissionError {
                 | Self::ManifestSignatureInvalid
                 | Self::ManifestContinuityInvalid
                 | Self::ManifestKeyVersionSkip
+                | Self::ManifestReintroductionRequired
                 | Self::ManifestRollback
         )
     }
@@ -834,6 +838,11 @@ impl OrganizationApproverManifest {
         })
     }
 
+    #[must_use]
+    pub const fn signing_key_fingerprint(&self) -> [u8; 32] {
+        self.signing_key_fingerprint
+    }
+
     fn verify_signature(
         &self,
         profile: SignatureProfile,
@@ -897,9 +906,10 @@ pub fn verify_approver_manifest_chain(
             &manifest.signing_public_key,
             SubmissionError::ManifestSignatureInvalid,
         )?;
-        let rotated = manifest.key_version > 1;
-        if rotated != manifest.continuity_signature.is_some()
-            || rotated != manifest.previous_signing_key_fingerprint.is_some()
+        // Continuity is present only on the manifest that introduces a key version by rotation.
+        let has_continuity = manifest.continuity_signature.is_some();
+        if has_continuity != manifest.previous_signing_key_fingerprint.is_some()
+            || (has_continuity && manifest.key_version == 1)
         {
             return Err(SubmissionError::ManifestContinuityInvalid);
         }
@@ -911,10 +921,13 @@ pub fn verify_approver_manifest_chain(
             return Err(SubmissionError::ManifestRollback);
         }
         if manifest.key_version == pin.key_version {
-            if manifest.signing_key_fingerprint != pin.signing_key_fingerprint() {
+            if manifest.signing_key_fingerprint != pin.signing_key_fingerprint() || has_continuity {
                 return Err(SubmissionError::ManifestSignatureInvalid);
             }
         } else if Some(manifest.key_version) == pin.key_version.checked_add(1) {
+            if !has_continuity {
+                return Err(SubmissionError::ManifestReintroductionRequired);
+            }
             let (Some(previous), Some(continuity)) = (
                 manifest.previous_signing_key_fingerprint,
                 manifest.continuity_signature.as_ref(),
@@ -936,6 +949,56 @@ pub fn verify_approver_manifest_chain(
         current = Some(manifest.pin());
     }
     Ok(current)
+}
+
+/// Explicit operator re-trust of a re-bootstrapped approver key.
+///
+/// Accepts only the manifest whose signing key fingerprint the operator confirmed, and only when
+/// it is exactly the re-bootstrap that ordinary verification refused: every earlier manifest
+/// still verifies against the pin and this one is `pinned + 1` without continuity. It then
+/// restarts trust-on-first-use from that manifest and verifies the remainder of the batch.
+pub fn reintroduce_approver_manifest(
+    manifests: &[OrganizationApproverManifest],
+    organization_id: Uuid,
+    pinned: &PinnedApproverTrust,
+    confirmed_signing_key_fingerprint: &[u8; 32],
+) -> Result<PinnedApproverTrust, SubmissionError> {
+    let index = manifests
+        .iter()
+        .position(|manifest| {
+            manifest.signing_key_fingerprint == *confirmed_signing_key_fingerprint
+                && manifest.continuity_signature.is_none()
+        })
+        .ok_or(SubmissionError::ManifestReintroductionRequired)?;
+    let before =
+        verify_approver_manifest_chain(&manifests[..index], organization_id, Some(pinned))?
+            .ok_or(SubmissionError::ManifestReintroductionRequired)?;
+    let candidate = &manifests[index];
+    if candidate.organization_id != organization_id
+        || candidate.manifest_revision <= before.manifest_revision
+        || Some(candidate.key_version) != before.key_version.checked_add(1)
+    {
+        return Err(SubmissionError::ManifestReintroductionRequired);
+    }
+    verify_approver_manifest_chain(&manifests[index..], organization_id, None)?
+        .ok_or(SubmissionError::ManifestReintroductionRequired)
+}
+
+/// Finds the re-bootstrap manifest that requires operator re-trust, for display only.
+#[must_use]
+pub fn approver_reintroduction_candidate(
+    manifests: &[OrganizationApproverManifest],
+    pinned: Option<&PinnedApproverTrust>,
+) -> Option<[u8; 32]> {
+    let pinned = pinned?;
+    manifests
+        .iter()
+        .find(|manifest| {
+            manifest.continuity_signature.is_none()
+                && manifest.key_version > pinned.key_version
+                && manifest.manifest_revision > pinned.manifest_revision
+        })
+        .map(|manifest| manifest.signing_key_fingerprint)
 }
 
 pub struct SubmissionBuildContext<'a> {
