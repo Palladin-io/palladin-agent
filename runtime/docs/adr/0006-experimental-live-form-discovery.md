@@ -57,11 +57,12 @@ Playwright/CDP credential channel.
 ## Test and rollback
 
 Use matching rebuilt debug extension and native host from the same worktree.
-For a source CLI command set the flag on the process before invoking the signed
-macOS development wrapper; for MCP set it in the MCP server environment. Do not
-change a profile, API host or default Agent to switch discovery mode.
+To select maps, set the flag on the CLI process before invoking the signed macOS
+development wrapper, or in the MCP server environment. Do not change a profile,
+API host or default Agent to switch discovery mode.
 
-Rollback: unset the flag or set `0` and restart the CLI/MCP process. This restores
+Rollback: set `PALLADIN_EXPERIMENTAL_LIVE_FORMS=0` explicitly and restart the
+CLI/MCP process; an unset flag keeps live discovery. This restores
 the original map/fallback path without deleting anything. Missing verified maps
 will again fail closed. Do not silently fall back to a map after a live write.
 
