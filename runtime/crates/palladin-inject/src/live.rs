@@ -5,8 +5,9 @@ use palladin_browser_bridge::InjectionFormDefinition;
 use palladin_browser_bridge::{InjectionControl, InjectionSubmitKind};
 pub(crate) fn enabled(value: Option<&str>) -> Result<bool, InjectServiceError> {
     match value {
-        None | Some("0") => Ok(false),
-        Some("1") => Ok(true),
+        // Live discovery is the default; `0` is the explicit rollback to verified maps.
+        None | Some("1") => Ok(true),
+        Some("0") => Ok(false),
         _ => Err(InjectServiceError::InvalidLiveFlag),
     }
 }
@@ -241,7 +242,7 @@ mod tests {
 
     #[test]
     fn rollout_flag_is_explicit_and_reversible() {
-        assert!(!enabled(None).unwrap());
+        assert!(enabled(None).unwrap());
         assert!(!enabled(Some("0")).unwrap());
         assert!(enabled(Some("1")).unwrap());
         assert!(enabled(Some("true")).is_err());

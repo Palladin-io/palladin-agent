@@ -2,9 +2,12 @@
 
 Status: local implementation behind a process feature flag; not a production release.
 
-`PALLADIN_EXPERIMENTAL_LIVE_FORMS=1` selects live discovery for the shared native
-CLI/MCP Inject service. Unset or `0` keeps verified Form Discovery Maps and the
-existing reviewed CLI fallback. Other values fail. An exact tab ID and current
+Live discovery is the default for the shared native CLI/MCP Inject service
+(2026-10-29): unset or `PALLADIN_EXPERIMENTAL_LIVE_FORMS=1` selects it. `0` is the
+explicit rollback to verified Form Discovery Maps and the existing reviewed CLI
+fallback. Other values fail. A per-process opt-in made CLI and MCP behave
+differently for the same Entry and tab, so identical logins succeeded or stopped
+at a missing map depending on how the process was launched. An exact tab ID and current
 HTTPS URL are required in live mode; `--form-json` is incompatible.
 
 In live mode the runtime does not look up/cache/refresh maps or record candidates.
@@ -54,11 +57,12 @@ Playwright/CDP credential channel.
 ## Test and rollback
 
 Use matching rebuilt debug extension and native host from the same worktree.
-For a source CLI command set the flag on the process before invoking the signed
-macOS development wrapper; for MCP set it in the MCP server environment. Do not
-change a profile, API host or default Agent to switch discovery mode.
+To select maps, set the flag on the CLI process before invoking the signed macOS
+development wrapper, or in the MCP server environment. Do not change a profile,
+API host or default Agent to switch discovery mode.
 
-Rollback: unset the flag or set `0` and restart the CLI/MCP process. This restores
+Rollback: set `PALLADIN_EXPERIMENTAL_LIVE_FORMS=0` explicitly and restart the
+CLI/MCP process; an unset flag keeps live discovery. This restores
 the original map/fallback path without deleting anything. Missing verified maps
 will again fail closed. Do not silently fall back to a map after a live write.
 

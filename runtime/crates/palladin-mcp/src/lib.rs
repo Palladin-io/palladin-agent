@@ -1915,7 +1915,7 @@ fn inject_failure(error: &InjectServiceError) -> ToolOutcome {
     let message = match error {
         InjectServiceError::InvalidLiveFlag => "PALLADIN_EXPERIMENTAL_LIVE_FORMS must be 0 or 1.",
         InjectServiceError::LiveTargetRequired => {
-            "Live discovery requires an exact target tab and URL, without a fallback form."
+            "Live discovery requires an exact target tab and URL, without a fallback form. Pass targetTabId and targetUrl from the browser framework."
         }
         InjectServiceError::LiveDiscoveryUnsupported => {
             "The running browser extension rejected live form discovery. Use matching updated runtime and extension versions."
