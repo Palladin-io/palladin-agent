@@ -17,6 +17,15 @@ pub enum SubmissionRejection {
     RevisionReplay,
     RewrapChangedPayload,
     SubmissionNotUsable,
+    InvalidInput,
+    UnsupportedEntryType,
+    InvalidAgentSignature,
+    ContextMismatch,
+    AgentNotActive,
+    AgentKeyMismatch,
+    ApproverKeyUnavailable,
+    SubmissionNotPending,
+    SubmissionNotFound,
 }
 
 impl SubmissionRejection {
@@ -29,6 +38,15 @@ impl SubmissionRejection {
             "revision-replay" => Self::RevisionReplay,
             "rewrap-changed-payload" => Self::RewrapChangedPayload,
             "submission-not-usable" => Self::SubmissionNotUsable,
+            "invalid-input" => Self::InvalidInput,
+            "unsupported-entry-type" => Self::UnsupportedEntryType,
+            "invalid-agent-signature" => Self::InvalidAgentSignature,
+            "context-mismatch" => Self::ContextMismatch,
+            "agent-not-active" => Self::AgentNotActive,
+            "agent-key-mismatch" => Self::AgentKeyMismatch,
+            "approver-key-unavailable" => Self::ApproverKeyUnavailable,
+            "submission-not-pending" => Self::SubmissionNotPending,
+            "submission-not-found" => Self::SubmissionNotFound,
             _ => return None,
         })
     }

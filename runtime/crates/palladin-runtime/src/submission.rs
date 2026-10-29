@@ -608,6 +608,8 @@ impl RuntimeSession<'_> {
                     SubmissionRejection::RevisionReplay => "revision-replay",
                     SubmissionRejection::RewrapChangedPayload => "rewrap-changed-payload",
                     SubmissionRejection::ApproverKeyRotated => "approver-key-rotated",
+                    SubmissionRejection::AgentKeyMismatch => "agent-key-mismatch",
+                    SubmissionRejection::SubmissionNotPending => "submission-not-pending",
                     _ => "service-unavailable",
                 })
             }
@@ -731,9 +733,21 @@ fn rejection_code(rejection: SubmissionRejection) -> SubmissionNotSaved {
         SubmissionRejection::UpdateNotGranted => SubmissionNotSaved::UpdateNotGranted,
         SubmissionRejection::SubmissionConflict => SubmissionNotSaved::SubmissionConflict,
         SubmissionRejection::ApproverKeyRotated => SubmissionNotSaved::ApproverKeyUnavailable,
-        SubmissionRejection::RevisionReplay
+        SubmissionRejection::InvalidInput => SubmissionNotSaved::InvalidInput,
+        SubmissionRejection::UnsupportedEntryType => SubmissionNotSaved::UnsupportedEntryType,
+        // A pending approver rotation, stale Agent key state or an inactive Agent are transient
+        // from the operator's view; the rest indicate a defect, never a reason to retry with
+        // another secret.
+        SubmissionRejection::ApproverKeyUnavailable
+        | SubmissionRejection::AgentKeyMismatch
+        | SubmissionRejection::AgentNotActive
+        | SubmissionRejection::InvalidAgentSignature
+        | SubmissionRejection::ContextMismatch
+        | SubmissionRejection::RevisionReplay
         | SubmissionRejection::RewrapChangedPayload
-        | SubmissionRejection::SubmissionNotUsable => SubmissionNotSaved::ServiceUnavailable,
+        | SubmissionRejection::SubmissionNotUsable
+        | SubmissionRejection::SubmissionNotPending
+        | SubmissionRejection::SubmissionNotFound => SubmissionNotSaved::ServiceUnavailable,
     }
 }
 

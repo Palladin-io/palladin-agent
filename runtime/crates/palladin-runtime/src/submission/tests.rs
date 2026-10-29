@@ -628,6 +628,27 @@ async fn backend_rejections_map_to_value_free_not_saved_codes() {
             SubmissionNotSaved::SubmissionConflict,
         ),
         (404, "no-approvers", SubmissionNotSaved::NoApprovers),
+        (400, "invalid-input", SubmissionNotSaved::InvalidInput),
+        (
+            400,
+            "unsupported-entry-type",
+            SubmissionNotSaved::UnsupportedEntryType,
+        ),
+        (
+            409,
+            "agent-key-mismatch",
+            SubmissionNotSaved::ServiceUnavailable,
+        ),
+        (
+            409,
+            "approver-key-unavailable",
+            SubmissionNotSaved::ServiceUnavailable,
+        ),
+        (
+            403,
+            "agent-not-active",
+            SubmissionNotSaved::ServiceUnavailable,
+        ),
     ] {
         let (host, _) = server(vec![
             respond(200, manifests_response(&[manifest(0)])),
