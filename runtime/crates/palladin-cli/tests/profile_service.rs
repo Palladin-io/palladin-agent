@@ -1935,7 +1935,6 @@ async fn generated_submission_pins_the_approver_in_signed_profile_and_never_reve
         .submit_entry(
             request,
             SubmissionSecret::Generate(PasswordPolicy::default()),
-            &tokio_util::sync::CancellationToken::new(),
         )
         .await
         .expect("submission");
@@ -2033,6 +2032,44 @@ async fn generated_submission_pins_the_approver_in_signed_profile_and_never_reve
     assert_eq!(anchor.key_version, 1);
     assert_eq!(anchor.manifest_revision, "1");
     drop(reopened);
+
+    let requests_before_update = requests.lock().expect("requests").len();
+    let update = SubmissionRequest {
+        target: SubmissionRequestTarget::Update {
+            vault_id: "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
+            entry_id: "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
+        },
+        entry_type: None,
+        label: None,
+        url: None,
+        username: None,
+    };
+    let update_session = service
+        .open_session(
+            Some("build"),
+            "fixture-host",
+            &operation_connection(),
+            OperationDescriptor::SubmitEntry {
+                surface: InvocationSurface::Cli,
+                request_digest: update.digest(true),
+            },
+        )
+        .expect("update session");
+    assert!(matches!(
+        update_session
+            .submit_entry(
+                update,
+                SubmissionSecret::Generate(PasswordPolicy::default())
+            )
+            .await,
+        Err(RuntimeError::SubmissionUpdateUnavailable)
+    ));
+    drop(update_session);
+    assert_eq!(
+        requests.lock().expect("requests").len(),
+        requests_before_update,
+        "an update never reaches credential delivery or creates an access request"
+    );
 
     let config_path =
         find_file_containing(root.path(), "approverTrustAnchor").expect("pinned config");

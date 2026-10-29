@@ -343,7 +343,6 @@ async fn generated_submission_is_pinned_encrypted_saved_and_never_leaks_the_secr
         .submit_entry(
             new_credential_request(),
             SubmissionSecret::Generate(policy()),
-            &CancellationToken::new(),
         )
         .await
         .expect("submission");
@@ -411,7 +410,6 @@ async fn unsatisfiable_policy_is_rejected_before_any_request() {
                 length: 2,
                 ..PasswordPolicy::default()
             }),
-            &CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -468,11 +466,7 @@ async fn invalid_new_requests_are_rejected_before_any_request() {
             None,
         );
         let result = session
-            .submit_entry(
-                request,
-                SubmissionSecret::Generate(policy()),
-                &CancellationToken::new(),
-            )
+            .submit_entry(request, SubmissionSecret::Generate(policy()))
             .await
             .unwrap();
         assert_eq!(
@@ -561,7 +555,6 @@ async fn approver_trust_failures_stop_before_secret_generation_or_upload() {
             .submit_entry(
                 new_credential_request(),
                 SubmissionSecret::Generate(policy()),
-                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -598,7 +591,6 @@ async fn rotated_approver_key_is_verified_by_continuity_and_the_submission_is_re
         .submit_entry(
             new_credential_request(),
             SubmissionSecret::Provided(SecretString::from("human-Provided-Secret-1".to_owned())),
-            &CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -653,7 +645,6 @@ async fn backend_rejections_map_to_value_free_not_saved_codes() {
             .submit_entry(
                 new_credential_request(),
                 SubmissionSecret::Generate(policy()),
-                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -701,7 +692,6 @@ async fn ambiguous_post_is_reconciled_by_id_and_never_resent() {
         .submit_entry(
             new_credential_request(),
             SubmissionSecret::Generate(policy()),
-            &CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -732,7 +722,6 @@ async fn ambiguous_post_is_reconciled_by_id_and_never_resent() {
         .submit_entry(
             new_credential_request(),
             SubmissionSecret::Generate(policy()),
-            &CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -758,8 +747,7 @@ async fn submit_requires_its_exact_operation_authorization() {
         session
             .submit_entry(
                 new_credential_request(),
-                SubmissionSecret::Generate(policy()),
-                &CancellationToken::new()
+                SubmissionSecret::Generate(policy())
             )
             .await,
         Err(RuntimeError::OperationAuthorizationMismatch)
@@ -970,4 +958,61 @@ fn request_digest_binds_every_non_secret_field_and_the_secret_source() {
     ] {
         assert_ne!(changed.digest(true), digest, "{changed:?}");
     }
+}
+
+#[tokio::test]
+async fn update_fails_closed_without_a_credential_delivery_or_access_request() {
+    // A mocked API that would answer every path the old update flow used; none may be called.
+    let (host, requests) = server(vec![
+        respond(200, manifests_response(&[manifest(0)])),
+        respond(
+            200,
+            json!({ "agentAccessEpoch": 4, "items": [] }).to_string(),
+        ),
+        respond(
+            202,
+            json!({ "status": "pending", "grantId": FIXTURE_SUBMISSION_ID }).to_string(),
+        ),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        Some(anchor_from_manifest(&manifest(0))),
+        Some(ORGANIZATION_ID),
+    );
+    let request = SubmissionRequest {
+        target: SubmissionRequestTarget::Update {
+            vault_id: "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
+            entry_id: "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
+        },
+        entry_type: None,
+        label: None,
+        url: None,
+        username: None,
+    };
+    for secret in [
+        SubmissionSecret::Generate(policy()),
+        SubmissionSecret::Provided(SecretString::from("human-Provided-Secret-1".to_owned())),
+    ] {
+        let session = test_session(
+            &host,
+            RuntimeOperation::SubmitEntry,
+            &persistence,
+            Some(anchor_from_manifest(&manifest(0))),
+            Some(ORGANIZATION_ID),
+        );
+        assert!(matches!(
+            session.submit_entry(request, secret).await,
+            Err(RuntimeError::SubmissionUpdateUnavailable)
+        ));
+    }
+    drop(session);
+    assert!(
+        requests.lock().unwrap().is_empty(),
+        "no API request of any kind"
+    );
+    assert!(persistence.anchors.lock().unwrap().is_empty());
 }

@@ -1637,17 +1637,16 @@ async fn submit(
             submit_entry(service, profile, request, &args.secret, args.json).await
         }
         SubmitCommand::Update(args) => {
-            let request = SubmissionRequest {
-                target: SubmissionRequestTarget::Update {
-                    vault_id: &args.vault,
-                    entry_id: &args.entry,
+            // Fail closed before prompting, opening the profile or contacting Palladin.
+            eprintln!("Error: {}", RuntimeError::SubmissionUpdateUnavailable);
+            emit_output(render_submission_result(
+                &SubmissionResult {
+                    kind: SubmissionKind::Update,
+                    outcome: Err(SubmissionNotSaved::ServiceUnavailable),
+                    submission_id: None,
                 },
-                entry_type: None,
-                label: None,
-                url: None,
-                username: None,
-            };
-            submit_entry(service, profile, request, &args.secret, args.json).await
+                args.json,
+            ))
         }
         SubmitCommand::Status {
             submission_id,
@@ -1705,8 +1704,7 @@ async fn submit_entry(
         Ok(session) => session,
         Err(error) => return fail(&error.to_string()),
     };
-    let cancellation = signal_cancellation_token();
-    match session.submit_entry(request, secret, &cancellation).await {
+    match session.submit_entry(request, secret).await {
         Ok(result) => emit_output(render_submission_result(&result, json)),
         Err(RuntimeError::UntrustedApproverManifest) => {
             not_saved(SubmissionNotSaved::ApproverKeyUntrusted)

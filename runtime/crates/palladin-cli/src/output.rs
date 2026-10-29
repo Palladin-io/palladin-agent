@@ -6,7 +6,7 @@ use palladin_core::terminal::{safe_terminal_text, shorten_identifier};
 use serde::Serialize;
 
 use crate::{CreatedProfile, LegacyCleanupOutcome, LegacyCutoverOutcome};
-use palladin_runtime::{RewrapOutcome, SubmissionNotSaved, SubmissionResult, SubmissionStatusItem};
+use palladin_runtime::{RewrapOutcome, SubmissionResult, SubmissionStatusItem};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RenderedOutput {
@@ -358,16 +358,10 @@ impl AgentSubmissionResult {
                 }
             }
             Err(code) => {
-                let message = match (code, result.submission_id.as_deref()) {
-                    (SubmissionNotSaved::ServiceUnavailable, Some(id)) => format!(
-                        "Palladin did not confirm that the {kind} submission ({id}) was saved ({}). Run palladin submit status {id} before retrying; do not generate another password.",
-                        code.code()
-                    ),
-                    _ => format!(
-                        "The {kind} submission was NOT saved to Palladin ({}). Nothing was submitted to any site.",
-                        code.code()
-                    ),
-                };
+                let message = format!(
+                    "Not saved to Palladin ({}). Nothing was submitted to any site.",
+                    code.code()
+                );
                 Self {
                     submission_status: "not-saved",
                     site_status: "not-attempted",
@@ -529,7 +523,7 @@ pub fn render_submission_status(items: &[SubmissionStatusItem], json: bool) -> R
 #[cfg(test)]
 mod submission_tests {
     use palladin_crypto::SubmissionKind;
-    use palladin_runtime::SubmissionSaved;
+    use palladin_runtime::{SubmissionNotSaved, SubmissionSaved};
 
     use super::*;
 
@@ -585,7 +579,13 @@ mod submission_tests {
             let human = render_submission_result(&result, false);
             assert_eq!(human.exit_code, 1);
             assert!(human.stdout.is_empty());
-            assert!(human.stderr.contains("NOT saved"));
+            assert_eq!(
+                human.stderr,
+                format!(
+                    "Error: Not saved to Palladin ({}). Nothing was submitted to any site.\n",
+                    code.code()
+                )
+            );
             let json = render_submission_result(&result, true);
             assert_eq!(json.exit_code, 1);
             let value: serde_json::Value = serde_json::from_str(&json.stdout).unwrap();
@@ -598,16 +598,23 @@ mod submission_tests {
     }
 
     #[test]
-    fn unconfirmed_save_points_to_status_instead_of_another_password() {
+    fn not_saved_uses_the_contract_message_and_keeps_an_unconfirmed_id() {
         let result = SubmissionResult {
             kind: SubmissionKind::New,
             outcome: Err(SubmissionNotSaved::ServiceUnavailable),
             submission_id: Some("0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d".to_owned()),
         };
-        let output = render_submission_result(&result, false);
-        assert!(output.stderr.contains(
-            "palladin submit status 0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d before retrying; do not generate another password"
-        ));
+        let output = render_submission_result(&result, true);
+        let value: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(
+            value["message"],
+            "Not saved to Palladin (service-unavailable). Nothing was submitted to any site."
+        );
+        assert_eq!(
+            value["submissionId"],
+            "0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d"
+        );
+        assert_eq!(value["code"], "service-unavailable");
     }
 
     #[test]

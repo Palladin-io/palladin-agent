@@ -2,14 +2,10 @@
 //! fresh pre-approval Inject delivery of the Agent's own submission.
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use palladin_api::{
-    AgentSubmissionSummary, AgentVisibleField, ApiError, CredentialMethod, SubmissionRejection,
-};
+use palladin_api::{AgentSubmissionSummary, AgentVisibleField, ApiError, SubmissionRejection};
 use palladin_core::public_store::PublicApproverTrustAnchor;
 use palladin_core::terminal::shorten_identifier;
 use palladin_credential::generator::{PasswordPolicy, PasswordPolicyError, generate_password};
-use palladin_credential::secret::parse_secret;
-use palladin_credential::wait::WaitOptions;
 use palladin_crypto::{
     AgentEntrySubmission, OrganizationApproverManifest, PinnedApproverTrust, SubmissionAuthority,
     SubmissionBuildContext, SubmissionContent, SubmissionEntryType, SubmissionError,
@@ -19,14 +15,10 @@ use palladin_crypto::{
 };
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
-use tokio_util::sync::CancellationToken;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-use crate::{
-    CredentialDelivery, CredentialDeliveryRequest, DeliveredCredential, RuntimeError,
-    RuntimeOperation, RuntimeSession,
-};
+use crate::{DeliveredCredential, RuntimeError, RuntimeOperation, RuntimeSession};
 
 const LABEL_MAX_BYTES: usize = 256;
 
@@ -165,14 +157,6 @@ impl From<RuntimeError> for Failure {
     }
 }
 
-struct UpdateBasis {
-    entry_type: SubmissionEntryType,
-    label: String,
-    username: Option<SecretString>,
-    url: Option<String>,
-    expected_entry_revision: u64,
-}
-
 impl RuntimeSession<'_> {
     /// Builds and saves one submission. Approver-key trust is established before any secret is
     /// generated or encrypted; nothing secret is persisted or returned.
@@ -180,7 +164,6 @@ impl RuntimeSession<'_> {
         &self,
         request: SubmissionRequest<'_>,
         secret: SubmissionSecret,
-        cancellation: &CancellationToken,
     ) -> Result<SubmissionResult, RuntimeError> {
         self.begin_operation(RuntimeOperation::SubmitEntry)?;
         let kind = match request.target {
@@ -203,6 +186,12 @@ impl RuntimeSession<'_> {
         if let Err(code) = validate_request(&request) {
             return Ok(not_saved(code, None));
         }
+        // The only current source of the granted Entry revision is a credential delivery, which
+        // creates an access request without a grant and consumes a grant use. Neither is an
+        // acceptable side effect of proposing an update, so updates fail closed before any request.
+        if kind == SubmissionKind::Update {
+            return Err(RuntimeError::SubmissionUpdateUnavailable);
+        }
         let submission_id = random_uuid()?;
         let approver = match self.trusted_approver().await {
             Ok(approver) => approver,
@@ -210,29 +199,15 @@ impl RuntimeSession<'_> {
             Err(Failure::Runtime(error)) => return Err(error),
         };
         self.ensure_authorized()?;
-        let (target, basis) = match request.target {
-            SubmissionRequestTarget::New { suggested_vault_id } => (
-                SubmissionTarget::New {
-                    suggested_vault_id: suggested_vault_id.map(parse_uuid).transpose()?,
-                },
-                None,
-            ),
-            SubmissionRequestTarget::Update { vault_id, entry_id } => {
-                let basis = match self.update_basis(vault_id, entry_id, cancellation).await {
-                    Ok(basis) => basis,
-                    Err(Failure::NotSaved(code)) => return Ok(not_saved(code, None)),
-                    Err(Failure::Runtime(error)) => return Err(error),
-                };
-                (
-                    SubmissionTarget::Update {
-                        vault_id: parse_uuid(vault_id)?,
-                        entry_id: parse_uuid(entry_id)?,
-                        expected_entry_revision: basis.expected_entry_revision,
-                    },
-                    Some(basis),
-                )
-            }
+        let SubmissionRequestTarget::New { suggested_vault_id } = request.target else {
+            unreachable!("update submissions fail closed before approver trust");
         };
+        let target = SubmissionTarget::New {
+            suggested_vault_id: suggested_vault_id.map(parse_uuid).transpose()?,
+        };
+        let entry_type = request
+            .entry_type
+            .ok_or(RuntimeError::Submission(SubmissionError::InvalidInput))?;
         let secret = match secret {
             SubmissionSecret::Generate(policy) => match generate_password(&policy) {
                 Ok(secret) => secret,
@@ -248,30 +223,15 @@ impl RuntimeSession<'_> {
             },
             SubmissionSecret::Provided(secret) => secret,
         };
-        let (entry_type, label, content) = match basis {
-            Some(basis) => {
-                let content = content_for(basis.entry_type, basis.username, basis.url, secret);
-                (basis.entry_type, basis.label, content)
-            }
-            None => {
-                let entry_type = request
-                    .entry_type
-                    .ok_or(RuntimeError::Submission(SubmissionError::InvalidInput))?;
-                let content = content_for(
-                    entry_type,
-                    request
-                        .username
-                        .map(|value| SecretString::from(value.to_owned())),
-                    request.url.map(str::to_owned),
-                    secret,
-                );
-                (
-                    entry_type,
-                    normalize_label(request.label.unwrap_or_default()),
-                    content,
-                )
-            }
-        };
+        let label = normalize_label(request.label.unwrap_or_default());
+        let content = content_for(
+            entry_type,
+            request
+                .username
+                .map(|value| SecretString::from(value.to_owned())),
+            request.url.map(str::to_owned),
+            secret,
+        );
         let Some(content) = content else {
             return Ok(not_saved(SubmissionNotSaved::InvalidInput, None));
         };
@@ -554,65 +514,6 @@ impl RuntimeSession<'_> {
             *current = Some(next);
         }
         self.ensure_authorized()
-    }
-
-    async fn update_basis(
-        &self,
-        vault_id: &str,
-        entry_id: &str,
-        cancellation: &CancellationToken,
-    ) -> Result<UpdateBasis, Failure> {
-        self.sync_local_discovery().await?;
-        let (entry_type, label) = {
-            let index = self.discovery.lock().await;
-            let Some((entry_type, label)) = index.entry_summary(vault_id, entry_id) else {
-                return Err(Failure::NotSaved(SubmissionNotSaved::UpdateNotGranted));
-            };
-            let entry_type = match entry_type {
-                "credential" => SubmissionEntryType::Credential,
-                "key" => SubmissionEntryType::Key,
-                _ => return Err(Failure::NotSaved(SubmissionNotSaved::UnsupportedEntryType)),
-            };
-            (entry_type, normalize_label(label))
-        };
-        // The current grant delivery is the authenticated source of the expected revision.
-        let delivery = self
-            .deliver_credential(
-                CredentialDeliveryRequest {
-                    vault_id,
-                    entry_id,
-                    reason: None,
-                    wait: WaitOptions {
-                        wait_ms: Some(0),
-                        poll_ms: None,
-                        progress: None,
-                    },
-                },
-                CredentialMethod::Inject,
-                cancellation,
-                |_| {},
-            )
-            .await?;
-        let delivered = match delivery {
-            CredentialDelivery::Granted(delivered) => delivered,
-            CredentialDelivery::NotGranted(_) => {
-                return Err(Failure::NotSaved(SubmissionNotSaved::UpdateNotGranted));
-            }
-        };
-        let parsed = parse_secret(delivered.expose_for_authorized_operation())
-            .map_err(|_| RuntimeError::InvalidCredentialPayload)?;
-        let expected_entry_revision = delivered.entry_revision();
-        drop(delivered);
-        Ok(UpdateBasis {
-            entry_type,
-            label,
-            url: parsed
-                .url
-                .as_ref()
-                .map(|url| url.expose_secret().to_owned()),
-            username: parsed.username,
-            expected_entry_revision,
-        })
     }
 
     async fn rewrap(

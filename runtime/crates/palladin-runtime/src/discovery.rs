@@ -724,17 +724,6 @@ impl LocalDiscoveryIndex {
         })
     }
 
-    /// Entry type and Agent label of a live, Vault-authenticated Discovery head.
-    pub(crate) fn entry_summary(&self, vault_id: &str, entry_id: &str) -> Option<(&str, &str)> {
-        let key = (vault_id.to_owned(), entry_id.to_owned());
-        self.entry_checkpoints
-            .get(&key)
-            .filter(|checkpoint| checkpoint.live)?;
-        self.entries
-            .get(&key)
-            .map(|entry| (entry.entry_type.as_str(), entry.label.as_str()))
-    }
-
     pub(crate) fn entry_type(&self, vault_id: &str, entry_id: &str) -> Option<&str> {
         let key = (vault_id.to_owned(), entry_id.to_owned());
         self.entry_checkpoints

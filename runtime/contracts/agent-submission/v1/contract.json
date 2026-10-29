@@ -196,6 +196,7 @@
   },
   "agentResult": {
     "fields": ["submissionStatus", "siteStatus", "submissionId", "submissionState", "message"],
+    "conditionalFields": { "code": "required when submissionStatus == not-saved; one of notSavedCodes; forbidden otherwise" },
     "submissionStatus": ["saved", "not-saved"],
     "notSavedCodes": ["no-approvers", "approver-key-unavailable", "approver-key-untrusted", "update-not-granted", "invalid-input", "unsupported-entry-type", "password-policy-unsatisfiable", "submission-conflict", "service-unavailable"],
     "siteStatus": ["not-attempted", "submitted-confirmed", "submitted-unconfirmed", "not-submitted"],
@@ -204,7 +205,8 @@
       "updateSavedAndSiteConfirmed": "Password changed on {host} and saved to Palladin as a pending update ({submissionId}). The vault entry still holds the previous password until a reviewer approves it in Palladin Inbox. Until then use this submission for inject.",
       "notSaved": "New password was NOT saved to Palladin; the form was not submitted. Nothing changed on {host}.",
       "savedSiteUnconfirmed": "Password saved to Palladin ({submissionId}), but the site did not confirm the change. Verify the account before retrying; do not generate another password.",
-      "savedWithoutSite": "Saved to Palladin as a pending {kind} submission ({submissionId}). A reviewer must approve it in Palladin Inbox."
+      "savedWithoutSite": "Saved to Palladin as a pending {kind} submission ({submissionId}). A reviewer must approve it in Palladin Inbox.",
+      "notSavedWithoutSite": "Not saved to Palladin ({code}). Nothing was submitted to any site."
     },
     "forbiddenFields": ["secret", "password", "value", "payload", "dek", "ciphertext"]
   },
