@@ -549,8 +549,10 @@ pub struct SubmissionAuthority<'a> {
 
 #[derive(Clone)]
 pub enum SubmissionContent {
+    /// For an update only the changed fields are present; the approver merges them into the
+    /// target revision. A new credential requires a username.
     Credential {
-        username: SecretString,
+        username: Option<SecretString>,
         password: SecretString,
         url: Option<String>,
         notes: Option<SecretString>,
@@ -590,12 +592,12 @@ impl SubmissionContent {
     #[must_use]
     pub fn username(&self) -> Option<&str> {
         match self {
-            Self::Credential { username, .. } => Some(username.expose_secret()),
+            Self::Credential { username, .. } => username.as_ref().map(ExposeSecret::expose_secret),
             Self::Key { .. } => None,
         }
     }
 
-    fn validate(&self) -> Result<(), SubmissionError> {
+    fn validate(&self, kind: SubmissionKind) -> Result<(), SubmissionError> {
         let (secret_ok, url, notes) = match self {
             Self::Credential {
                 username,
@@ -603,8 +605,10 @@ impl SubmissionContent {
                 url,
                 notes,
             } => (
-                bounded_text(username.expose_secret(), USERNAME_MAX_BYTES)
-                    && bounded_text(password.expose_secret(), PASSWORD_MAX_BYTES),
+                match username {
+                    Some(username) => bounded_text(username.expose_secret(), USERNAME_MAX_BYTES),
+                    None => kind == SubmissionKind::Update,
+                } && bounded_text(password.expose_secret(), PASSWORD_MAX_BYTES),
                 url,
                 notes,
             ),
@@ -637,7 +641,9 @@ impl SubmissionContent {
                 url,
                 notes,
             } => {
-                content.insert("username".into(), json!(username.expose_secret()));
+                if let Some(username) = username {
+                    content.insert("username".into(), json!(username.expose_secret()));
+                }
                 content.insert("password".into(), json!(password.expose_secret()));
                 (url, notes)
             }
@@ -655,13 +661,22 @@ impl SubmissionContent {
         Value::Object(content)
     }
 
-    fn from_value(entry_type: SubmissionEntryType, value: &Value) -> Result<Self, SubmissionError> {
+    fn from_value(
+        kind: SubmissionKind,
+        entry_type: SubmissionEntryType,
+        value: &Value,
+    ) -> Result<Self, SubmissionError> {
         let object = value.as_object().ok_or(SubmissionError::MissingField)?;
-        let required: &[&str] = match entry_type {
-            SubmissionEntryType::Credential => &["username", "password"],
-            SubmissionEntryType::Key => &["value"],
+        let (required, optional): (&[&str], &[&str]) = match (kind, entry_type) {
+            (SubmissionKind::New, SubmissionEntryType::Credential) => {
+                (&["username", "password"], &["url", "notes"])
+            }
+            (SubmissionKind::Update, SubmissionEntryType::Credential) => {
+                (&["password"], &["username", "url", "notes"])
+            }
+            (_, SubmissionEntryType::Key) => (&["value"], &["url", "notes"]),
         };
-        check_fields(object, required, &["url", "notes"])?;
+        check_fields(object, required, optional)?;
         let required_text = |key: &str| -> Result<SecretString, SubmissionError> {
             match object.get(key).and_then(Value::as_str) {
                 Some(value) if !value.is_empty() => Ok(SecretString::from(value.to_owned())),
@@ -679,7 +694,10 @@ impl SubmissionContent {
         let notes = optional_text("notes")?.map(SecretString::from);
         Ok(match entry_type {
             SubmissionEntryType::Credential => Self::Credential {
-                username: required_text("username")?,
+                username: object
+                    .contains_key("username")
+                    .then(|| required_text("username"))
+                    .transpose()?,
                 password: required_text("password")?,
                 url,
                 notes,
@@ -696,7 +714,8 @@ impl SubmissionContent {
 /// A verified and decrypted submission. Only produced by `open_agent_submission`.
 pub struct OpenedSubmission {
     pub identity: SubmissionIdentity,
-    pub label: String,
+    /// Required for a new Entry; for an update it proposes a rename.
+    pub label: Option<String>,
     pub content: SubmissionContent,
 }
 
@@ -932,7 +951,7 @@ pub struct SubmissionBuildContext<'a> {
 /// the pinned approver key, and signs the transport object with the Agent's Ed25519 key.
 pub fn build_agent_submission(
     context: &SubmissionBuildContext<'_>,
-    label: &str,
+    label: Option<&str>,
     content: &SubmissionContent,
 ) -> Result<AgentEntrySubmission, SubmissionError> {
     if context.identity.entry_type != content.entry_type() {
@@ -941,20 +960,28 @@ pub fn build_agent_submission(
     if context.identity.organization_id != context.approver.organization_id {
         return Err(SubmissionError::ContextMismatch);
     }
-    if label.is_empty()
-        || label.len() > LABEL_MAX_BYTES
-        || !unicode_normalization::is_nfc(label)
-        || label.chars().any(char::is_control)
-    {
+    let kind = context.identity.kind();
+    let label_valid = match label {
+        Some(label) => {
+            !label.is_empty()
+                && label.len() <= LABEL_MAX_BYTES
+                && unicode_normalization::is_nfc(label)
+                && !label.chars().any(char::is_control)
+        }
+        None => kind == SubmissionKind::Update,
+    };
+    if !label_valid {
         return Err(SubmissionError::InvalidInput);
     }
-    content.validate()?;
+    content.validate(kind)?;
     let mut payload = json!({
         "schema": PAYLOAD_SCHEMA,
         "identity": context.identity.to_value(),
-        "label": label,
         "content": content.to_value(),
     });
+    if let (Some(label), Value::Object(object)) = (label, &mut payload) {
+        object.insert("label".into(), json!(label));
+    }
     let plaintext = canonical_json(&payload).map(Zeroizing::new);
     zeroize_json(&mut payload);
     let plaintext = plaintext?;
@@ -1079,27 +1106,34 @@ fn parse_payload(
     let object = payload
         .as_object()
         .ok_or(SubmissionError::InvalidEncoding)?;
-    check_fields(object, &["schema", "identity", "label", "content"], &[])?;
+    check_fields(object, &["schema", "identity", "content"], &["label"])?;
     if text(object, "schema")? != PAYLOAD_SCHEMA {
         return Err(SubmissionError::UnsupportedContract);
     }
     let inner_identity = object
         .get("identity")
         .ok_or(SubmissionError::MissingField)?;
+    let label = match object.get("label") {
+        None if identity.kind() == SubmissionKind::New => {
+            return Err(SubmissionError::MissingField);
+        }
+        None => None,
+        Some(Value::String(label)) if !label.is_empty() && label.len() <= LABEL_MAX_BYTES => {
+            Some(label.clone())
+        }
+        Some(_) => return Err(SubmissionError::InvalidEncoding),
+    };
     let content = SubmissionContent::from_value(
+        identity.kind(),
         identity.entry_type,
         object.get("content").ok_or(SubmissionError::MissingField)?,
     )?;
     if canonical_json(inner_identity)? != identity.canonical()? {
         return Err(SubmissionError::IdentityMismatch);
     }
-    let label = text(object, "label")?;
-    if label.is_empty() || label.len() > LABEL_MAX_BYTES {
-        return Err(SubmissionError::InvalidEncoding);
-    }
     Ok(OpenedSubmission {
         identity: identity.clone(),
-        label: label.to_owned(),
+        label,
         content,
     })
 }

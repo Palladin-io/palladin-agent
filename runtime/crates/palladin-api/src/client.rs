@@ -23,7 +23,7 @@ mod submissions;
 
 pub use submissions::{
     AgentSubmissionList, AgentSubmissionSummary, ApproverManifestsResponse, SubmissionAccepted,
-    SubmissionDecision, SubmissionRejection,
+    SubmissionDecision, SubmissionRejection, SubmissionTargetResponse,
 };
 
 pub struct BrowserPairingClient<'a> {

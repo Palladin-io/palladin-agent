@@ -13,7 +13,7 @@ use palladin_crypto::{
     build_agent_submission, open_agent_submission, rewrap_agent_submission,
     verify_approver_manifest_chain,
 };
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
@@ -58,7 +58,7 @@ pub enum SubmissionRequestTarget<'a> {
     New {
         suggested_vault_id: Option<&'a str>,
     },
-    /// The label, type, username and URL come from authenticated Discovery and grant delivery.
+    /// The revision and entry type come from the side-effect-free submission target.
     Update {
         vault_id: &'a str,
         entry_id: &'a str,
@@ -186,12 +186,6 @@ impl RuntimeSession<'_> {
         if let Err(code) = validate_request(&request) {
             return Ok(not_saved(code, None));
         }
-        // The only current source of the granted Entry revision is a credential delivery, which
-        // creates an access request without a grant and consumes a grant use. Neither is an
-        // acceptable side effect of proposing an update, so updates fail closed before any request.
-        if kind == SubmissionKind::Update {
-            return Err(RuntimeError::SubmissionUpdateUnavailable);
-        }
         let submission_id = random_uuid()?;
         let approver = match self.trusted_approver().await {
             Ok(approver) => approver,
@@ -199,15 +193,22 @@ impl RuntimeSession<'_> {
             Err(Failure::Runtime(error)) => return Err(error),
         };
         self.ensure_authorized()?;
-        let SubmissionRequestTarget::New { suggested_vault_id } = request.target else {
-            unreachable!("update submissions fail closed before approver trust");
+        let (target, entry_type) = match request.target {
+            SubmissionRequestTarget::New { suggested_vault_id } => (
+                SubmissionTarget::New {
+                    suggested_vault_id: suggested_vault_id.map(parse_uuid).transpose()?,
+                },
+                request
+                    .entry_type
+                    .ok_or(RuntimeError::Submission(SubmissionError::InvalidInput))?,
+            ),
+            SubmissionRequestTarget::Update { vault_id, entry_id } => {
+                match self.update_target(vault_id, entry_id).await? {
+                    Ok(target) => target,
+                    Err(code) => return Ok(not_saved(code, None)),
+                }
+            }
         };
-        let target = SubmissionTarget::New {
-            suggested_vault_id: suggested_vault_id.map(parse_uuid).transpose()?,
-        };
-        let entry_type = request
-            .entry_type
-            .ok_or(RuntimeError::Submission(SubmissionError::InvalidInput))?;
         let secret = match secret {
             SubmissionSecret::Generate(policy) => match generate_password(&policy) {
                 Ok(secret) => secret,
@@ -223,17 +224,26 @@ impl RuntimeSession<'_> {
             },
             SubmissionSecret::Provided(secret) => secret,
         };
-        let label = normalize_label(request.label.unwrap_or_default());
-        let content = content_for(
-            entry_type,
-            request
-                .username
-                .map(|value| SecretString::from(value.to_owned())),
-            request.url.map(str::to_owned),
-            secret,
-        );
-        let Some(content) = content else {
-            return Ok(not_saved(SubmissionNotSaved::InvalidInput, None));
+        let label = request.label.map(normalize_label);
+        let username = request
+            .username
+            .map(|value| SecretString::from(value.to_owned()));
+        let url = request.url.map(str::to_owned);
+        let content = match entry_type {
+            SubmissionEntryType::Credential => SubmissionContent::Credential {
+                username,
+                password: secret,
+                url,
+                notes: None,
+            },
+            SubmissionEntryType::Key if username.is_none() => SubmissionContent::Key {
+                value: secret,
+                url,
+                notes: None,
+            },
+            SubmissionEntryType::Key => {
+                return Ok(not_saved(SubmissionNotSaved::InvalidInput, None));
+            }
         };
         let identity = SubmissionIdentity {
             organization_id: approver.pin.organization_id,
@@ -245,7 +255,7 @@ impl RuntimeSession<'_> {
         let mut approver = approver;
         let mut rotated = false;
         loop {
-            let submission = match self.build(&identity, &approver, &label, &content) {
+            let submission = match self.build(&identity, &approver, label.as_deref(), &content) {
                 Ok(submission) => submission,
                 Err(RuntimeError::Submission(SubmissionError::InvalidInput)) => {
                     return Ok(not_saved(SubmissionNotSaved::InvalidInput, None));
@@ -516,6 +526,47 @@ impl RuntimeSession<'_> {
         self.ensure_authorized()
     }
 
+    /// Reads the granted Entry's current revision and type from the side-effect-free
+    /// submission-target endpoint; never from a credential delivery.
+    async fn update_target(
+        &self,
+        vault_id: &str,
+        entry_id: &str,
+    ) -> Result<Result<(SubmissionTarget, SubmissionEntryType), SubmissionNotSaved>, RuntimeError>
+    {
+        let target = match self.api.get_submission_target(vault_id, entry_id).await {
+            Ok(target) => target,
+            Err(ApiError::SubmissionRejected(SubmissionRejection::UpdateNotGranted)) => {
+                return Ok(Err(SubmissionNotSaved::UpdateNotGranted));
+            }
+            Err(_) => return Ok(Err(SubmissionNotSaved::ServiceUnavailable)),
+        };
+        self.ensure_authorized()?;
+        // Bind the answer to the Entry the operator named, not to the response itself.
+        if target.vault_id != vault_id || target.entry_id != entry_id {
+            return Err(RuntimeError::Api(ApiError::InvalidResponse));
+        }
+        let entry_type = match target.entry_type {
+            0 => SubmissionEntryType::Key,
+            1 => SubmissionEntryType::Credential,
+            _ => return Ok(Err(SubmissionNotSaved::UnsupportedEntryType)),
+        };
+        let expected_entry_revision = target
+            .entry_revision
+            .parse::<u64>()
+            .ok()
+            .filter(|revision| revision.to_string() == target.entry_revision)
+            .ok_or(RuntimeError::Api(ApiError::InvalidResponse))?;
+        Ok(Ok((
+            SubmissionTarget::Update {
+                vault_id: parse_uuid(vault_id)?,
+                entry_id: parse_uuid(entry_id)?,
+                expected_entry_revision,
+            },
+            entry_type,
+        )))
+    }
+
     async fn rewrap(
         &self,
         summary: &AgentSubmissionSummary,
@@ -569,7 +620,7 @@ impl RuntimeSession<'_> {
         &self,
         identity: &SubmissionIdentity,
         approver: &TrustedApprover,
-        label: &str,
+        label: Option<&str>,
         content: &SubmissionContent,
     ) -> Result<AgentEntrySubmission, RuntimeError> {
         let signing = self
@@ -640,39 +691,28 @@ fn validate_request(request: &SubmissionRequest<'_>) -> Result<(), SubmissionNot
             }
         }
         SubmissionRequestTarget::Update { vault_id, entry_id } => {
+            // The entry type comes from the submission target; every other field is an optional
+            // change merged by the approver.
+            let label_valid = request.label.is_none_or(|label| {
+                let label = normalize_label(label);
+                !label.is_empty()
+                    && label.len() <= LABEL_MAX_BYTES
+                    && !label.chars().any(char::is_control)
+            });
             if parse_uuid(vault_id).is_err()
                 || parse_uuid(entry_id).is_err()
                 || request.entry_type.is_some()
-                || request.label.is_some()
-                || request.url.is_some()
-                || request.username.is_some()
+                || !label_valid
+                || !request.url.is_none_or(valid_https_url)
+                || !request
+                    .username
+                    .is_none_or(|value| !value.trim().is_empty() && value.len() <= 1024)
             {
                 return Err(SubmissionNotSaved::InvalidInput);
             }
         }
     }
     Ok(())
-}
-
-fn content_for(
-    entry_type: SubmissionEntryType,
-    username: Option<SecretString>,
-    url: Option<String>,
-    secret: SecretString,
-) -> Option<SubmissionContent> {
-    match entry_type {
-        SubmissionEntryType::Credential => Some(SubmissionContent::Credential {
-            username: username.filter(|value| !value.expose_secret().is_empty())?,
-            password: secret,
-            url,
-            notes: None,
-        }),
-        SubmissionEntryType::Key => Some(SubmissionContent::Key {
-            value: secret,
-            url,
-            notes: None,
-        }),
-    }
 }
 
 fn valid_https_url(value: &str) -> bool {

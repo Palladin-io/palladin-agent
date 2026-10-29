@@ -82,6 +82,16 @@ pub struct AgentSubmissionSummary {
     pub decided_at: Option<String>,
 }
 
+/// Side-effect-free view of an Entry covered by the Agent's active grant.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubmissionTargetResponse {
+    pub vault_id: String,
+    pub entry_id: String,
+    pub entry_type: u16,
+    pub entry_revision: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSubmissionList {
@@ -125,6 +135,21 @@ impl ApiClient {
             encode_component(submission_id)
         );
         let response = self.send(Method::PUT, &path, Some(body), &[]).await?;
+        decode(response, MAX_SUBMISSION_RESPONSE_BYTES).await
+    }
+
+    /// Never creates a grant or access request and never consumes a grant use.
+    pub async fn get_submission_target(
+        &self,
+        vault_id: &str,
+        entry_id: &str,
+    ) -> Result<SubmissionTargetResponse, ApiError> {
+        let path = format!(
+            "/api/agent/vaults/{}/entries/{}/submission-target",
+            encode_component(vault_id),
+            encode_component(entry_id)
+        );
+        let response = self.send(Method::GET, &path, None, &[]).await?;
         decode(response, MAX_SUBMISSION_RESPONSE_BYTES).await
     }
 

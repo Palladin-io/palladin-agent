@@ -6450,10 +6450,6 @@ pub enum RuntimeError {
     InvalidScriptExecutionPackage,
     #[error("Agent Submission verification failed: {0}")]
     Submission(#[from] palladin_crypto::SubmissionError),
-    #[error(
-        "submit update is unavailable: Palladin does not yet provide the granted Entry revision without creating an access request or consuming a grant use; nothing was requested or submitted"
-    )]
-    SubmissionUpdateUnavailable,
     #[error("the organization approver key is not bound to the pinned local trust anchor")]
     UntrustedApproverManifest,
     #[error(

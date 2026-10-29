@@ -187,10 +187,10 @@ fn opened_as_value(opened: &palladin_crypto::OpenedSubmission) -> Value {
             url,
             notes,
         } => {
-            let mut content = json!({
-                "username": username.expose_secret(),
-                "password": password.expose_secret(),
-            });
+            let mut content = json!({ "password": password.expose_secret() });
+            if let Some(username) = username {
+                content["username"] = json!(username.expose_secret());
+            }
             if let Some(url) = url {
                 content["url"] = json!(url);
             }
@@ -201,12 +201,15 @@ fn opened_as_value(opened: &palladin_crypto::OpenedSubmission) -> Value {
         }
         SubmissionContent::Key { .. } => panic!("fixture is a credential"),
     };
-    json!({
+    let mut payload = json!({
         "schema": "palladin.agent-submission-payload.v1",
         "identity": serde_json::from_slice::<Value>(&opened.identity.canonical().unwrap()).unwrap(),
-        "label": opened.label,
         "content": content,
-    })
+    });
+    if let Some(label) = &opened.label {
+        payload["label"] = json!(label);
+    }
+    payload
 }
 
 fn expect_error<T>(result: Result<T, SubmissionError>, expected: &str, case: &str) {
@@ -221,7 +224,7 @@ fn vendored_contract_files_match_pinned_digests() {
     let digest = |bytes: &str| hex::encode(Sha256::digest(bytes.as_bytes()));
     assert_eq!(
         digest(CONTRACT),
-        "e176a9377820e389315953b5750910d759e1662c3cccc3f759a23f5d187cb7e2"
+        "5a128f5e13c7178a2b09c16aa4481a81656e3b7fde7f56e687de1db00ef90403"
     );
     assert_eq!(
         digest(FIXTURE),
@@ -617,6 +620,13 @@ fn every_contract_negative_submission_case_fails_closed_with_its_code() {
             reencrypt(&|payload| payload["content"]["totp"] = json!("JBSWY3DPEHPK3PXP")),
             "unknown-field",
         ),
+        (
+            "credential update requires the new password",
+            reencrypt(&|payload| {
+                payload["content"] = json!({ "username": payload["content"]["username"] });
+            }),
+            "missing-field",
+        ),
     ] {
         for recipient in [
             approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_box),
@@ -629,6 +639,41 @@ fn every_contract_negative_submission_case_fails_closed_with_its_code() {
             );
         }
     }
+}
+
+#[test]
+fn update_payload_may_carry_only_the_changed_password() {
+    let fixture = fixture();
+    let keys = keys(&fixture);
+    let agent_key = agent_signing_public_key(&fixture);
+    let mut payload = fixture["expectedPlaintext"].clone();
+    payload.as_object_mut().unwrap().remove("label");
+    payload["content"] = json!({ "password": "only-the-new-Password-1" });
+    let parsed = parse(&fixture["submissions"][0]).unwrap();
+    let nonce = hex_24(
+        fixture["deterministicInputs"]["payloadNonce"]
+            .as_str()
+            .unwrap(),
+    );
+    let ciphertext = XChaCha20Poly1305::new(Key::from_slice(&seed(&fixture, "submissionDek")))
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &serde_jcs::to_vec(&payload).unwrap(),
+                aad: &parsed.identity.payload_aad().unwrap(),
+            },
+        )
+        .unwrap();
+    let mut submission = fixture["submissions"][0].clone();
+    submission["encodedPayload"] = json!(b64(&[nonce.as_slice(), &ciphertext].concat()));
+    let submission = parse(&resign(submission, &keys)).unwrap();
+    let opened = open_agent_submission(
+        &submission,
+        &approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_box),
+    )
+    .expect("a password-only update is valid");
+    assert!(opened.label.is_none());
+    assert_eq!(opened_as_value(&opened)["content"], payload["content"]);
 }
 
 fn hex_24(value: &str) -> [u8; 24] {
@@ -789,7 +834,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
         },
     };
     let content = SubmissionContent::Credential {
-        username: SecretString::from("builder@example.invalid".to_owned()),
+        username: Some(SecretString::from("builder@example.invalid".to_owned())),
         password: SecretString::from("builder-Synthetic-Only-7!".to_owned()),
         url: Some("https://example.invalid/login".to_owned()),
         notes: None,
@@ -803,7 +848,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
             agent_signing: &agent_signing,
             approver: &pin_v1,
         },
-        "Builder Account",
+        Some("Builder Account"),
         &content,
     )
     .expect("build");
@@ -830,7 +875,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
     .expect("approver opens");
     for opened in [&agent, &approver] {
         assert_eq!(opened.identity, identity);
-        assert_eq!(opened.label, "Builder Account");
+        assert_eq!(opened.label.as_deref(), Some("Builder Account"));
         assert_eq!(opened.content.username(), Some("builder@example.invalid"));
     }
 
@@ -887,7 +932,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
             agent_signing: &agent_signing,
             approver: &pin_v1,
         },
-        "Builder Account",
+        Some("Builder Account"),
         &content,
     )
     .unwrap();
@@ -919,12 +964,12 @@ fn builder_rejects_invalid_input_before_encryption() {
         },
     };
     let credential = |url: Option<&str>| SubmissionContent::Credential {
-        username: SecretString::from("user".to_owned()),
+        username: Some(SecretString::from("user".to_owned())),
         password: SecretString::from("password".to_owned()),
         url: url.map(str::to_owned),
         notes: None,
     };
-    let build = |identity: SubmissionIdentity, label: &str, content: &SubmissionContent| {
+    let build = |identity: SubmissionIdentity, label: Option<&str>, content: &SubmissionContent| {
         build_agent_submission(
             &SubmissionBuildContext {
                 identity,
@@ -941,24 +986,44 @@ fn builder_rejects_invalid_input_before_encryption() {
     let org = organization(&fixture);
     let cred = SubmissionEntryType::Credential;
     expect_error(
-        build(identity(org, cred), "", &credential(None)),
+        build(identity(org, cred), None, &credential(None)),
+        "invalid-input",
+        "a new Entry requires a label",
+    );
+    let anonymous = SubmissionContent::Credential {
+        username: None,
+        password: SecretString::from("password".to_owned()),
+        url: None,
+        notes: None,
+    };
+    expect_error(
+        build(identity(org, cred), Some("Label"), &anonymous),
+        "invalid-input",
+        "a new credential requires a username",
+    );
+    expect_error(
+        build(identity(org, cred), Some(""), &credential(None)),
         "invalid-input",
         "empty label",
     );
     expect_error(
-        build(identity(org, cred), &"x".repeat(257), &credential(None)),
+        build(
+            identity(org, cred),
+            Some(&"x".repeat(257)),
+            &credential(None),
+        ),
         "invalid-input",
         "label limit",
     );
     expect_error(
-        build(identity(org, cred), "Cafe\u{301}", &credential(None)),
+        build(identity(org, cred), Some("Cafe\u{301}"), &credential(None)),
         "invalid-input",
         "label must be NFC",
     );
     expect_error(
         build(
             identity(org, cred),
-            "Label",
+            Some("Label"),
             &credential(Some("http://example.invalid")),
         ),
         "invalid-input",
@@ -967,7 +1032,7 @@ fn builder_rejects_invalid_input_before_encryption() {
     expect_error(
         build(
             identity(org, SubmissionEntryType::Key),
-            "Label",
+            Some("Label"),
             &credential(None),
         ),
         "invalid-input",
@@ -979,20 +1044,20 @@ fn builder_rejects_invalid_input_before_encryption() {
                 Uuid::from_u128(0x2a2a_2a2a_2a2a_4a2a_8a2a_2a2a_2a2a_2a2a),
                 cred,
             ),
-            "Label",
+            Some("Label"),
             &credential(None),
         ),
         "context-mismatch",
         "approver key must belong to the submission organization",
     );
     let oversized = SubmissionContent::Credential {
-        username: SecretString::from("user".to_owned()),
+        username: Some(SecretString::from("user".to_owned())),
         password: SecretString::from("p".repeat(4097)),
         url: None,
         notes: None,
     };
     expect_error(
-        build(identity(org, cred), "Label", &oversized),
+        build(identity(org, cred), Some("Label"), &oversized),
         "invalid-input",
         "password limit",
     );

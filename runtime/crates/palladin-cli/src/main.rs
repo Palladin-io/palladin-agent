@@ -1637,16 +1637,17 @@ async fn submit(
             submit_entry(service, profile, request, &args.secret, args.json).await
         }
         SubmitCommand::Update(args) => {
-            // Fail closed before prompting, opening the profile or contacting Palladin.
-            eprintln!("Error: {}", RuntimeError::SubmissionUpdateUnavailable);
-            emit_output(render_submission_result(
-                &SubmissionResult {
-                    kind: SubmissionKind::Update,
-                    outcome: Err(SubmissionNotSaved::ServiceUnavailable),
-                    submission_id: None,
+            let request = SubmissionRequest {
+                target: SubmissionRequestTarget::Update {
+                    vault_id: &args.vault,
+                    entry_id: &args.entry,
                 },
-                args.json,
-            ))
+                entry_type: None,
+                label: args.label.as_deref(),
+                url: args.url.as_deref(),
+                username: args.username.as_deref(),
+            };
+            submit_entry(service, profile, request, &args.secret, args.json).await
         }
         SubmitCommand::Status {
             submission_id,

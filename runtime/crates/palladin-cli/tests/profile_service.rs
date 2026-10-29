@@ -1823,6 +1823,7 @@ async fn submission_router() -> (String, Arc<Mutex<Vec<String>>>) {
         "manifests": [fixture["approverManifests"][0]],
     })
     .to_string();
+    let manifest_list = serde_json::json!([fixture["approverManifests"][0]]).to_string();
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let address = listener.local_addr().expect("address");
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -1850,6 +1851,17 @@ async fn submission_router() -> (String, Arc<Mutex<Vec<String>>>) {
             let request = String::from_utf8(bytes).expect("UTF-8 request");
             let body = if request.starts_with("GET /api/agent/me ") {
                 format!(r#"{{"agentId":"{AGENT}","name":null,"status":"active"}}"#)
+            } else if request.contains("/submission-target ") {
+                serde_json::json!({
+                    "vaultId": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
+                    "entryId": "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
+                    "entryType": 1,
+                    "entryRevision": "7",
+                })
+                .to_string()
+            } else if request.starts_with("GET /api/agent/approver-manifests?afterRevision=1 ") {
+                // Already pinned at revision 1: nothing newer exists.
+                manifests.replace(&manifest_list, "[]")
             } else if request.starts_with("GET /api/agent/approver-manifests") {
                 manifests.clone()
             } else if request.starts_with("POST /api/agent/submissions ") {
@@ -2033,7 +2045,6 @@ async fn generated_submission_pins_the_approver_in_signed_profile_and_never_reve
     assert_eq!(anchor.manifest_revision, "1");
     drop(reopened);
 
-    let requests_before_update = requests.lock().expect("requests").len();
     let update = SubmissionRequest {
         target: SubmissionRequestTarget::Update {
             vault_id: "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
@@ -2055,19 +2066,27 @@ async fn generated_submission_pins_the_approver_in_signed_profile_and_never_reve
             },
         )
         .expect("update session");
-    assert!(matches!(
-        update_session
-            .submit_entry(
-                update,
-                SubmissionSecret::Generate(PasswordPolicy::default())
-            )
-            .await,
-        Err(RuntimeError::SubmissionUpdateUnavailable)
-    ));
+    let updated = update_session
+        .submit_entry(
+            update,
+            SubmissionSecret::Generate(PasswordPolicy::default()),
+        )
+        .await
+        .expect("update");
     drop(update_session);
-    assert_eq!(
-        requests.lock().expect("requests").len(),
-        requests_before_update,
+    assert!(updated.outcome.is_ok(), "{updated:?}");
+    let requests_seen = requests.lock().expect("requests").clone();
+    assert!(
+        requests_seen
+            .iter()
+            .any(|request| request.contains("/submission-target "))
+    );
+    assert!(
+        requests_seen.iter().all(|request| !request
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .contains("/credential")),
         "an update never reaches credential delivery or creates an access request"
     );
 

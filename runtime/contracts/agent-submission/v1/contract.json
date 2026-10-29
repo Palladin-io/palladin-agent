@@ -100,7 +100,14 @@
     "identityFields": ["contractVersion", "protocolVersion", "organizationId", "submissionId", "agentId", "submissionKind", "entryType", "target"],
     "target": {
       "new": { "requiredFields": ["kind"], "optionalFields": ["suggestedVaultId"], "kind": "new", "suggestedVaultId": "advisory only; never an authority for recipients or decision" },
-      "update": { "requiredFields": ["kind", "vaultId", "entryId", "expectedEntryRevision"], "kind": "update", "expectedEntryRevision": "u64 decimal string of the Entry revision the Agent's active grant delivered", "authorization": "the Agent must hold an active grant covering vaultId/entryId at submission time; checked by the backend against authenticated Agent and current grant state" }
+      "update": { "requiredFields": ["kind", "vaultId", "entryId", "expectedEntryRevision"], "kind": "update", "expectedEntryRevision": "u64 decimal string of the Entry revision the Agent's active grant delivered", "authorization": "the Agent must hold an active grant covering vaultId/entryId at submission time; checked by the backend against authenticated Agent and current grant state",
+        "revisionSource": {
+          "route": "GET /api/agent/vaults/{vaultId}/entries/{entryId}/submission-target",
+          "returns": ["vaultId", "entryId", "entryType", "entryRevision"],
+          "requires": "an active grant of the authenticated Agent covering the Entry at the current agentAccessEpoch",
+          "sideEffects": "none: never creates a grant or access request, never consumes a grant use, never emits a credential-accessed event",
+          "neverReturns": ["any field value", "username", "url", "label", "ciphertext"]
+        } }
     },
     "transportFields": ["schema", "contractVersion", "protocolVersion", "organizationId", "submissionId", "agentId", "submissionKind", "entryType", "target", "submissionRevision", "agentAccessEpoch", "agentKeyVersion", "agentKeyFingerprint", "approverKeyVersion", "approverMessageKeyFingerprint", "approverManifestRevision", "encodedPayload", "encodedAgentWrappedDek", "encodedApproverWrappedDek", "agentSignature"],
     "submissionRevision": "positive u64 decimal string; 1 on create; incremented only when the Agent re-wraps the unchanged DEK for a new approver key version",
@@ -136,12 +143,21 @@
     },
     "payload": {
       "schema": "palladin.agent-submission-payload.v1",
-      "requiredFields": ["schema", "identity", "label", "content"],
+      "requiredFields": ["schema", "identity", "content"],
+      "optionalFields": ["label"],
+      "labelRule": "required for new; optional for update, where it proposes a rename",
       "identity": "inner copy of identityFields; must equal the outer identity exactly after decryption",
       "label": "NFC UTF-8, 1..256 bytes, Agent-proposed Entry name; the approver may change it",
       "content": {
-        "key": { "requiredFields": ["value"], "optionalFields": ["url", "notes"], "maps": "key-content-v2 value/url/notes with fields []" },
-        "credential": { "requiredFields": ["username", "password"], "optionalFields": ["url", "notes"], "url": "absolute https URL", "maps": "credential-content-v2 username/password/url/notes with fields []" }
+        "new": {
+          "key": { "requiredFields": ["value"], "optionalFields": ["url", "notes"], "maps": "key-content-v2 value/url/notes with fields []" },
+          "credential": { "requiredFields": ["username", "password"], "optionalFields": ["url", "notes"], "url": "absolute https URL", "maps": "credential-content-v2 username/password/url/notes with fields []" }
+        },
+        "update": {
+          "key": { "requiredFields": ["value"], "optionalFields": ["url", "notes"] },
+          "credential": { "requiredFields": ["password"], "optionalFields": ["username", "url", "notes"], "url": "absolute https URL" },
+          "merge": "the approver client applies only the present fields to the target Entry revision expectedEntryRevision; absent fields keep their current values; custom fields, TOTP and the Agent Visibility Policy are never changed by a submission"
+        }
       },
       "additionalFields": "reject-at-every-object-level",
       "excluded": ["totp", "custom fields", "agentVisibilityPolicy", "Vault metadata"]

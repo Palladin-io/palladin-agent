@@ -333,6 +333,15 @@ pub struct SubmitUpdateArgs {
     pub vault: String,
     #[arg(long)]
     pub entry: String,
+    /// Proposed new Entry name; omit to keep the current name.
+    #[arg(long)]
+    pub label: Option<String>,
+    /// New absolute https URL; omit to keep the current URL.
+    #[arg(long)]
+    pub url: Option<String>,
+    /// New username for a credential; omit to keep the current username.
+    #[arg(long)]
+    pub username: Option<String>,
     #[command(flatten)]
     pub secret: SubmitSecretArgs,
     /// Emit the machine-readable Agent result.
@@ -576,20 +585,32 @@ mod submit_tests {
             parse(&[&NEW[..], &["--generate", "hunter2"]].concat()).is_err(),
             "no positional secret"
         );
+        let update = [
+            "submit",
+            "update",
+            "--vault",
+            "v",
+            "--entry",
+            "e",
+            "--generate",
+        ];
         assert!(
-            parse(&[
-                "submit",
-                "update",
-                "--vault",
-                "v",
-                "--entry",
-                "e",
-                "--generate",
-                "--label",
-                "x"
-            ])
-            .is_err(),
-            "update metadata comes from authenticated Discovery and grant delivery"
+            parse(
+                &[
+                    &update[..],
+                    &["--label", "x", "--url", "https://x.test", "--username", "u"]
+                ]
+                .concat()
+            )
+            .is_ok(),
+            "update may propose changed metadata"
+        );
+        for secret_flag in ["--password", "--secret", "--value"] {
+            assert!(parse(&[&update[..], &[secret_flag, "hunter2"]].concat()).is_err());
+        }
+        assert!(
+            parse(&[&update[..], &["--type", "key"]].concat()).is_err(),
+            "the entry type comes from the submission target"
         );
     }
 

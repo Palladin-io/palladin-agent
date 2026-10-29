@@ -6,7 +6,7 @@ mod types;
 pub use client::{
     AgentSubmissionList, AgentSubmissionSummary, ApiClient, ApiError, ApproverManifestsResponse,
     BrowserPairingClient, SigningContext, SubmissionAccepted, SubmissionDecision,
-    SubmissionRejection,
+    SubmissionRejection, SubmissionTargetResponse,
 };
 pub use palladin_browser_bridge::FormDiscoveryMap;
 pub use types::{

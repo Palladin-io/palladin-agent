@@ -12,6 +12,7 @@ use palladin_core::secret::OrganizationApiKey;
 use palladin_credential::generator::{CharacterClass, PasswordPolicy};
 use palladin_crypto::{Ed25519Identity, X25519Identity, compute_key_fingerprint, verify_rewrap};
 use palladin_platform::secure_store::{OperationAuthorization, OperationLease, OperationScope};
+use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 use sha2::Sha512;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -960,19 +961,98 @@ fn request_digest_binds_every_non_secret_field_and_the_secret_source() {
     }
 }
 
+const VAULT_ID: &str = "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e";
+const ENTRY_ID: &str = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
+
+fn submission_target(entry_type: u16, entry_revision: &str) -> String {
+    json!({
+        "vaultId": VAULT_ID,
+        "entryId": ENTRY_ID,
+        "entryType": entry_type,
+        "entryRevision": entry_revision,
+    })
+    .to_string()
+}
+
+fn update_request<'a>(
+    label: Option<&'a str>,
+    url: Option<&'a str>,
+    username: Option<&'a str>,
+) -> SubmissionRequest<'a> {
+    SubmissionRequest {
+        target: SubmissionRequestTarget::Update {
+            vault_id: VAULT_ID,
+            entry_id: ENTRY_ID,
+        },
+        entry_type: None,
+        label,
+        url,
+        username,
+    }
+}
+
+/// Opens an uploaded body as the approver and returns the exact decrypted `{label?, content}`.
+fn approver_payload(body: &Value) -> Value {
+    let submission = AgentEntrySubmission::from_value(body).expect("strict transport");
+    let signing = agent_signing();
+    let approver = box_identity("approverV1X25519Seed");
+    let opened = open_agent_submission(
+        &submission,
+        &SubmissionAuthority {
+            organization_id: Uuid::parse_str(ORGANIZATION_ID).unwrap(),
+            agent_id: Uuid::parse_str(AGENT_ID).unwrap(),
+            agent_signing_public_key: signing.public_key(),
+            recipient: SubmissionRecipient::ApproverGroup {
+                key_version: 1,
+                identity: &approver,
+            },
+        },
+    )
+    .expect("approver opens");
+    let mut content = serde_json::Map::new();
+    match opened.content {
+        SubmissionContent::Credential {
+            username,
+            password,
+            url,
+            notes,
+        } => {
+            content.insert("password".into(), json!(password.expose_secret()));
+            if let Some(username) = username {
+                content.insert("username".into(), json!(username.expose_secret()));
+            }
+            if let Some(url) = url {
+                content.insert("url".into(), json!(url));
+            }
+            assert!(notes.is_none());
+        }
+        SubmissionContent::Key { value, url, notes } => {
+            content.insert("value".into(), json!(value.expose_secret()));
+            if let Some(url) = url {
+                content.insert("url".into(), json!(url));
+            }
+            assert!(notes.is_none());
+        }
+    }
+    json!({ "label": opened.label, "content": content })
+}
+
+fn assert_never_requested_credential_delivery(requests: &[String]) {
+    for request in requests {
+        let line = request.lines().next().unwrap_or_default();
+        assert!(
+            !line.contains("/credential") && !line.contains("/request-access"),
+            "{line}"
+        );
+    }
+}
+
 #[tokio::test]
-async fn update_fails_closed_without_a_credential_delivery_or_access_request() {
-    // A mocked API that would answer every path the old update flow used; none may be called.
+async fn update_with_generated_secret_uploads_only_the_new_password() {
     let (host, requests) = server(vec![
         respond(200, manifests_response(&[manifest(0)])),
-        respond(
-            200,
-            json!({ "agentAccessEpoch": 4, "items": [] }).to_string(),
-        ),
-        respond(
-            202,
-            json!({ "status": "pending", "grantId": FIXTURE_SUBMISSION_ID }).to_string(),
-        ),
+        respond(200, submission_target(1, "7")),
+        accept_post(),
     ])
     .await;
     let persistence = RecordingPersistence::default();
@@ -980,39 +1060,202 @@ async fn update_fails_closed_without_a_credential_delivery_or_access_request() {
         &host,
         RuntimeOperation::SubmitEntry,
         &persistence,
-        Some(anchor_from_manifest(&manifest(0))),
-        Some(ORGANIZATION_ID),
+        None,
+        None,
     );
-    let request = SubmissionRequest {
-        target: SubmissionRequestTarget::Update {
-            vault_id: "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
-            entry_id: "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
-        },
-        entry_type: None,
-        label: None,
-        url: None,
-        username: None,
-    };
-    for secret in [
-        SubmissionSecret::Generate(policy()),
-        SubmissionSecret::Provided(SecretString::from("human-Provided-Secret-1".to_owned())),
-    ] {
+    let result = session
+        .submit_entry(
+            update_request(None, None, None),
+            SubmissionSecret::Generate(policy()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.kind, SubmissionKind::Update);
+    assert!(result.outcome.is_ok());
+    let requests = requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].starts_with("GET /api/agent/approver-manifests "));
+    assert!(requests[1].starts_with(&format!(
+        "GET /api/agent/vaults/{VAULT_ID}/entries/{ENTRY_ID}/submission-target HTTP/1.1"
+    )));
+    assert!(requests[2].starts_with("POST /api/agent/submissions "));
+    assert_never_requested_credential_delivery(&requests);
+
+    let body = request_body(&requests[2]);
+    assert_eq!(body["submissionKind"], 2);
+    assert_eq!(body["entryType"], 1);
+    assert_eq!(
+        body["target"],
+        json!({ "kind": "update", "vaultId": VAULT_ID, "entryId": ENTRY_ID, "expectedEntryRevision": "7" })
+    );
+    let payload = approver_payload(&body);
+    let password = payload["content"]["password"].as_str().unwrap().to_owned();
+    assert_eq!(password.len(), 40);
+    assert_eq!(
+        payload,
+        json!({ "label": null, "content": { "password": password } }),
+        "an update carries exactly the changed password"
+    );
+    for request in &requests {
+        assert!(!request.contains(&password));
+    }
+}
+
+#[tokio::test]
+async fn update_with_prompted_secret_carries_only_the_provided_optional_fields() {
+    let (host, requests) = server(vec![
+        respond(200, manifests_response(&[manifest(0)])),
+        respond(200, submission_target(1, "12")),
+        accept_post(),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        None,
+        None,
+    );
+    let result = session
+        .submit_entry(
+            update_request(
+                Some("Renamed Account"),
+                Some("https://example.invalid/new-login"),
+                Some("renamed@example.invalid"),
+            ),
+            SubmissionSecret::Provided(SecretString::from("human-Provided-Secret-2".to_owned())),
+        )
+        .await
+        .unwrap();
+    assert!(result.outcome.is_ok());
+    let requests = requests.lock().unwrap().clone();
+    assert_never_requested_credential_delivery(&requests);
+    let body = request_body(&requests[2]);
+    assert_eq!(body["target"]["expectedEntryRevision"], "12");
+    assert_eq!(
+        approver_payload(&body),
+        json!({
+            "label": "Renamed Account",
+            "content": {
+                "password": "human-Provided-Secret-2",
+                "username": "renamed@example.invalid",
+                "url": "https://example.invalid/new-login",
+            }
+        })
+    );
+}
+
+#[tokio::test]
+async fn update_uses_the_target_entry_type_for_a_key() {
+    let (host, requests) = server(vec![
+        respond(200, manifests_response(&[manifest(0)])),
+        respond(200, submission_target(0, "3")),
+        accept_post(),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        None,
+        None,
+    );
+    let result = session
+        .submit_entry(
+            update_request(None, None, None),
+            SubmissionSecret::Provided(SecretString::from("new-api-token".to_owned())),
+        )
+        .await
+        .unwrap();
+    assert!(result.outcome.is_ok());
+    let body = request_body(&requests.lock().unwrap()[2]);
+    assert_eq!(body["entryType"], 0);
+    assert_eq!(
+        approver_payload(&body),
+        json!({ "label": null, "content": { "value": "new-api-token" } })
+    );
+}
+
+#[tokio::test]
+async fn update_target_failures_never_upload_or_deliver_a_credential() {
+    let cases: Vec<(
+        Vec<Handler>,
+        SubmissionRequest<'static>,
+        Result<(), SubmissionNotSaved>,
+    )> = vec![
+        (
+            vec![respond(
+                403,
+                json!({ "code": "update-not-granted" }).to_string(),
+            )],
+            update_request(None, None, None),
+            Err(SubmissionNotSaved::UpdateNotGranted),
+        ),
+        (
+            vec![respond(200, submission_target(2, "4"))],
+            update_request(None, None, None),
+            Err(SubmissionNotSaved::UnsupportedEntryType),
+        ),
+        (
+            vec![respond(200, submission_target(0, "4"))],
+            update_request(None, None, Some("not-for-a-key")),
+            Err(SubmissionNotSaved::InvalidInput),
+        ),
+    ];
+    for (handlers, request, expected) in cases {
+        let mut all = vec![respond(200, manifests_response(&[manifest(0)]))];
+        all.extend(handlers);
+        let (host, requests) = server(all).await;
+        let persistence = RecordingPersistence::default();
         let session = test_session(
             &host,
             RuntimeOperation::SubmitEntry,
             &persistence,
-            Some(anchor_from_manifest(&manifest(0))),
-            Some(ORGANIZATION_ID),
+            None,
+            None,
         );
-        assert!(matches!(
-            session.submit_entry(request, secret).await,
-            Err(RuntimeError::SubmissionUpdateUnavailable)
-        ));
+        let result = session
+            .submit_entry(request, SubmissionSecret::Generate(policy()))
+            .await
+            .unwrap();
+        assert_eq!(result.outcome.map(|_| ()), expected);
+        let requests = requests.lock().unwrap().clone();
+        assert!(requests.iter().all(|request| !request.starts_with("POST")));
+        assert_never_requested_credential_delivery(&requests);
     }
-    drop(session);
-    assert!(
-        requests.lock().unwrap().is_empty(),
-        "no API request of any kind"
+
+    let mut other = serde_json::from_str::<Value>(&submission_target(1, "4")).unwrap();
+    other["entryId"] = json!("1f1f1f1f-1f1f-4f1f-8f1f-1f1f1f1f1f1f");
+    let (host, requests) = server(vec![
+        respond(200, manifests_response(&[manifest(0)])),
+        respond(200, other.to_string()),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        None,
+        None,
     );
-    assert!(persistence.anchors.lock().unwrap().is_empty());
+    assert!(matches!(
+        session
+            .submit_entry(
+                update_request(None, None, None),
+                SubmissionSecret::Generate(policy())
+            )
+            .await,
+        Err(RuntimeError::Api(ApiError::InvalidResponse))
+    ));
+    assert!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|request| !request.starts_with("POST")),
+        "a target for another Entry is never used"
+    );
 }
