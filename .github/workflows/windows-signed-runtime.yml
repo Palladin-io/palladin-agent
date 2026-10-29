@@ -175,10 +175,16 @@ jobs:
     runs-on: windows-2025
     environment: windows-signing
     timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      signer_thumbprint: ${{ steps.signer_identity.outputs.thumbprint }}
     env:
       PUBLISHER: ${{ vars.PALLADIN_WINDOWS_PUBLISHER }}
-      EXPECTED_THUMBPRINT: ${{ vars.PALLADIN_WINDOWS_SIGNER_THUMBPRINT }}
-      TIMESTAMP_URL: ${{ vars.PALLADIN_WINDOWS_TIMESTAMP_URL }}
+      SIGNING_ENDPOINT: ${{ vars.PALLADIN_AZURE_SIGNING_ENDPOINT }}
+      SIGNING_ACCOUNT: ${{ vars.PALLADIN_AZURE_SIGNING_ACCOUNT }}
+      SIGNING_PROFILE: ${{ vars.PALLADIN_AZURE_SIGNING_PROFILE }}
       RELEASE_VERSION: ${{ inputs.version }}
       PACKAGE_VERSION: ${{ inputs.package_version }}
       SECURITY_FLOOR: ${{ inputs.security_floor }}
@@ -210,35 +216,52 @@ jobs:
         with:
           pattern: unsigned-windows-*-${{ inputs.source_sha }}
           path: ${{ runner.temp }}/native
-      - name: Zaimportuj certyfikat do tymczasowego magazynu użytkownika
+      - name: Zaloguj workload release do Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.PALLADIN_AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.PALLADIN_AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.PALLADIN_AZURE_SUBSCRIPTION_ID }}
+      - name: Podpisz skrypty i wszystkie natywne PE
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ env.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ env.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ env.SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\packaging\windows\scripts\Install-SecureRuntime.ps1
+            ${{ github.workspace }}\packaging\windows\scripts\Palladin.Release.psm1
+          files-folder: ${{ runner.temp }}\native
+          files-folder-filter: exe
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Zweryfikuj tożsamość i zapisz odcisk certyfikatu tego wydania
+        id: signer_identity
         shell: pwsh
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CODE_SIGNING_CERTIFICATE_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CODE_SIGNING_CERTIFICATE_PASSWORD }}
-        run: |
-          if (-not $env:CERTIFICATE_BASE64 -or -not $env:CERTIFICATE_PASSWORD -or -not $env:PUBLISHER -or -not $env:EXPECTED_THUMBPRINT -or -not $env:TIMESTAMP_URL) { throw 'missing protected signing configuration' }
-          $pfx = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
-          $password = ConvertTo-SecureString $env:CERTIFICATE_PASSWORD -AsPlainText -Force
-          $certificate = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password -Exportable:$false | Where-Object HasPrivateKey)[0]
-          if ($null -eq $certificate) { throw 'PFX does not contain a private signing key' }
-          "IMPORTED_SIGNER_THUMBPRINT=$($certificate.Thumbprint)" | Add-Content -LiteralPath $env:GITHUB_ENV
-          if ($certificate.Thumbprint -cne $env:EXPECTED_THUMBPRINT.Replace(' ', '').ToUpperInvariant()) { throw 'imported signer does not match protected thumbprint' }
-          Export-Certificate -Cert $certificate -FilePath (Join-Path $env:RUNNER_TEMP 'palladin-signer.cer') -Type CERT | Out-Null
-      - name: Podpisz skrypty instalacyjne i wszystkie PE
-        shell: pwsh
-        run: |
-          $sign = 'packaging/windows/scripts/Sign-Release.ps1'
-          $scripts = @('packaging/windows/scripts/Install-SecureRuntime.ps1', 'packaging/windows/scripts/Palladin.Release.psm1')
-          & $sign -Artifacts $scripts -CertificateThumbprint $env:EXPECTED_THUMBPRINT -TimestampUrl $env:TIMESTAMP_URL -Publisher $env:PUBLISHER
-          foreach ($architecture in 'x64', 'arm64') {
-            $directory = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-$architecture-$env:INPUTS_SOURCE_SHA"
-            $artifacts = Get-ChildItem -LiteralPath $directory -Filter '*.exe' | ForEach-Object FullName
-            if ($artifacts.Count -ne 5) { throw "expected five $architecture PE artifacts" }
-            & $sign -Artifacts $artifacts -CertificateThumbprint $env:EXPECTED_THUMBPRINT -TimestampUrl $env:TIMESTAMP_URL -Publisher $env:PUBLISHER
-          }
         env:
           INPUTS_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if (-not $env:PUBLISHER -or -not $env:SIGNING_ENDPOINT -or -not $env:SIGNING_ACCOUNT -or -not $env:SIGNING_PROFILE) { throw 'missing protected signing configuration' }
+          Import-Module (Resolve-Path './packaging/windows/scripts/Palladin.Release.psm1') -Force
+          $client = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-x64-$env:INPUTS_SOURCE_SHA/palladin-client.exe"
+          $signature = Get-AuthenticodeSignature -LiteralPath $client
+          if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Subject -cne $env:PUBLISHER -or $null -eq $signature.TimeStamperCertificate) { throw 'Azure signer does not match the protected publisher' }
+          $thumbprint = $signature.SignerCertificate.Thumbprint.ToUpperInvariant()
+          "thumbprint=$thumbprint" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+          "EXPECTED_THUMBPRINT=$thumbprint" | Add-Content -LiteralPath $env:GITHUB_ENV
+          Export-Certificate -Cert $signature.SignerCertificate -FilePath (Join-Path $env:RUNNER_TEMP 'palladin-signer.cer') -Type CERT | Out-Null
+          $artifacts = @('packaging/windows/scripts/Install-SecureRuntime.ps1', 'packaging/windows/scripts/Palladin.Release.psm1')
+          foreach ($architecture in 'x64', 'arm64') {
+            $directory = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-$architecture-$env:INPUTS_SOURCE_SHA"
+            $native = @(Get-ChildItem -LiteralPath $directory -Filter '*.exe' -File)
+            if ($native.Count -ne 5) { throw "expected five $architecture PE artifacts" }
+            $artifacts += $native.FullName
+          }
+          foreach ($artifact in $artifacts) {
+            Assert-PalladinSignature -Path $artifact -Publisher $env:PUBLISHER -Thumbprint $thumbprint -RequireTimestamp
+          }
       - name: Zweryfikuj atomową wersję npm i Rust
         shell: pwsh
         run: |
@@ -250,7 +273,7 @@ jobs:
           if (($versions | Where-Object { $_ -cne $env:PACKAGE_VERSION }).Count -ne 0) { throw 'npm package versions are not atomic' }
           $cargoVersions = @((cargo metadata --manifest-path runtime/Cargo.toml --format-version 1 --no-deps | ConvertFrom-Json).packages.version | Sort-Object -Unique)
           if ($cargoVersions.Count -ne 1 -or $cargoVersions[0] -cne $env:PACKAGE_VERSION) { throw 'Rust workspace version does not match npm release version' }
-      - name: Zbuduj i podpisz architektoniczne MSIX oraz paczki npm
+      - name: Zbuduj architektoniczne MSIX
         shell: pwsh
         run: |
           $assets = Join-Path $env:RUNNER_TEMP 'assets'
@@ -259,8 +282,31 @@ jobs:
             $native = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-$architecture-$env:INPUTS_SOURCE_SHA"
             $msix = Join-Path $env:RUNNER_TEMP "msix-$architecture"
             packaging/windows/scripts/Build-Msix.ps1 -Architecture $architecture -Version $env:RELEASE_VERSION -Publisher $env:PUBLISHER -BrokerBinary (Join-Path $native 'palladin-service.exe') -WorkerBinary (Join-Path $native 'palladin-worker.exe') -ExecutorBinary (Join-Path $native 'palladin-executor.exe') -CompanionBinary (Join-Path $native 'palladin-companion.exe') -AssetsDirectory $assets -OutputDirectory $msix
-            $packages = Get-ChildItem -LiteralPath $msix -Filter '*.msix' | ForEach-Object FullName
-            packaging/windows/scripts/Sign-Release.ps1 -Artifacts $packages -CertificateThumbprint $env:EXPECTED_THUMBPRINT -TimestampUrl $env:TIMESTAMP_URL -Publisher $env:PUBLISHER
+          }
+        env:
+          INPUTS_SOURCE_SHA: ${{ inputs.source_sha }}
+      - name: Podpisz architektoniczne MSIX
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ env.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ env.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ env.SIGNING_PROFILE }}
+          files-folder: ${{ runner.temp }}
+          files-folder-filter: '*.msix'
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Zweryfikuj MSIX i spakuj npm
+        shell: pwsh
+        run: |
+          Import-Module (Resolve-Path './packaging/windows/scripts/Palladin.Release.psm1') -Force
+          foreach ($architecture in 'x64', 'arm64') {
+            $native = Join-Path $env:RUNNER_TEMP "native/unsigned-windows-$architecture-$env:INPUTS_SOURCE_SHA"
+            $msix = Join-Path $env:RUNNER_TEMP "msix-$architecture"
+            $packages = @(Get-ChildItem -LiteralPath $msix -Filter '*.msix' -File)
+            if ($packages.Count -ne 2) { throw "expected two $architecture MSIX artifacts" }
+            foreach ($package in $packages) { Assert-PalladinSignature -Path $package.FullName -Publisher $env:PUBLISHER -Thumbprint $env:EXPECTED_THUMBPRINT -RequireTimestamp }
             $npm = Join-Path $env:RUNNER_TEMP "npm-$architecture"
             packaging/windows/scripts/Stage-NpmPlatformPackage.ps1 -Architecture $architecture -ClientBinary (Join-Path $native 'palladin-client.exe') -WorkerBinary (Join-Path $native 'palladin-worker.exe') -OutputDirectory $npm -Publisher $env:PUBLISHER -SignerThumbprint $env:EXPECTED_THUMBPRINT
             $broker = Get-ChildItem -LiteralPath $msix -Filter '*Broker*.msix' | Select-Object -ExpandProperty FullName
@@ -269,7 +315,7 @@ jobs:
           }
         env:
           INPUTS_SOURCE_SHA: ${{ inputs.source_sha }}
-      - name: Zbuduj i podpisz wieloarchitekturne bundle
+      - name: Zbuduj wieloarchitekturne bundle
         shell: pwsh
         run: |
           $bundles = Join-Path $env:RUNNER_TEMP 'bundles'
@@ -280,9 +326,19 @@ jobs:
             $bundle = Join-Path $bundles "Palladin.Runtime.$kind-$($env:RELEASE_VERSION).msixbundle"
             packaging/windows/scripts/Build-MsixBundle.ps1 -Kind $kind -Version $env:RELEASE_VERSION -X64Package $x64 -Arm64Package $arm64 -OutputBundle $bundle
           }
-          packaging/windows/scripts/Sign-Release.ps1 -Artifacts (Get-ChildItem $bundles -Filter '*.msixbundle' | ForEach-Object FullName) -CertificateThumbprint $env:EXPECTED_THUMBPRINT -TimestampUrl $env:TIMESTAMP_URL -Publisher $env:PUBLISHER
           packaging/windows/scripts/Render-AppInstaller.ps1 -Version $env:RELEASE_VERSION -Publisher $env:PUBLISHER -BaseUri $env:RELEASE_BASE_URI -OutputPath (Join-Path $bundles 'Palladin.Runtime.appinstaller')
-      - name: Zbuduj i podpisz bootstrapper one-UAC dla obu architektur
+      - name: Podpisz wieloarchitekturne bundle
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ env.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ env.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ env.SIGNING_PROFILE }}
+          files-folder: ${{ runner.temp }}\bundles
+          files-folder-filter: '*.msixbundle'
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Zbuduj bootstrapper one-UAC dla obu architektur
         shell: pwsh
         run: |
           foreach ($architecture in 'x64', 'arm64') {
@@ -292,8 +348,27 @@ jobs:
             $output = Join-Path $env:RUNNER_TEMP "setup-$architecture"
             if (-not (dotnet --list-sdks | Select-String '^10\.')) { throw '.NET 10 SDK is unavailable' }
             packaging/windows/scripts/Build-Bootstrapper.ps1 -Architecture $architecture -Version $env:RELEASE_VERSION -SecurityFloor $env:SECURITY_FLOOR -Publisher $env:PUBLISHER -SignerThumbprint $env:EXPECTED_THUMBPRINT -BrokerPackage $broker -CompanionPackage $companion -OutputDirectory $output
-            packaging/windows/scripts/Sign-Release.ps1 -Artifacts (Join-Path $output 'palladin-runtime-setup.exe') -CertificateThumbprint $env:EXPECTED_THUMBPRINT -TimestampUrl $env:TIMESTAMP_URL -Publisher $env:PUBLISHER
-          }
+      - name: Podpisz bootstrapper one-UAC
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ env.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ env.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ env.SIGNING_PROFILE }}
+          files-folder: ${{ runner.temp }}
+          files-folder-filter: palladin-runtime-setup.exe
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Zweryfikuj końcowe podpisy Windows
+        shell: pwsh
+        run: |
+          Import-Module (Resolve-Path './packaging/windows/scripts/Palladin.Release.psm1') -Force
+          $artifacts = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'bundles') -Filter '*.msixbundle' -File | ForEach-Object FullName)
+          $artifacts += (Join-Path $env:RUNNER_TEMP 'setup-x64/palladin-runtime-setup.exe')
+          $artifacts += (Join-Path $env:RUNNER_TEMP 'setup-arm64/palladin-runtime-setup.exe')
+          if ($artifacts.Count -ne 4) { throw 'expected two bundles and two signed installers' }
+          foreach ($artifact in $artifacts) { Assert-PalladinSignature -Path $artifact -Publisher $env:PUBLISHER -Thumbprint $env:EXPECTED_THUMBPRINT -RequireTimestamp }
       - name: Zweryfikuj politykę aktualizacji i npm tarball
         shell: pwsh
         run: |
@@ -328,18 +403,6 @@ jobs:
             ${{ runner.temp }}/*.tgz
           if-no-files-found: error
           retention-days: 7
-      - name: Remove the private signing material
-        if: always()
-        shell: pwsh
-        run: |
-          $thumbprints = @($env:IMPORTED_SIGNER_THUMBPRINT, $env:EXPECTED_THUMBPRINT) |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-            ForEach-Object { $_.Replace(' ', '').ToUpperInvariant() } |
-            Sort-Object -Unique
-          foreach ($thumbprint in $thumbprints) {
-            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -Force -ErrorAction SilentlyContinue
-          }
-          Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'windows-signing.pfx') -Force -ErrorAction SilentlyContinue
 
   signed-install-smoke:
     name: Signed install smoke - ${{ matrix.architecture }}
@@ -360,7 +423,7 @@ jobs:
     env:
       RELEASE_VERSION: ${{ inputs.version }}
       PACKAGE_VERSION: ${{ inputs.package_version }}
-      EXPECTED_THUMBPRINT: ${{ vars.PALLADIN_WINDOWS_SIGNER_THUMBPRINT }}
+      EXPECTED_THUMBPRINT: ${{ needs.sign-package.outputs.signer_thumbprint }}
       EXPECTED_PUBLISHER: ${{ vars.PALLADIN_WINDOWS_PUBLISHER }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -400,7 +463,6 @@ jobs:
           if ($certificate.Thumbprint -cne $expectedThumbprint -or $certificate.Subject -cne $env:EXPECTED_PUBLISHER) {
             throw 'smoke-test certificate does not match protected release identity'
           }
-          Import-Certificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
           $setup = Join-Path $release 'setup-${{ matrix.architecture }}/palladin-runtime-setup.exe'
           if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'signed setup executable is missing' }
           $signature = Get-AuthenticodeSignature -LiteralPath $setup

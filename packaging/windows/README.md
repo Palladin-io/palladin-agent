@@ -28,7 +28,7 @@ Release order:
 6. Run `Verify-Release.ps1`, rollback policy tests, install/update tests, and hostile same-user boundary tests on clean VMs.
 7. Publish only from the protected owner-dispatched environment.
 
-The protected `windows-signing` environment must define `PALLADIN_WINDOWS_PUBLISHER`, `PALLADIN_WINDOWS_COMPANION_PFN`, `PALLADIN_WINDOWS_SIGNER_THUMBPRINT`, and `PALLADIN_WINDOWS_TIMESTAMP_URL`, plus the signing-certificate secrets. The workflow derives the PFN again from the package name and publisher and refuses to build when it differs from the protected value.
+The protected `windows-signing` environment must define `PALLADIN_WINDOWS_PUBLISHER`, `PALLADIN_WINDOWS_COMPANION_PFN`, `PALLADIN_AZURE_SIGNING_ENDPOINT`, `PALLADIN_AZURE_SIGNING_ACCOUNT`, `PALLADIN_AZURE_SIGNING_PROFILE`, `PALLADIN_AZURE_CLIENT_ID`, `PALLADIN_AZURE_TENANT_ID`, and `PALLADIN_AZURE_SUBSCRIPTION_ID`. The GitHub OIDC subject must be restricted to this repository and environment, and the workload identity needs only the Artifact Signing Certificate Profile Signer role on this profile. The workflow derives the PFN from the protected publisher and refuses to build when it differs. Azure retains the private signing key; the workflow records the actual certificate thumbprint from this release's signed client and requires the same publisher, thumbprint, and timestamp on every artifact. A certificate rollover during a run fails verification and requires a fresh build.
 
 The organization API key remains one organization credential that multiple Agent profiles may reference. Each Agent retains its own `agentId`, X25519 keypair, and Ed25519 keypair inside the broker-owned identity boundary.
 
