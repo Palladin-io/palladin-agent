@@ -266,6 +266,20 @@ pub fn render_search_human(result: &EntrySearchResult) -> RenderedOutput {
                     safe_terminal_text(&field.value)
                 ));
             }
+            if let Some(method) = &item.sign_in_method {
+                match &method.provider_entry {
+                    Some(provider_entry) => output.stdout_line(format_args!(
+                        "  sign-in: {} via entry={} vault={} (request access to that entry, then inject on the provider page)",
+                        safe_terminal_text(&method.provider),
+                        shorten_identifier(&provider_entry.entry_id),
+                        shorten_identifier(&provider_entry.vault_id)
+                    )),
+                    None => output.stdout_line(format_args!(
+                        "  sign-in: {} (provider account not linked; ask the user which account to use)",
+                        safe_terminal_text(&method.provider)
+                    )),
+                }
+            }
         }
     }
     if let Some(cursor) = &result.next_cursor {

@@ -4,7 +4,7 @@ use std::process::Command;
 use clap::Parser;
 use palladin_api::{
     AgentRegistrationResult, AgentVisibleField, CredentialAccess, CredentialMethod,
-    EntrySearchItem, EntrySearchResult,
+    EntrySearchItem, EntrySearchResult, SignInMethod, SignInProviderEntry,
 };
 use palladin_cli::args::{Cli, Commands};
 use palladin_cli::output::{
@@ -499,6 +499,7 @@ fn frozen_command_outputs_cover_every_ported_public_surface() {
                 value: "eu-central-1".to_owned(),
             }],
             script_execution: None,
+            sign_in_method: None,
         }],
         next_cursor: Some("cursor-1234567890abcdef".to_owned()),
     };
@@ -584,6 +585,46 @@ fn frozen_command_outputs_cover_every_ported_public_surface() {
             .unwrap_or_else(|| panic!("snapshot {name}"));
         assert_rendered(actual, expected, name);
     }
+}
+
+#[test]
+fn search_human_output_names_the_sign_in_provider_and_its_entry() {
+    let item = |sign_in_method| EntrySearchItem {
+        entry_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
+        vault_id: "11111111-1111-4111-8111-111111111111".to_owned(),
+        label: "Service".to_owned(),
+        url_domain: Some("app.example.test".to_owned()),
+        description: None,
+        agent_fields: Vec::new(),
+        script_execution: None,
+        sign_in_method: Some(sign_in_method),
+    };
+    let rendered = render_search_human(&EntrySearchResult {
+        items: vec![
+            item(SignInMethod {
+                provider: "google".to_owned(),
+                provider_entry: Some(SignInProviderEntry {
+                    vault_id: "44444444-4444-4444-8444-444444444444".to_owned(),
+                    entry_id: "55555555-5555-4555-8555-555555555555".to_owned(),
+                }),
+            }),
+            item(SignInMethod {
+                provider: "apple".to_owned(),
+                provider_entry: None,
+            }),
+        ],
+        next_cursor: None,
+    });
+    assert_eq!(rendered.exit_code, 0);
+    assert!(rendered.stdout.contains("  sign-in: google via entry="));
+    assert!(
+        rendered
+            .stdout
+            .contains("(request access to that entry, then inject on the provider page)")
+    );
+    assert!(rendered.stdout.contains(
+        "  sign-in: apple (provider account not linked; ask the user which account to use)"
+    ));
 }
 
 fn assert_rendered(actual: RenderedOutput, expected: &CommandOutputSnapshot, name: &str) {
