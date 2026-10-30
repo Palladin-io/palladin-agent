@@ -262,7 +262,7 @@ describe('Palladin plugin targets', () => {
       };
     };
     const mcpContract = JSON.parse(
-      await readFile(resolve(repositoryRoot, 'runtime/contracts/mcp/v2.1/mcp-tools.json'), 'utf8'),
+      await readFile(resolve(repositoryRoot, 'runtime/contracts/mcp/v2.2/mcp-tools.json'), 'utf8'),
     ) as {
       tools: Array<{
         name: string;

@@ -58,7 +58,7 @@ const UNSUPPORTED_VERSION_SENTINEL: &str = "palladin-unsupported-version";
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
     ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 const GET_EXPOSURE_WARNING: &str = "Note: this secret is now in the Agent's context. On a hosted LLM it may leave your machine. Prefer exec_with_credential or inject_credential when the credential only needs to authenticate another operation.";
-const CONTRACT_JSON: &str = include_str!("../../../contracts/mcp/v2.1/mcp-tools.json");
+const CONTRACT_JSON: &str = include_str!("../../../contracts/mcp/v2.2/mcp-tools.json");
 
 type ApplicationFuture<'a> = Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
 
@@ -1403,7 +1403,7 @@ fn load_tools() -> Result<Vec<Tool>, ContractError> {
     let contract: ContractFile =
         serde_json::from_str(CONTRACT_JSON).map_err(|_| ContractError::Invalid)?;
     if contract.contract != "palladin-agent-mcp-tools"
-        || contract.version != "2.1.0"
+        || contract.version != "2.2.0"
         || contract.status != "frozen"
         || contract.server.name != "Palladin Agents"
         || contract.server.title != "Palladin Agent Runtime"
