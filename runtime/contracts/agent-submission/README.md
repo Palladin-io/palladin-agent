@@ -3,7 +3,7 @@
 Byte-identical vendored copy of `contracts/agent-submission/v1/contract.json` and
 `v1/fixture.json` from the public
 [palladin-protocol](https://github.com/Palladin-io/palladin-protocol) repository
-(branch `feat/cvt-627-agent-submission-contract`, commit `f3bdfdc`).
+(`main`, commit `b99b95a6cddbb5bb03eaab74a7d877318f5f29b2`).
 
 | File | SHA-256 |
 | --- | --- |
