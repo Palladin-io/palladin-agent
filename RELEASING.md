@@ -1,6 +1,6 @@
 # Palladin CLI release runbook
 
-Palladin Agent is a public repository and a security-sensitive credential runtime. Releases are built, signed, staged, approved, and published by protected GitHub Actions workflows. Publishing from a laptop or with a long-lived npm token is forbidden.
+Palladin Agent is a public repository and a security-sensitive credential runtime. Releases are built, signed, verified, and published by owner-authorized GitHub Actions workflows. Publishing from a laptop or with a long-lived npm token is forbidden.
 
 The product owner and only release approver is `@patryk-roguszewski`. A release is not complete until every verification below passes and the GitHub release is immutable.
 
@@ -10,9 +10,9 @@ The product owner and only release approver is `@patryk-roguszewski`. A release 
 - Use GitHub-hosted runners. npm trusted publishing does not support self-hosted runners.
 - Pin every third-party GitHub Action to a full 40-character commit SHA and keep the readable version in a comment.
 - Give build jobs `contents: read`. Grant `id-token: write`, `attestations: write`, or other write permissions only to the exact job that needs them.
-- Keep npm trusted publishers stage-only. CI may run `npm stage publish`, but it must never run a direct `npm publish` for an established package.
-- Require Patryk's GitHub environment approval before any signing secret, OIDC publishing identity, or release finalization becomes available.
-- Require Patryk to review every staged npm package and approve it interactively with npm 2FA.
+- Publish directly with `npm publish` through the exact npm trusted publisher (OIDC), without an npm token or per-package approval.
+- Require both the original workflow actor and the actor triggering a rerun to be `patryk-roguszewski`; retain the protected immutable tag and reviewed-source checks.
+- Keep npm account 2FA and token publishing disabled. Only the configured release workflows may publish without an interactive npm approval.
 - Never place npm tokens, signing keys, notarization credentials, package contents, or runtime secrets in logs or artifacts.
 - Never move or reuse a release tag. Never reuse a version that reached npm staging or the live registry.
 - Run only one active Palladin npm release train at a time. All release workflows share a global concurrency group. An abandoned candidate with no pending npm stages may remain as a draft for audit, but it must never be resumed or finalized after the release source changes.
@@ -48,21 +48,23 @@ Do not bootstrap from a developer machine. Do not keep a fallback token after tr
 
 ## Trusted publisher configuration
 
-Configure each npm package separately. npm permits only one trusted publisher per package.
+Configure each npm package separately. Update the existing publisher without broadening its repository, workflow or environment scope.
 
 Use these settings:
 
 - Provider: GitHub Actions
 - Organization or user: `Palladin-io`
 - Repository: `palladin-agent`
-- Workflow: the exact platform or meta release workflow filename in `.github/workflows/`
+- Workflow: `release-platforms.yml` for the five active platform packages; `release-meta.yml` for `@palladin/cli`
 - Environment: `npm-release`
-- Allowed action: `npm stage publish` only
-- Direct `npm publish`: disabled
+- Allowed action: direct `npm publish`
+- Publishing access: **Require two-factor authentication and disallow tokens**
 
 The publishing job must use Node `22.14.0` or newer and npm `11.15.0` or newer, request `id-token: write`, and run on a GitHub-hosted runner. Pin an exact npm 11 version in the workflow so CLI behavior does not change during a release.
 
-Before the first functional release, verify a staged publish through the protected workflow. `npm whoami` is not an OIDC verification and must not be used as one. A successful `npm stage publish`, visible source provenance, and a rejected direct `npm publish` are the verification. The bootstrap versions and npm UI settings alone do not prove that release OIDC works end-to-end.
+Verify direct publication through the protected workflow, public exact-version registry bytes and source provenance. `npm whoami` only checks local interactive authentication, not OIDC. UI configuration alone does not prove release OIDC works end-to-end.
+
+The owner authorized this change on 2026-10-29. In npm package settings, enable direct publishing for the existing scoped publisher on each of the five active platform packages and `@palladin/cli`. Keep account 2FA enabled. Previously tagged workflows retain their original staged-publishing behavior; do not move tags. Already staged packages still require their original 2FA approval. Apply this workflow change only to a new reviewed release tag.
 
 ## Protected GitHub configuration
 
@@ -87,10 +89,10 @@ Every production native binary and CLI embeds the same public Ed25519 trust anch
 
 Configure the public `PALLADIN_VERSION_POLICY_PUBLIC_KEY` variable and the protected `version-policy-signing` environment with `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_VERSION_POLICY_SERVICE_ACCOUNT`, `GCP_PROJECT_ID`, `GCP_VERSION_POLICY_KEY`, `GCP_VERSION_POLICY_KEYRING`, `GCP_VERSION_POLICY_LOCATION` and `GCP_VERSION_POLICY_KEY_VERSION`. These existing variable and file names are retained for build compatibility; they now describe immutable signatures only. The workload identity is limited to the owner-dispatched release workflows on immutable owner-created release tags. The signer needs public-key retrieval and signing on its exact KMS key, not storage access. No bucket or serving infrastructure is required.
 
-1. `release-platforms.yml` builds the five macOS ARM/Linux candidates, signs and notarizes macOS, and stages the exact platform packages.
-2. After owner acceptance of those candidates, `release-meta.yml` verifies their provenance and exact bytes, hashes each client and worker, and KMS-signs the deterministic manifest.
+1. `release-platforms.yml` builds the five macOS ARM/Linux candidates, signs and notarizes macOS, and publishes the exact platform packages under `candidate`.
+2. After those exact candidates are public, `release-meta.yml` verifies their provenance and exact bytes, hashes each client and worker, and KMS-signs the deterministic manifest.
 3. Native artifact smokes verify the signature and exact source/version/worker hash. An installed CLI smoke verifies the bundled signature without contacting release infrastructure.
-4. The same signed manifest is embedded in the CLI and attached to the draft release. Retries must reuse its byte-identical artifact bindings. For official releases after `0.0.9`, npm staging and finalization also require the owner-approved adversarial and physical lifecycle evidence. The opt-in `0.0.10` preview below is not an official release or a waiver of those finalization gates.
+4. The same signed manifest is embedded in the CLI and attached to the draft release. Retries must reuse its byte-identical artifact bindings. For official releases after `0.0.9`, npm publication and finalization also require the owner-approved adversarial and physical lifecycle evidence. The opt-in `0.0.10` preview below is not an official release or a waiver of those finalization gates.
 
 An already installed correctly signed version is not remotely revocable. Publish a security advisory, deprecate affected npm versions and instruct users to update explicitly. Do not promise forced upgrades or immediate revocation. Existing package-manager downgrade checks and native identity/schema integrity remain independent safeguards; a signed release is not rejected solely because a newer release exists.
 
@@ -125,23 +127,21 @@ For every platform tarball:
 
 Any mismatch in signature, entitlement, identity, checksum, manifest, SBOM, provenance, attestation, package contents, version, or source commit stops the release.
 
-### 3. Stage and approve platform candidates
+### 3. Publish platform candidates
 
-1. The protected OIDC job stages each platform tarball with `npm stage publish --tag candidate`. It must not receive an npm token.
-2. Record each stage ID and expected SHA-256 digest in the release manifest without exposing credentials.
-3. Patryk uses npmjs.com or an interactive npm CLI session to inspect every staged package. Download the staged tarball and compare it byte-for-byte with the attested tarball.
-4. Patryk approves each platform stage with npm 2FA. No bot, workflow, access token, or second person approves on Patryk's behalf.
-5. Install every published platform package from the public npm registry by exact `X.Y.Z` in clean target runners. Re-run signature, checksum, launcher, startup, and smoke tests against the registry tarball.
+1. The owner-authorized OIDC job publishes each verified platform tarball with `npm publish --tag candidate --provenance --ignore-scripts`. It must not receive an npm token.
+2. Record each published package version, expected digest and provenance.
+3. Install every published platform package from the public npm registry by exact `X.Y.Z` in clean target runners. Re-run signature, checksum, launcher, startup, and smoke tests against the registry tarball.
 
-The `candidate` dist-tag deliberately keeps platform packages away from their default tag. Exact optional dependency versions still allow the meta package to resolve them after the final approval.
+The `candidate` dist-tag deliberately keeps platform packages away from their default tag. Exact optional dependency versions still allow the meta package to resolve them after the meta-package gates pass.
 
 ### 4. Collect and approve adversarial evidence
 
 For `0.0.9` only, the product owner directed publication before this adversarial matrix and the physical lifecycle workflow. The release must say plainly that these checks are pending. Do not create placeholder reports or approvals, and do not attach them to the immutable release later. Keep source/contract CI, signed and notarized macOS, exact artifact verification, KMS-signed release policy, npm provenance, and clean registry smokes as publication gates. Run the deferred QA against the public version afterward; the physical workflow accepts only the published tag and stores its report as a GitHub Actions artifact for 90 days. Preserve the reviewed results separately before that artifact expires, and ship fixes under a new patch version if needed. The procedure below remains mandatory for later releases.
 
-After platform staging and registry smoke tests pass, but before the public meta package is staged, collect the adversarial evidence for the exact tagged source and exact platform artifact digests. Automated evidence is not a substitute for a cell marked `manual-required` in `security/adversarial/coverage-manifest.json`.
+After platform publication and registry smoke tests pass, but before the public meta package is published, collect the adversarial evidence for the exact tagged source and exact platform artifact digests. Automated evidence is not a substitute for a cell marked `manual-required` in `security/adversarial/coverage-manifest.json`.
 
-1. Run every automated and manual target-tier-attack cell required by the manifest against the staged artifact whose SHA-256 is recorded in that cell. Never copy evidence from another source SHA, artifact, target, or tier.
+1. Run every automated and manual target-tier-attack cell required by the manifest against the exact candidate artifact whose SHA-256 is recorded in that cell. Never copy evidence from another source SHA, artifact, target, or tier.
 2. Record every outcome explicitly. There is no default `passed` outcome. Convenience same-user observations use the manifest's `expected-residual` result and residual-risk reference; a failed cell requires a structured finding.
 3. Manual-required cells use only `manual://operator-attestation/<target>/<attack>/<UTC timestamp>` evidence references. A GitHub Actions artifact reference cannot satisfy a manual boundary.
 4. Keep canaries, credentials, API keys, private keys, process memory, environments, protocol payloads, and all other secret values out of evidence and reports.
@@ -150,22 +150,21 @@ After platform staging and registry smoke tests pass, but before the public meta
 7. For releases after `0.0.9`, Patryk alone uploads `adversarial-report.json` and `adversarial-report.md` to the existing draft release after reviewing that both files contain no secrets. Do not replace either file after approval. For the deferred `0.0.9` run, retain the reviewed reports outside the immutable release, with their exact source and artifact digests.
 8. The protected `version-policy-signing` job derives every manual-required cell from that exact report and KMS-signs `adversarial-approval.json` as Patryk. The signed payload binds the operator, approval time, source SHA, report digest, target, attack, result, observation time, evidence reference, and exact artifact SHA-256. Never create or upload this approval by hand.
 
-An unresolved or accepted Critical/High finding, incomplete target, stale observation, artifact mismatch, overdue residual-risk review, missing manual attestation, forged operator, or invalid KMS signature stops the workflow before `@palladin/cli` is staged. Linux Hardened DEB and RPM are separate evidence targets with separate artifact digests. The protected meta workflow validates the report before build, KMS-signs the manual approval after native smoke tests, and verifies both again immediately before `npm stage publish`.
+An unresolved or accepted Critical/High finding, incomplete target, stale observation, artifact mismatch, overdue residual-risk review, missing manual attestation, forged operator, or invalid KMS signature stops the workflow before `@palladin/cli` is published. Linux Hardened DEB and RPM are separate evidence targets with separate artifact digests. The protected meta workflow validates the report before build, KMS-signs the manual approval after native smoke tests, and verifies both again immediately before `npm publish`.
 
-### 5. Stage and approve the meta package
+### 5. Publish the meta package
 
-For `0.0.9`, stage `latest` after all supported platform registry smokes and the retained cryptographic/artifact gates pass. For `0.0.10`, the same retained gates permit only the opt-in `preview` channel described above. For later versions, also require the adversarial and physical lifecycle gates:
+For `0.0.9`, publish `latest` after all supported platform registry smokes and the retained cryptographic/artifact gates pass. For `0.0.10`, the same retained gates permit only the opt-in `preview` channel described above. For later versions, also require the adversarial and physical lifecycle gates:
 
 1. Build the meta tarball from the same tag commit.
 2. Verify its package allowlist contains only the launcher, runtime metadata, documentation, and license files. It must not contain private source, keys, build caches, test fixtures, or lifecycle scripts.
 3. Verify every supported optional dependency uses exact `X.Y.Z` and no unsupported platform fallback exists.
 4. Generate and verify its checksum, manifest entry, SBOM, provenance, and attestations.
 5. Except for `0.0.9`, re-download and revalidate the approved adversarial reports and KMS-signed operator approval against the tagged source and exact platform release manifest.
-6. Stage the meta package through the protected OIDC workflow with `npm stage publish --tag preview` for `0.0.10`, otherwise `--tag latest` after its applicable gates pass.
-7. Patryk downloads and inspects the staged tarball, verifies the digest and provenance, and, for releases after `0.0.9`, the recorded adversarial gate, then approves it with npm 2FA.
-8. Install `@palladin/cli@X.Y.Z` from npm in clean runners for every supported platform and repeat the end-to-end smoke checks. For an official release, also verify `@palladin/cli@latest`; the `0.0.10` preview must leave `latest` on `0.0.9`.
+6. Publish the byte-identical verified meta package through the protected OIDC workflow with `npm publish --tag preview` for `0.0.10`, otherwise `--tag latest` after its applicable gates pass. No additional npm approval follows the owner-authorized workflow.
+7. Install `@palladin/cli@X.Y.Z` from npm in clean runners for every supported platform and repeat the end-to-end smoke checks. For an official release, also verify `@palladin/cli@latest`; the `0.0.10` preview must leave `latest` on `0.0.9`.
 
-Publishing the meta package is the consumer-visible commit point. Never approve it while a platform package, registry smoke test, attestation, applicable adversarial cell, or Critical/High release blocker is missing.
+Publishing the meta package is the consumer-visible commit point. Never publish it while a platform package, registry smoke test, attestation, applicable adversarial cell, or Critical/High release blocker is missing.
 
 ### 6. Finalize the immutable GitHub release
 
@@ -183,11 +182,11 @@ The owner-only finalizer requires the exact version-specific draft asset set. Fo
 
 ## Failure and recovery
 
-- **Build, test, signing, notarization, or attestation fails before staging:** publish nothing. Fix through a pull request. If the tag's source changes, create a new version and a new protected tag.
+- **Build, test, signing, notarization, or attestation fails before publication:** publish nothing. Fix through a pull request. If the tag's source changes, create a new version and a new protected tag.
 - **A staged package is wrong and no package was approved:** reject every stage for that version with interactive npm 2FA. Fix through a pull request and use a new version. Never overwrite or reuse the staged version.
-- **Only some platform stages were approved:** do not approve the meta package. Do not unpublish the approved packages as routine cleanup. Correct the issue under a new patch version, rebuild every supported platform package and the meta package, and repeat the complete flow.
+- **Only some platform packages were published:** do not publish the meta package. Do not unpublish the published packages as routine cleanup. Correct the issue under a new patch version, rebuild every supported platform package and the meta package, and repeat the complete flow.
 - **All platform packages are public but a release-workflow defect prevents the meta package from being built:** preserve the published bytes and failed run as audit evidence. Fix the workflow through a reviewed PR, abandon the old draft without finalizing it, and start a new exact patch version with the complete platform and meta gates. Never move the original tag or reuse its npm package versions.
-- **All platforms are live but a registry smoke test fails:** keep the meta package unapproved. Preserve evidence, reject its stage if present, and issue a complete new patch release after the cause is fixed.
+- **All platforms are live but a registry smoke test fails:** keep the meta package unpublished. Preserve evidence, reject its stage if present, and issue a complete new patch release after the cause is fixed.
 - **The meta package is live but GitHub finalization fails:** do not republish npm packages and do not move the tag. Resume finalization from the same verified artifacts and digests after Patryk's protected approval.
 - **A stage expires or is rejected:** treat that version as consumed and start a new version. Do not silently create a different tarball with the same version.
 - **A signing or publishing credential may be compromised:** stop release workflows, reject all pending stages, remove trusted publisher access, revoke tokens, rotate affected signing credentials, preserve audit evidence, and follow the security incident process before releasing again.
@@ -201,7 +200,7 @@ Record the following without secrets:
 
 - version, protected tag, and full source commit SHA
 - GitHub workflow run IDs and environment approvals
-- npm stage IDs and Patryk's approval timestamps
+- owner dispatch/rerun identity and OIDC publication timestamps; for historical staged releases, stage IDs and approval timestamps
 - for releases after `0.0.9`, the KMS-signed adversarial operator approval and its exact report digest; for `0.0.9`, the explicit deferral and, after QA runs, the retained reports with exact source and artifact digests
 - package names, registry URLs, tarball digests, and dist-tags
 - signing identities, certificate fingerprints, timestamps, notarization request IDs, and verification results
