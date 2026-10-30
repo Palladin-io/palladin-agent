@@ -41,6 +41,15 @@ enum StoreOperation {
 }
 
 impl MemoryStore {
+    fn any_secret_contains(&self, needle: &[u8]) -> bool {
+        self.state
+            .lock()
+            .expect("store")
+            .secrets
+            .values()
+            .any(|secret| secret.windows(needle.len()).any(|window| window == needle))
+    }
+
     fn contains(&self, owner: &str, slot: SecretSlot) -> bool {
         self.state
             .lock()
@@ -1807,4 +1816,562 @@ async fn mcp_requests_bind_each_profile_to_its_saved_host_and_identity_without_c
             "each selected profile must complete discovery with its own encrypted cache"
         );
     }
+}
+
+const SUBMISSION_FIXTURE: &str =
+    include_str!("../../../contracts/agent-submission/v1/fixture.json");
+
+/// Routes the Agent API by request line so connect and submission share the saved profile host.
+type SharedManifests = Arc<Mutex<Vec<serde_json::Value>>>;
+
+/// Serves manifests from a shared, append-only list, honoring `afterRevision`.
+async fn submission_router() -> (String, Arc<Mutex<Vec<String>>>, SharedManifests) {
+    const AGENT: &str = "0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b";
+    let fixture: serde_json::Value = serde_json::from_str(SUBMISSION_FIXTURE).expect("fixture");
+    let shared: SharedManifests =
+        Arc::new(Mutex::new(vec![fixture["approverManifests"][0].clone()]));
+    let served = Arc::clone(&shared);
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&requests);
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).await.expect("read");
+                bytes.extend_from_slice(&buffer[..read]);
+                let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                let length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .map_or(0, |value| value.trim().parse::<usize>().expect("length"));
+                if bytes.len() >= end + 4 + length || read == 0 {
+                    break;
+                }
+            }
+            let request = String::from_utf8(bytes).expect("UTF-8 request");
+            let body = if request.starts_with("GET /api/agent/me ") {
+                format!(r#"{{"agentId":"{AGENT}","name":null,"status":"active"}}"#)
+            } else if request.contains("/submission-target ") {
+                serde_json::json!({
+                    "vaultId": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
+                    "entryId": "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
+                    "entryRevision": "7",
+                })
+                .to_string()
+            } else if request.starts_with("GET /api/agent/approver-manifests") {
+                let line = request.lines().next().unwrap_or_default();
+                let after = line
+                    .split_once("afterRevision=")
+                    .and_then(|(_, rest)| rest.split_once(' '))
+                    .map_or(0, |(revision, _)| {
+                        revision.parse::<u64>().expect("revision")
+                    });
+                let manifests = served
+                    .lock()
+                    .expect("manifests")
+                    .iter()
+                    .filter(|manifest| {
+                        manifest["manifestRevision"]
+                            .as_str()
+                            .and_then(|revision| revision.parse::<u64>().ok())
+                            .is_some_and(|revision| revision > after)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                serde_json::json!({
+                    "organizationId": "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a",
+                    "agentKeyVersion": 1,
+                    "agentAccessEpoch": "1",
+                    "manifests": manifests,
+                })
+                .to_string()
+            } else if request.starts_with("POST /api/agent/submissions ") {
+                let submitted: serde_json::Value =
+                    serde_json::from_str(request.split_once("\r\n\r\n").expect("body").1)
+                        .expect("submission JSON");
+                serde_json::json!({
+                    "submissionId": submitted["submissionId"],
+                    "state": "pending",
+                    "submissionRevision": "1",
+                })
+                .to_string()
+            } else {
+                panic!(
+                    "unexpected request: {}",
+                    request.lines().next().unwrap_or_default()
+                );
+            };
+            captured.lock().expect("requests").push(request);
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(wire.as_bytes()).await.expect("write");
+        }
+    });
+    (format!("http://{address}"), requests, shared)
+}
+
+#[tokio::test]
+async fn generated_submission_pins_the_approver_in_signed_profile_and_never_reveals_the_secret() {
+    use base64::Engine as _;
+    use palladin_credential::generator::PasswordPolicy;
+    use palladin_crypto::{
+        AgentEntrySubmission, SubmissionAuthority, SubmissionContent, SubmissionEntryType,
+        SubmissionRecipient, open_agent_submission,
+    };
+    use palladin_runtime::{SubmissionRequest, SubmissionRequestTarget, SubmissionSecret};
+    use sha2::Digest as _;
+
+    let root = tempfile::tempdir().expect("root");
+    let store = MemoryStore::default();
+    let service = service(root.path(), store.clone());
+    service.create_profile("build", None).expect("profile");
+    let (host, requests, _) = submission_router().await;
+    service
+        .connect(
+            Some("build"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            ApiHost::parse(&host).expect("host"),
+            None,
+            None,
+            "fixture-host",
+            &operation_connection(),
+        )
+        .await
+        .expect("connect");
+    let request = SubmissionRequest {
+        target: SubmissionRequestTarget::New {
+            suggested_vault_id: None,
+        },
+        entry_type: Some(SubmissionEntryType::Credential),
+        label: Some("Example Account"),
+        url: Some("https://example.invalid/login"),
+        username: Some("agent@example.invalid"),
+    };
+    let session = service
+        .open_session(
+            Some("build"),
+            "fixture-host",
+            &operation_connection(),
+            OperationDescriptor::SubmitEntry {
+                surface: InvocationSurface::Cli,
+                request_digest: request.digest(true),
+            },
+        )
+        .expect("session");
+    let signing_public_key: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(session.config().signing_public_key.as_deref().expect("key"))
+        .expect("base64")
+        .try_into()
+        .expect("32 bytes");
+    let result = session
+        .submit_entry(
+            request,
+            SubmissionSecret::Generate(PasswordPolicy::default()),
+        )
+        .await
+        .expect("submission");
+    drop(session);
+    assert!(result.outcome.is_ok());
+
+    let post = requests
+        .lock()
+        .expect("requests")
+        .iter()
+        .find(|request| request.starts_with("POST /api/agent/submissions "))
+        .cloned()
+        .expect("submission POST");
+    let fixture: serde_json::Value = serde_json::from_str(SUBMISSION_FIXTURE).expect("fixture");
+    let seed = hex::decode(
+        fixture["deterministicInputs"]["approverV1X25519Seed"]
+            .as_str()
+            .expect("seed"),
+    )
+    .expect("hex");
+    let approver =
+        X25519Identity::from_private_bytes(sha2::Sha512::digest(seed)[..32].to_vec()).unwrap();
+    let submission = AgentEntrySubmission::from_value(
+        &serde_json::from_str(post.split_once("\r\n\r\n").expect("body").1).expect("JSON"),
+    )
+    .expect("strict transport");
+    let opened = open_agent_submission(
+        &submission,
+        &SubmissionAuthority {
+            organization_id: submission.identity.organization_id,
+            agent_id: submission.identity.agent_id,
+            agent_signing_public_key: &signing_public_key,
+            recipient: SubmissionRecipient::ApproverGroup {
+                key_version: 1,
+                identity: &approver,
+            },
+        },
+    )
+    .expect("approver opens");
+    let SubmissionContent::Credential { password, .. } = opened.content else {
+        panic!("credential");
+    };
+    let password = password.expose_secret().to_owned();
+    assert_eq!(password.len(), 24);
+
+    for json in [false, true] {
+        let output = palladin_cli::output::render_submission_result(&result, json);
+        assert_eq!(output.exit_code, 0);
+        assert!(!output.stdout.contains(&password) && !output.stderr.contains(&password));
+        if json {
+            let value: serde_json::Value = serde_json::from_str(&output.stdout).expect("JSON");
+            let keys = value
+                .as_object()
+                .expect("object")
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                keys,
+                [
+                    "message",
+                    "siteStatus",
+                    "submissionId",
+                    "submissionState",
+                    "submissionStatus"
+                ]
+            );
+            assert_eq!(value["submissionStatus"], "saved");
+            assert_eq!(value["siteStatus"], "not-attempted");
+        }
+    }
+    for request in requests.lock().expect("requests").iter() {
+        assert!(!request.contains(&password));
+    }
+    let public = read_public_files(root.path());
+    assert!(!public.contains(&password));
+    assert!(
+        !store.any_secret_contains(password.as_bytes()),
+        "the secret never reaches secure storage either"
+    );
+    assert!(public.contains("approverTrustAnchor"));
+
+    let restarted = self::service(root.path(), store.clone());
+    let reopened = restarted
+        .open_session(
+            Some("build"),
+            "fixture-host",
+            &operation_connection(),
+            OperationDescriptor::SubmissionStatus {
+                surface: InvocationSurface::Cli,
+                submission_id: None,
+            },
+        )
+        .expect("pinned profile verifies");
+    let anchor = reopened
+        .config()
+        .approver_trust_anchor
+        .clone()
+        .expect("approver pin committed to the signed profile");
+    assert_eq!(anchor.key_version, 1);
+    assert_eq!(anchor.manifest_revision, "1");
+    drop(reopened);
+
+    let update = SubmissionRequest {
+        target: SubmissionRequestTarget::Update {
+            vault_id: "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
+            entry_id: "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
+        },
+        entry_type: Some(SubmissionEntryType::Credential),
+        label: None,
+        url: None,
+        username: None,
+    };
+    let update_session = service
+        .open_session(
+            Some("build"),
+            "fixture-host",
+            &operation_connection(),
+            OperationDescriptor::SubmitEntry {
+                surface: InvocationSurface::Cli,
+                request_digest: update.digest(true),
+            },
+        )
+        .expect("update session");
+    let updated = update_session
+        .submit_entry(
+            update,
+            SubmissionSecret::Generate(PasswordPolicy::default()),
+        )
+        .await
+        .expect("update");
+    drop(update_session);
+    assert!(updated.outcome.is_ok(), "{updated:?}");
+    let requests_seen = requests.lock().expect("requests").clone();
+    assert!(
+        requests_seen
+            .iter()
+            .any(|request| request.contains("/submission-target "))
+    );
+    assert!(
+        requests_seen.iter().all(|request| !request
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .contains("/credential")),
+        "an update never reaches credential delivery or creates an access request"
+    );
+
+    let config_path =
+        find_file_containing(root.path(), "approverTrustAnchor").expect("pinned config");
+    let original = std::fs::read(&config_path).expect("config");
+    let mut rolled_back: serde_json::Value = serde_json::from_slice(&original).expect("JSON");
+    rolled_back
+        .as_object_mut()
+        .expect("config")
+        .remove("approverTrustAnchor");
+    std::fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&rolled_back).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        service
+            .open_session(
+                Some("build"),
+                "fixture-host",
+                &operation_connection(),
+                OperationDescriptor::SubmissionStatus {
+                    surface: InvocationSurface::Cli,
+                    submission_id: None,
+                },
+            )
+            .is_err(),
+        "removing the pin is a rollback and must fail integrity verification"
+    );
+}
+
+fn find_file_containing(path: &std::path::Path, needle: &str) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(path)
+        .expect("directory")
+        .find_map(|entry| {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                find_file_containing(&path, needle)
+            } else {
+                std::fs::read_to_string(&path)
+                    .is_ok_and(|text| text.contains(needle))
+                    .then_some(path)
+            }
+        })
+}
+
+fn submit_session(
+    service: &RuntimeService<MemoryStore>,
+    request_digest: [u8; 32],
+) -> palladin_cli::RuntimeSession<'_> {
+    service
+        .open_session(
+            Some("build"),
+            "fixture-host",
+            &operation_connection(),
+            OperationDescriptor::SubmitEntry {
+                surface: InvocationSurface::Cli,
+                request_digest,
+            },
+        )
+        .expect("session")
+}
+
+fn re_bootstrapped_manifest() -> serde_json::Value {
+    use base64::Engine as _;
+    use ed25519_dalek::Signer as _;
+    let fixture: serde_json::Value = serde_json::from_str(SUBMISSION_FIXTURE).expect("fixture");
+    let mut manifest = fixture["approverManifests"][1].clone();
+    let object = manifest.as_object_mut().expect("manifest");
+    for field in [
+        "signature",
+        "continuitySignature",
+        "previousSigningKeyFingerprint",
+    ] {
+        object.remove(field);
+    }
+    let mut input = b"PLDNSUB1SIG:APPROVER-MANIFEST:\x00\x02".to_vec();
+    input.extend(serde_jcs::to_vec(&manifest).expect("JCS"));
+    let seed: [u8; 32] = hex::decode(
+        fixture["deterministicInputs"]["approverV2Ed25519Seed"]
+            .as_str()
+            .expect("seed"),
+    )
+    .expect("hex")
+    .try_into()
+    .expect("seed length");
+    let signature = ed25519_dalek::SigningKey::from_bytes(&seed).sign(&input);
+    manifest["signature"] = serde_json::json!(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes())
+    );
+    manifest
+}
+
+#[tokio::test]
+async fn re_bootstrapped_approver_key_needs_explicit_re_trust_that_survives_restart() {
+    use palladin_credential::generator::PasswordPolicy;
+    use palladin_crypto::SubmissionEntryType;
+    use palladin_runtime::{
+        SubmissionHint, SubmissionNotSaved, SubmissionRequest, SubmissionRequestTarget,
+        SubmissionSecret,
+    };
+
+    let root = tempfile::tempdir().expect("root");
+    let store = MemoryStore::default();
+    let first = service(root.path(), store.clone());
+    first.create_profile("build", None).expect("profile");
+    let (host, requests, manifests) = submission_router().await;
+    first
+        .connect(
+            Some("build"),
+            OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
+            ApiHost::parse(&host).expect("host"),
+            None,
+            None,
+            "fixture-host",
+            &operation_connection(),
+        )
+        .await
+        .expect("connect");
+    let request = SubmissionRequest {
+        target: SubmissionRequestTarget::New {
+            suggested_vault_id: None,
+        },
+        entry_type: Some(SubmissionEntryType::Credential),
+        label: Some("Example Account"),
+        url: None,
+        username: Some("agent@example.invalid"),
+    };
+    let submit = |service| submit_session(service, request.digest(true));
+    let session = submit(&first);
+    assert!(
+        session
+            .submit_entry(
+                request,
+                SubmissionSecret::Generate(PasswordPolicy::default())
+            )
+            .await
+            .expect("pinning submission")
+            .outcome
+            .is_ok()
+    );
+    drop(session);
+
+    let re_bootstrap = re_bootstrapped_manifest();
+    let fingerprint = palladin_core::terminal::shorten_identifier(
+        re_bootstrap["signingKeyFingerprint"]
+            .as_str()
+            .expect("fingerprint"),
+    );
+    manifests.lock().expect("manifests").push(re_bootstrap);
+    let posts_before = requests
+        .lock()
+        .expect("requests")
+        .iter()
+        .filter(|request| request.starts_with("POST"))
+        .count();
+    let restarted = service(root.path(), store.clone());
+    let session = submit(&restarted);
+    let refused = session
+        .submit_entry(
+            request,
+            SubmissionSecret::Generate(PasswordPolicy::default()),
+        )
+        .await
+        .expect("refused submission");
+    drop(session);
+    assert_eq!(
+        refused.outcome,
+        Err(SubmissionNotSaved::ApproverKeyUntrusted)
+    );
+    assert_eq!(
+        refused.hints,
+        vec![SubmissionHint::ApproverReintroduction {
+            signing_key_fingerprint: fingerprint.clone(),
+        }]
+    );
+    assert_eq!(
+        requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .filter(|request| request.starts_with("POST"))
+            .count(),
+        posts_before,
+        "nothing is uploaded to a re-created key before re-trust"
+    );
+
+    let config_path =
+        find_file_containing(root.path(), "approverTrustAnchor").expect("pinned config");
+    let pinned_v1 = std::fs::read(&config_path).expect("config");
+    let key = restarted
+        .open_session(
+            Some("build"),
+            "fixture-host",
+            &operation_connection(),
+            OperationDescriptor::TrustApprovers {
+                signing_key_fingerprint: fingerprint.clone(),
+            },
+        )
+        .expect("trust session")
+        .trust_approvers(&fingerprint)
+        .await
+        .expect("explicit re-trust");
+    assert_eq!(key.key_version, 2);
+
+    let after_restart = service(root.path(), store.clone());
+    let session = submit(&after_restart);
+    assert_eq!(
+        session
+            .config()
+            .approver_trust_anchor
+            .as_ref()
+            .map(|anchor| anchor.key_version),
+        Some(2),
+        "the re-trusted pin is durable across a process restart"
+    );
+    let saved = session
+        .submit_entry(
+            request,
+            SubmissionSecret::Generate(PasswordPolicy::default()),
+        )
+        .await
+        .expect("submission after re-trust");
+    drop(session);
+    assert!(saved.outcome.is_ok());
+    let last_post = requests
+        .lock()
+        .expect("requests")
+        .iter()
+        .rev()
+        .find(|request| request.starts_with("POST"))
+        .cloned()
+        .expect("post");
+    let body: serde_json::Value =
+        serde_json::from_str(last_post.split_once("\r\n\r\n").expect("body").1).expect("JSON");
+    assert_eq!(body["approverKeyVersion"], 2);
+
+    std::fs::write(&config_path, pinned_v1).expect("roll back pin");
+    assert!(
+        service(root.path(), store)
+            .open_session(
+                Some("build"),
+                "fixture-host",
+                &operation_connection(),
+                OperationDescriptor::SubmissionStatus {
+                    surface: InvocationSurface::Cli,
+                    submission_id: None,
+                },
+            )
+            .is_err(),
+        "restoring the pre-re-trust pin is a detected rollback"
+    );
 }

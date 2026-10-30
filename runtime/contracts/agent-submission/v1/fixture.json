@@ -1,0 +1,181 @@
+{
+  "contract": "palladin-agent-submission",
+  "contractVersion": 1,
+  "warning": "Deterministic synthetic conformance data. Every key, nonce and secret is invalid outside tests.",
+  "deterministicInputs": {
+    "agentX25519Seed": "1111111111111111111111111111111111111111111111111111111111111111",
+    "agentEd25519Seed": "1212121212121212121212121212121212121212121212121212121212121212",
+    "memberX25519Seed": "1313131313131313131313131313131313131313131313131313131313131313",
+    "approverV1X25519Seed": "2121212121212121212121212121212121212121212121212121212121212121",
+    "approverV1Ed25519Seed": "2222222222222222222222222222222222222222222222222222222222222222",
+    "approverV2X25519Seed": "2323232323232323232323232323232323232323232323232323232323232323",
+    "approverV2Ed25519Seed": "2424242424242424242424242424242424242424242424242424242424242424",
+    "submissionDek": "3131313131313131313131313131313131313131313131313131313131313131",
+    "payloadNonce": "323232323232323232323232323232323232323232323232",
+    "ephemeralSeeds": {
+      "approverV1MessageWrap": "4141414141414141414141414141414141414141414141414141414141414141",
+      "approverV1SigningWrap": "4242424242424242424242424242424242424242424242424242424242424242",
+      "agentDekWrap": "4343434343434343434343434343434343434343434343434343434343434343",
+      "approverV1DekWrap": "4444444444444444444444444444444444444444444444444444444444444444",
+      "agentDekReWrap": "4545454545454545454545454545454545454545454545454545454545454545",
+      "approverV2DekWrap": "4646464646464646464646464646464646464646464646464646464646464646"
+    }
+  },
+  "context": {
+    "organizationId": "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a",
+    "agentId": "0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b",
+    "memberId": "0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c",
+    "agentKeyVersion": 3,
+    "agentAccessEpoch": "4",
+    "memberKeyVersion": 2,
+    "agentX25519PublicKey": "ekbhKf2AUEdEhDfkdE8fFXa-jESf31fgxYDTbFz8Zmg",
+    "agentEd25519PublicKey": "IEBA42TBDyvsnB_lAKHNTCR8idZQoB7X6CyrqGeHfCE",
+    "memberX25519PublicKey": "R-Ep6LX1pCsLIW9F0QQ6JuLmNtIRu01_MN6Lc4GFVDk"
+  },
+  "approverManifests": [
+    {
+      "schema": "palladin.organization-approver-manifest.v1",
+      "contractVersion": 1,
+      "protocolVersion": 2,
+      "organizationId": "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a",
+      "keyVersion": 1,
+      "manifestRevision": "1",
+      "approverSetRevision": "1",
+      "approverSetDigest": "Mti-UjrTM776Xrz3D4D1-quPLW0g8EqrQrz_PcjWYm0",
+      "messagePublicKey": "kxqtAwrZPT_4BCaZMk_bIwWFvk2vUAJm6qS490dUP1A",
+      "messageKeyFingerprint": "vp_Bq_kI2BBx41rOG49pG8YAgGteOp5HxQudrpzu_n0",
+      "signingPublicKey": "oJql9HpnWYAv-VX43C0qFKXJnSO-l_hkEn_5ODRVpPA",
+      "signingKeyFingerprint": "cL6Q6gdVcLEM6vODM1oziwnzxv-Qn3dy5_7i5xknT0I",
+      "issuedAt": "2026-10-29T08:00:00Z",
+      "signature": "wkWoUu5x9_RBp5DbL-2ykt7_vyT2_PSEvMu64PYaMjAmzunPIipoDQZ3T9EkFGG3nHmaSznKSFw5NGlDjUo2Dw"
+    },
+    {
+      "schema": "palladin.organization-approver-manifest.v1",
+      "contractVersion": 1,
+      "protocolVersion": 2,
+      "organizationId": "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a",
+      "keyVersion": 2,
+      "manifestRevision": "2",
+      "approverSetRevision": "2",
+      "approverSetDigest": "Mti-UjrTM776Xrz3D4D1-quPLW0g8EqrQrz_PcjWYm0",
+      "messagePublicKey": "Xesey89oAeuRdblPsr1XSQMcYeeZcp3K0hN7peLW1yU",
+      "messageKeyFingerprint": "vBNp8yGjtqD3WhKuHEQU5TN10PVNNtpbKghC9cU_ESw",
+      "signingPublicKey": "WJNmBKvaESvJSTNWnIL40MwN35Kj-DKfL0SPf0hKWUw",
+      "signingKeyFingerprint": "CddpQldlKNTcpEXSFiP9y7KJKIUHfl5Djt1cbCsknV0",
+      "previousSigningKeyFingerprint": "cL6Q6gdVcLEM6vODM1oziwnzxv-Qn3dy5_7i5xknT0I",
+      "issuedAt": "2026-10-30T08:00:00Z",
+      "signature": "KA19fLe-4nFVWRoj1UHoeTZC0mtdrk1WQ4Ac-n9EUM1b8lpjzScC0O74pMxz0XTLCSFNdYUC6uEPD7zZtPJeCw",
+      "continuitySignature": "8L2FRrN-dGVIR6jL4aGaeDl47kJEU4iUA9VAg5MqfrrkLV7Gfgmp_-VJlXR7II-tSElu1oqtKhWDGAHQFqX3Ag"
+    }
+  ],
+  "approverKeyWraps": [
+    {
+      "descriptor": {
+        "purpose": 8,
+        "scopeBitmap": 33,
+        "organizationId": "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a",
+        "memberId": "0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c",
+        "resourceRevision": "1",
+        "wrappedKeyVersion": 1,
+        "recipientKeyKind": 5,
+        "recipientKeyVersion": 2,
+        "recipientFingerprint": "kG7elzgc__mGo9Wj1bvuqzb7loJma34dW4DD3yLupN0"
+      },
+      "encodedSealedKeyPackage": "EEOtNNMpbBfP5VbhcEUrbYluUsTtkR8lRxE5jlhHbiA1IPKuShf0lXVpG6Nv2u7M67FJUG6HiA-rWXutw9JU_dgfukPmBQhoRJnjsLBoX-3TD2v6LCdtyumo9B-zNz_s_m26LvzwrkehJyA7JXzjCdvZNaOwOXkQ"
+    },
+    {
+      "descriptor": {
+        "purpose": 9,
+        "scopeBitmap": 33,
+        "organizationId": "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a",
+        "memberId": "0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c",
+        "resourceRevision": "1",
+        "wrappedKeyVersion": 1,
+        "recipientKeyKind": 5,
+        "recipientKeyVersion": 2,
+        "recipientFingerprint": "kG7elzgc__mGo9Wj1bvuqzb7loJma34dW4DD3yLupN0"
+      },
+      "encodedSealedKeyPackage": "zE8s22ld12bzQRjrZ7mGUv7R2LxJwzCxGbv6imSYk3ig2JXBCoT4-1UvhSMhhdLdShvqMpEv47au4CpQ_ywxuOxK8Xa1meobcIPKJGizX6BKfQhjA0cN8ZQdKDNZXms74ea2CG5I1QY_GWLTU7yXAKSctL-UypWy"
+    }
+  ],
+  "submissions": [
+    {
+      "schema": "palladin.agent-entry-submission.v1",
+      "contractVersion": 1,
+      "protocolVersion": 2,
+      "organizationId": "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a",
+      "submissionId": "0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d",
+      "agentId": "0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b",
+      "submissionKind": 2,
+      "entryType": 1,
+      "target": {
+        "kind": "update",
+        "vaultId": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
+        "entryId": "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
+        "expectedEntryRevision": "7"
+      },
+      "submissionRevision": "1",
+      "agentAccessEpoch": "4",
+      "agentKeyVersion": 3,
+      "agentKeyFingerprint": "oc4wdkjVcLPntU9KXCHOEwjN4iegwKMpL7zdCDjD9c4",
+      "approverKeyVersion": 1,
+      "approverMessageKeyFingerprint": "vp_Bq_kI2BBx41rOG49pG8YAgGteOp5HxQudrpzu_n0",
+      "approverManifestRevision": "1",
+      "encodedPayload": "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyDZEgboo4Z-ttvtSSfTge2NfRWDmCCU9JNsneazXhpKgdsTJMLGK1g_R3Bs6pL8pf7RSjw51dx0fh6bY_V8F_Xzmrq-Fm_zVJ7FBGK4MjJf2RlowtBmec8ZRhDai3J0rFNdWXlR16j_TzZSWhiPNlD2yMBzUM_6KG480JEI7c3davbUV_sLREkYGq8-gmhGDPT0rWVBcLIyKKFgB8tedmWZoO72ZsfS-lnENgyt0P6yoiW7uVi6SA1M6hxctoSWdv8o8jNsAiaouVxvIt9PMAlfZ6PuO8AbU9cQddC_xCUlDHXf22hoDufUyxw0JJo9fAMQsOixFEWJNwrFswat8FoRMyJgwkViJNbYocgKNENEehkSHvHFBXYz_rYBZeM_ymjkdBx--wAdtHFqXXnaDTVmvvzubitmdXj6v1ZDwWENHsZSTDcqR3pPb9oSoArtY9_xYI6bW8yDbspVZx5uZ1jx8C1XbOp2UmcudFTXKAEujgUWB_xmtWUSkg7Z7Oi8mFgZNQ6n5hzh-Hd9L3xhLEbSYvwwFo_8oTBBtprIwF-fEnUcs4msbNV5GWtSeeii2vqg05iAJ1qeUxL1Z7iJ9RDggFhaLhHHkPFhWaLDoRKKWDFMHa6-xE7FDEB9_ZZVFRHVqGWPKOFdNSxBnCYti0zuD_7nByB4_zf3JTrxpzXd64lmpZrpPSIX1Hi-ELI1ARrE4PfMnnx3KuVYHS72fa-7-K177PD7zRd2uzpqCtVdUe0_P88L89e5Cea8NgUHw12UAfequTqqGcQlabQYZIcgLtQpXAKmyZJBm_CkW9R1QhJM2BxBuBuFCI5TkTqaaHChXA4mQYS1sY",
+      "encodedAgentWrappedDek": "5ts4hhGFovRyFq-15oQJocMtyctz1sU4pTf7jvVxaFIJp7VUWjgbyHHwdYBw9bbqEDMThe11yBv0ua2Y5OQF_T57lkr-Yj5U_w9BXGnzm2mOYEi31zzEmV-slCiBjSR_EsJM0ho5lrQadPJWwA_kKJhurQg2hUB4",
+      "encodedApproverWrappedDek": "fOMbqpoEtc-4OrfM3Xtmm5EaCC0piD1qrTJWKUoKXgyRcF6D5vLpqVQkFqtxpONgAezaxub2HdPq_ll6ff2qC_UIuV7lb92mClyzYLirfi4OZX2yxpFMhpjVhi2XiSRE-OG2BdP2YX9qhzpUPqXkR2y5Qg6zez8f",
+      "agentSignature": "KCQ8jS_KkGDKrSlh54qcmc_mKU_CD752IcEtaUd28QCiVFRknuBDrwstFM9hewsJ9Fu3UGdYuKtRziMFhIwMDw"
+    },
+    {
+      "schema": "palladin.agent-entry-submission.v1",
+      "contractVersion": 1,
+      "protocolVersion": 2,
+      "organizationId": "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a",
+      "submissionId": "0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d",
+      "agentId": "0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b",
+      "submissionKind": 2,
+      "entryType": 1,
+      "target": {
+        "kind": "update",
+        "vaultId": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
+        "entryId": "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
+        "expectedEntryRevision": "7"
+      },
+      "submissionRevision": "2",
+      "agentAccessEpoch": "4",
+      "agentKeyVersion": 3,
+      "agentKeyFingerprint": "oc4wdkjVcLPntU9KXCHOEwjN4iegwKMpL7zdCDjD9c4",
+      "approverKeyVersion": 2,
+      "approverMessageKeyFingerprint": "vBNp8yGjtqD3WhKuHEQU5TN10PVNNtpbKghC9cU_ESw",
+      "approverManifestRevision": "2",
+      "encodedPayload": "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyDZEgboo4Z-ttvtSSfTge2NfRWDmCCU9JNsneazXhpKgdsTJMLGK1g_R3Bs6pL8pf7RSjw51dx0fh6bY_V8F_Xzmrq-Fm_zVJ7FBGK4MjJf2RlowtBmec8ZRhDai3J0rFNdWXlR16j_TzZSWhiPNlD2yMBzUM_6KG480JEI7c3davbUV_sLREkYGq8-gmhGDPT0rWVBcLIyKKFgB8tedmWZoO72ZsfS-lnENgyt0P6yoiW7uVi6SA1M6hxctoSWdv8o8jNsAiaouVxvIt9PMAlfZ6PuO8AbU9cQddC_xCUlDHXf22hoDufUyxw0JJo9fAMQsOixFEWJNwrFswat8FoRMyJgwkViJNbYocgKNENEehkSHvHFBXYz_rYBZeM_ymjkdBx--wAdtHFqXXnaDTVmvvzubitmdXj6v1ZDwWENHsZSTDcqR3pPb9oSoArtY9_xYI6bW8yDbspVZx5uZ1jx8C1XbOp2UmcudFTXKAEujgUWB_xmtWUSkg7Z7Oi8mFgZNQ6n5hzh-Hd9L3xhLEbSYvwwFo_8oTBBtprIwF-fEnUcs4msbNV5GWtSeeii2vqg05iAJ1qeUxL1Z7iJ9RDggFhaLhHHkPFhWaLDoRKKWDFMHa6-xE7FDEB9_ZZVFRHVqGWPKOFdNSxBnCYti0zuD_7nByB4_zf3JTrxpzXd64lmpZrpPSIX1Hi-ELI1ARrE4PfMnnx3KuVYHS72fa-7-K177PD7zRd2uzpqCtVdUe0_P88L89e5Cea8NgUHw12UAfequTqqGcQlabQYZIcgLtQpXAKmyZJBm_CkW9R1QhJM2BxBuBuFCI5TkTqaaHChXA4mQYS1sY",
+      "encodedAgentWrappedDek": "WmW6xHQzYEsxUrofvEJyrdcoKXN0oag_bKmtpHfPBza3S95aSkwsJVxlONBJrXe8aJ0WZCvCvxI2eSrzSkR2QqIJgekUjx5V_GecKvS0v_bvBF0IpzDKWb8Wv3S-xLrhI5oZ6TaZJhRg2Xc8Efg4-zQuUiwtqyb7",
+      "encodedApproverWrappedDek": "j52xMrPgZYhYNmm3QNMj3_RdXRCzz9J7hIfFVjq3QWHCG_zUFcbvQ9fmB7SsoUE9GQaYJ-nZWMBV3ytvjEbyYFc9f2JpdFTQc7X-GPVEqw4SG0Qq02tX_6f64aTVvLNwAc3wS6n_7j5NV4nFTk3w2RPygOkXqS5_",
+      "agentSignature": "JYXAQT8_K8UZXCHPc5tCHDGlh7bqB9zmwW_15kY3nznztuaJT402SWo2pgUFPzw0bG8Yhl4thYv75hG16mvqDw"
+    }
+  ],
+  "expectedPlaintext": {
+    "schema": "palladin.agent-submission-payload.v1",
+    "identity": {
+      "contractVersion": 1,
+      "protocolVersion": 2,
+      "organizationId": "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a",
+      "submissionId": "0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d",
+      "agentId": "0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b",
+      "submissionKind": 2,
+      "entryType": 1,
+      "target": {
+        "kind": "update",
+        "vaultId": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e",
+        "entryId": "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f",
+        "expectedEntryRevision": "7"
+      }
+    },
+    "label": "Synthetic Example Account",
+    "content": {
+      "username": "synthetic-user@example.invalid",
+      "password": "synthetic-Fixture-Only-9!q",
+      "url": "https://example.invalid/login"
+    }
+  }
+}

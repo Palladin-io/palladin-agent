@@ -9,12 +9,18 @@ mod browser_pairing;
 mod discovery;
 mod form_map_cache;
 mod integrity;
+mod submission;
 pub mod version_policy;
 
 pub use browser_pairing::{BrowserPairingMetadata, SetupDescriptorError, encode_setup_descriptor};
 use browser_pairing::{
     MAX_PENDING_BROWSER_PAIRING_STATE_BYTES, PendingBrowserPairingState,
     PendingBrowserPairingStateError,
+};
+pub use submission::{
+    ReTrustedApproverKey, RewrapOutcome, SubmissionHint, SubmissionNotSaved, SubmissionRequest,
+    SubmissionRequestTarget, SubmissionResult, SubmissionSaved, SubmissionSecret,
+    SubmissionStatusItem,
 };
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -39,9 +45,9 @@ use palladin_core::profiles::{
     purge_profile, rename_profile, set_default, set_profile_type,
 };
 use palladin_core::public_store::{
-    PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicDiscoveryCacheCommitment, PublicProfileConfig,
-    PublicRegistry, PublicVaultTrustAnchor, profile_binding_bytes, profile_config_digest,
-    registry_digest,
+    PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicApproverTrustAnchor,
+    PublicDiscoveryCacheCommitment, PublicProfileConfig, PublicRegistry, PublicVaultTrustAnchor,
+    profile_binding_bytes, profile_config_digest, registry_digest,
 };
 use palladin_core::secret::OrganizationApiKey;
 use palladin_core::terminal::shorten_identifier;
@@ -213,6 +219,9 @@ pub enum RuntimeOperation {
     InjectCredential,
     ExecWithCredential,
     ReportCredentialStale,
+    SubmitEntry,
+    SubmissionStatus,
+    TrustApprovers,
     PairVaults,
     VerifyIdentity,
     DeleteProfile,
@@ -232,6 +241,9 @@ impl RuntimeOperation {
             Self::InjectCredential => "inject_credential",
             Self::ExecWithCredential => "exec_with_credential",
             Self::ReportCredentialStale => "report_credential_stale",
+            Self::SubmitEntry => "submit_entry",
+            Self::SubmissionStatus => "submission_status",
+            Self::TrustApprovers => "trust_approvers",
             Self::PairVaults => "pair_vaults",
             Self::VerifyIdentity => "verify_identity",
             Self::DeleteProfile => "delete_profile",
@@ -251,6 +263,9 @@ impl RuntimeOperation {
             Self::InjectCredential => AuthorizationPrompt::InjectCredential,
             Self::ExecWithCredential => AuthorizationPrompt::ExecWithCredential,
             Self::ReportCredentialStale => AuthorizationPrompt::ReportCredentialStale,
+            Self::SubmitEntry => AuthorizationPrompt::SubmitEntry,
+            Self::SubmissionStatus => AuthorizationPrompt::Status,
+            Self::TrustApprovers => AuthorizationPrompt::IdentityManagement,
             Self::VerifyIdentity | Self::UpgradeSecurity | Self::PairVaults => {
                 AuthorizationPrompt::IdentityManagement
             }
@@ -333,6 +348,27 @@ pub enum OperationDescriptor {
         entry_id: String,
         code: String,
     },
+    /// Value-free digest of the non-secret submission request; the secret never enters it.
+    SubmitEntry {
+        surface: InvocationSurface,
+        request_digest: [u8; 32],
+    },
+    SubmissionStatus {
+        surface: InvocationSurface,
+        submission_id: Option<String>,
+    },
+    /// Explicit operator re-trust of a re-created approver key. It has no invocation surface
+    /// because only the interactive CLI constructs it; MCP has no path to it.
+    TrustApprovers {
+        signing_key_fingerprint: String,
+    },
+    /// Inject of the Agent's own pending submission; authorized as an Inject operation.
+    InjectSubmission {
+        surface: InvocationSurface,
+        submission_id: String,
+        provider: String,
+        output: CredentialOutputPolicy,
+    },
     PairVaults {
         activation_id: String,
     },
@@ -365,6 +401,10 @@ impl OperationDescriptor {
             Self::InjectCredential { .. } => RuntimeOperation::InjectCredential,
             Self::ExecWithCredential { .. } => RuntimeOperation::ExecWithCredential,
             Self::ReportCredentialStale { .. } => RuntimeOperation::ReportCredentialStale,
+            Self::SubmitEntry { .. } => RuntimeOperation::SubmitEntry,
+            Self::SubmissionStatus { .. } => RuntimeOperation::SubmissionStatus,
+            Self::TrustApprovers { .. } => RuntimeOperation::TrustApprovers,
+            Self::InjectSubmission { .. } => RuntimeOperation::InjectCredential,
             Self::PairVaults { .. } => RuntimeOperation::PairVaults,
             Self::VerifyIdentity => RuntimeOperation::VerifyIdentity,
             Self::DeleteProfile => RuntimeOperation::DeleteProfile,
@@ -486,6 +526,35 @@ impl OperationDescriptor {
                 encoder.field(vault_id.as_bytes());
                 encoder.field(entry_id.as_bytes());
                 encoder.field(code.as_bytes());
+            }
+            Self::SubmitEntry {
+                surface,
+                request_digest,
+            } => {
+                encoder.surface(*surface);
+                encoder.field(request_digest);
+            }
+            Self::SubmissionStatus {
+                surface,
+                submission_id,
+            } => {
+                encoder.surface(*surface);
+                encoder.optional(submission_id.as_deref());
+            }
+            Self::TrustApprovers {
+                signing_key_fingerprint,
+            } => encoder.field(signing_key_fingerprint.as_bytes()),
+            Self::InjectSubmission {
+                surface,
+                submission_id,
+                provider,
+                output,
+            } => {
+                encoder.field(b"submission");
+                encoder.surface(*surface);
+                encoder.field(submission_id.as_bytes());
+                encoder.field(provider.as_bytes());
+                encoder.output(*output);
             }
             Self::PairVaults { activation_id } => encoder.field(activation_id.as_bytes()),
         }
@@ -1624,6 +1693,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             retired_organization_credential_ids: Vec::new(),
             vault_trust_anchors: Vec::new(),
             discovery_cache: None,
+            approver_trust_anchor: None,
             agent_id: Some(agent_id.to_string()),
             agent_active: true,
             encryption_public_key: Some(STANDARD.encode(encryption.public_key())),
@@ -1952,6 +2022,10 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                     .as_ref()
                     .filter(|config| config.agent_id == agent_id)
                     .and_then(|config| config.discovery_cache.clone()),
+                approver_trust_anchor: existing_config
+                    .as_ref()
+                    .filter(|config| config.agent_id == agent_id)
+                    .and_then(|config| config.approver_trust_anchor.clone()),
                 agent_id,
                 agent_active,
                 encryption_public_key: Some(encryption_public_key),
@@ -2217,6 +2291,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             manifest_persistence: Some(self),
             profile_signing: Some(profile_signing),
             form_map_root: self.repository.root().to_path_buf(),
+            approver_anchor: std::sync::Mutex::new(None),
         })
     }
 
@@ -2266,6 +2341,61 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         }
         anchor.manifest_revision = advanced.manifest_revision.to_string();
         anchor.vdk_version = advanced.vdk_version;
+        let binding =
+            profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+        let digest =
+            profile_config_digest(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        let mut registry = state.registry.clone();
+        registry
+            .agents
+            .iter_mut()
+            .find(|entry| entry.identity_id == identity_id)
+            .ok_or(RuntimeError::IntegrityViolation)?
+            .config_digest = Some(digest);
+        self.commit_authorized_transition(
+            &state,
+            registry,
+            vec![ConfigWrite {
+                identity_id: identity_id.to_owned(),
+                config,
+            }],
+            Vec::new(),
+            Vec::new(),
+            false,
+            lease,
+        )
+    }
+
+    /// Compare-and-swap of the signed approver pin. The caller has already verified the
+    /// manifest chain from `expected`; a concurrent change makes this commit fail closed.
+    fn persist_approver_anchor(
+        &self,
+        identity_id: &str,
+        expected: Option<&PublicApproverTrustAnchor>,
+        next: &PublicApproverTrustAnchor,
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError> {
+        let _lock = self.repository.acquire_transaction_lock()?;
+        self.recover_pending_operations_locked()?;
+        let state = self.verified_state_locked()?;
+        let mut config = state
+            .configs
+            .get(identity_id)
+            .cloned()
+            .ok_or(RuntimeError::InvalidPublicConfig)?;
+        let expected_profile_signing_key = STANDARD.encode(signing.public_key());
+        if config.signing_public_key.as_deref() != Some(expected_profile_signing_key.as_str()) {
+            return Err(RuntimeError::UntrustedApproverManifest);
+        }
+        if config.approver_trust_anchor.as_ref() == Some(next) {
+            return Ok(());
+        }
+        if config.approver_trust_anchor.as_ref() != expected {
+            return Err(RuntimeError::UntrustedApproverManifest);
+        }
+        config.approver_trust_anchor = Some(next.clone());
         let binding =
             profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
         config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
@@ -2816,6 +2946,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                     signing_public_key: Some(signing_public_key),
                     vault_trust_anchors: Vec::new(),
                     discovery_cache: None,
+                    approver_trust_anchor: None,
                     binding_signature: STANDARD.encode([0_u8; 64]),
                 };
                 let binding =
@@ -3733,9 +3864,20 @@ pub struct RuntimeSession<'a> {
     manifest_persistence: Option<&'a dyn ManifestRevisionPersistence>,
     profile_signing: Option<Ed25519Identity>,
     form_map_root: std::path::PathBuf,
+    /// Approver pin committed by this session, newer than the `config` snapshot.
+    approver_anchor: std::sync::Mutex<Option<PublicApproverTrustAnchor>>,
 }
 
 trait ManifestRevisionPersistence: Sync {
+    fn persist_approver_anchor(
+        &self,
+        identity_id: &str,
+        expected: Option<&PublicApproverTrustAnchor>,
+        next: &PublicApproverTrustAnchor,
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError>;
+
     fn persist_manifest_batch(
         &self,
         identity_id: &str,
@@ -3769,6 +3911,17 @@ trait ManifestRevisionPersistence: Sync {
 }
 
 impl<S: SecretStore + Sync> ManifestRevisionPersistence for RuntimeService<S> {
+    fn persist_approver_anchor(
+        &self,
+        identity_id: &str,
+        expected: Option<&PublicApproverTrustAnchor>,
+        next: &PublicApproverTrustAnchor,
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(), RuntimeError> {
+        RuntimeService::persist_approver_anchor(self, identity_id, expected, next, signing, lease)
+    }
+
     fn persist_manifest_batch(
         &self,
         identity_id: &str,
@@ -6308,6 +6461,22 @@ pub enum RuntimeError {
     StaleScriptDiscovery,
     #[error("the atomic Script execution package is invalid, stale or substituted")]
     InvalidScriptExecutionPackage,
+    #[error("Agent Submission verification failed: {0}")]
+    Submission(#[from] palladin_crypto::SubmissionError),
+    #[error(
+        "no re-created organization approver key with this fingerprint awaits re-trust; nothing was changed"
+    )]
+    ApproverReintroductionNotPending,
+    #[error("the organization approver key is not bound to the pinned local trust anchor")]
+    UntrustedApproverManifest,
+    #[error(
+        "the submission is not usable; only this Agent's own pending, unsuspended submissions can be injected"
+    )]
+    SubmissionNotUsable,
+    #[error(
+        "the current Agent access could not be verified against the organization approver key; the submission was not used"
+    )]
+    SubmissionAccessUnverified,
 }
 
 impl From<PendingBrowserPairingStateError> for RuntimeError {
@@ -8078,6 +8247,18 @@ mod tests {
     struct CountingManifestPersistence(AtomicU64);
 
     impl ManifestRevisionPersistence for CountingManifestPersistence {
+        fn persist_approver_anchor(
+            &self,
+            _identity_id: &str,
+            _expected: Option<&PublicApproverTrustAnchor>,
+            _next: &PublicApproverTrustAnchor,
+            _signing: &Ed25519Identity,
+            _lease: &OperationLease,
+        ) -> Result<(), RuntimeError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
         fn persist_manifest_batch(
             &self,
             _identity_id: &str,
@@ -8253,6 +8434,7 @@ mod tests {
                 signing_public_key: Some(created.signing_public_key.clone()),
                 vault_trust_anchors: vec![anchor.clone()],
                 discovery_cache: None,
+                approver_trust_anchor: None,
                 binding_signature: STANDARD.encode([0_u8; 64]),
             };
             let binding = profile_binding_bytes(&config).expect("binding");
@@ -8386,6 +8568,7 @@ mod tests {
                 signing_public_key: Some(created.signing_public_key.clone()),
                 vault_trust_anchors: Vec::new(),
                 discovery_cache: None,
+                approver_trust_anchor: None,
                 binding_signature: STANDARD.encode([0_u8; 64]),
             };
             let binding = profile_binding_bytes(&config).expect("binding");
@@ -8573,6 +8756,7 @@ mod tests {
                 signing_public_key: None,
                 vault_trust_anchors: Vec::new(),
                 discovery_cache: None,
+                approver_trust_anchor: None,
                 binding_signature: STANDARD.encode([0_u8; 64]),
             },
             api,
@@ -8585,6 +8769,7 @@ mod tests {
             manifest_persistence: None,
             profile_signing: None,
             form_map_root: std::path::PathBuf::new(),
+            approver_anchor: std::sync::Mutex::new(None),
         };
 
         let get = session
@@ -9260,6 +9445,7 @@ mod tests {
                     vdk_version: 1,
                 }],
                 discovery_cache: None,
+                approver_trust_anchor: None,
                 binding_signature: STANDARD.encode([0_u8; 64]),
             },
             api,
@@ -9272,6 +9458,7 @@ mod tests {
             manifest_persistence: None,
             profile_signing: None,
             form_map_root: std::path::PathBuf::new(),
+            approver_anchor: std::sync::Mutex::new(None),
         }
     }
 
@@ -9298,6 +9485,7 @@ mod tests {
                 vdk_version: 1,
             }],
             discovery_cache: None,
+            approver_trust_anchor: None,
             binding_signature: STANDARD.encode([0_u8; 64]),
         };
 
@@ -9343,6 +9531,7 @@ mod tests {
             signing_public_key: Some(STANDARD.encode(signing.public_key())),
             vault_trust_anchors: Vec::new(),
             discovery_cache: None,
+            approver_trust_anchor: None,
             binding_signature: STANDARD.encode([0_u8; 64]),
         };
 
@@ -9440,6 +9629,7 @@ mod tests {
             signing_public_key: Some(STANDARD.encode(signing.public_key())),
             vault_trust_anchors: Vec::new(),
             discovery_cache: None,
+            approver_trust_anchor: None,
             binding_signature: STANDARD.encode([0_u8; 64]),
         };
         let session = RuntimeSession {
@@ -9455,6 +9645,7 @@ mod tests {
             manifest_persistence: None,
             profile_signing: None,
             form_map_root: std::path::PathBuf::new(),
+            approver_anchor: std::sync::Mutex::new(None),
         };
 
         let candidate = session
@@ -9494,6 +9685,7 @@ mod tests {
             manifest_persistence: None,
             profile_signing: None,
             form_map_root: std::path::PathBuf::new(),
+            approver_anchor: std::sync::Mutex::new(None),
         };
         assert!(matches!(
             renewed.resume_pairing_polling("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),

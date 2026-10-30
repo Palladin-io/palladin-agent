@@ -1667,6 +1667,7 @@ dependencies = [
  "rpassword",
  "secrecy",
  "serde",
+ "serde_jcs",
  "serde_json",
  "sha2",
  "subtle",
@@ -1703,6 +1704,7 @@ dependencies = [
 name = "palladin-credential"
 version = "0.0.11"
 dependencies = [
+ "getrandom 0.4.3",
  "hmac",
  "palladin-api",
  "palladin-core",
@@ -1717,6 +1719,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "unicode-normalization",
  "zeroize",
 ]
 
@@ -1744,6 +1747,7 @@ dependencies = [
  "thiserror",
  "time",
  "unicode-normalization",
+ "url",
  "uuid",
  "x25519-dalek",
  "zeroize",
@@ -1901,6 +1905,7 @@ name = "palladin-runtime"
 version = "0.0.11"
 dependencies = [
  "base64",
+ "chacha20poly1305",
  "ed25519-dalek",
  "getrandom 0.4.3",
  "hex",
@@ -1916,6 +1921,7 @@ dependencies = [
  "reqwest",
  "secrecy",
  "serde",
+ "serde_jcs",
  "serde_json",
  "sha2",
  "subtle",

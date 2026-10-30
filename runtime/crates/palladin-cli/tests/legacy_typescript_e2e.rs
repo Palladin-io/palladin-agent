@@ -190,6 +190,7 @@ async fn pending_inject_does_not_prepare_expiring_browser_handles() {
             connection: &connection,
             vault_id: VAULT_ID,
             entry_id: ENTRY_ID,
+            submission_id: None,
             reason: None,
             wait: delivery_request(0).wait,
             provider: &provider,

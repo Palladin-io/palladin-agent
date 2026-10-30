@@ -61,6 +61,11 @@ pub enum Commands {
     },
     /// Report that a credential is stale without sending its value.
     ReportStale(ReportStaleArgs),
+    /// Propose a new or updated Entry for review without revealing its secret.
+    Submit {
+        #[command(subcommand)]
+        command: SubmitCommand,
+    },
     /// Serve Palladin tools over the Model Context Protocol.
     Mcp {
         #[command(subcommand)]
@@ -212,8 +217,16 @@ pub struct ExecArgs {
 
 #[derive(Debug, Args)]
 pub struct InjectArgs {
-    pub vault_id: String,
-    pub entry_id: String,
+    #[arg(required_unless_present = "submission")]
+    pub vault_id: Option<String>,
+    #[arg(required_unless_present = "submission")]
+    pub entry_id: Option<String>,
+    /// Inject this Agent's own pending submission instead of a granted Entry.
+    #[arg(
+        long,
+        conflicts_with_all = ["vault_id", "entry_id", "reason", "wait", "no_wait", "poll_interval", "progress"]
+    )]
+    pub submission: Option<String>,
     /// Deprecated and rejected unauthenticated CDP endpoint.
     #[arg(long, hide = true)]
     pub cdp: Option<String>,
@@ -274,6 +287,129 @@ pub struct InjectArgs {
     /// Approval heartbeat format written to stderr.
     #[arg(long, value_enum)]
     pub progress: Option<ProgressArg>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SubmitCommand {
+    /// Propose a new Entry; a reviewer chooses its Vault and approves it in Palladin Inbox.
+    New(SubmitNewArgs),
+    /// Propose a new secret for an Entry this Agent holds an active grant for.
+    Update(SubmitUpdateArgs),
+    /// Re-trust a re-created organization approver key after verifying its fingerprint.
+    TrustApprovers {
+        /// Signing key fingerprint shown in the approver-key-untrusted hint.
+        #[arg(long)]
+        fingerprint: String,
+        /// Required acknowledgement that the fingerprint was verified with an administrator.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Show this Agent's submissions and re-wrap pending ones after an approver key rotation.
+    Status {
+        submission_id: Option<String>,
+        /// Emit machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct SubmitNewArgs {
+    #[arg(long = "type", value_enum)]
+    pub entry_type: SubmitEntryTypeArg,
+    /// Proposed Entry name; the reviewer may change it.
+    #[arg(long)]
+    pub label: String,
+    /// Absolute https URL of the account.
+    #[arg(long)]
+    pub url: Option<String>,
+    /// Account username; required for a credential.
+    #[arg(long)]
+    pub username: Option<String>,
+    /// Advisory Vault ID; the reviewer decides the target Vault.
+    #[arg(long)]
+    pub suggested_vault: Option<String>,
+    #[command(flatten)]
+    pub secret: SubmitSecretArgs,
+    /// Emit the machine-readable Agent result.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SubmitUpdateArgs {
+    /// Type of the target Entry; the reviewer's client rejects a mismatch.
+    #[arg(long = "type", value_enum)]
+    pub entry_type: SubmitEntryTypeArg,
+    #[arg(long)]
+    pub vault: String,
+    #[arg(long)]
+    pub entry: String,
+    /// Proposed new Entry name; omit to keep the current name.
+    #[arg(long)]
+    pub label: Option<String>,
+    /// New absolute https URL; omit to keep the current URL.
+    #[arg(long)]
+    pub url: Option<String>,
+    /// New username for a credential; omit to keep the current username.
+    #[arg(long)]
+    pub username: Option<String>,
+    #[command(flatten)]
+    pub secret: SubmitSecretArgs,
+    /// Emit the machine-readable Agent result.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// The secret is never accepted as an argument or environment variable.
+#[derive(Debug, Args)]
+pub struct SubmitSecretArgs {
+    /// Generate the secret with the native CSPRNG; it is never printed.
+    #[arg(
+        long,
+        required_unless_present = "from_prompt",
+        conflicts_with = "from_prompt"
+    )]
+    pub generate: bool,
+    /// Read the secret from a masked, confirmed prompt on an interactive terminal; never stdin.
+    #[arg(long)]
+    pub from_prompt: bool,
+    /// Generated password length (default 24).
+    #[arg(long, conflicts_with = "from_prompt")]
+    pub length: Option<usize>,
+    /// Allowed character classes (default: all).
+    #[arg(
+        long,
+        conflicts_with = "from_prompt",
+        value_enum,
+        value_delimiter = ','
+    )]
+    pub classes: Vec<CharacterClassArg>,
+    /// Classes that must each appear at least once (default: every allowed class).
+    #[arg(
+        long,
+        conflicts_with = "from_prompt",
+        value_enum,
+        value_delimiter = ','
+    )]
+    pub require: Vec<CharacterClassArg>,
+    /// Allowed symbol characters, for example '!@#-_'.
+    #[arg(long, conflicts_with = "from_prompt", allow_hyphen_values = true)]
+    pub symbols: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum SubmitEntryTypeArg {
+    Credential,
+    Key,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum CharacterClassArg {
+    Lower,
+    Upper,
+    Digit,
+    Symbol,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -402,5 +538,196 @@ mod browser_session_tests {
             ])
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod submit_tests {
+    use super::*;
+
+    fn parse(arguments: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("palladin").chain(arguments.iter().copied()))
+    }
+
+    const NEW: [&str; 6] = [
+        "submit",
+        "new",
+        "--type",
+        "credential",
+        "--label",
+        "Example",
+    ];
+
+    #[test]
+    fn submit_requires_exactly_one_protected_secret_source() {
+        assert!(parse(&[&NEW[..], &["--generate"]].concat()).is_ok());
+        assert!(parse(&[&NEW[..], &["--from-prompt"]].concat()).is_ok());
+        assert!(parse(&NEW).is_err(), "a secret source is required");
+        assert!(parse(&[&NEW[..], &["--generate", "--from-prompt"]].concat()).is_err());
+        assert!(
+            parse(&[
+                "submit",
+                "update",
+                "--type",
+                "credential",
+                "--vault",
+                "v",
+                "--entry",
+                "e",
+                "--from-prompt"
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn submit_rejects_every_secret_bearing_argument() {
+        for secret_flag in [
+            "--password",
+            "--secret",
+            "--value",
+            "--api-key",
+            "--password-stdin",
+            "--payload",
+        ] {
+            assert!(
+                parse(&[&NEW[..], &["--generate", secret_flag, "hunter2"]].concat()).is_err(),
+                "{secret_flag}"
+            );
+        }
+        assert!(
+            parse(&[&NEW[..], &["--generate", "hunter2"]].concat()).is_err(),
+            "no positional secret"
+        );
+        let update = [
+            "submit",
+            "update",
+            "--type",
+            "credential",
+            "--vault",
+            "v",
+            "--entry",
+            "e",
+            "--generate",
+        ];
+        assert!(
+            parse(
+                &[
+                    &update[..],
+                    &["--label", "x", "--url", "https://x.test", "--username", "u"]
+                ]
+                .concat()
+            )
+            .is_ok(),
+            "update may propose changed metadata"
+        );
+        for secret_flag in ["--password", "--secret", "--value"] {
+            assert!(parse(&[&update[..], &[secret_flag, "hunter2"]].concat()).is_err());
+        }
+        assert!(
+            parse(&[
+                "submit",
+                "update",
+                "--vault",
+                "v",
+                "--entry",
+                "e",
+                "--generate"
+            ])
+            .is_err(),
+            "the update asserts the target Entry type"
+        );
+    }
+
+    #[test]
+    fn approver_re_trust_requires_an_explicit_fingerprint() {
+        let parsed = parse(&[
+            "submit",
+            "trust-approvers",
+            "--fingerprint",
+            "CddpQldl…ksknV0",
+            "--confirm",
+        ])
+        .expect("re-trust");
+        let Commands::Submit {
+            command:
+                SubmitCommand::TrustApprovers {
+                    fingerprint,
+                    confirm,
+                },
+        } = parsed.command
+        else {
+            panic!("trust-approvers");
+        };
+        assert_eq!(fingerprint, "CddpQldl…ksknV0");
+        assert!(confirm);
+        assert!(parse(&["submit", "trust-approvers", "--confirm"]).is_err());
+    }
+
+    #[test]
+    fn password_policy_flags_require_generation() {
+        let parsed = parse(
+            &[
+                &NEW[..],
+                &[
+                    "--generate",
+                    "--length",
+                    "32",
+                    "--classes",
+                    "lower,digit,symbol",
+                    "--require",
+                    "digit",
+                    "--symbols",
+                    "-_",
+                ],
+            ]
+            .concat(),
+        )
+        .expect("policy flags");
+        let Commands::Submit {
+            command: SubmitCommand::New(args),
+        } = parsed.command
+        else {
+            panic!("submit new");
+        };
+        assert_eq!(args.secret.length, Some(32));
+        assert_eq!(
+            args.secret.classes,
+            [
+                CharacterClassArg::Lower,
+                CharacterClassArg::Digit,
+                CharacterClassArg::Symbol
+            ]
+        );
+        assert_eq!(args.secret.require, [CharacterClassArg::Digit]);
+        for flag in [
+            ["--length", "32"],
+            ["--symbols", "-"],
+            ["--require", "digit"],
+        ] {
+            assert!(
+                parse(&[&NEW[..], &["--from-prompt"], &flag[..]].concat()).is_err(),
+                "{flag:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn submission_inject_is_exclusive_and_get_exec_cannot_use_a_submission() {
+        let id = "0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d";
+        let parsed = parse(&["inject", "--submission", id]).expect("inject submission");
+        let Commands::Inject(args) = parsed.command else {
+            panic!("inject");
+        };
+        assert_eq!(args.submission.as_deref(), Some(id));
+        assert!(args.vault_id.is_none() && args.entry_id.is_none());
+        assert!(parse(&["inject", "vault", "entry"]).is_ok());
+        assert!(parse(&["inject"]).is_err());
+        assert!(parse(&["inject", "vault", "entry", "--submission", id]).is_err());
+        assert!(parse(&["inject", "--submission", id, "--reason", "x"]).is_err());
+        assert!(parse(&["inject", "--submission", id, "--wait", "5s"]).is_err());
+        assert!(parse(&["get", "--submission", id]).is_err());
+        assert!(parse(&["get", "vault", "entry", "--submission", id]).is_err());
+        assert!(parse(&["exec", "vault", "entry", "--submission", id, "--", "true"]).is_err());
     }
 }
