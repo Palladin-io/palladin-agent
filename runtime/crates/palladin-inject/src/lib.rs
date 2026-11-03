@@ -55,6 +55,8 @@ pub struct InjectOperation<'a> {
     pub connection: &'a OperationConnection,
     pub vault_id: &'a str,
     pub entry_id: &'a str,
+    /// The Agent's own pending submission; replaces the grant lookup by `vault_id`/`entry_id`.
+    pub submission_id: Option<&'a str>,
     pub reason: Option<&'a str>,
     pub wait: WaitOptions,
     pub provider: &'a ProviderId,
@@ -188,14 +190,22 @@ where
         return Err(InjectServiceError::LiveTargetRequired);
     }
     let authorization = service.browser_host_authorization()?;
-    let descriptor = OperationDescriptor::InjectCredential {
-        surface: operation.surface,
-        vault_id: operation.vault_id.to_owned(),
-        entry_id: operation.entry_id.to_owned(),
-        reason: operation.reason.map(str::to_owned),
-        wait: operation.wait,
-        provider: operation.provider.as_str().to_owned(),
-        output: CredentialOutputPolicy::TrustedInjectionProvider,
+    let descriptor = match operation.submission_id {
+        Some(submission_id) => OperationDescriptor::InjectSubmission {
+            surface: operation.surface,
+            submission_id: submission_id.to_owned(),
+            provider: operation.provider.as_str().to_owned(),
+            output: CredentialOutputPolicy::TrustedInjectionProvider,
+        },
+        None => OperationDescriptor::InjectCredential {
+            surface: operation.surface,
+            vault_id: operation.vault_id.to_owned(),
+            entry_id: operation.entry_id.to_owned(),
+            reason: operation.reason.map(str::to_owned),
+            wait: operation.wait,
+            provider: operation.provider.as_str().to_owned(),
+            output: CredentialOutputPolicy::TrustedInjectionProvider,
+        },
     };
     let session = service.open_session(
         operation.profile,
@@ -203,23 +213,29 @@ where
         operation.connection,
         descriptor,
     )?;
-    let delivery = session
-        .deliver_for_inject(
-            CredentialDeliveryRequest {
-                vault_id: operation.vault_id,
-                entry_id: operation.entry_id,
-                reason: operation.reason,
-                wait: operation.wait,
-            },
-            cancellation,
-            heartbeat,
-        )
-        .await?;
-    let delivered = match delivery {
-        CredentialDelivery::Granted(delivered) => delivered,
-        CredentialDelivery::NotGranted(access) => {
-            return Ok(InjectExecution::NotGranted(access));
+    let delivered = match operation.submission_id {
+        Some(submission_id) => {
+            let _ = heartbeat;
+            session.deliver_submission_for_inject(submission_id).await?
         }
+        None => match session
+            .deliver_for_inject(
+                CredentialDeliveryRequest {
+                    vault_id: operation.vault_id,
+                    entry_id: operation.entry_id,
+                    reason: operation.reason,
+                    wait: operation.wait,
+                },
+                cancellation,
+                heartbeat,
+            )
+            .await?
+        {
+            CredentialDelivery::Granted(delivered) => delivered,
+            CredentialDelivery::NotGranted(access) => {
+                return Ok(InjectExecution::NotGranted(access));
+            }
+        },
     };
     // Approval can outlive DOM handles; bind the exact browser target only after delivery.
     let mut operation_nonce = [0_u8; 32];
@@ -322,9 +338,11 @@ where
         if cancellation.is_cancelled() {
             return Err(InjectServiceError::Cancelled);
         }
-        if delivered
-            .authenticated_field("credential.username")
-            .is_none()
+        // A submission carries its own authenticated username; it never has a Discovery head.
+        if operation.submission_id.is_none()
+            && delivered
+                .authenticated_field("credential.username")
+                .is_none()
             && discovery_username.is_none()
             && current_form
                 .field_ids()

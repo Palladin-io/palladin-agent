@@ -10,18 +10,19 @@ use palladin_api::{
 };
 use palladin_browser_bridge::{InjectionFormDefinition, ProviderId};
 use palladin_cli::args::{
-    AgentsCommand, BrowserCommand, Cli, Commands, ConnectArgs, ExecArgs, GetArgs, InjectArgs,
-    McpCommand, PairAgentArgs, ProgressArg, ReportStaleArgs, SearchArgs, SecurityCommand,
-    StaleCodeArg,
+    AgentsCommand, BrowserCommand, CharacterClassArg, Cli, Commands, ConnectArgs, ExecArgs,
+    GetArgs, InjectArgs, McpCommand, PairAgentArgs, ProgressArg, ReportStaleArgs, SearchArgs,
+    SecurityCommand, StaleCodeArg, SubmitCommand, SubmitEntryTypeArg, SubmitSecretArgs,
 };
 use palladin_cli::browser::{
     BrowserInstallError, install_manifest, manifest_status, remove_manifest,
 };
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
-    render_agent_list, render_connect, render_init, render_legacy_cleanup, render_legacy_cutover,
-    render_live_flow, render_profile_created, render_report_stale, render_search_human,
-    render_security_upgrade, render_status,
+    render_agent_list, render_approver_retrust, render_connect, render_init, render_legacy_cleanup,
+    render_legacy_cutover, render_live_flow, render_profile_created, render_report_stale,
+    render_search_human, render_security_upgrade, render_status, render_submission_result,
+    render_submission_status,
 };
 use palladin_cli::{
     CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
@@ -36,12 +37,16 @@ use palladin_core::secret::OrganizationApiKey;
 use palladin_core::terminal::is_safe_terminal_text;
 use palladin_credential::access::{access_message, exit_code_for_access};
 use palladin_credential::fields::{FieldSelector, redact_totp_secrets, resolve_field};
+use palladin_credential::generator::{
+    ALL_CLASSES, CharacterClass, DEFAULT_PASSWORD_LENGTH, DEFAULT_SYMBOLS, PasswordPolicy,
+};
 use palladin_credential::secret::parse_secret;
 use palladin_credential::wait::{
     ProgressMode, WaitOptions, heartbeat_line, parse_duration, parse_wait_duration,
     signal_cancellation_token,
 };
 use palladin_crypto::ScriptExecutionParameters;
+use palladin_crypto::{SubmissionEntryType, SubmissionKind};
 use palladin_inject::{BrowserTarget, InjectExecution, InjectOperation};
 #[cfg(target_os = "linux")]
 use palladin_linux_broker::store::LinuxBrokerSecretStore;
@@ -54,7 +59,8 @@ use palladin_platform::secure_store::{
 };
 use palladin_runtime::{
     BrowserPairingMetadata, CredentialOutputPolicy, InvocationSurface, OperationConnection,
-    OperationDescriptor, open_system_browser,
+    OperationDescriptor, SubmissionHint, SubmissionNotSaved, SubmissionRequest,
+    SubmissionRequestTarget, SubmissionResult, SubmissionSecret, open_system_browser,
 };
 #[cfg(windows)]
 use palladin_windows_broker::BrokerSecretStore;
@@ -99,6 +105,10 @@ async fn main() -> ExitCode {
     }
     let environment = EnvironmentReport::inspect_current();
     let cli = Cli::parse();
+
+    if let Some(refused) = refuse_non_interactive_prompt(&cli.command) {
+        return refused;
+    }
 
     if browser_command_unsupported_on_platform(&cli.command) {
         return fail(&BrowserInstallError::UnsupportedPlatform.to_string());
@@ -189,6 +199,7 @@ async fn main() -> ExitCode {
         Commands::Inject(args) => inject(&service, cli.id.as_deref(), *args).await,
         Commands::Browser { command } => browser(&service, command).await,
         Commands::ReportStale(args) => report_stale(&service, cli.id.as_deref(), args).await,
+        Commands::Submit { command } => submit(&service, cli.id.as_deref(), command).await,
         Commands::Mcp { command } => mcp(Arc::clone(&service), cli.id.clone(), command).await,
         Commands::Agents { command } => agents(&service, command, runtime_storage_tier),
         Commands::Security { command } => security(
@@ -663,6 +674,7 @@ const fn environment_requirement(command: &Commands) -> EnvironmentRequirement {
         | Commands::Inject(_)
         | Commands::Browser { .. }
         | Commands::ReportStale(_)
+        | Commands::Submit { .. }
         | Commands::Mcp { .. }
         | Commands::Agents { .. }
         | Commands::Security {
@@ -1505,8 +1517,9 @@ async fn inject(
             profile,
             hostname: &hostname,
             connection: &connection,
-            vault_id: &args.vault_id,
-            entry_id: &args.entry_id,
+            vault_id: args.vault_id.as_deref().unwrap_or_default(),
+            entry_id: args.entry_id.as_deref().unwrap_or_default(),
+            submission_id: args.submission.as_deref(),
             reason: args.reason.as_deref(),
             wait,
             provider: &provider,
@@ -1605,6 +1618,263 @@ async fn report_stale(
         Ok(()) => emit_output(render_report_stale()),
         Err(error) => fail(&error.to_string()),
     }
+}
+
+async fn submit(
+    service: &RuntimeService<RuntimeSecretStore>,
+    profile: Option<&str>,
+    command: SubmitCommand,
+) -> ExitCode {
+    match command {
+        SubmitCommand::New(args) => {
+            let request = SubmissionRequest {
+                target: SubmissionRequestTarget::New {
+                    suggested_vault_id: args.suggested_vault.as_deref(),
+                },
+                entry_type: Some(entry_type(args.entry_type)),
+                label: Some(&args.label),
+                url: args.url.as_deref(),
+                username: args.username.as_deref(),
+            };
+            submit_entry(service, profile, request, &args.secret, args.json).await
+        }
+        SubmitCommand::Update(args) => {
+            let request = SubmissionRequest {
+                target: SubmissionRequestTarget::Update {
+                    vault_id: &args.vault,
+                    entry_id: &args.entry,
+                },
+                entry_type: Some(entry_type(args.entry_type)),
+                label: args.label.as_deref(),
+                url: args.url.as_deref(),
+                username: args.username.as_deref(),
+            };
+            submit_entry(service, profile, request, &args.secret, args.json).await
+        }
+        SubmitCommand::Status {
+            submission_id,
+            json,
+        } => submission_status(service, profile, submission_id, json).await,
+        SubmitCommand::TrustApprovers {
+            fingerprint,
+            confirm,
+        } => trust_approvers(service, profile, &fingerprint, confirm).await,
+    }
+}
+
+const fn entry_type(value: SubmitEntryTypeArg) -> SubmissionEntryType {
+    match value {
+        SubmitEntryTypeArg::Credential => SubmissionEntryType::Credential,
+        SubmitEntryTypeArg::Key => SubmissionEntryType::Key,
+    }
+}
+
+async fn submit_entry(
+    service: &RuntimeService<RuntimeSecretStore>,
+    profile: Option<&str>,
+    request: SubmissionRequest<'_>,
+    secret_args: &SubmitSecretArgs,
+    json: bool,
+) -> ExitCode {
+    let kind = match request.target {
+        SubmissionRequestTarget::New { .. } => SubmissionKind::New,
+        SubmissionRequestTarget::Update { .. } => SubmissionKind::Update,
+    };
+    let not_saved = |code| {
+        emit_output(render_submission_result(
+            &SubmissionResult {
+                kind,
+                outcome: Err(code),
+                submission_id: None,
+                hints: Vec::new(),
+            },
+            json,
+        ))
+    };
+    let secret = if secret_args.generate {
+        let policy = password_policy(secret_args);
+        if policy.validate().is_err() {
+            return not_saved(SubmissionNotSaved::PasswordPolicyUnsatisfiable);
+        }
+        SubmissionSecret::Generate(policy)
+    } else {
+        match read_submission_secret() {
+            Ok(secret) => SubmissionSecret::Provided(secret),
+            Err(error) => return fail(&error),
+        }
+    };
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let descriptor = OperationDescriptor::SubmitEntry {
+        surface: InvocationSurface::Cli,
+        request_digest: request.digest(secret_args.generate),
+    };
+    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
+    match session.submit_entry(request, secret).await {
+        Ok(result) => emit_output(render_submission_result(&result, json)),
+        Err(RuntimeError::UntrustedApproverManifest) => {
+            not_saved(SubmissionNotSaved::ApproverKeyUntrusted)
+        }
+        Err(RuntimeError::Submission(palladin_crypto::SubmissionError::InvalidInput)) => {
+            not_saved(SubmissionNotSaved::InvalidInput)
+        }
+        Err(error) => fail(&format!("{error}; the submission was not saved")),
+    }
+}
+
+async fn submission_status(
+    service: &RuntimeService<RuntimeSecretStore>,
+    profile: Option<&str>,
+    submission_id: Option<String>,
+    json: bool,
+) -> ExitCode {
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let descriptor = OperationDescriptor::SubmissionStatus {
+        surface: InvocationSurface::Cli,
+        submission_id: submission_id.clone(),
+    };
+    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
+    match session.submission_status(submission_id.as_deref()).await {
+        Ok(items) => emit_output(render_submission_status(&items, json)),
+        Err(error) => fail(&error.to_string()),
+    }
+}
+
+async fn trust_approvers(
+    service: &RuntimeService<RuntimeSecretStore>,
+    profile: Option<&str>,
+    fingerprint: &str,
+    confirm: bool,
+) -> ExitCode {
+    if !confirm {
+        return fail(
+            "re-trusting an organization approver key requires --confirm after verifying its fingerprint with a Palladin administrator; nothing was changed",
+        );
+    }
+    let hostname = match operating_system_hostname() {
+        Ok(hostname) => hostname,
+        Err(error) => return fail(error),
+    };
+    let connection = match OperationConnection::new() {
+        Ok(connection) => connection,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let descriptor = OperationDescriptor::TrustApprovers {
+        signing_key_fingerprint: fingerprint.to_owned(),
+    };
+    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
+    match session.trust_approvers(fingerprint).await {
+        Ok(key) => emit_output(render_approver_retrust(&key)),
+        Err(error) => fail(&error.to_string()),
+    }
+}
+
+fn password_policy(args: &SubmitSecretArgs) -> PasswordPolicy {
+    let class = |value: &CharacterClassArg| match value {
+        CharacterClassArg::Lower => CharacterClass::Lowercase,
+        CharacterClassArg::Upper => CharacterClass::Uppercase,
+        CharacterClassArg::Digit => CharacterClass::Digit,
+        CharacterClassArg::Symbol => CharacterClass::Symbol,
+    };
+    let allowed = if args.classes.is_empty() {
+        ALL_CLASSES.to_vec()
+    } else {
+        args.classes.iter().map(class).collect()
+    };
+    let required = if args.require.is_empty() {
+        allowed.clone()
+    } else {
+        args.require.iter().map(class).collect()
+    };
+    PasswordPolicy {
+        length: args.length.unwrap_or(DEFAULT_PASSWORD_LENGTH),
+        allowed,
+        required,
+        symbols: args
+            .symbols
+            .clone()
+            .unwrap_or_else(|| DEFAULT_SYMBOLS.to_owned()),
+    }
+}
+
+/// `--from-prompt` accepts only a human at an interactive terminal. A pipe or file on stdin could
+/// carry model output, an environment variable or a file, which the submission contract forbids
+/// as secret sources; it is refused before any profile access or read.
+fn refuse_non_interactive_prompt(command: &Commands) -> Option<ExitCode> {
+    let (kind, secret, json) = match command {
+        Commands::Submit {
+            command: SubmitCommand::New(args),
+        } => (SubmissionKind::New, &args.secret, args.json),
+        Commands::Submit {
+            command: SubmitCommand::Update(args),
+        } => (SubmissionKind::Update, &args.secret, args.json),
+        _ => return None,
+    };
+    if !secret.from_prompt || io::stdin().is_terminal() {
+        return None;
+    }
+    Some(emit_output(render_submission_result(
+        &SubmissionResult {
+            kind,
+            outcome: Err(SubmissionNotSaved::InvalidInput),
+            submission_id: None,
+            hints: vec![SubmissionHint::InvalidInput {
+                field: "--from-prompt",
+                rule: "requires an interactive terminal; use --generate or run it in a terminal",
+            }],
+        },
+        json,
+    )))
+}
+
+/// Reads the secret twice from the masked controlling terminal (`/dev/tty`, `CONIN$`), never
+/// from stdin.
+fn read_submission_secret() -> Result<secrecy::SecretString, String> {
+    const MAX_SECRET_BYTES: usize = 16_384;
+    if !io::stdin().is_terminal() {
+        return Err("--from-prompt requires an interactive terminal".to_owned());
+    }
+    let first = Zeroizing::new(
+        rpassword::prompt_password("New secret: ")
+            .map_err(|_| "could not read the secret from the masked prompt".to_owned())?,
+    );
+    let confirmation = Zeroizing::new(
+        rpassword::prompt_password("Confirm secret: ")
+            .map_err(|_| "could not read the secret from the masked prompt".to_owned())?,
+    );
+    if *first != *confirmation {
+        return Err("the secrets do not match; nothing was submitted".to_owned());
+    }
+    let mut value = first;
+    while value.ends_with(['\r', '\n']) {
+        value.pop();
+    }
+    if value.is_empty() || value.len() > MAX_SECRET_BYTES {
+        return Err("the secret must be one non-empty line of at most 16 KiB".to_owned());
+    }
+    Ok(secrecy::SecretString::from(std::mem::take(&mut *value)))
 }
 
 const fn stale_reason_code_name(code: StaleReasonCode) -> &'static str {

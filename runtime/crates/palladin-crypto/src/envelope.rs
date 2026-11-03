@@ -427,6 +427,14 @@ pub struct DecryptedCredential {
 }
 
 impl DecryptedCredential {
+    /// Only for plaintext that this crate has already authenticated and decrypted.
+    pub(crate) fn from_authenticated_plaintext(plaintext: SecretSlice<u8>) -> Self {
+        Self {
+            plaintext,
+            grant_expires_at: None,
+        }
+    }
+
     #[must_use]
     pub fn expose_for_authorized_operation(&self) -> &[u8] {
         self.plaintext.expose_secret()

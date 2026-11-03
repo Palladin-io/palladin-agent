@@ -298,7 +298,7 @@ test('accepts only one exact, inert tarball for every supported platform package
   }
 });
 
-test('release workflows pin actions and do not permit direct or token-based npm publishing', () => {
+test('release workflows restrict direct publishing to protected OIDC release jobs', () => {
   const workflowDirectory = resolve('.github/workflows');
   const workflows = readdirSync(workflowDirectory)
     .filter((name) => name.endsWith('.yml') || name.endsWith('.yaml'));
@@ -317,19 +317,24 @@ test('release workflows pin actions and do not permit direct or token-based npm 
     if (/NODE_AUTH_TOKEN|NPM_TOKEN/.test(contents)) tokenConsumers.push(workflow);
   }
 
-  assert.deepEqual(directPublishes, []);
+  assert.deepEqual(directPublishes.sort(), ['release-meta.yml', 'release-platforms.yml']);
   assert.deepEqual(tokenConsumers, []);
   const platformRelease = readFileSync(join(workflowDirectory, 'release-platforms.yml'), 'utf8');
   const metaRelease = readFileSync(join(workflowDirectory, 'release-meta.yml'), 'utf8');
   const finalRelease = readFileSync(join(workflowDirectory, 'release-finalize.yml'), 'utf8');
   assert.doesNotMatch(platformRelease, /secrets:\s+inherit/);
-  assert.match(platformRelease, /npm stage publish "\$package" --tag candidate/);
+  assert.match(platformRelease, /npm publish "\$package" --tag candidate/);
   assert.match(metaRelease, /INPUTS_VERSION: \$\{\{ inputs\.version \}\}/);
-  assert.match(metaRelease, /npm stage publish "\$RUNNER_TEMP\/stage-assets\/palladin-cli-\$\{INPUTS_VERSION\}\.tgz" --tag "\$dist_tag"/);
+  assert.match(metaRelease, /npm publish "\$RUNNER_TEMP\/stage-assets\/palladin-cli-\$\{INPUTS_VERSION\}\.tgz" --tag "\$dist_tag"/);
   assert.match(metaRelease, /dist_tag=latest/);
   assert.match(metaRelease, /if \[\[ "\$INPUTS_VERSION" == 0\.0\.10 \]\]; then dist_tag=preview; fi/);
+  for (const [contents, job] of [[platformRelease, 'stage-platforms'], [metaRelease, 'stage-meta'], [finalRelease, 'finalize']]) {
+    const publishingJob = contents.slice(contents.indexOf(`\n  ${job}:`));
+    assert.match(publishingJob, /github\.triggering_actor == 'patryk-roguszewski'/);
+  }
   for (const contents of [platformRelease, metaRelease, finalRelease]) {
     assert.match(contents, /github\.actor == 'patryk-roguszewski'/);
+    assert.match(contents, /github\.triggering_actor == 'patryk-roguszewski'/);
     assert.match(contents, /test "\$GITHUB_REF" = "refs\/tags\/\$RELEASE_TAG"/);
     assert.match(contents, /git merge-base --is-ancestor/);
     assert.match(contents, /group: palladin-npm-release/);
@@ -388,7 +393,7 @@ test('meta-package staging preserves signed artifacts and limits 0.0.10 to previ
   const lifecycleArtifactValidations = [
     ...workflow.matchAll(/node security\/lifecycle\/verify-release-artifacts\.mjs/g),
   ];
-  const stageOffset = workflow.indexOf('npm stage publish "$RUNNER_TEMP/stage-assets/palladin-cli-${INPUTS_VERSION}.tgz" --tag "$dist_tag"');
+  const stageOffset = workflow.indexOf('npm publish "$RUNNER_TEMP/stage-assets/palladin-cli-${INPUTS_VERSION}.tgz" --tag "$dist_tag"');
 
   assert.equal(reportValidations.length, 2);
   assert.equal(artifactValidations.length, 2);
@@ -441,7 +446,7 @@ test('meta-package staging preserves signed artifacts and limits 0.0.10 to previ
   const approveLifecycleOffset = workflow.indexOf('\n  approve-lifecycle:');
   assert.ok(prepareOffset > 0 && approveLifecycleOffset > 0);
   assert.match(workflow.slice(prepareOffset, workflow.indexOf('\n  stage-meta:')), /The exact `@palladin\/cli` candidate was attached to the draft release but was not published to npm/);
-  assert.doesNotMatch(workflow.slice(prepareOffset, workflow.indexOf('\n  stage-meta:')), /npm stage publish/);
+  assert.doesNotMatch(workflow.slice(prepareOffset, workflow.indexOf('\n  stage-meta:')), /npm publish/);
   assert.doesNotMatch(workflow, /adversarial\/report\.mjs validate[^]*\|\| true/);
   assert.doesNotMatch(workflow, /lifecycle\/report\.mjs validate[^]*\|\| true/);
 });

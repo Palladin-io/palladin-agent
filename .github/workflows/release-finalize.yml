@@ -26,7 +26,7 @@ env:
 jobs:
   authorize:
     name: Resolve the public npm release
-    if: github.actor == 'patryk-roguszewski'
+    if: github.actor == 'patryk-roguszewski' && github.triggering_actor == 'patryk-roguszewski'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     outputs:
@@ -168,6 +168,7 @@ jobs:
             "
 
   finalize:
+    if: github.actor == 'patryk-roguszewski' && github.triggering_actor == 'patryk-roguszewski'
     name: Verify assets and publish the draft release
     needs: [authorize, compatibility, smoke-native, smoke-musl]
     runs-on: ubuntu-latest

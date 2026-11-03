@@ -132,7 +132,35 @@ pub struct PublicProfileConfig {
     pub vault_trust_anchors: Vec<PublicVaultTrustAnchor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery_cache: Option<PublicDiscoveryCacheCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approver_trust_anchor: Option<PublicApproverTrustAnchor>,
     pub binding_signature: String,
+}
+
+/// Pinned organization approver key for Agent Submissions.
+///
+/// The first manifest is accepted from the authenticated backend; afterwards only manifests
+/// signed by this key, or a continuity-signed next key version, may replace it. Binding it into
+/// the signed profile and its trust-root digest makes a rolled-back or substituted pin fail
+/// integrity verification.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicApproverTrustAnchor {
+    pub organization_id: String,
+    pub key_version: u32,
+    pub manifest_revision: String,
+    pub signing_public_key: String,
+    pub message_public_key: String,
+}
+
+impl PublicApproverTrustAnchor {
+    fn validate(&self) -> bool {
+        is_canonical_uuid(&self.organization_id)
+            && self.key_version > 0
+            && is_canonical_positive_revision(&self.manifest_revision)
+            && is_canonical_base64url(&self.signing_public_key, ED25519_PUBLIC_KEY_BYTES)
+            && is_canonical_base64url(&self.message_public_key, X25519_PUBLIC_KEY_BYTES)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -262,6 +290,10 @@ impl PublicProfileConfig {
             || self.discovery_cache.as_ref().is_some_and(|cache| {
                 cache.generation == 0 || !is_sha256_hex(&cache.ciphertext_sha256)
             })
+            || self
+                .approver_trust_anchor
+                .as_ref()
+                .is_some_and(|anchor| !anchor.validate())
         {
             return Err(PublicStoreError::InvalidPublicData);
         }
@@ -429,6 +461,14 @@ pub fn profile_config_digest(config: &PublicProfileConfig) -> Result<String, Pub
         digest.u64(cache.generation);
         digest.text(&cache.ciphertext_sha256);
     }
+    if let Some(anchor) = &config.approver_trust_anchor {
+        digest.u32(5);
+        digest.text(&anchor.organization_id);
+        digest.u32(anchor.key_version);
+        digest.text(&anchor.manifest_revision);
+        digest.text(&anchor.signing_public_key);
+        digest.text(&anchor.message_public_key);
+    }
     digest.text(&config.binding_signature);
     Ok(digest.finish())
 }
@@ -459,6 +499,14 @@ pub fn profile_binding_bytes(config: &PublicProfileConfig) -> Result<Vec<u8>, Pu
         bytes.u32(4);
         bytes.u64(cache.generation);
         bytes.text(&cache.ciphertext_sha256);
+    }
+    if let Some(anchor) = &config.approver_trust_anchor {
+        bytes.u32(5);
+        bytes.text(&anchor.organization_id);
+        bytes.u32(anchor.key_version);
+        bytes.text(&anchor.manifest_revision);
+        bytes.text(&anchor.signing_public_key);
+        bytes.text(&anchor.message_public_key);
     }
     Ok(bytes.finish())
 }
@@ -898,10 +946,10 @@ mod tests {
     use sha2::Digest;
 
     use super::{
-        PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicDiscoveryCacheCommitment,
-        PublicProfileConfig, PublicRegistry, PublicVaultTrustAnchor, load_profile_config,
-        load_registry, profile_binding_bytes, profile_config_digest, registry_digest,
-        save_profile_config, save_registry,
+        PUBLIC_SCHEMA_VERSION, PublicAgentEntry, PublicApproverTrustAnchor,
+        PublicDiscoveryCacheCommitment, PublicProfileConfig, PublicRegistry,
+        PublicVaultTrustAnchor, load_profile_config, load_registry, profile_binding_bytes,
+        profile_config_digest, registry_digest, save_profile_config, save_registry,
     };
 
     fn fixture_config(host: &str) -> PublicProfileConfig {
@@ -919,6 +967,7 @@ mod tests {
             signing_public_key: Some(base64::engine::general_purpose::STANDARD.encode([5_u8; 32])),
             vault_trust_anchors: Vec::new(),
             discovery_cache: None,
+            approver_trust_anchor: None,
             binding_signature: base64::engine::general_purpose::STANDARD.encode([7_u8; 64]),
         }
     }
@@ -969,6 +1018,42 @@ mod tests {
             .expect("commitment")
             .generation = 0;
         assert!(profile_binding_bytes(&config).is_err());
+    }
+
+    #[test]
+    fn approver_trust_anchor_is_bound_by_profile_signature_input_and_digest() {
+        let mut config = fixture_config("https://api.palladin.io");
+        let binding_before = profile_binding_bytes(&config).expect("binding");
+        let digest_before = profile_config_digest(&config).expect("digest");
+        let encode =
+            |bytes: [u8; 32]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+        config.approver_trust_anchor = Some(PublicApproverTrustAnchor {
+            organization_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
+            key_version: 1,
+            manifest_revision: "1".to_owned(),
+            signing_public_key: encode([12; 32]),
+            message_public_key: encode([13; 32]),
+        });
+        let binding_v1 = profile_binding_bytes(&config).expect("anchor-bound binding");
+        let digest_v1 = profile_config_digest(&config).expect("anchor-bound digest");
+        assert_ne!(binding_v1, binding_before);
+        assert_ne!(digest_v1, digest_before);
+
+        let anchor = config.approver_trust_anchor.as_mut().expect("anchor");
+        anchor.manifest_revision = "2".to_owned();
+        assert_ne!(profile_binding_bytes(&config).unwrap(), binding_v1);
+        assert_ne!(profile_config_digest(&config).unwrap(), digest_v1);
+
+        for corrupt in [
+            |anchor: &mut PublicApproverTrustAnchor| anchor.key_version = 0,
+            |anchor: &mut PublicApproverTrustAnchor| anchor.manifest_revision = "01".to_owned(),
+            |anchor: &mut PublicApproverTrustAnchor| anchor.organization_id = "x".to_owned(),
+            |anchor: &mut PublicApproverTrustAnchor| anchor.signing_public_key = "AA".to_owned(),
+        ] {
+            let mut invalid = config.clone();
+            corrupt(invalid.approver_trust_anchor.as_mut().expect("anchor"));
+            assert!(profile_binding_bytes(&invalid).is_err());
+        }
     }
 
     fn private_tempdir() -> tempfile::TempDir {

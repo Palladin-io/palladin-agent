@@ -8,6 +8,8 @@ description = "Deterministic crypto vectors, secret-slot identifiers, and explic
 targetRules = ["generic-api-key"]
 paths = [
   '''^runtime/Cargo\.lock$''',
+  '''^runtime/contracts/agent-submission/v1/contract\.json$''',
+  '''^runtime/contracts/agent-submission/v1/fixture\.json$''',
   '''^runtime/contracts/v1/encrypted-envelope\.json$''',
   '''^runtime/contracts/v2/envelope-xchacha-hkdf\.json$''',
   '''^runtime/contracts/script-execution/v1/wire-fixture\.json$''',

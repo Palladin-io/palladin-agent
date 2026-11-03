@@ -757,15 +757,21 @@ pub enum SignatureProfile {
     EncryptedReason,
     ScriptExecutionPackage,
     AgentWrappedVaultKey,
+    ApproverManifest,
+    ApproverContinuity,
+    AgentSubmission,
 }
 
 impl SignatureProfile {
-    fn domain_prefix(self) -> &'static [u8] {
+    pub(crate) fn domain_prefix(self) -> &'static [u8] {
         match self {
             Self::VaultManifest => b"PLDNV2SIG:VAULT-MANIFEST:",
             Self::EncryptedReason => b"PLDNV2SIG:ENCRYPTED-REASON:",
             Self::ScriptExecutionPackage => b"PLDNV2SIG:SCRIPT-EXECUTION-PACKAGE:",
             Self::AgentWrappedVaultKey => b"PLDNV2SIG:AGENT-WRAPPED-VAULT-KEY:",
+            Self::ApproverManifest => b"PLDNSUB1SIG:APPROVER-MANIFEST:",
+            Self::ApproverContinuity => b"PLDNSUB1SIG:APPROVER-CONTINUITY:",
+            Self::AgentSubmission => b"PLDNSUB1SIG:AGENT-SUBMISSION:",
         }
     }
 }

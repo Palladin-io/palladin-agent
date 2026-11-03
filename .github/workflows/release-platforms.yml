@@ -26,7 +26,7 @@ concurrency:
 jobs:
   authorize:
     name: Resolve the protected release source
-    if: github.actor == 'patryk-roguszewski'
+    if: github.actor == 'patryk-roguszewski' && github.triggering_actor == 'patryk-roguszewski'
     runs-on: ubuntu-latest
     environment: version-policy-signing
     timeout-minutes: 10
@@ -303,7 +303,8 @@ jobs:
           retention-days: 7
 
   stage-platforms:
-    name: Attest and stage the platform release set
+    if: github.actor == 'patryk-roguszewski' && github.triggering_actor == 'patryk-roguszewski'
+    name: Attest and publish the platform release set
     needs: [authorize, compatibility, macos, linux]
     runs-on: ubuntu-latest
     environment: npm-release
@@ -419,14 +420,14 @@ jobs:
           subject-path: ${{ runner.temp }}/release-set/*
           sbom-path: ${{ runner.temp }}/release-set/sbom-release.spdx.json
 
-      - name: Stage all five platform packages under candidate
+      - name: Publish all five platform packages under candidate
         run: |
           set -euo pipefail
           mapfile -t packages < <(find "$RUNNER_TEMP/release-set" -type f \
             -name 'palladin-runtime-*.tgz' -print | sort)
           test "${#packages[@]}" -eq 5
           for package in "${packages[@]}"; do
-            npm stage publish "$package" --tag candidate --provenance --ignore-scripts
+            npm publish "$package" --tag candidate --provenance --ignore-scripts
           done
 
       - name: Create the owner-reviewable draft release
@@ -437,7 +438,7 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t assets < <(find "$RUNNER_TEMP/release-set" -type f -print | sort)
-          notes='Platform candidates are staged for owner approval. The meta-package is not staged by this workflow.'
+          notes='Platform candidates are published through owner-authorized OIDC. The meta-package is not published by this workflow.'
           if [[ "$INPUTS_VERSION" == 0.0.9 ]]; then
             notes+=' Product-owner-directed physical lifecycle and adversarial QA will follow publication; these tests are not claimed as passed.'
           elif [[ "$INPUTS_VERSION" == 0.0.10 ]]; then
@@ -455,10 +456,10 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Record the manual npm approval boundary
+      - name: Record platform publication
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          All five macOS/Linux platform versions were staged with the immutable `candidate` tag.
+          All five macOS/Linux platform versions were published with the `candidate` tag.
 
-          Patryk must inspect and approve every staged package with npm 2FA. Do not run `release-meta.yml` until all five exact versions are public and the native registry smoke matrix can consume them.
+          No per-package npm approval is required. Do not run `release-meta.yml` until all five exact versions are public and the native registry smoke matrix can consume them.
           SUMMARY

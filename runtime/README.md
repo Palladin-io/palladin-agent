@@ -67,6 +67,43 @@ or transparency mechanism. Palladin deliberately does not add that trust chain
 because it does not protect existing credential confidentiality and would make
 Vault creation, onboarding, and recovery materially more complex.
 
+## Agent Submissions
+
+`palladin submit new|update` proposes an Entry, or a new secret for a granted Entry,
+under the [`palladin-agent-submission` v1](contracts/agent-submission/README.md)
+contract. The secret comes only from the native CSPRNG generator (`--generate`,
+honoring explicit length, class and symbol constraints; an unsatisfiable policy fails
+before anything else) or from a masked, confirmed prompt on an interactive terminal
+(`--from-prompt`; piped or redirected stdin is refused because it could carry model
+output, an environment variable or a file). It is never accepted in argv or environment variables, printed,
+logged, returned to MCP, or persisted.
+
+Before any secret is generated or encrypted, the runtime verifies the organization's
+approver manifest chain. The first manifest is a trust-on-first-use introduction from
+the authenticated backend, with the same boundary as a first Vault manifest; its
+organization must match every paired Vault anchor. Afterwards only manifests signed by
+the pinned key, or the next key version with a continuity signature by it, are
+accepted. A re-bootstrapped key (the next key version without continuity) is never
+accepted automatically: submissions fail with `approver-key-untrusted` and print the new
+signing key fingerprint, and only the operator can re-pin that exact manifest with
+`palladin submit trust-approvers --fingerprint <fingerprint> --confirm`, a CLI-only
+command with no MCP path. The pin is bound into the signed profile and its secure-store checkpoint, so
+a rolled-back or substituted pin fails integrity verification.
+
+Each submission uses a fresh random DEK and nonce, an identity-bound AAD, and DEK
+wraps for this Agent and the pinned approver key, signed with the Agent's Ed25519 key.
+A POST is sent once; an ambiguous result is reconciled by the Agent-chosen submission
+ID, never by resending different bytes. `palladin submit update --type credential|key` reads the
+expected revision only from the side-effect-free `submission-target` endpoint, never from
+a credential delivery; the reviewer's client rejects an asserted type that differs from
+the decrypted Entry, and uploads only the changed fields (a credential
+needs only the new password); the reviewer's client merges them into that revision.
+`palladin submit status` re-wraps the unchanged
+DEK and payload of pending submissions after a continuity-verified approver rotation.
+`palladin inject --submission <id>` fetches the Agent's own pending submission fresh,
+verifies its signature and bindings, and injects it through the same authenticated
+browser route as a granted credential; `get` and `exec` never accept a submission.
+
 ## Identity ownership
 
 Browser pairing creates a fresh local profile or resumes its matching signed pending record;
