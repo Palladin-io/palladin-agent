@@ -2,6 +2,7 @@
 use super::*;
 
 const SCHEMA: &str = "palladin.agent-submission-payload.v2";
+const DESCRIPTION_MAX_BYTES: usize = 4096;
 
 /// Values are memory-only. For TOTP, value contains a JSON object; other kinds use raw text.
 pub struct SubmissionCustomFieldV2 {
@@ -121,7 +122,7 @@ fn validate(payload: &Value, identity: &SubmissionIdentity) -> Result<(), Submis
         return Err(SubmissionError::MissingField);
     }
     if let Some(description) = object.get("description") {
-        string(description, NOTES_MAX_BYTES)?;
+        string(description, DESCRIPTION_MAX_BYTES)?;
     }
     let content = object["content"]
         .as_object()
@@ -404,6 +405,14 @@ mod tests {
             let payload = json!({"schema":"palladin.agent-submission-payload.v2", "identity":identity.to_value(), "content":content});
             assert!(validate(&payload, &identity).is_err());
         }
+    }
+
+    #[test]
+    fn description_respects_member_secret_byte_limit_while_notes_keep_their_limit() {
+        let identity = identity();
+        let payload = |description: &str| json!({"schema":SCHEMA,"identity":identity.to_value(),"description":description,"content":{"notes":"x".repeat(8192)}});
+        assert!(validate(&payload(&"é".repeat(2048)), &identity).is_ok());
+        assert!(validate(&payload(&format!("{}x", "é".repeat(2048))), &identity).is_err());
     }
 
     #[test]

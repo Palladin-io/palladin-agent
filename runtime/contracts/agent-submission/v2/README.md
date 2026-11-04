@@ -29,11 +29,12 @@ without a label or a type mismatch for an existing ID. Merge by ID preserves
 all unspecified fields and existing visibility policy. A newly added custom
 field starts with `never` Agent visibility. Submissions cannot change policy.
 
-TOTP values require uppercase unpadded base32 `secret`, `algorithm` in
+TOTP values require canonical uppercase unpadded base32 `secret` (complete bytes,
+legal unpadded length, zero unused trailing bits), `algorithm` in
 SHA1/SHA256/SHA512, `digits` 6 or 8, and `period` 15–120. Optional issuer/account
 are strings or null. Unknown fields, invalid values and unknown types reject.
 
-Limits in UTF-8 bytes: label 256, description/notes 8192, username 1024,
+Limits in UTF-8 bytes: label 256, description 4096, notes 8192, username 1024,
 password 4096, key/custom string value 16384, URL 2048, custom label 128, TOTP
 secret/issuer/account 1024. All strings are NFC; secrets are never normalized.
 Total canonical plaintext is at most 32768 bytes, as in v1.
