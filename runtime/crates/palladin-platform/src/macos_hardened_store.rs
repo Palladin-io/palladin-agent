@@ -218,6 +218,7 @@ fn service_for(slot: SecretSlot) -> &'static str {
     match slot {
         SecretSlot::OrganizationApiKey
         | SecretSlot::X25519PrivateKey
+        | SecretSlot::EncryptionKeyV4
         | SecretSlot::Ed25519SecretKey
         | SecretSlot::InvocationAuthorizationSeedV2 => IDENTITY_SERVICE_V2,
         SecretSlot::IntegrityTrustStateV1

@@ -456,7 +456,7 @@ impl RuntimeSession<'_> {
                 agent_signing_public_key: &signing_public_key,
                 recipient: SubmissionRecipient::Agent {
                     key_version: current.agent_key_version,
-                    identity: &self.encryption,
+                    keys: &self.encryption,
                     access_epoch: current.agent_access_epoch,
                 },
             },
@@ -771,7 +771,7 @@ impl RuntimeSession<'_> {
                 identity: identity.clone(),
                 agent_access_epoch: approver.agent_access_epoch,
                 agent_key_version: approver.agent_key_version,
-                agent_encryption_public_key: self.encryption.public_key(),
+                agent_encryption_key: &self.encryption.current().recipient_public_key(),
                 agent_signing: signing,
                 approver: &approver.pin,
             },

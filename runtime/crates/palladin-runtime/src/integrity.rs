@@ -238,10 +238,22 @@ pub(crate) struct DiscoveryCacheWrite {
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) enum SecretDeletion {
-    Identity { identity_id: String },
-    OrganizationCredential { organization_credential_id: String },
-    LegacyIdentity { identity_id: String },
-    LegacyOrganizationCredential { organization_credential_id: String },
+    Identity {
+        identity_id: String,
+    },
+    OrganizationCredential {
+        organization_credential_id: String,
+    },
+    LegacyIdentity {
+        identity_id: String,
+    },
+    LegacyOrganizationCredential {
+        organization_credential_id: String,
+    },
+    /// The pre-suite encryption key after the signed profile stopped naming it.
+    ReplacedEncryptionKey {
+        identity_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -375,7 +387,10 @@ impl IntegrityJournal {
                 != self.discovery_cache_writes.len()
             || self.secret_deletions.iter().any(|deletion| match deletion {
                 SecretDeletion::Identity { identity_id }
-                | SecretDeletion::LegacyIdentity { identity_id } => !is_opaque_id(identity_id),
+                | SecretDeletion::LegacyIdentity { identity_id }
+                | SecretDeletion::ReplacedEncryptionKey { identity_id } => {
+                    !is_opaque_id(identity_id)
+                }
                 SecretDeletion::OrganizationCredential {
                     organization_credential_id,
                 }
@@ -626,6 +641,7 @@ mod tests {
             agent_id: Some("agent-build".to_owned()),
             agent_active: false,
             encryption_public_key: Some(STANDARD.encode([3_u8; 32])),
+            previous_encryption_public_key: None,
             signing_public_key: Some(STANDARD.encode([4_u8; 32])),
             vault_trust_anchors: Vec::new(),
             discovery_cache: None,

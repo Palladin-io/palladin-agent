@@ -47,6 +47,7 @@ impl BrokerSecretStore {
             SecretSlot::BrowserHostLifecycleTokenV1 => "browser-host-lifecycle-token-v1",
             SecretSlot::OrganizationApiKey => "organization-api-key-v3",
             SecretSlot::X25519PrivateKey => "x25519-private-key-v3",
+            SecretSlot::EncryptionKeyV4 => "encryption-key-v4",
             SecretSlot::Ed25519SecretKey => "ed25519-secret-key-v3",
             SecretSlot::LegacyOrganizationApiKeyV2 => "organization-api-key",
             SecretSlot::LegacyX25519PrivateKeyV2 => "x25519-private-key",

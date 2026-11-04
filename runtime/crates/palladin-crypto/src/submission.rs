@@ -18,11 +18,10 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::suite::WrapperOpenError;
 use crate::{
-    DecryptedCredential, Ed25519Identity, EnvelopeScope, PROTOCOL_VERSION, RecipientKeyKind,
-    SealedWrappedKey, SignatureProfile, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1,
-    X25519Identity, X25519SealedBoxSuite, compute_key_fingerprint, verify_domain_signature,
+    AgentEncryptionKeys, DecryptedCredential, Ed25519Identity, EncryptionIdentity, EnvelopeScope,
+    PROTOCOL_VERSION, RecipientKeyKind, RecipientPublicKey, SignatureProfile, WrapperContext,
+    WrapperPurpose, compute_key_fingerprint, key_wrapper::OpenError, verify_domain_signature,
 };
 
 const CONTRACT_VERSION: u64 = 1;
@@ -520,12 +519,16 @@ impl AgentEntrySubmission {
         .map_err(|_| SubmissionError::InvalidAgentSignature)
     }
 
+    /// `wrapper_suite_id` is the suite registered with the recipient key: v1 carries no suite.
     fn wrapper_context(
         &self,
         recipient_key_kind: RecipientKeyKind,
+        wrapper_suite_id: &str,
     ) -> Result<WrapperContext, SubmissionError> {
         let (recipient_key_version, recipient_fingerprint) = match recipient_key_kind {
-            RecipientKeyKind::AgentX25519 => (self.agent_key_version, self.agent_key_fingerprint),
+            RecipientKeyKind::AgentEncryption => {
+                (self.agent_key_version, self.agent_key_fingerprint)
+            }
             _ => (
                 self.approver_key_version,
                 self.approver_message_key_fingerprint,
@@ -533,7 +536,7 @@ impl AgentEntrySubmission {
         };
         Ok(WrapperContext {
             protocol_version: PROTOCOL_VERSION,
-            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+            wrapper_suite_id: wrapper_suite_id.to_owned(),
             purpose: WrapperPurpose::SubmissionDek,
             scope: EnvelopeScope {
                 organization_id: *self.identity.organization_id.as_bytes(),
@@ -558,13 +561,13 @@ impl AgentEntrySubmission {
 pub enum SubmissionRecipient<'a> {
     Agent {
         key_version: u32,
-        identity: &'a X25519Identity,
+        keys: &'a AgentEncryptionKeys,
         /// The Agent's current access epoch from an authority other than this submission.
         access_epoch: u64,
     },
     ApproverGroup {
         key_version: u32,
-        identity: &'a X25519Identity,
+        identity: &'a EncryptionIdentity,
     },
 }
 
@@ -756,7 +759,7 @@ impl PinnedApproverTrust {
     pub fn signing_key_fingerprint(&self) -> [u8; 32] {
         compute_key_fingerprint(
             &self.signing_public_key,
-            RecipientKeyKind::OrganizationApproverEd25519,
+            RecipientKeyKind::OrganizationApproverSigning,
         )
     }
 
@@ -764,7 +767,7 @@ impl PinnedApproverTrust {
     pub fn message_key_fingerprint(&self) -> [u8; 32] {
         compute_key_fingerprint(
             &self.message_public_key,
-            RecipientKeyKind::OrganizationApproverX25519,
+            RecipientKeyKind::OrganizationApproverMessage,
         )
     }
 }
@@ -878,11 +881,11 @@ pub fn verify_approver_manifest_chain(
         }
         if compute_key_fingerprint(
             &manifest.signing_public_key,
-            RecipientKeyKind::OrganizationApproverEd25519,
+            RecipientKeyKind::OrganizationApproverSigning,
         ) != manifest.signing_key_fingerprint
             || compute_key_fingerprint(
                 &manifest.message_public_key,
-                RecipientKeyKind::OrganizationApproverX25519,
+                RecipientKeyKind::OrganizationApproverMessage,
             ) != manifest.message_key_fingerprint
         {
             return Err(SubmissionError::ManifestFingerprintMismatch);
@@ -996,7 +999,7 @@ pub struct SubmissionBuildContext<'a> {
     pub identity: SubmissionIdentity,
     pub agent_access_epoch: u64,
     pub agent_key_version: u32,
-    pub agent_encryption_public_key: &'a [u8; 32],
+    pub agent_encryption_key: &'a RecipientPublicKey,
     pub agent_signing: &'a Ed25519Identity,
     pub approver: &'a PinnedApproverTrust,
 }
@@ -1031,7 +1034,7 @@ pub fn build_agent_submission(
         1,
         context.agent_access_epoch,
         context.agent_key_version,
-        context.agent_encryption_public_key,
+        context.agent_encryption_key,
         context.agent_signing,
         context.approver,
     )
@@ -1046,7 +1049,7 @@ pub fn rewrap_agent_submission(
     agent_id: Uuid,
     current_access_epoch: u64,
     current_agent_key_version: u32,
-    agent_encryption: &X25519Identity,
+    agent_keys: &AgentEncryptionKeys,
     agent_signing: &Ed25519Identity,
     approver: &PinnedApproverTrust,
 ) -> Result<AgentEntrySubmission, SubmissionError> {
@@ -1059,11 +1062,11 @@ pub fn rewrap_agent_submission(
         agent_signing_public_key: agent_signing.public_key(),
         recipient: SubmissionRecipient::Agent {
             key_version: current_agent_key_version,
-            identity: agent_encryption,
+            keys: agent_keys,
             access_epoch: current_access_epoch,
         },
     };
-    let dek = open_dek(stored, &authority)?;
+    let (dek, agent_key) = open_dek(stored, &authority)?;
     let next_revision = stored
         .submission_revision
         .checked_add(1)
@@ -1075,7 +1078,7 @@ pub fn rewrap_agent_submission(
         next_revision,
         stored.agent_access_epoch,
         stored.agent_key_version,
-        agent_encryption.public_key(),
+        &agent_key.recipient_public_key(),
         agent_signing,
         approver,
     )?;
@@ -1111,7 +1114,7 @@ pub fn open_agent_submission(
     submission: &AgentEntrySubmission,
     authority: &SubmissionAuthority<'_>,
 ) -> Result<OpenedSubmission, SubmissionError> {
-    let dek = open_dek(submission, authority)?;
+    let (dek, _) = open_dek(submission, authority)?;
     let sealed = &submission.encoded_payload;
     if sealed.len() < NONCE_BYTES + TAG_BYTES {
         return Err(SubmissionError::PayloadAuthFailed);
@@ -1174,45 +1177,52 @@ fn parse_payload(
     })
 }
 
-fn open_dek(
+fn open_dek<'a>(
     submission: &AgentEntrySubmission,
-    authority: &SubmissionAuthority<'_>,
-) -> Result<SecretBox<[u8; 32]>, SubmissionError> {
+    authority: &SubmissionAuthority<'a>,
+) -> Result<(SecretBox<[u8; 32]>, &'a EncryptionIdentity), SubmissionError> {
     submission.verify_agent_signature(authority.agent_signing_public_key)?;
     if submission.identity.organization_id != authority.organization_id
         || submission.identity.agent_id != authority.agent_id
     {
         return Err(SubmissionError::ContextMismatch);
     }
-    let (kind, key_version, identity, declared_version, declared_fingerprint, wrapped) =
-        match authority.recipient {
-            SubmissionRecipient::Agent {
-                key_version,
-                identity,
-                ..
-            } => (
-                RecipientKeyKind::AgentX25519,
-                key_version,
-                identity,
-                submission.agent_key_version,
-                submission.agent_key_fingerprint,
-                &submission.agent_wrapped_dek,
-            ),
-            SubmissionRecipient::ApproverGroup {
-                key_version,
-                identity,
-            } => (
-                RecipientKeyKind::OrganizationApproverX25519,
+    let (kind, key_version, identity, declared_version, wrapped) = match authority.recipient {
+        SubmissionRecipient::Agent {
+            key_version, keys, ..
+        } => (
+            RecipientKeyKind::AgentEncryption,
+            key_version,
+            keys.select_by_fingerprint(
+                RecipientKeyKind::AgentEncryption,
+                &submission.agent_key_fingerprint,
+            )
+            .map_err(|_| SubmissionError::RecipientKeyMismatch)?,
+            submission.agent_key_version,
+            &submission.agent_wrapped_dek,
+        ),
+        SubmissionRecipient::ApproverGroup {
+            key_version,
+            identity,
+        } => {
+            if identity
+                .fingerprint(RecipientKeyKind::OrganizationApproverMessage)
+                .ct_eq(&submission.approver_message_key_fingerprint)
+                .unwrap_u8()
+                != 1
+            {
+                return Err(SubmissionError::RecipientKeyMismatch);
+            }
+            (
+                RecipientKeyKind::OrganizationApproverMessage,
                 key_version,
                 identity,
                 submission.approver_key_version,
-                submission.approver_message_key_fingerprint,
                 &submission.approver_wrapped_dek,
-            ),
-        };
-    let fingerprint = compute_key_fingerprint(identity.public_key(), kind);
-    if declared_version != key_version || declared_fingerprint.ct_eq(&fingerprint).unwrap_u8() != 1
-    {
+            )
+        }
+    };
+    if declared_version != key_version {
         return Err(SubmissionError::RecipientKeyMismatch);
     }
     // The epoch is outside the AAD and wrapper context; only this comparison stops pre-approval
@@ -1222,17 +1232,14 @@ fn open_dek(
     {
         return Err(SubmissionError::StaleAccessEpoch);
     }
-    let wrapped = SealedWrappedKey::from_bytes(wrapped.clone())
-        .map_err(|_| SubmissionError::WrapperOpenFailed)?;
-    let context = submission.wrapper_context(kind)?;
-    X25519SealedBoxSuite::unwrap_classified(&wrapped, identity, &context).map_err(|error| {
-        match error {
-            WrapperOpenError::ContextMismatch => SubmissionError::WrapperContextMismatch,
-            WrapperOpenError::Open | WrapperOpenError::Descriptor(_) => {
-                SubmissionError::WrapperOpenFailed
-            }
-        }
-    })
+    let context = submission.wrapper_context(kind, identity.suite_id())?;
+    let dek = context
+        .open_classified(wrapped, identity)
+        .map_err(|error| match error {
+            OpenError::ContextMismatch => SubmissionError::WrapperContextMismatch,
+            OpenError::Wrapper(_) => SubmissionError::WrapperOpenFailed,
+        })?;
+    Ok((dek, identity))
 }
 
 fn encrypt_payload(
@@ -1265,7 +1272,7 @@ fn seal_revision(
     submission_revision: u64,
     agent_access_epoch: u64,
     agent_key_version: u32,
-    agent_encryption_public_key: &[u8; 32],
+    agent_encryption_key: &RecipientPublicKey,
     agent_signing: &Ed25519Identity,
     approver: &PinnedApproverTrust,
 ) -> Result<AgentEntrySubmission, SubmissionError> {
@@ -1274,10 +1281,7 @@ fn seal_revision(
         submission_revision,
         agent_access_epoch,
         agent_key_version,
-        agent_key_fingerprint: compute_key_fingerprint(
-            agent_encryption_public_key,
-            RecipientKeyKind::AgentX25519,
-        ),
+        agent_key_fingerprint: agent_encryption_key.fingerprint(RecipientKeyKind::AgentEncryption),
         approver_key_version: approver.key_version,
         approver_message_key_fingerprint: approver.message_key_fingerprint(),
         approver_manifest_revision: approver.manifest_revision,
@@ -1286,19 +1290,21 @@ fn seal_revision(
         approver_wrapped_dek: Vec::new(),
         agent_signature: [0; 64],
     };
-    let wrap = |kind, public_key: &[u8; 32], submission: &AgentEntrySubmission| {
-        X25519SealedBoxSuite::wrap(dek, *public_key, &submission.wrapper_context(kind)?)
+    let wrap = |kind, recipient: &RecipientPublicKey, submission: &AgentEntrySubmission| {
+        submission
+            .wrapper_context(kind, recipient.suite_id())?
+            .seal_for_frozen_contract(dek, recipient)
             .map(|sealed| sealed.as_bytes().to_vec())
             .map_err(|_| SubmissionError::InvalidInput)
     };
     submission.agent_wrapped_dek = wrap(
-        RecipientKeyKind::AgentX25519,
-        agent_encryption_public_key,
+        RecipientKeyKind::AgentEncryption,
+        agent_encryption_key,
         &submission,
     )?;
     submission.approver_wrapped_dek = wrap(
-        RecipientKeyKind::OrganizationApproverX25519,
-        &approver.message_public_key,
+        RecipientKeyKind::OrganizationApproverMessage,
+        &RecipientPublicKey::from_frozen_contract(approver.message_public_key),
         &submission,
     )?;
     sign_submission(&mut submission, agent_signing)?;

@@ -1,22 +1,24 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use palladin_browser_bridge::{FormDiscoveryMap, FormDiscoveryMapDefinition};
 use palladin_core::{
     host::ApiHost, public_store::MAX_VAULT_TRUST_ANCHORS, secret::OrganizationApiKey,
 };
 use palladin_crypto::{
-    Ed25519Identity, EncryptedReasonContext, EncryptedReasonEnvelope, X25519Identity,
-    encrypt_reason, generate_nonce_base64, sign_request,
+    Ed25519Identity, EncryptedReasonContext, EncryptedReasonEnvelope, EncryptionIdentity,
+    X25519Identity, encrypt_reason, generate_nonce_base64, sign_request,
 };
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use reqwest::{Method, StatusCode, header::HeaderValue};
 use thiserror::Error;
 
 use crate::types::{
-    AgentDiscoveryDeltaBody, AgentDiscoverySnapshotBody, AgentRegistrationResult,
-    CreatePairingActivationBody, CredentialAccess, CredentialRequestBody, GetCredentialOptions,
-    RegistrationBody, ReportCredentialStaleInput, StaleRequestBody, StartBrowserPairingBody,
+    AgentDiscoveryDeltaBody, AgentDiscoverySnapshotBody, AgentEncryptionKeyStatus,
+    AgentRegistrationResult, CreatePairingActivationBody, CredentialAccess, CredentialRequestBody,
+    EncryptionKeyRotationBody, GetCredentialOptions, RegistrationBody, ReportCredentialStaleInput,
+    StaleRequestBody, StartBrowserPairingBody,
 };
 
 mod submissions;
@@ -209,6 +211,7 @@ pub struct ApiClient {
     host: ApiHost,
     organization_api_key: OrganizationApiKey,
     encryption_public_key_base64: String,
+    encryption_key_suite: HeaderValue,
     hostname: HeaderValue,
     signing: Option<SigningContext>,
 }
@@ -226,7 +229,7 @@ impl ApiClient {
     pub fn new(
         host: ApiHost,
         organization_api_key: OrganizationApiKey,
-        encryption_identity: &X25519Identity,
+        encryption_identity: &EncryptionIdentity,
         hostname: &str,
         signing: Option<SigningContext>,
     ) -> Result<Self, ApiError> {
@@ -243,7 +246,7 @@ impl ApiClient {
     fn new_with_timeout(
         host: ApiHost,
         organization_api_key: OrganizationApiKey,
-        encryption_identity: &X25519Identity,
+        encryption_identity: &EncryptionIdentity,
         hostname: &str,
         signing: Option<SigningContext>,
         timeout: Duration,
@@ -262,6 +265,7 @@ impl ApiClient {
             host,
             organization_api_key,
             encryption_public_key_base64: STANDARD.encode(encryption_identity.public_key()),
+            encryption_key_suite: HeaderValue::from_static(encryption_identity.suite_id()),
             hostname,
             signing,
         })
@@ -410,6 +414,43 @@ impl ApiClient {
             return Err(ApiError::InvalidResponse);
         }
         Ok(response)
+    }
+
+    /// Registers a new encryption key for this Agent. The request is signed like every Agent
+    /// request; `key_binding_signature` additionally signs the explicit rotation statement so
+    /// member clients can verify the new key against the Agent's pinned Ed25519 identity
+    /// before re-wrapping for it.
+    pub async fn rotate_encryption_key(
+        &self,
+        next: &EncryptionIdentity,
+        key_binding_signature: &[u8; 64],
+    ) -> Result<AgentEncryptionKeyStatus, ApiError> {
+        if self.signing.is_none() {
+            return Err(ApiError::InvalidInput);
+        }
+        let public_key = URL_SAFE_NO_PAD.encode(next.public_key());
+        let signature = URL_SAFE_NO_PAD.encode(key_binding_signature);
+        let body = serde_json::to_vec(&EncryptionKeyRotationBody {
+            wrapper_suite_id: next.suite_id(),
+            public_key: &public_key,
+            key_binding_signature: &signature,
+        })
+        .map_err(|_| ApiError::InvalidInput)?;
+        let response = self
+            .send(Method::POST, "/api/agent/encryption-key", Some(body), &[])
+            .await?;
+        decode_bounded_success_with_limit(response, MAX_PAIRING_RESPONSE_BYTES).await
+    }
+
+    /// Reports the registered key and how many envelopes still address the replaced key.
+    pub async fn get_encryption_key_status(&self) -> Result<AgentEncryptionKeyStatus, ApiError> {
+        if self.signing.is_none() {
+            return Err(ApiError::InvalidInput);
+        }
+        let response = self
+            .send(Method::GET, "/api/agent/encryption-key", None, &[])
+            .await?;
+        decode_bounded_success_with_limit(response, MAX_PAIRING_RESPONSE_BYTES).await
     }
 
     pub async fn create_pairing_activation(
@@ -732,6 +773,7 @@ impl ApiClient {
                 .request(method.clone(), url.clone())
                 .header("X-Api-Key", api_key)
                 .header("X-Agent-Key", &self.encryption_public_key_base64)
+                .header("X-Agent-Key-Suite", self.encryption_key_suite.clone())
                 .header("X-Agent-Hostname", self.hostname.clone());
             if let Some(body) = body.as_ref() {
                 request = request
@@ -981,7 +1023,7 @@ mod tests {
         InjectionFormStep, InjectionSubmit, InjectionSubmitKind,
     };
     use palladin_core::{host::ApiHost, secret::OrganizationApiKey};
-    use palladin_crypto::{Ed25519Identity, X25519Identity, canonical_request};
+    use palladin_crypto::{Ed25519Identity, EncryptionIdentity, X25519Identity, canonical_request};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -1226,7 +1268,7 @@ mod tests {
     async fn signature_covers_the_exact_json_bytes_sent_on_the_wire() {
         let response = r#"{"access":"pending","grantId":"grant-1"}"#;
         let (host, requests) = response_server(vec![(202, response)]).await;
-        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("X25519");
+        let encryption = EncryptionIdentity::generate().expect("encryption key");
         let signing_identity = Ed25519Identity::from_seed(vec![9; 32]).expect("Ed25519");
         let public_key = *signing_identity.public_key();
         let api = ApiClient::new_with_timeout(
@@ -1750,7 +1792,7 @@ mod tests {
     }
 
     fn client(host: &str, private_key: Vec<u8>, timeout: Duration) -> ApiClient {
-        let identity = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let identity = EncryptionIdentity::from_legacy_storage(private_key).expect("identity");
         ApiClient::new_with_timeout(
             ApiHost::parse(host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
@@ -1763,7 +1805,7 @@ mod tests {
     }
 
     fn signed_client(host: &str, private_key: Vec<u8>, timeout: Duration) -> ApiClient {
-        let identity = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let identity = EncryptionIdentity::from_legacy_storage(private_key).expect("identity");
         ApiClient::new_with_timeout(
             ApiHost::parse(host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),

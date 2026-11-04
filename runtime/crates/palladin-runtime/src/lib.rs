@@ -56,17 +56,18 @@ use palladin_credential::wait::{
     resolve_wait_policy,
 };
 use palladin_crypto::{
-    AgentIdentityBinding, BrowserPairingEnvelope, CredentialEnvelopeContext, DecryptedCredential,
-    Ed25519Identity, EncodedSuitePayload, EncryptedReasonContext, EnvelopeBinding,
-    EnvelopeDescriptor, EnvelopePurpose, EnvelopeScope, ExpectedScriptExecutionPackageContext,
-    FullCredentialEnvelopeContext, FullScriptMemberSecretContext, PairingCandidate,
-    PairingRelayStatus, PinnedVaultTrust, RecipientKeyKind, SealedWrappedKey, SecretBytes,
-    VaultManifestV2, WrapperContext, WrapperPurpose, X25519Identity, X25519SealedBoxSuite,
-    XChaChaVaultSuite, confirm_pairing_from_relay, decode_base64url, decrypt_credential,
-    decrypt_full_credential, decrypt_full_script_member_secret, encode_script_execution_parameters,
-    key_fingerprint, open_browser_pairing_credential, open_local_discovery_cache,
-    open_script_execution_package, prepare_pairing, seal_local_discovery_cache,
-    verify_agent_wrapped_vault_key_producer, verify_current_manifest, verify_profile_binding,
+    AgentEncryptionKeys, AgentIdentityBinding, BrowserPairingEnvelope, CredentialEnvelopeContext,
+    DecryptedCredential, Ed25519Identity, EncodedSuitePayload, EncryptedReasonContext,
+    EncryptionIdentity, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose, EnvelopeScope,
+    ExpectedScriptExecutionPackageContext, FullCredentialEnvelopeContext,
+    FullScriptMemberSecretContext, PairingCandidate, PairingRelayStatus, PinnedVaultTrust,
+    RecipientKeyKind, RecipientPublicKey, SecretBytes, VaultManifestV2, WrapperContext,
+    WrapperPurpose, X25519Identity, XChaChaVaultSuite, confirm_pairing_from_relay,
+    decode_base64url, decrypt_credential, decrypt_full_credential,
+    decrypt_full_script_member_secret, encode_script_execution_parameters, key_fingerprint,
+    open_browser_pairing_credential, open_local_discovery_cache, open_script_execution_package,
+    prepare_pairing, seal_local_discovery_cache, verify_agent_wrapped_vault_key_producer,
+    verify_current_manifest, verify_profile_binding,
 };
 use palladin_exec::{
     CapturedScriptResult, EnvironmentError, SecretEnvironment, resolve_interpreter, run_command,
@@ -87,8 +88,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-const AGENT_DISCOVERY_VDK_WRAPPER_PURPOSE: &str = "agentDiscoveryVdk";
-const AGENT_X25519_RECIPIENT_KEY_KIND: &str = "agentX25519";
+const AGENT_DISCOVERY_VDK_WRAPPER_PURPOSE: &str = "agentVaultDiscoveryKey";
+const AGENT_ENCRYPTION_RECIPIENT_KEY_KIND: &str = "agentEncryption";
 const AGENT_WRAPPED_VDK_DIGEST_PREFIX: &[u8] = b"PLDNV2DG:AGENT-WRAPPED-VDK:";
 
 use discovery::{DiscoveryPlaintext, LocalDiscoveryIndex};
@@ -1450,9 +1451,8 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                     request.operation.authorization_prompt(),
                     &operation_binding,
                 )?;
-                let (encryption, signing) = self.load_identity_verified_authorized(
+                let (encryption, signing) = self.load_pairing_identity_authorized(
                     &agent.identity_id,
-                    None,
                     &authorization,
                     &operation_binding,
                 )?;
@@ -1697,6 +1697,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             agent_id: Some(agent_id.to_string()),
             agent_active: true,
             encryption_public_key: Some(STANDARD.encode(encryption.public_key())),
+            previous_encryption_public_key: None,
             signing_public_key: Some(STANDARD.encode(signing.public_key())),
             binding_signature: STANDARD.encode([0_u8; 64]),
         };
@@ -1904,7 +1905,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         let host_string = host.as_url().as_str().trim_end_matches('/').to_owned();
         let signing_public_key_bytes = *signing.public_key();
         let signing_public_key = STANDARD.encode(signing_public_key_bytes);
-        let encryption_public_key = STANDARD.encode(encryption.public_key());
+        let encryption_public_key = STANDARD.encode(encryption.current().public_key());
         let signing_context = existing_config
             .as_ref()
             .and_then(|config| config.agent_id.as_ref())
@@ -1915,7 +1916,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         let client = match ApiClient::new(
             host,
             organization_api_key,
-            &encryption,
+            encryption.current(),
             hostname,
             signing_context,
         ) {
@@ -2029,6 +2030,9 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                 agent_id,
                 agent_active,
                 encryption_public_key: Some(encryption_public_key),
+                previous_encryption_public_key: encryption
+                    .previous()
+                    .map(|previous| STANDARD.encode(previous.public_key())),
                 signing_public_key: Some(signing_public_key),
                 binding_signature: STANDARD.encode([0_u8; 64]),
             };
@@ -2109,7 +2113,11 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             request.operation.authorization_prompt(),
             &operation_binding,
         )?;
-        let (encryption, signing) = self.load_identity_verified_authorized(
+        let StoredIdentity {
+            keys: encryption,
+            pending: pending_encryption_key,
+            signing,
+        } = self.read_identity_authorized(
             &agent.identity_id,
             Some(&config),
             &authorization,
@@ -2139,7 +2147,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         let client = ApiClient::new(
             host,
             organization_api_key,
-            &encryption,
+            encryption.current(),
             hostname,
             signing_context,
         )?;
@@ -2174,7 +2182,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         {
             update_registered_agent_id(&mut config, agent_id);
             config.agent_active = matches!(&registration, AgentRegistrationResult::Active { .. });
-            config.encryption_public_key = Some(STANDARD.encode(encryption.public_key()));
+            config.encryption_public_key = Some(STANDARD.encode(encryption.current().public_key()));
             config.signing_public_key = Some(STANDARD.encode(signing_public_key));
             let binding =
                 profile_binding_bytes(&config).map_err(|_| RuntimeError::IntegrityViolation)?;
@@ -2201,14 +2209,169 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                 false,
             )?;
         }
-        if !matches!(&registration, AgentRegistrationResult::Active { .. }) {
+        let mut encryption_key = EncryptionKeyMigration::NotAttempted;
+        if matches!(&registration, AgentRegistrationResult::Active { .. }) {
+            // A failed step changes nothing durable and is retried on the next status, so it
+            // must not hide the registration result.
+            match self
+                .advance_encryption_key_migration(
+                    &agent.identity_id,
+                    config.clone(),
+                    &client,
+                    &encryption,
+                    pending_encryption_key,
+                    &signing_for_binding,
+                    &lease,
+                )
+                .await
+            {
+                Ok((advanced, migration)) => {
+                    config = advanced;
+                    encryption_key = migration;
+                }
+                Err(RuntimeError::OperationAuthorizationExpired) => {
+                    return Err(RuntimeError::OperationAuthorizationExpired);
+                }
+                Err(_) => encryption_key = EncryptionKeyMigration::Deferred,
+            }
+        } else {
             self.discovery.lock().await.purge();
         }
         Ok(StatusOutcome {
             profile: agent,
             config,
             registration,
+            encryption_key,
         })
+    }
+
+    /// Moves an active Agent off a read-only wrapper suite without re-pairing. The new key is
+    /// stored before it is registered so an interrupted rotation retries with the same key,
+    /// and the replaced key is deleted only after the backend reports that no envelope still
+    /// addresses it.
+    #[allow(clippy::too_many_arguments)]
+    async fn advance_encryption_key_migration(
+        &self,
+        identity_id: &str,
+        mut config: PublicProfileConfig,
+        client: &ApiClient,
+        keys: &AgentEncryptionKeys,
+        pending: Option<EncryptionIdentity>,
+        signing: &Ed25519Identity,
+        lease: &OperationLease,
+    ) -> Result<(PublicProfileConfig, EncryptionKeyMigration), RuntimeError> {
+        let expect_key = |status: &palladin_api::AgentEncryptionKeyStatus,
+                          key: &EncryptionIdentity| {
+            let fingerprint =
+                URL_SAFE_NO_PAD.encode(key.fingerprint(RecipientKeyKind::AgentEncryption));
+            if status.wrapper_suite_id == key.suite_id() && status.key_fingerprint == fingerprint {
+                Ok(())
+            } else {
+                Err(RuntimeError::EncryptionKeyMismatch)
+            }
+        };
+        if keys.current().is_current_suite() {
+            if keys.previous().is_none() {
+                return Ok((config, EncryptionKeyMigration::Current));
+            }
+            let status = within_lease(lease, client.get_encryption_key_status()).await??;
+            expect_key(&status, keys.current())?;
+            if status.previous_key_envelope_count != 0 {
+                return Ok((
+                    config,
+                    EncryptionKeyMigration::AwaitingRewrap {
+                        remaining_envelopes: Some(status.previous_key_envelope_count),
+                    },
+                ));
+            }
+            config.previous_encryption_public_key = None;
+            // The local discovery cache may still be sealed to the key being deleted.
+            config.discovery_cache = None;
+            self.discovery.lock().await.purge();
+            lease
+                .ensure_active()
+                .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+            self.commit_signed_config(
+                identity_id,
+                &mut config,
+                signing,
+                vec![SecretDeletion::ReplacedEncryptionKey {
+                    identity_id: identity_id.to_owned(),
+                }],
+            )?;
+            return Ok((config, EncryptionKeyMigration::PreviousKeyDeleted));
+        }
+        if keys.previous().is_some() {
+            return Ok((config, EncryptionKeyMigration::Deferred));
+        }
+        let agent_id = config
+            .agent_id
+            .as_deref()
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .ok_or(RuntimeError::MissingAgentId)?;
+        let next = match pending {
+            Some(next) => next,
+            None => {
+                let next = EncryptionIdentity::generate()?;
+                lease
+                    .ensure_active()
+                    .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+                self.secrets.set(
+                    identity_id,
+                    SecretSlot::EncryptionKeyV4,
+                    next.secure_storage_bytes().expose_secret(),
+                )?;
+                next
+            }
+        };
+        let signature =
+            signing.sign_encryption_key_rotation(agent_id.as_bytes(), keys.current(), &next);
+        let status = within_lease(lease, client.rotate_encryption_key(&next, &signature)).await??;
+        expect_key(&status, &next)?;
+        config.previous_encryption_public_key = config.encryption_public_key.take();
+        config.encryption_public_key = Some(STANDARD.encode(next.public_key()));
+        lease
+            .ensure_active()
+            .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+        self.commit_signed_config(identity_id, &mut config, signing, Vec::new())?;
+        Ok((
+            config,
+            EncryptionKeyMigration::AwaitingRewrap {
+                remaining_envelopes: None,
+            },
+        ))
+    }
+
+    fn commit_signed_config(
+        &self,
+        identity_id: &str,
+        config: &mut PublicProfileConfig,
+        signing: &Ed25519Identity,
+        secret_deletions: Vec<SecretDeletion>,
+    ) -> Result<(), RuntimeError> {
+        let state = self.verified_state_locked()?;
+        let binding =
+            profile_binding_bytes(config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        config.binding_signature = STANDARD.encode(signing.sign_profile_binding(&binding));
+        let digest = profile_config_digest(config).map_err(|_| RuntimeError::IntegrityViolation)?;
+        let mut registry = state.registry.clone();
+        registry
+            .agents
+            .iter_mut()
+            .find(|entry| entry.identity_id == identity_id)
+            .ok_or(RuntimeError::IntegrityViolation)?
+            .config_digest = Some(digest);
+        self.commit_transition(
+            &state,
+            registry,
+            vec![ConfigWrite {
+                identity_id: identity_id.to_owned(),
+                config: config.clone(),
+            }],
+            Vec::new(),
+            secret_deletions,
+            false,
+        )
     }
 
     pub fn open_session(
@@ -2276,7 +2439,13 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             agent_id: agent_id.clone(),
             identity: signing,
         });
-        let api = ApiClient::new(host, organization_api_key, &encryption, hostname, signing)?;
+        let api = ApiClient::new(
+            host,
+            organization_api_key,
+            encryption.current(),
+            hostname,
+            signing,
+        )?;
         let lease = authorization.into_lease()?;
         Ok(RuntimeSession {
             profile,
@@ -2480,7 +2649,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         identity_id: &str,
         agent_id: &str,
         commitment: Option<&PublicDiscoveryCacheCommitment>,
-        encryption: &X25519Identity,
+        encryption: &AgentEncryptionKeys,
     ) -> Result<LocalDiscoveryIndex, RuntimeError> {
         let Some(commitment) = commitment else {
             let mut index = LocalDiscoveryIndex::new();
@@ -2639,7 +2808,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
             &expected_identity,
             &anchors,
             &config,
-            encryption.public_key(),
+            encryption.current(),
             signing.public_key(),
         )?;
         config.vault_trust_anchors = anchors;
@@ -2943,6 +3112,7 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                     agent_id: legacy_config.agent_id,
                     agent_active: false,
                     encryption_public_key: Some(encryption_public_key),
+                    previous_encryption_public_key: None,
                     signing_public_key: Some(signing_public_key),
                     vault_trust_anchors: Vec::new(),
                     discovery_cache: None,
@@ -3042,27 +3212,10 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         &self,
         identity_id: &str,
         expected: Option<&PublicProfileConfig>,
-    ) -> Result<(X25519Identity, Ed25519Identity), RuntimeError> {
-        let encryption = self
-            .secrets
-            .get(identity_id, SecretSlot::X25519PrivateKey)?
-            .ok_or(RuntimeError::MissingIdentity)?;
-        let signing = self
-            .secrets
-            .get(identity_id, SecretSlot::Ed25519SecretKey)?
-            .ok_or(RuntimeError::MissingIdentity)?;
-        let encryption = X25519Identity::from_private_bytes(encryption.expose_secret().to_vec())?;
-        let signing = Ed25519Identity::from_libsodium_secret(signing.expose_secret().to_vec())?;
-        if let Some(expected) = expected {
-            let encryption_public = STANDARD.encode(encryption.public_key());
-            let signing_public = STANDARD.encode(signing.public_key());
-            if expected.encryption_public_key.as_deref() != Some(encryption_public.as_str())
-                || expected.signing_public_key.as_deref() != Some(signing_public.as_str())
-            {
-                return Err(RuntimeError::IntegrityViolation);
-            }
-        }
-        Ok((encryption, signing))
+    ) -> Result<(AgentEncryptionKeys, Ed25519Identity), RuntimeError> {
+        let stored =
+            Self::read_identity(expected, |slot| Ok(self.secrets.get(identity_id, slot)?))?;
+        Ok((stored.keys, stored.signing))
     }
 
     fn load_identity_verified_authorized(
@@ -3071,37 +3224,101 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
         expected: Option<&PublicProfileConfig>,
         authorization: &OperationAuthorization,
         binding: &[u8],
+    ) -> Result<(AgentEncryptionKeys, Ed25519Identity), RuntimeError> {
+        let stored =
+            self.read_identity_authorized(identity_id, expected, authorization, binding)?;
+        Ok((stored.keys, stored.signing))
+    }
+
+    fn read_identity_authorized(
+        &self,
+        identity_id: &str,
+        expected: Option<&PublicProfileConfig>,
+        authorization: &OperationAuthorization,
+        binding: &[u8],
+    ) -> Result<StoredIdentity, RuntimeError> {
+        Self::read_identity(expected, |slot| {
+            Ok(self
+                .secrets
+                .get_authorized(identity_id, slot, authorization, binding)?)
+        })
+    }
+
+    /// Browser pairing (out of scope for suite migration) still uses the key created with the
+    /// unconfigured profile for its X25519 key agreement.
+    fn load_pairing_identity_authorized(
+        &self,
+        identity_id: &str,
+        authorization: &OperationAuthorization,
+        binding: &[u8],
     ) -> Result<(X25519Identity, Ed25519Identity), RuntimeError> {
-        let encryption = self
-            .secrets
-            .get_authorized(
-                identity_id,
-                SecretSlot::X25519PrivateKey,
-                authorization,
-                binding,
-            )?
-            .ok_or(RuntimeError::MissingIdentity)?;
-        let signing = self
-            .secrets
-            .get_authorized(
-                identity_id,
-                SecretSlot::Ed25519SecretKey,
-                authorization,
-                binding,
-            )?
-            .ok_or(RuntimeError::MissingIdentity)?;
-        let encryption = X25519Identity::from_private_bytes(encryption.expose_secret().to_vec())?;
+        let stored = self.read_identity_authorized(identity_id, None, authorization, binding)?;
+        let pairing = X25519Identity::from_private_bytes(
+            stored.keys.current().legacy_storage_bytes()?.to_vec(),
+        )?;
+        Ok((pairing, stored.signing))
+    }
+
+    /// The signed profile is the authenticated directory of the Agent's own keys: it names the
+    /// current key and, during a suite migration, the previous one. A suite-tagged key it does
+    /// not name is a registration still in flight.
+    fn read_identity(
+        expected: Option<&PublicProfileConfig>,
+        read: impl Fn(SecretSlot) -> Result<Option<secrecy::SecretSlice<u8>>, RuntimeError>,
+    ) -> Result<StoredIdentity, RuntimeError> {
+        let signing = read(SecretSlot::Ed25519SecretKey)?.ok_or(RuntimeError::MissingIdentity)?;
         let signing = Ed25519Identity::from_libsodium_secret(signing.expose_secret().to_vec())?;
-        if let Some(expected) = expected {
-            let encryption_public = STANDARD.encode(encryption.public_key());
-            let signing_public = STANDARD.encode(signing.public_key());
-            if expected.encryption_public_key.as_deref() != Some(encryption_public.as_str())
-                || expected.signing_public_key.as_deref() != Some(signing_public.as_str())
-            {
-                return Err(RuntimeError::IntegrityViolation);
+        let legacy = read(SecretSlot::X25519PrivateKey)?
+            .map(|stored| EncryptionIdentity::from_legacy_storage(stored.expose_secret().to_vec()))
+            .transpose()?;
+        let suite_tagged = read(SecretSlot::EncryptionKeyV4)?
+            .map(|stored| EncryptionIdentity::from_secure_storage(stored.expose_secret()))
+            .transpose()?;
+        let Some(expected) = expected else {
+            // An unconfigured profile holds only the key created with it.
+            let current = legacy
+                .or(suite_tagged)
+                .ok_or(RuntimeError::MissingIdentity)?;
+            return Ok(StoredIdentity {
+                keys: AgentEncryptionKeys::new(current, None)?,
+                pending: None,
+                signing,
+            });
+        };
+        if expected.signing_public_key.as_deref()
+            != Some(STANDARD.encode(signing.public_key()).as_str())
+        {
+            return Err(RuntimeError::IntegrityViolation);
+        }
+        let names = |key: &EncryptionIdentity, public_key: Option<&String>| {
+            public_key.is_some_and(|value| *value == STANDARD.encode(key.public_key()))
+        };
+        let current_public = expected.encryption_public_key.as_ref();
+        let previous_public = expected.previous_encryption_public_key.as_ref();
+        let mut current = None;
+        let mut previous = None;
+        let mut pending = None;
+        for (key, is_legacy) in [(suite_tagged, false), (legacy, true)] {
+            let Some(key) = key else { continue };
+            if current.is_none() && names(&key, current_public) {
+                current = Some(key);
+            } else if previous.is_none() && names(&key, previous_public) {
+                previous = Some(key);
+            } else if !is_legacy {
+                pending = Some(key);
             }
         }
-        Ok((encryption, signing))
+        if previous_public.is_some() != previous.is_some() {
+            return Err(RuntimeError::IntegrityViolation);
+        }
+        Ok(StoredIdentity {
+            keys: AgentEncryptionKeys::new(
+                current.ok_or(RuntimeError::IntegrityViolation)?,
+                previous,
+            )?,
+            pending,
+            signing,
+        })
     }
 
     fn load_organization_api_key_authorized(
@@ -3737,6 +3954,16 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
                     &self.secrets,
                     organization_credential_id,
                 )?,
+                SecretDeletion::ReplacedEncryptionKey { identity_id } => {
+                    if target_configs
+                        .get(identity_id)
+                        .is_none_or(|config| config.previous_encryption_public_key.is_some())
+                    {
+                        return Err(RuntimeError::IntegrityRecoveryRequired);
+                    }
+                    self.secrets
+                        .delete(identity_id, SecretSlot::X25519PrivateKey)?;
+                }
             }
         }
         for identity_id in &journal.remove_identity_directories {
@@ -3830,6 +4057,22 @@ pub struct StatusOutcome {
     pub profile: PublicAgentEntry,
     pub config: PublicProfileConfig,
     pub registration: AgentRegistrationResult,
+    pub encryption_key: EncryptionKeyMigration,
+}
+
+/// Progress of moving the Agent's encryption key off a read-only wrapper suite.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EncryptionKeyMigration {
+    /// The Agent is not active, so no key change was attempted.
+    NotAttempted,
+    Current,
+    /// A new key is registered; envelopes addressed to the previous key await re-wrapping.
+    AwaitingRewrap {
+        remaining_envelopes: Option<u64>,
+    },
+    PreviousKeyDeleted,
+    /// The key change could not complete now; it is retried with the same key next time.
+    Deferred,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3851,11 +4094,18 @@ pub struct LegacyCleanupOutcome {
     pub profiles: usize,
 }
 
+struct StoredIdentity {
+    keys: AgentEncryptionKeys,
+    /// A generated key whose registration has not been committed to the signed profile yet.
+    pending: Option<EncryptionIdentity>,
+    signing: Ed25519Identity,
+}
+
 pub struct RuntimeSession<'a> {
     profile: PublicAgentEntry,
     config: PublicProfileConfig,
     api: ApiClient,
-    encryption: X25519Identity,
+    encryption: AgentEncryptionKeys,
     lease: OperationLease,
     operation: RuntimeOperation,
     consumed: AtomicBool,
@@ -3892,7 +4142,7 @@ trait ManifestRevisionPersistence: Sync {
         identity_id: &str,
         agent_id: &str,
         commitment: Option<&PublicDiscoveryCacheCommitment>,
-        encryption: &X25519Identity,
+        encryption: &AgentEncryptionKeys,
     ) -> Result<LocalDiscoveryIndex, RuntimeError>;
 
     #[allow(clippy::too_many_arguments)]
@@ -3945,7 +4195,7 @@ impl<S: SecretStore + Sync> ManifestRevisionPersistence for RuntimeService<S> {
         identity_id: &str,
         agent_id: &str,
         commitment: Option<&PublicDiscoveryCacheCommitment>,
-        encryption: &X25519Identity,
+        encryption: &AgentEncryptionKeys,
     ) -> Result<LocalDiscoveryIndex, RuntimeError> {
         RuntimeService::load_discovery_cache(self, identity_id, agent_id, commitment, encryption)
     }
@@ -4365,7 +4615,12 @@ impl RuntimeSession<'_> {
         getrandom::fill(&mut request_id).map_err(|_| RuntimeError::RandomGenerationFailed)?;
         request_id[6] = (request_id[6] & 0x0f) | 0x40;
         request_id[8] = (request_id[8] & 0x3f) | 0x80;
-        let recipient_key = decode_32_url(&manifest.vault_agent_message_public_key)?;
+        // The signed manifest is the key directory: it names the message key and its suite.
+        let recipient_key = RecipientPublicKey::new(
+            &manifest.wrapper_suite_id,
+            decode_base64url(&manifest.vault_agent_message_public_key)?,
+        )
+        .map_err(|_| RuntimeError::UntrustedVaultManifest)?;
         let recipient_fingerprint = decode_32_url(&manifest.vault_agent_message_key_fingerprint)?;
         let encrypted_reason = self.api.encrypt_access_reason(
             reason,
@@ -4416,7 +4671,14 @@ impl RuntimeSession<'_> {
             organization_id: Uuid::parse_str(organization_id)
                 .map_err(|_| RuntimeError::InvalidPublicConfig)?,
             agent_id: Uuid::parse_str(agent_id).map_err(|_| RuntimeError::InvalidPublicConfig)?,
-            x25519_fingerprint: key_fingerprint(1, self.encryption.public_key())?,
+            encryption_fingerprint: self
+                .encryption
+                .current()
+                .fingerprint(RecipientKeyKind::AgentEncryption),
+            previous_encryption_fingerprint: self
+                .encryption
+                .previous()
+                .map(|key| key.fingerprint(RecipientKeyKind::AgentEncryption)),
             ed25519_fingerprint: key_fingerprint(2, &signing_public_key)?,
         })
     }
@@ -4440,7 +4702,11 @@ impl RuntimeSession<'_> {
             organization_id: Uuid::parse_str(organization_id)
                 .map_err(|_| RuntimeError::InvalidPublicConfig)?,
             agent_id: Uuid::parse_str(agent_id).map_err(|_| RuntimeError::InvalidPublicConfig)?,
-            x25519_fingerprint: key_fingerprint(1, self.encryption.public_key())?,
+            encryption_fingerprint: self
+                .encryption
+                .current()
+                .fingerprint(RecipientKeyKind::AgentEncryption),
+            previous_encryption_fingerprint: None,
             ed25519_fingerprint: key_fingerprint(2, &signing_public_key)?,
         })
     }
@@ -4703,8 +4969,11 @@ impl RuntimeSession<'_> {
             .map_or(1, |cache| cache.generation.saturating_add(1));
         let binding = discovery_cache_binding(&self.profile.identity_id, agent_id, generation)?;
         let plaintext = index.encode_durable_cache()?;
-        let ciphertext =
-            seal_local_discovery_cache(self.encryption.public_key(), &binding, plaintext.as_ref())?;
+        let ciphertext = seal_local_discovery_cache(
+            &self.encryption.current().recipient_public_key(),
+            &binding,
+            plaintext.as_ref(),
+        )?;
         let commitment = PublicDiscoveryCacheCommitment {
             generation,
             ciphertext_sha256: hex_digest(Sha256::digest(&ciphertext)),
@@ -4741,7 +5010,7 @@ impl RuntimeSession<'_> {
             || descriptor.resource_revision != envelope.vdk_version.to_string()
             || descriptor.wrapped_key_version != envelope.vdk_version
             || descriptor.member_key_generation.is_some()
-            || descriptor.recipient_key_kind != AGENT_X25519_RECIPIENT_KEY_KIND
+            || descriptor.recipient_key_kind != AGENT_ENCRYPTION_RECIPIENT_KEY_KIND
             || descriptor.recipient_key_version == 0
             || descriptor.recipient_fingerprint != manifest.agent_x25519_fingerprint
             || descriptor.parent_descriptor_hash.is_some();
@@ -4762,7 +5031,6 @@ impl RuntimeSession<'_> {
         {
             return Err(RuntimeError::UntrustedVaultManifest);
         }
-        let wrapped = SealedWrappedKey::from_bytes(wrapped)?;
         let organization_id = Uuid::parse_str(&scope.organization_id)
             .map_err(|_| RuntimeError::UntrustedVaultManifest)?;
         let vault_id =
@@ -4779,6 +5047,14 @@ impl RuntimeSession<'_> {
             .parse::<u64>()
             .map_err(|_| RuntimeError::UntrustedVaultManifest)?;
         let recipient_fingerprint = decode_32_url(&descriptor.recipient_fingerprint)?;
+        let recipient = self
+            .encryption
+            .select(
+                &descriptor.wrapper_suite_id,
+                RecipientKeyKind::AgentEncryption,
+                &recipient_fingerprint,
+            )
+            .map_err(|_| RuntimeError::UntrustedVaultManifest)?;
         let context = WrapperContext {
             protocol_version: descriptor.protocol_version,
             wrapper_suite_id: descriptor.wrapper_suite_id.clone(),
@@ -4794,16 +5070,15 @@ impl RuntimeSession<'_> {
             resource_revision,
             wrapped_key_version: descriptor.wrapped_key_version,
             member_key_generation: descriptor.member_key_generation,
-            recipient_key_kind: RecipientKeyKind::AgentX25519,
+            recipient_key_kind: RecipientKeyKind::AgentEncryption,
             recipient_key_version: descriptor.recipient_key_version,
             recipient_fingerprint,
             parent_descriptor_hash: None,
         };
-        Ok(X25519SealedBoxSuite::unwrap_secret(
-            &wrapped,
-            &self.encryption,
-            &context,
-        )?)
+        let vdk = context
+            .open(&wrapped, recipient)
+            .map_err(palladin_crypto::CryptoError::from)?;
+        Ok(SecretBytes::new(vdk.expose_secret().to_vec()))
     }
 
     async fn sync_discovery_vault(
@@ -5906,6 +6181,22 @@ impl RuntimePairingCandidate {
     }
 }
 
+async fn within_lease<T>(
+    lease: &OperationLease,
+    operation: impl std::future::Future<Output = T>,
+) -> Result<T, RuntimeError> {
+    let remaining = lease
+        .remaining()
+        .map_err(|_| RuntimeError::OperationAuthorizationExpired)?;
+    let cancellation = lease.cancellation_token();
+    tokio::select! {
+        biased;
+        () = cancellation.cancelled() => Err(RuntimeError::OperationAuthorizationExpired),
+        () = tokio::time::sleep(remaining) => Err(RuntimeError::OperationAuthorizationExpired),
+        result = operation => Ok(result),
+    }
+}
+
 pub fn prepare_runtime_pairing(
     response: AgentPairingActivationResponse,
     expected_identity: &AgentIdentityBinding,
@@ -5920,7 +6211,7 @@ pub fn prepare_runtime_pairing(
         || agent_id != expected_identity.agent_id
         || response.agent_access_epoch == 0
         || decode_32_url(&response.agent_x25519_fingerprint)?
-            != expected_identity.x25519_fingerprint
+            != expected_identity.encryption_fingerprint
         || decode_32_url(&response.agent_ed25519_fingerprint)?
             != expected_identity.ed25519_fingerprint
     {
@@ -6231,7 +6522,7 @@ fn validate_confirmed_pairing_identity(
     expected: &AgentIdentityBinding,
     anchors: &[PublicVaultTrustAnchor],
     config: &PublicProfileConfig,
-    encryption_public_key: &[u8; 32],
+    encryption: &EncryptionIdentity,
     signing_public_key: &[u8; 32],
 ) -> Result<(), RuntimeError> {
     let configured_agent_id = config
@@ -6240,7 +6531,8 @@ fn validate_confirmed_pairing_identity(
         .ok_or(RuntimeError::MissingAgentId)
         .and_then(|value| Uuid::parse_str(value).map_err(|_| RuntimeError::InvalidPublicConfig))?;
     if configured_agent_id != expected.agent_id
-        || key_fingerprint(1, encryption_public_key)? != expected.x25519_fingerprint
+        || encryption.fingerprint(RecipientKeyKind::AgentEncryption)
+            != expected.encryption_fingerprint
         || key_fingerprint(2, signing_public_key)? != expected.ed25519_fingerprint
         || anchors
             .iter()
@@ -6307,6 +6599,10 @@ fn authenticated_inject_metadata(
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
+    #[error(
+        "the Palladin API reported a different Agent encryption key; no local key was replaced or deleted"
+    )]
+    EncryptionKeyMismatch,
     #[error("signed runtime release manifest is not configured; no identity was opened")]
     VersionPolicyNotConfigured,
     #[error("signed runtime release manifest is unavailable; no identity was opened")]
@@ -6734,9 +7030,21 @@ mod tests {
         EncodedSuitePayload, EncryptedCredential, EnvelopeBinding, EnvelopeDescriptor,
         EnvelopePurpose, EnvelopeScope, GrantEnvelopeBinding, GrantEnvelopeDescriptor,
         GrantEnvelopeScope, RecipientKeyKind, VAULT_XCHACHA_V1, WrappedGrantDek, WrapperContext,
-        WrapperPurpose, X25519_WRAPPER_V1, X25519SealedBoxSuite, XChaChaVaultSuite,
-        compute_field_set_commitment, compute_key_fingerprint,
+        WrapperPurpose, XChaChaVaultSuite, compute_field_set_commitment,
     };
+
+    pub(super) fn agent_keys() -> AgentEncryptionKeys {
+        AgentEncryptionKeys::new(EncryptionIdentity::generate().expect("Agent key"), None)
+            .expect("Agent keys")
+    }
+
+    fn legacy_agent_keys(private_key: Vec<u8>) -> AgentEncryptionKeys {
+        AgentEncryptionKeys::new(
+            EncryptionIdentity::from_legacy_storage(private_key).expect("legacy Agent key"),
+            None,
+        )
+        .expect("Agent keys")
+    }
     use secrecy::{ExposeSecret, SecretBox};
     use serde_json::json;
     use sha2::{Digest, Sha256};
@@ -7154,11 +7462,11 @@ mod tests {
     async fn script_method_not_allowed_returns_before_package_open_or_process_spawn() {
         let body = r#"{"statusCode":403,"errors":{"generalErrors":["method-not-allowed"]}}"#;
         let (host, requests) = single_response_server(403, body.to_owned()).await;
-        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let encryption = agent_keys();
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -7198,11 +7506,11 @@ mod tests {
     #[tokio::test]
     async fn stale_refresh_never_recaches_the_rejected_revision() {
         let (host, _) = single_response_server(200, TEST_FORM_MAP.to_owned()).await;
-        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let encryption = agent_keys();
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -7247,11 +7555,11 @@ mod tests {
             ),
         ])
         .await;
-        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let encryption = agent_keys();
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -7336,12 +7644,11 @@ mod tests {
                 .expect("recipient private key"),
         )
         .expect("recipient private key encoding");
-        let encryption =
-            X25519Identity::from_private_bytes(private_key).expect("recipient identity");
+        let encryption = legacy_agent_keys(private_key);
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -7623,7 +7930,7 @@ mod tests {
             .provision_browser_host_authorization()
             .expect("provision authorization");
 
-        let encryption = X25519Identity::from_private_bytes(vec![61; 32]).expect("identity");
+        let encryption = agent_keys();
         let expires_at =
             OffsetDateTime::from_unix_timestamp(OffsetDateTime::now_utc().unix_timestamp() + 2)
                 .expect("whole-second expiry");
@@ -7680,7 +7987,7 @@ mod tests {
         let api = ApiClient::new(
             ApiHost::parse("https://api.stage.palladin.io").expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -7722,7 +8029,7 @@ mod tests {
             .provision_browser_host_authorization()
             .expect("provision authorization");
 
-        let encryption = X25519Identity::from_private_bytes(vec![61; 32]).expect("identity");
+        let encryption = agent_keys();
         let expires_at =
             OffsetDateTime::from_unix_timestamp(OffsetDateTime::now_utc().unix_timestamp() + 30)
                 .expect("whole-second expiry");
@@ -7772,7 +8079,7 @@ mod tests {
         let api = ApiClient::new(
             ApiHost::parse("https://api.stage.palladin.io").expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -7979,13 +8286,15 @@ mod tests {
     }
 
     fn signed_manifest_fixture() -> (AgentIdentityBinding, Vec<VaultManifestV2>) {
-        let agent_encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("X25519");
+        let agent_encryption = agent_keys();
         let agent_signing = Ed25519Identity::from_seed(vec![9; 32]).expect("Ed25519");
         let identity = AgentIdentityBinding {
             organization_id: Uuid::parse_str(TEST_ORGANIZATION_ID).expect("organization"),
             agent_id: Uuid::parse_str(TEST_AGENT_ID).expect("agent"),
-            x25519_fingerprint: key_fingerprint(1, agent_encryption.public_key())
-                .expect("X25519 fingerprint"),
+            encryption_fingerprint: agent_encryption
+                .current()
+                .fingerprint(RecipientKeyKind::AgentEncryption),
+            previous_encryption_fingerprint: None,
             ed25519_fingerprint: key_fingerprint(2, agent_signing.public_key())
                 .expect("Ed25519 fingerprint"),
         };
@@ -8006,7 +8315,8 @@ mod tests {
                     organization_id: identity.organization_id.to_string(),
                     vault_id: vault_id.to_owned(),
                     agent_id: identity.agent_id.to_string(),
-                    agent_x25519_fingerprint: URL_SAFE_NO_PAD.encode(identity.x25519_fingerprint),
+                    agent_x25519_fingerprint: URL_SAFE_NO_PAD
+                        .encode(identity.encryption_fingerprint),
                     agent_ed25519_fingerprint: URL_SAFE_NO_PAD.encode(identity.ed25519_fingerprint),
                     vault_signing_public_key: URL_SAFE_NO_PAD.encode(signing_public_key),
                     vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(signing_fingerprint),
@@ -8276,7 +8586,7 @@ mod tests {
             identity_id: &str,
             agent_id: &str,
             _commitment: Option<&PublicDiscoveryCacheCommitment>,
-            _encryption: &X25519Identity,
+            _encryption: &AgentEncryptionKeys,
         ) -> Result<LocalDiscoveryIndex, RuntimeError> {
             let mut index = LocalDiscoveryIndex::new();
             index.scope_to_identity(identity_id, agent_id);
@@ -8303,11 +8613,11 @@ mod tests {
     #[test]
     fn unchanged_manifest_batch_still_revalidates_durable_anchors() {
         let host = "http://127.0.0.1:5000".to_owned();
-        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let encryption = agent_keys();
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -8332,11 +8642,11 @@ mod tests {
     async fn epoch_rejection_clears_live_discovery_without_publishing_partial_state() {
         let (host, _) =
             single_response_server(200, r#"{"agentAccessEpoch":2,"items":[]}"#.to_owned()).await;
-        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let encryption = agent_keys();
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -8431,6 +8741,7 @@ mod tests {
                 agent_id: Some("55555555-5555-4555-8555-555555555555".to_owned()),
                 agent_active: true,
                 encryption_public_key: Some(created.encryption_public_key.clone()),
+                previous_encryption_public_key: None,
                 signing_public_key: Some(created.signing_public_key.clone()),
                 vault_trust_anchors: vec![anchor.clone()],
                 discovery_cache: None,
@@ -8540,15 +8851,14 @@ mod tests {
                 .to_vec(),
         )
         .expect("signing identity");
-        let encryption = X25519Identity::from_private_bytes(
+        let encryption = legacy_agent_keys(
             store
                 .get(&created.identity_id, SecretSlot::X25519PrivateKey)
                 .expect("read encryption key")
                 .expect("encryption key")
                 .expose_secret()
                 .to_vec(),
-        )
-        .expect("encryption identity");
+        );
         let agent_id = "55555555-5555-4555-8555-555555555555";
         {
             let _lock = service
@@ -8565,6 +8875,7 @@ mod tests {
                 agent_id: Some(agent_id.to_owned()),
                 agent_active: true,
                 encryption_public_key: Some(created.encryption_public_key.clone()),
+                previous_encryption_public_key: None,
                 signing_public_key: Some(created.signing_public_key.clone()),
                 vault_trust_anchors: Vec::new(),
                 discovery_cache: None,
@@ -8617,9 +8928,12 @@ mod tests {
         let plaintext = index.encode_durable_cache().expect("encode cache");
         let first_binding =
             discovery_cache_binding(&created.identity_id, agent_id, 1).expect("cache binding");
-        let first_ciphertext =
-            seal_local_discovery_cache(encryption.public_key(), &first_binding, plaintext.as_ref())
-                .expect("seal cache");
+        let first_ciphertext = seal_local_discovery_cache(
+            &encryption.current().recipient_public_key(),
+            &first_binding,
+            plaintext.as_ref(),
+        )
+        .expect("seal cache");
         let first_commitment = PublicDiscoveryCacheCommitment {
             generation: 1,
             ciphertext_sha256: hex_digest(Sha256::digest(&first_ciphertext)),
@@ -8667,7 +8981,7 @@ mod tests {
         let second_binding =
             discovery_cache_binding(&created.identity_id, agent_id, 2).expect("cache binding");
         let second_ciphertext = seal_local_discovery_cache(
-            encryption.public_key(),
+            &encryption.current().recipient_public_key(),
             &second_binding,
             plaintext.as_ref(),
         )
@@ -8727,11 +9041,11 @@ mod tests {
         ];
         bodies.extend(non_granted_bodies);
         let (host, requests) = credential_server(bodies).await;
-        let encryption = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
+        let encryption = agent_keys();
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -8753,6 +9067,7 @@ mod tests {
                 agent_id: None,
                 agent_active: false,
                 encryption_public_key: None,
+                previous_encryption_public_key: None,
                 signing_public_key: None,
                 vault_trust_anchors: Vec::new(),
                 discovery_cache: None,
@@ -8833,7 +9148,7 @@ mod tests {
 
     #[tokio::test]
     async fn inject_binds_an_unchanged_discovery_projection_to_a_newer_granted_entry() {
-        let encryption = X25519Identity::from_private_bytes(vec![41; 32]).expect("test identity");
+        let encryption = agent_keys();
         let payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"synthetic-password"},{"id":"credential.url","kind":"url","mode":"value","value":"https://login.example.test"}],"schema":"palladin.grant-payload.v1"}"#;
         let mut body: serde_json::Value = serde_json::from_str(&grant_response_for_identity(
             &encryption,
@@ -8850,7 +9165,7 @@ mod tests {
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -8966,19 +9281,7 @@ mod tests {
 
     #[tokio::test]
     async fn granted_inject_uses_one_credential_request_and_never_syncs_discovery() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../contracts/v1/encrypted-envelope.json"
-        ))
-        .expect("envelope fixture");
-        let private_key = STANDARD
-            .decode(
-                fixture
-                    .pointer("/keyFixture/privateKeyBase64")
-                    .and_then(serde_json::Value::as_str)
-                    .expect("private key"),
-            )
-            .expect("private key base64");
-        let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let encryption = agent_keys();
         let payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-password-not-production"},{"id":"credential.url","kind":"url","mode":"value","value":"https://login.example.test/sign-in"},{"id":"credential.username","kind":"text","mode":"value","value":"fixture-user"}],"schema":"palladin.grant-payload.v1"}"#;
         let body = grant_response(
             &encryption,
@@ -8995,7 +9298,7 @@ mod tests {
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -9033,7 +9336,7 @@ mod tests {
         let browser = service
             .provision_browser_host_authorization()
             .expect("authorization");
-        let encryption = X25519Identity::from_private_bytes(vec![41; 32]).expect("identity");
+        let encryption = agent_keys();
         let payload = r#"{"entryType":"credential","fields":[{"id":"credential.url","kind":"url","mode":"value","value":"https://login.example.test/"},{"id":"credential.username","kind":"text","mode":"value","value":"synthetic-user"}],"schema":"palladin.grant-payload.v1"}"#;
         let body = grant_response_for_identity(
             &encryption,
@@ -9048,7 +9351,7 @@ mod tests {
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".into()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -9089,19 +9392,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_exec_consumes_the_canonical_credential_envelope() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../contracts/v1/encrypted-envelope.json"
-        ))
-        .expect("envelope fixture");
-        let private_key = STANDARD
-            .decode(
-                fixture
-                    .pointer("/keyFixture/privateKeyBase64")
-                    .and_then(serde_json::Value::as_str)
-                    .expect("private key"),
-            )
-            .expect("private key base64");
-        let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let encryption = agent_keys();
         let payload = r#"{"entryType":"credential","fields":[{"id":"credential.password","kind":"concealed","mode":"value","value":"fixture-password-not-production"},{"id":"credential.url","kind":"url","mode":"value","value":"https://example.test/login"},{"id":"credential.username","kind":"text","mode":"value","value":"fixture-user"}],"schema":"palladin.grant-payload.v1"}"#;
         let body = grant_response(
             &encryption,
@@ -9118,7 +9409,7 @@ mod tests {
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -9172,19 +9463,7 @@ mod tests {
     #[cfg(not(windows))]
     #[tokio::test]
     async fn legacy_script_delivery_never_falls_back_to_n_plus_one_reference_requests() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../contracts/v1/encrypted-envelope.json"
-        ))
-        .expect("identity fixture");
-        let private_key = STANDARD
-            .decode(
-                fixture
-                    .pointer("/keyFixture/privateKeyBase64")
-                    .and_then(serde_json::Value::as_str)
-                    .expect("private key"),
-            )
-            .expect("private key base64");
-        let encryption = X25519Identity::from_private_bytes(private_key).expect("identity");
+        let encryption = agent_keys();
         let main_payload = format!(
             r#"{{"entryType":"script","fields":[{{"id":"script.interpreter","kind":"interpreter","mode":"runtime","value":"sh"}},{{"id":"script.refs","kind":"refs","mode":"runtime","value":[{{"entryId":"{TEST_REFERENCE_ENTRY_ID}","env":"TEST_SECRET","fieldId":"credential.password","vaultId":"{TEST_VAULT_ID}"}}]}},{{"id":"script.source","kind":"script","mode":"runtime","value":"test \"$TEST_SECRET\" = fixture-password-not-production"}}],"schema":"palladin.grant-payload.v1"}}"#
         );
@@ -9199,7 +9478,7 @@ mod tests {
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -9414,7 +9693,7 @@ mod tests {
     fn runtime_session(
         host: String,
         api: ApiClient,
-        encryption: X25519Identity,
+        encryption: AgentEncryptionKeys,
     ) -> RuntimeSession<'static> {
         RuntimeSession {
             profile: PublicAgentEntry {
@@ -9433,6 +9712,7 @@ mod tests {
                 agent_id: Some(TEST_AGENT_ID.to_owned()),
                 agent_active: true,
                 encryption_public_key: None,
+                previous_encryption_public_key: None,
                 signing_public_key: None,
                 vault_trust_anchors: vec![PublicVaultTrustAnchor {
                     organization_id: TEST_ORGANIZATION_ID.to_owned(),
@@ -9473,6 +9753,7 @@ mod tests {
             agent_id: Some("agent-current".to_owned()),
             agent_active: true,
             encryption_public_key: None,
+            previous_encryption_public_key: None,
             signing_public_key: None,
             vault_trust_anchors: vec![PublicVaultTrustAnchor {
                 organization_id: TEST_ORGANIZATION_ID.to_owned(),
@@ -9499,14 +9780,17 @@ mod tests {
 
     #[test]
     fn confirmed_pairing_cannot_cross_agent_identity() {
-        let encryption = X25519Identity::generate().expect("encryption identity");
+        let encryption = agent_keys();
         let signing = Ed25519Identity::generate().expect("signing identity");
         let agent_id = Uuid::parse_str(TEST_AGENT_ID).expect("agent id");
         let organization_id = Uuid::parse_str(TEST_ORGANIZATION_ID).expect("organization id");
         let expected = AgentIdentityBinding {
             organization_id,
             agent_id,
-            x25519_fingerprint: key_fingerprint(1, encryption.public_key()).expect("fingerprint"),
+            encryption_fingerprint: encryption
+                .current()
+                .fingerprint(RecipientKeyKind::AgentEncryption),
+            previous_encryption_fingerprint: None,
             ed25519_fingerprint: key_fingerprint(2, signing.public_key()).expect("fingerprint"),
         };
         let anchor = PublicVaultTrustAnchor {
@@ -9527,7 +9811,8 @@ mod tests {
             retired_organization_credential_ids: Vec::new(),
             agent_id: Some(TEST_AGENT_ID.to_owned()),
             agent_active: true,
-            encryption_public_key: Some(STANDARD.encode(encryption.public_key())),
+            encryption_public_key: Some(STANDARD.encode(encryption.current().public_key())),
+            previous_encryption_public_key: None,
             signing_public_key: Some(STANDARD.encode(signing.public_key())),
             vault_trust_anchors: Vec::new(),
             discovery_cache: None,
@@ -9539,7 +9824,7 @@ mod tests {
             &expected,
             std::slice::from_ref(&anchor),
             &config,
-            encryption.public_key(),
+            encryption.current(),
             signing.public_key(),
         )
         .expect("matching identity");
@@ -9550,7 +9835,7 @@ mod tests {
                 &expected,
                 &[anchor],
                 &config,
-                encryption.public_key(),
+                encryption.current(),
                 signing.public_key(),
             ),
             Err(RuntimeError::UntrustedVaultManifest)
@@ -9560,13 +9845,15 @@ mod tests {
     #[tokio::test]
     async fn pair_vaults_session_renews_polling_for_the_bound_activation() {
         let activation_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let encryption =
-            X25519Identity::from_private_bytes(vec![41; 32]).expect("encryption identity");
+        let encryption = agent_keys();
         let signing = Ed25519Identity::from_seed(vec![42; 32]).expect("signing identity");
         let identity = AgentIdentityBinding {
             organization_id: Uuid::parse_str(TEST_ORGANIZATION_ID).expect("organization id"),
             agent_id: Uuid::parse_str(TEST_AGENT_ID).expect("agent id"),
-            x25519_fingerprint: key_fingerprint(1, encryption.public_key()).expect("fingerprint"),
+            encryption_fingerprint: encryption
+                .current()
+                .fingerprint(RecipientKeyKind::AgentEncryption),
+            previous_encryption_fingerprint: None,
             ed25519_fingerprint: key_fingerprint(2, signing.public_key()).expect("fingerprint"),
         };
         let expected_candidate = prepare_pairing(
@@ -9581,7 +9868,7 @@ mod tests {
             "organizationId": TEST_ORGANIZATION_ID,
             "agentId": TEST_AGENT_ID,
             "agentAccessEpoch": 1,
-            "agentX25519Fingerprint": URL_SAFE_NO_PAD.encode(identity.x25519_fingerprint),
+            "agentX25519Fingerprint": URL_SAFE_NO_PAD.encode(identity.encryption_fingerprint),
             "agentEd25519Fingerprint": URL_SAFE_NO_PAD.encode(identity.ed25519_fingerprint),
             "expiresAt": expires_at,
             "candidateManifests": [],
@@ -9605,7 +9892,7 @@ mod tests {
         let api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_pairing_fixture".to_owned()),
-            &encryption,
+            encryption.current(),
             "fixture-host",
             None,
         )
@@ -9617,7 +9904,7 @@ mod tests {
             agent_type: None,
             config_digest: None,
         };
-        let config = |host: String, identity: &X25519Identity| PublicProfileConfig {
+        let config = |host: String, identity: &AgentEncryptionKeys| PublicProfileConfig {
             schema_version: PUBLIC_SCHEMA_VERSION,
             identity_id: "11111111111111111111111111111111".to_owned(),
             host,
@@ -9625,7 +9912,8 @@ mod tests {
             retired_organization_credential_ids: Vec::new(),
             agent_id: Some(TEST_AGENT_ID.to_owned()),
             agent_active: true,
-            encryption_public_key: Some(STANDARD.encode(identity.public_key())),
+            encryption_public_key: Some(STANDARD.encode(identity.current().public_key())),
+            previous_encryption_public_key: None,
             signing_public_key: Some(STANDARD.encode(signing.public_key())),
             vault_trust_anchors: Vec::new(),
             discovery_cache: None,
@@ -9662,12 +9950,11 @@ mod tests {
         );
         drop(session);
 
-        let renewed_encryption =
-            X25519Identity::from_private_bytes(vec![41; 32]).expect("renewed encryption identity");
+        let renewed_encryption = agent_keys();
         let renewed_api = ApiClient::new(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_pairing_fixture".to_owned()),
-            &renewed_encryption,
+            renewed_encryption.current(),
             "fixture-host",
             None,
         )
@@ -9713,7 +10000,7 @@ mod tests {
     }
 
     fn grant_response(
-        recipient: &X25519Identity,
+        recipient: &AgentEncryptionKeys,
         entry_id: &str,
         plaintext: &str,
         field_ids: &[&str],
@@ -9730,7 +10017,7 @@ mod tests {
     }
 
     fn grant_response_with_expiry(
-        recipient: &X25519Identity,
+        recipient: &AgentEncryptionKeys,
         entry_id: &str,
         plaintext: &str,
         field_ids: &[&str],
@@ -9749,7 +10036,7 @@ mod tests {
     }
 
     pub(super) fn grant_response_for_identity(
-        recipient: &X25519Identity,
+        recipient: &AgentEncryptionKeys,
         (entry_id, entry_revision): (&str, u64),
         plaintext: &str,
         field_ids: &[&str],
@@ -9765,8 +10052,9 @@ mod tests {
             agent_id: Some(test_uuid(agent_id)),
             member_id: None,
         };
-        let fingerprint =
-            compute_key_fingerprint(recipient.public_key(), RecipientKeyKind::AgentX25519);
+        let fingerprint = recipient
+            .current()
+            .fingerprint(RecipientKeyKind::AgentEncryption);
         let commitment =
             compute_field_set_commitment(field_ids.iter().copied()).expect("field-set commitment");
         let descriptor = EnvelopeDescriptor {
@@ -9779,7 +10067,7 @@ mod tests {
             member_key_generation: Some(1),
             binding: EnvelopeBinding::Grant {
                 entry_revision,
-                wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                wrapper_suite_id: recipient.current().suite_id().to_owned(),
                 recipient_agent_key_version: 1,
                 recipient_agent_key_fingerprint: fingerprint,
                 approved_methods,
@@ -9800,20 +10088,20 @@ mod tests {
             XChaChaVaultSuite::seal(&payload_key, plaintext.as_bytes(), &aad).expect("payload");
         let wrapper_context = WrapperContext {
             protocol_version: 2,
-            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+            wrapper_suite_id: recipient.current().suite_id().to_owned(),
             purpose: WrapperPurpose::GrantDek,
             scope,
             resource_revision: 1,
             wrapped_key_version: 1,
             member_key_generation: Some(1),
-            recipient_key_kind: RecipientKeyKind::AgentX25519,
+            recipient_key_kind: RecipientKeyKind::AgentEncryption,
             recipient_key_version: 1,
             recipient_fingerprint: fingerprint,
             parent_descriptor_hash: Some(Sha256::digest(aad).into()),
         };
-        let wrapped =
-            X25519SealedBoxSuite::wrap(&grant_dek, *recipient.public_key(), &wrapper_context)
-                .expect("wrapped DEK");
+        let wrapped = wrapper_context
+            .seal(&grant_dek, &recipient.current().recipient_public_key())
+            .expect("wrapped DEK");
         let envelope = EncryptedCredential {
             descriptor: GrantEnvelopeDescriptor {
                 protocol_version: 2,
@@ -9832,7 +10120,7 @@ mod tests {
                 member_key_generation: Some(1),
                 binding: GrantEnvelopeBinding {
                     entry_revision: entry_revision.to_string(),
-                    wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                    wrapper_suite_id: recipient.current().suite_id().to_owned(),
                     recipient_key_version: 1,
                     recipient_key_fingerprint: URL_SAFE_NO_PAD.encode(fingerprint),
                     approved_methods,
@@ -9844,7 +10132,7 @@ mod tests {
                 },
             },
             encoded_suite_payload: URL_SAFE_NO_PAD.encode(payload.as_bytes()),
-            wrapped_grant_dek: WrappedGrantDek::from_context(&wrapper_context, &wrapped),
+            wrapped_grant_dek: WrappedGrantDek::from_context(&wrapper_context, wrapped.as_bytes()),
             field_ids: field_ids.iter().map(|value| (*value).to_owned()).collect(),
         };
         json!({

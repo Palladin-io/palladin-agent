@@ -1,0 +1,42 @@
+{
+  "id": "palladin-xwing-v1",
+  "summary": "Hybrid post-quantum wrapper: X-Wing KEM (ML-KEM-768 + X25519) derives a single-use XChaCha20-Poly1305 key bound to the wrapper context, the full recipient public key and the KEM ciphertext.",
+  "quantumResistant": true,
+  "kem": {
+    "algorithm": "X-Wing",
+    "specification": "draft-connolly-cfrg-xwing-kem-10",
+    "knownAnswerTest": "vectors.json xwingKnownAnswer (Appendix C, first vector of draft-10)",
+    "sharedSecretBytes": 32,
+    "ciphertextBytes": 1120,
+    "encapsulationRandomnessBytes": 64
+  },
+  "recipientKey": {
+    "algorithm": "X-Wing",
+    "publicKeyBytes": 1216,
+    "publicKeyEncoding": "X-Wing encapsulation key: ML-KEM-768 encapsulation key[1184] || X25519 public key[32]",
+    "privateKeyBytes": 32,
+    "privateKeyEncoding": "X-Wing 32-byte decapsulation seed; implementations expand it per the specification and never store the expanded key"
+  },
+  "fingerprint": {
+    "algorithm": "SHA-256",
+    "input": "ASCII(PLDNV2FP) || u16be(protocolVersion) || u16be(recipientKeyKind) || u16be(len) || ASCII(suiteId) || rawPublicKey[1216]",
+    "bytes": 32,
+    "suiteBound": true
+  },
+  "package": {
+    "kdf": "aeadKey = HKDF-SHA-256(ikm = sharedSecret, salt = empty, info = ASCII(PLDNXW1KEY) || contextHash[32] || SHA-256(recipientPublicKey)[32] || SHA-256(kemCiphertext)[32], length = 32)",
+    "aead": "XChaCha20-Poly1305-IETF with a 24-byte all-zero nonce; the key is used exactly once",
+    "aad": "ASCII(PLDNXW1AAD) || contextHash[32]",
+    "plaintext": "wrappedKey[32]",
+    "layout": "kemCiphertext[1120] || aeadCiphertextWithTag[48]",
+    "packageBytes": 1168,
+    "seal": "Encapsulate to the recipient public key with fresh CSPRNG randomness, derive aeadKey, encrypt wrappedKey, wipe sharedSecret and aeadKey.",
+    "open": "Reject any package that is not exactly 1168 bytes and any public key that is not exactly 1216 bytes before calling the KEM. Decapsulate, derive aeadKey from the independently built descriptor's context hash, and require AEAD authentication."
+  },
+  "wrappedKeyBytes": 32,
+  "implementationNotes": [
+    "The deterministic encapsulation randomness exists only in the fixture generator.",
+    "Never reuse an aeadKey; the zero nonce is safe only because every encapsulation yields a fresh shared secret.",
+    "Wipe the shared secret, aeadKey and the opened key material after use."
+  ]
+}

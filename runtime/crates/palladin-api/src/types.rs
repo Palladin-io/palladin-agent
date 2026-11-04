@@ -744,6 +744,26 @@ pub(crate) struct AgentDiscoveryDeltaBody<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct EncryptionKeyRotationBody<'a> {
+    pub wrapper_suite_id: &'a str,
+    pub public_key: &'a str,
+    pub key_binding_signature: &'a str,
+}
+
+/// Backend view of the Agent's registered encryption key. `previous_key_envelope_count` is the
+/// number of envelopes that still address the replaced key; the replaced private key is
+/// deleted locally only when it is zero.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEncryptionKeyStatus {
+    pub wrapper_suite_id: String,
+    pub key_version: u32,
+    pub key_fingerprint: String,
+    pub previous_key_envelope_count: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct StartBrowserPairingBody<'a> {
     pub hostname: &'a str,
     pub pairing_id: &'a str,
@@ -988,7 +1008,7 @@ mod tests {
                         "resourceRevision": "1",
                         "wrappedKeyVersion": 1,
                         "memberKeyGeneration": 1,
-                        "recipientKeyKind": "agentX25519",
+                        "recipientKeyKind": "agentEncryption",
                         "recipientKeyVersion": 1,
                         "recipientFingerprint": "fingerprint",
                         "parentDescriptorHash": "hash"
@@ -1065,7 +1085,7 @@ mod tests {
                         "resourceRevision": "7",
                         "wrappedKeyVersion": 3,
                         "memberKeyGeneration": null,
-                        "recipientKeyKind": "agentX25519",
+                        "recipientKeyKind": "agentEncryption",
                         "recipientKeyVersion": 2,
                         "recipientFingerprint": "fingerprint",
                         "parentDescriptorHash": null
@@ -1188,7 +1208,7 @@ mod tests {
                             "resourceRevision": "1",
                             "wrappedKeyVersion": 1,
                             "memberKeyGeneration": 1,
-                            "recipientKeyKind": "agentX25519",
+                            "recipientKeyKind": "agentEncryption",
                             "recipientKeyVersion": 2,
                             "recipientFingerprint": "fingerprint",
                             "parentDescriptorHash": "hash"

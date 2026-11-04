@@ -22,6 +22,7 @@ const SHA256_HEX_LENGTH: usize = 64;
 const ED25519_PUBLIC_KEY_BYTES: usize = 32;
 const ED25519_SIGNATURE_BYTES: usize = 64;
 const X25519_PUBLIC_KEY_BYTES: usize = 32;
+const MAX_ENCRYPTION_PUBLIC_KEY_BYTES: usize = 4096;
 const SHA256_BYTES: usize = 32;
 const MAX_AGENT_TYPE_CODE_POINTS: usize = 100;
 const MAX_AGENT_TYPE_BYTES: usize = MAX_AGENT_TYPE_CODE_POINTS * 4;
@@ -124,8 +125,12 @@ pub struct PublicProfileConfig {
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub agent_active: bool,
+    /// The Agent's currently registered encryption public key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encryption_public_key: Option<String>,
+    /// The replaced encryption public key, kept while envelopes still address it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_encryption_public_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signing_public_key: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -270,10 +275,10 @@ impl PublicProfileConfig {
                 .as_deref()
                 .is_some_and(|value| !is_safe_public_text(value, 256))
             || (self.agent_active && self.agent_id.is_none())
-            || !valid_optional_public_key(
-                self.encryption_public_key.as_deref(),
-                X25519_PUBLIC_KEY_BYTES,
-            )
+            || !valid_optional_encryption_key(self.encryption_public_key.as_deref())
+            || !valid_optional_encryption_key(self.previous_encryption_public_key.as_deref())
+            || (self.previous_encryption_public_key.is_some()
+                && self.previous_encryption_public_key == self.encryption_public_key)
             || !valid_optional_public_key(
                 self.signing_public_key.as_deref(),
                 ED25519_PUBLIC_KEY_BYTES,
@@ -469,6 +474,10 @@ pub fn profile_config_digest(config: &PublicProfileConfig) -> Result<String, Pub
         digest.text(&anchor.signing_public_key);
         digest.text(&anchor.message_public_key);
     }
+    if let Some(previous) = &config.previous_encryption_public_key {
+        digest.u32(6);
+        digest.text(previous);
+    }
     digest.text(&config.binding_signature);
     Ok(digest.finish())
 }
@@ -507,6 +516,10 @@ pub fn profile_binding_bytes(config: &PublicProfileConfig) -> Result<Vec<u8>, Pu
         bytes.text(&anchor.manifest_revision);
         bytes.text(&anchor.signing_public_key);
         bytes.text(&anchor.message_public_key);
+    }
+    if let Some(previous) = &config.previous_encryption_public_key {
+        bytes.u32(6);
+        bytes.text(previous);
     }
     Ok(bytes.finish())
 }
@@ -740,6 +753,17 @@ fn valid_optional_public_key(value: Option<&str>, expected_bytes: usize) -> bool
     value.is_none_or(|value| is_canonical_base64(value, expected_bytes))
 }
 
+/// The exact length belongs to the key's suite and is checked against the stored private key
+/// when the identity is loaded; the profile only bounds and canonicalizes it.
+fn valid_optional_encryption_key(value: Option<&str>) -> bool {
+    value.is_none_or(|value| {
+        STANDARD.decode(value).is_ok_and(|decoded| {
+            (32..=MAX_ENCRYPTION_PUBLIC_KEY_BYTES).contains(&decoded.len())
+                && STANDARD.encode(decoded) == value
+        })
+    })
+}
+
 fn is_canonical_base64(value: &str, expected_bytes: usize) -> bool {
     STANDARD
         .decode(value)
@@ -964,6 +988,7 @@ mod tests {
             encryption_public_key: Some(
                 base64::engine::general_purpose::STANDARD.encode([3_u8; 32]),
             ),
+            previous_encryption_public_key: None,
             signing_public_key: Some(base64::engine::general_purpose::STANDARD.encode([5_u8; 32])),
             vault_trust_anchors: Vec::new(),
             discovery_cache: None,

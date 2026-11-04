@@ -7,8 +7,8 @@ use serde::Serialize;
 
 use crate::{CreatedProfile, LegacyCleanupOutcome, LegacyCutoverOutcome};
 use palladin_runtime::{
-    ReTrustedApproverKey, RewrapOutcome, SubmissionHint, SubmissionNotSaved, SubmissionResult,
-    SubmissionStatusItem,
+    EncryptionKeyMigration, ReTrustedApproverKey, RewrapOutcome, SubmissionHint,
+    SubmissionNotSaved, SubmissionResult, SubmissionStatusItem,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -139,6 +139,32 @@ pub fn render_status(
                 safe_terminal_text(error)
             ));
         }
+    }
+    output
+}
+
+/// Reported on stderr so the frozen `status` stdout contract is unchanged.
+#[must_use]
+pub fn render_encryption_key_migration(migration: EncryptionKeyMigration) -> RenderedOutput {
+    let mut output = RenderedOutput::default();
+    match migration {
+        EncryptionKeyMigration::NotAttempted | EncryptionKeyMigration::Current => {}
+        EncryptionKeyMigration::AwaitingRewrap {
+            remaining_envelopes: Some(remaining),
+        } => output.stderr_line(format_args!(
+            "Note: encryption key upgraded; {remaining} item(s) still wait for a member to re-share them"
+        )),
+        EncryptionKeyMigration::AwaitingRewrap {
+            remaining_envelopes: None,
+        } => output.stderr_line(
+            "Note: encryption key upgraded; items are available again after a member re-shares them",
+        ),
+        EncryptionKeyMigration::PreviousKeyDeleted => {
+            output.stderr_line("Note: encryption key upgrade completed; the previous key was deleted");
+        }
+        EncryptionKeyMigration::Deferred => output.stderr_line(
+            "Note: encryption key upgrade is pending; run `palladin status` again later",
+        ),
     }
     output
 }

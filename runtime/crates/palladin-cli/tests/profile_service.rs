@@ -8,7 +8,7 @@ use palladin_cli::{
 use palladin_core::host::ApiHost;
 use palladin_core::profiles::ProfileRepository;
 use palladin_core::secret::OrganizationApiKey;
-use palladin_crypto::{Ed25519Identity, X25519Identity};
+use palladin_crypto::{Ed25519Identity, EncryptionIdentity, X25519Identity};
 use palladin_platform::secure_store::{SecretSlot, SecretStore, StoreError};
 use secrecy::{ExposeSecret, SecretSlice};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1997,7 +1997,7 @@ async fn generated_submission_pins_the_approver_in_signed_profile_and_never_reve
     )
     .expect("hex");
     let approver =
-        X25519Identity::from_private_bytes(sha2::Sha512::digest(seed)[..32].to_vec()).unwrap();
+        EncryptionIdentity::from_legacy_storage(sha2::Sha512::digest(seed)[..32].to_vec()).unwrap();
     let submission = AgentEntrySubmission::from_value(
         &serde_json::from_str(post.split_once("\r\n\r\n").expect("body").1).expect("JSON"),
     )

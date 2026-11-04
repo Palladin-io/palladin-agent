@@ -10,7 +10,10 @@ use palladin_core::public_store::{
 };
 use palladin_core::secret::OrganizationApiKey;
 use palladin_credential::generator::{CharacterClass, PasswordPolicy};
-use palladin_crypto::{Ed25519Identity, X25519Identity, compute_key_fingerprint, verify_rewrap};
+use palladin_crypto::{
+    AgentEncryptionKeys, Ed25519Identity, EncryptionIdentity, compute_key_fingerprint,
+    verify_rewrap,
+};
 use palladin_platform::secure_store::{OperationAuthorization, OperationLease, OperationScope};
 use serde_json::{Value, json};
 use sha2::Sha512;
@@ -46,8 +49,8 @@ fn seed(name: &str) -> [u8; 32] {
         .unwrap()
 }
 
-fn box_identity(name: &str) -> X25519Identity {
-    X25519Identity::from_private_bytes(Sha512::digest(seed(name))[..32].to_vec()).unwrap()
+fn box_identity(name: &str) -> EncryptionIdentity {
+    EncryptionIdentity::from_legacy_storage(Sha512::digest(seed(name))[..32].to_vec()).unwrap()
 }
 
 fn agent_signing() -> Ed25519Identity {
@@ -188,7 +191,7 @@ impl ManifestRevisionPersistence for RecordingPersistence {
         _: &str,
         _: &str,
         _: Option<&PublicDiscoveryCacheCommitment>,
-        _: &X25519Identity,
+        _: &AgentEncryptionKeys,
     ) -> Result<LocalDiscoveryIndex, RuntimeError> {
         Err(RuntimeError::IntegrityViolation)
     }
@@ -238,11 +241,11 @@ fn test_session<'a>(
     approver_anchor: Option<PublicApproverTrustAnchor>,
     vault_organization: Option<&str>,
 ) -> RuntimeSession<'a> {
-    let encryption = box_identity("agentX25519Seed");
+    let encryption = AgentEncryptionKeys::new(box_identity("agentX25519Seed"), None).unwrap();
     let api = ApiClient::new(
         ApiHost::parse(host).unwrap(),
         OrganizationApiKey::new("pl_submission_fixture".to_owned()),
-        &encryption,
+        encryption.current(),
         "fixture-host",
         Some(SigningContext {
             agent_id: AGENT_ID.to_owned(),
@@ -267,6 +270,7 @@ fn test_session<'a>(
             agent_id: Some(AGENT_ID.to_owned()),
             agent_active: true,
             encryption_public_key: None,
+            previous_encryption_public_key: None,
             signing_public_key: None,
             vault_trust_anchors: vault_organization
                 .map(|organization_id| PublicVaultTrustAnchor {
@@ -505,7 +509,7 @@ async fn approver_trust_failures_stop_before_secret_generation_or_upload() {
     forged["signingPublicKey"] = json!(URL_SAFE_NO_PAD.encode(attacker.verifying_key().as_bytes()));
     forged["signingKeyFingerprint"] = json!(URL_SAFE_NO_PAD.encode(compute_key_fingerprint(
         attacker.verifying_key().as_bytes(),
-        palladin_crypto::RecipientKeyKind::OrganizationApproverEd25519,
+        palladin_crypto::RecipientKeyKind::OrganizationApproverSigning,
     )));
     let mut unsigned = forged.as_object().unwrap().clone();
     unsigned.remove("signature");

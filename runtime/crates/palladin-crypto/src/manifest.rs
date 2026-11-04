@@ -7,8 +7,8 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::{
-    CryptoError, PROTOCOL_VERSION, SecretBytes, SignatureProfile, VAULT_XCHACHA_V1,
-    X25519_WRAPPER_V1, decode_base64url, key_fingerprint, verify_domain_signature,
+    CryptoError, PROTOCOL_VERSION, SecretBytes, SignatureProfile, VAULT_XCHACHA_V1, WrapperSuite,
+    decode_base64url, key_fingerprint, verify_domain_signature,
 };
 
 const PAIRING_DOMAIN: &[u8] = b"PLDNV2PAIR:TRANSCRIPT:";
@@ -45,8 +45,20 @@ pub struct VaultManifestV2 {
 pub struct AgentIdentityBinding {
     pub organization_id: Uuid,
     pub agent_id: Uuid,
-    pub x25519_fingerprint: [u8; 32],
+    /// Fingerprint of the Agent's current encryption key; pairing transcripts name only this one.
+    pub encryption_fingerprint: [u8; 32],
+    /// The key being replaced during a suite migration. Manifests signed before a member
+    /// re-wrapped the discovery key for the current key still name it.
+    pub previous_encryption_fingerprint: Option<[u8; 32]>,
     pub ed25519_fingerprint: [u8; 32],
+}
+
+impl AgentIdentityBinding {
+    #[must_use]
+    pub fn names_encryption_key(&self, fingerprint: &[u8; 32]) -> bool {
+        *fingerprint == self.encryption_fingerprint
+            || self.previous_encryption_fingerprint == Some(*fingerprint)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -244,12 +256,12 @@ fn validate_identity(
 ) -> Result<(), CryptoError> {
     if manifest.protocol_version != PROTOCOL_VERSION
         || manifest.crypto_suite_id != VAULT_XCHACHA_V1
-        || manifest.wrapper_suite_id != X25519_WRAPPER_V1
+        || WrapperSuite::from_id(&manifest.wrapper_suite_id).is_err()
         || manifest.signature_suite_id != ED25519_SIGNATURE_V1
         || manifest.minimum_agent_runtime_protocol > PROTOCOL_VERSION
         || manifest.organization_id != identity.organization_id.to_string()
         || manifest.agent_id != identity.agent_id.to_string()
-        || decode_32(&manifest.agent_x25519_fingerprint)? != identity.x25519_fingerprint
+        || !identity.names_encryption_key(&decode_32(&manifest.agent_x25519_fingerprint)?)
         || decode_32(&manifest.agent_ed25519_fingerprint)? != identity.ed25519_fingerprint
         || manifest.vdk_version == 0
         || manifest.agent_message_key_version == 0
@@ -307,7 +319,7 @@ pub fn prepare_pairing(
         activation_id: activation_id.to_string(),
         agent_ed25519_fingerprint: URL_SAFE_NO_PAD.encode(identity.ed25519_fingerprint),
         agent_id: identity.agent_id.to_string(),
-        agent_x25519_fingerprint: URL_SAFE_NO_PAD.encode(identity.x25519_fingerprint),
+        agent_x25519_fingerprint: URL_SAFE_NO_PAD.encode(identity.encryption_fingerprint),
         crypto_suite_id: VAULT_XCHACHA_V1.to_owned(),
         organization_id: identity.organization_id.to_string(),
         protocol_version: PROTOCOL_VERSION,

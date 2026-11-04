@@ -3,10 +3,14 @@ use secrecy::{ExposeSecret, SecretSlice};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::CryptoError;
+use crate::{
+    CryptoError, EncryptionIdentity, RecipientKeyKind, RecipientPublicKey,
+    key_wrapper::PROTOCOL_VERSION,
+};
 
 const PROFILE_BINDING_DOMAIN: &[u8] = b"palladin.profile-trust.v1\0";
 const BROWSER_PAIRING_STATE_DOMAIN: &[u8] = b"palladin.browser-pairing-state.v1\0";
+const ENCRYPTION_KEY_ROTATION_DOMAIN: &[u8] = b"palladin.agent-encryption-key-rotation.v1\0";
 
 pub struct X25519Identity {
     private_key: SecretSlice<u8>,
@@ -144,6 +148,64 @@ impl Ed25519Identity {
     }
 }
 
+/// The statement an Agent signs to replace its encryption key without re-pairing:
+///
+/// `ASCII("palladin.agent-encryption-key-rotation.v1") || 0x00 || u16be(2) || agentId[16] ||
+/// previousFingerprint[32] || u16be(len) || ASCII(nextSuiteId) || nextFingerprint[32]`
+///
+/// Both fingerprints are suite fingerprints with key kind `agent-encryption`, so the statement
+/// commits to both full public keys and suites. The previous fingerprint ties it to one
+/// transition and prevents replay after a later rotation.
+#[must_use]
+pub fn encryption_key_rotation_statement(
+    agent_id: &[u8; 16],
+    previous: &RecipientPublicKey,
+    next: &RecipientPublicKey,
+) -> Vec<u8> {
+    let suite = next.suite_id().as_bytes();
+    let mut statement = Vec::with_capacity(ENCRYPTION_KEY_ROTATION_DOMAIN.len() + 84 + suite.len());
+    statement.extend_from_slice(ENCRYPTION_KEY_ROTATION_DOMAIN);
+    statement.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+    statement.extend_from_slice(agent_id);
+    statement.extend_from_slice(&previous.fingerprint(RecipientKeyKind::AgentEncryption));
+    statement.extend_from_slice(&(suite.len() as u16).to_be_bytes());
+    statement.extend_from_slice(suite);
+    statement.extend_from_slice(&next.fingerprint(RecipientKeyKind::AgentEncryption));
+    statement
+}
+
+impl Ed25519Identity {
+    #[must_use]
+    pub fn sign_encryption_key_rotation(
+        &self,
+        agent_id: &[u8; 16],
+        previous: &EncryptionIdentity,
+        next: &EncryptionIdentity,
+    ) -> [u8; 64] {
+        self.sign(&encryption_key_rotation_statement(
+            agent_id,
+            &previous.recipient_public_key(),
+            &next.recipient_public_key(),
+        ))
+    }
+}
+
+pub fn verify_encryption_key_rotation(
+    signing_public_key: &[u8; 32],
+    agent_id: &[u8; 16],
+    previous: &RecipientPublicKey,
+    next: &RecipientPublicKey,
+    signature: &[u8; 64],
+) -> Result<(), CryptoError> {
+    VerifyingKey::from_bytes(signing_public_key)
+        .map_err(|_| CryptoError::InvalidEncoding)?
+        .verify(
+            &encryption_key_rotation_statement(agent_id, previous, next),
+            &Signature::from_bytes(signature),
+        )
+        .map_err(|_| CryptoError::AuthenticationFailed)
+}
+
 pub fn verify_profile_binding(
     public_key: &[u8; 32],
     canonical_binding: &[u8],
@@ -196,8 +258,10 @@ mod tests {
     use secrecy::ExposeSecret;
 
     use super::{
-        Ed25519Identity, X25519Identity, verify_browser_pairing_state, verify_profile_binding,
+        Ed25519Identity, X25519Identity, encryption_key_rotation_statement,
+        verify_browser_pairing_state, verify_encryption_key_rotation, verify_profile_binding,
     };
+    use crate::EncryptionIdentity;
 
     #[test]
     fn identities_have_redacted_debug_output() {
@@ -219,6 +283,46 @@ mod tests {
             .expect("pairing signature");
         assert!(verify_profile_binding(signing.public_key(), state, &signature).is_err());
         assert!(verify_browser_pairing_state(signing.public_key(), b"other", &signature).is_err());
+    }
+
+    #[test]
+    fn encryption_key_rotation_statement_is_explicit_and_domain_separated() {
+        let signing = Ed25519Identity::from_seed(vec![9; 32]).expect("Ed25519");
+        let previous = EncryptionIdentity::from_legacy_storage(vec![7; 32]).expect("previous");
+        let next = EncryptionIdentity::generate().expect("next");
+        let (previous_key, next_key) =
+            (previous.recipient_public_key(), next.recipient_public_key());
+        let agent_id = [0x55; 16];
+        let statement = encryption_key_rotation_statement(&agent_id, &previous_key, &next_key);
+        assert!(statement.starts_with(b"palladin.agent-encryption-key-rotation.v1\0\0\x02"));
+        assert_eq!(statement.len(), 42 + 2 + 16 + 32 + 2 + 17 + 32);
+        let signature = signing.sign_encryption_key_rotation(&agent_id, &previous, &next);
+        verify_encryption_key_rotation(
+            signing.public_key(),
+            &agent_id,
+            &previous_key,
+            &next_key,
+            &signature,
+        )
+        .expect("rotation signature");
+        assert!(
+            verify_profile_binding(signing.public_key(), &statement[42..], &signature).is_err()
+        );
+        for (agent, previous, next) in [
+            (&[0x56; 16], &previous_key, &next_key),
+            (&agent_id, &next_key, &previous_key),
+        ] {
+            assert!(
+                verify_encryption_key_rotation(
+                    signing.public_key(),
+                    agent,
+                    previous,
+                    next,
+                    &signature
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

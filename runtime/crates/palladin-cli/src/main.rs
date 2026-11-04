@@ -19,10 +19,10 @@ use palladin_cli::browser::{
 };
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
-    render_agent_list, render_approver_retrust, render_connect, render_init, render_legacy_cleanup,
-    render_legacy_cutover, render_live_flow, render_profile_created, render_report_stale,
-    render_search_human, render_security_upgrade, render_status, render_submission_result,
-    render_submission_status,
+    render_agent_list, render_approver_retrust, render_connect, render_encryption_key_migration,
+    render_init, render_legacy_cleanup, render_legacy_cutover, render_live_flow,
+    render_profile_created, render_report_stale, render_search_human, render_security_upgrade,
+    render_status, render_submission_result, render_submission_status,
 };
 use palladin_cli::{
     CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
@@ -1045,12 +1045,14 @@ async fn status(
         Ok(outcome) => outcome,
         Err(error) => return fail(&error.to_string()),
     };
-    emit_output(render_status(
+    let exit_code = emit_output(render_status(
         &outcome.profile.name,
         &outcome.config.host,
         &outcome.registration,
         runtime_storage_tier,
-    ))
+    ));
+    emit_output(render_encryption_key_migration(outcome.encryption_key));
+    exit_code
 }
 
 async fn pair(service: &RuntimeService<RuntimeSecretStore>, profile: Option<&str>) -> ExitCode {

@@ -7,9 +7,8 @@ use zeroize::Zeroizing;
 
 use crate::{
     CryptoError, Ed25519Identity, EncodedSuitePayload, EnvelopeBinding, EnvelopeDescriptor,
-    EnvelopePurpose, EnvelopeScope, PROTOCOL_VERSION, RecipientKeyKind, SealedWrappedKey,
-    VAULT_XCHACHA_V1, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1, X25519SealedBoxSuite,
-    XChaChaVaultSuite, compute_key_fingerprint,
+    EnvelopePurpose, EnvelopeScope, PROTOCOL_VERSION, RecipientKeyKind, RecipientPublicKey,
+    SealedWrappedKey, VAULT_XCHACHA_V1, WrapperContext, WrapperPurpose, XChaChaVaultSuite,
 };
 
 const ENCRYPTED_REASON_SIGNATURE_PREFIX: &[u8] = b"PLDNV2SIG:ENCRYPTED-REASON:";
@@ -80,7 +79,7 @@ pub struct ReasonWrapperDescriptor {
     pub parent_descriptor_hash: String,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct EncryptedReasonContext {
     pub organization_id: Uuid,
     pub vault_id: Uuid,
@@ -92,7 +91,8 @@ pub struct EncryptedReasonContext {
     pub agent_message_key_version: u32,
     pub member_key_generation: u32,
     pub requested_methods: u16,
-    pub recipient_agent_message_public_key: [u8; 32],
+    /// The Vault message key and its suite from the signed Vault manifest.
+    pub recipient_agent_message_public_key: RecipientPublicKey,
     pub recipient_agent_message_key_fingerprint: [u8; 32],
 }
 
@@ -113,15 +113,14 @@ pub fn encrypt_reason(
         || context.agent_message_key_version == 0
         || context.member_key_generation == 0
         || context.requested_methods == 0
-        || context.recipient_agent_message_public_key == [0; 32]
     {
         return Err(CryptoError::InvalidProfile);
     }
-    let expected_fingerprint = compute_key_fingerprint(
-        &context.recipient_agent_message_public_key,
-        RecipientKeyKind::VaultMessageX25519,
-    );
-    if expected_fingerprint != context.recipient_agent_message_key_fingerprint {
+    let recipient = &context.recipient_agent_message_public_key;
+    let wrapper_suite_id = recipient.suite_id();
+    if recipient.fingerprint(RecipientKeyKind::VaultAgentMessage)
+        != context.recipient_agent_message_key_fingerprint
+    {
         return Err(CryptoError::AuthenticationFailed);
     }
 
@@ -142,7 +141,7 @@ pub fn encrypt_reason(
         key_version: context.reason_key_version,
         member_key_generation: Some(context.member_key_generation),
         binding: EnvelopeBinding::Reason {
-            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+            wrapper_suite_id: wrapper_suite_id.to_owned(),
             agent_message_key_version: context.agent_message_key_version,
             recipient_vault_message_key_fingerprint: context
                 .recipient_agent_message_key_fingerprint,
@@ -153,13 +152,13 @@ pub fn encrypt_reason(
     let parent_descriptor_hash: [u8; 32] = Sha256::digest(&descriptor_bytes).into();
     let wrapper_context = WrapperContext {
         protocol_version: PROTOCOL_VERSION,
-        wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+        wrapper_suite_id: wrapper_suite_id.to_owned(),
         purpose: WrapperPurpose::ReasonDek,
         scope,
         resource_revision: context.request_revision,
         wrapped_key_version: context.reason_key_version,
         member_key_generation: Some(context.member_key_generation),
-        recipient_key_kind: RecipientKeyKind::VaultMessageX25519,
+        recipient_key_kind: RecipientKeyKind::VaultAgentMessage,
         recipient_key_version: context.agent_message_key_version,
         recipient_fingerprint: context.recipient_agent_message_key_fingerprint,
         parent_descriptor_hash: Some(parent_descriptor_hash),
@@ -177,12 +176,8 @@ pub fn encrypt_reason(
     }
     let payload_key = XChaChaVaultSuite::derive_key(dek.expose_secret(), &descriptor)?;
     let payload = XChaChaVaultSuite::seal(&payload_key, &plaintext, &descriptor_bytes)?;
-    let wrapped = X25519SealedBoxSuite::wrap(
-        &dek,
-        context.recipient_agent_message_public_key,
-        &wrapper_context,
-    )?;
-    let transcript = signature_transcript(&descriptor_bytes, &payload, &wrapped)?;
+    let wrapped = wrapper_context.seal_for_frozen_contract(&dek, recipient)?;
+    let transcript = signature_transcript(&descriptor_bytes, &payload, wrapper_suite_id, &wrapped)?;
 
     let serialized_scope = EncryptedReasonScope {
         organization_id: context.organization_id.to_string(),
@@ -205,7 +200,7 @@ pub fn encrypt_reason(
             key_version: context.reason_key_version,
             member_key_generation: Some(context.member_key_generation),
             binding: EncryptedReasonBinding {
-                wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                wrapper_suite_id: wrapper_suite_id.to_owned(),
                 recipient_key_version: context.agent_message_key_version,
                 recipient_key_fingerprint: recipient_fingerprint.clone(),
                 requested_methods: context.requested_methods,
@@ -215,13 +210,13 @@ pub fn encrypt_reason(
         wrapped_reason_dek: WrappedReasonDek {
             descriptor: ReasonWrapperDescriptor {
                 protocol_version: PROTOCOL_VERSION,
-                wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                wrapper_suite_id: wrapper_suite_id.to_owned(),
                 purpose: "reasonDek".to_owned(),
                 scope: serialized_scope,
                 resource_revision: revision,
                 wrapped_key_version: context.reason_key_version,
                 member_key_generation: Some(context.member_key_generation),
-                recipient_key_kind: "vaultMessageX25519".to_owned(),
+                recipient_key_kind: "vaultAgentMessage".to_owned(),
                 recipient_key_version: context.agent_message_key_version,
                 recipient_fingerprint,
                 parent_descriptor_hash: URL_SAFE_NO_PAD.encode(parent_descriptor_hash),
@@ -235,9 +230,10 @@ pub fn encrypt_reason(
 fn signature_transcript(
     descriptor: &[u8],
     payload: &EncodedSuitePayload,
+    wrapper_suite_id: &str,
     wrapper: &SealedWrappedKey,
 ) -> Result<Vec<u8>, CryptoError> {
-    let suite = X25519_WRAPPER_V1.as_bytes();
+    let suite = wrapper_suite_id.as_bytes();
     let suite_length = u16::try_from(suite.len()).map_err(|_| CryptoError::InvalidLength)?;
     let mut transcript = Vec::with_capacity(
         ENCRYPTED_REASON_SIGNATURE_PREFIX.len()
@@ -264,9 +260,9 @@ mod tests {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     use super::*;
-    use crate::{X25519Identity, compute_key_fingerprint};
+    use crate::EncryptionIdentity;
 
-    fn context(recipient: &X25519Identity) -> EncryptedReasonContext {
+    fn context(recipient: &EncryptionIdentity) -> EncryptedReasonContext {
         EncryptedReasonContext {
             organization_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
             vault_id: Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
@@ -278,25 +274,31 @@ mod tests {
             agent_message_key_version: 4,
             member_key_generation: 4,
             requested_methods: 1,
-            recipient_agent_message_public_key: *recipient.public_key(),
-            recipient_agent_message_key_fingerprint: compute_key_fingerprint(
-                recipient.public_key(),
-                RecipientKeyKind::VaultMessageX25519,
-            ),
+            recipient_agent_message_public_key: recipient.recipient_public_key(),
+            recipient_agent_message_key_fingerprint: recipient
+                .fingerprint(RecipientKeyKind::VaultAgentMessage),
         }
     }
 
     #[test]
-    fn current_reason_contract_round_trips_and_verifies() {
-        let recipient = X25519Identity::from_private_bytes(vec![7; 32]).unwrap();
+    fn reason_seals_to_the_suite_of_the_frozen_and_the_current_vault_message_key() {
+        assert_reason_round_trips(&EncryptionIdentity::from_legacy_storage(vec![7; 32]).unwrap());
+        assert_reason_round_trips(&EncryptionIdentity::generate().unwrap());
+    }
+
+    fn assert_reason_round_trips(recipient: &EncryptionIdentity) {
         let signer = Ed25519Identity::from_seed(vec![9; 32]).unwrap();
-        let context = context(&recipient);
+        let context = context(recipient);
         let canary = "Need access to the synthetic credential";
-        let envelope = encrypt_reason(canary, context, &signer).unwrap();
+        let envelope = encrypt_reason(canary, context.clone(), &signer).unwrap();
         let json = serde_json::to_string(&envelope).unwrap();
         assert!(!json.contains(canary));
         assert!(json.contains("\"purpose\":\"encryptedReason\""));
-        assert!(json.contains("\"recipientKeyKind\":\"vaultMessageX25519\""));
+        assert!(json.contains("\"recipientKeyKind\":\"vaultAgentMessage\""));
+        assert_eq!(
+            envelope.wrapped_reason_dek.descriptor.wrapper_suite_id,
+            recipient.suite_id()
+        );
 
         let descriptor = EnvelopeDescriptor {
             protocol_version: PROTOCOL_VERSION,
@@ -314,7 +316,7 @@ mod tests {
             key_version: 1,
             member_key_generation: Some(4),
             binding: EnvelopeBinding::Reason {
-                wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                wrapper_suite_id: recipient.suite_id().to_owned(),
                 agent_message_key_version: 4,
                 recipient_vault_message_key_fingerprint: context
                     .recipient_agent_message_key_fingerprint,
@@ -325,24 +327,21 @@ mod tests {
         let parent_hash: [u8; 32] = Sha256::digest(&descriptor_bytes).into();
         let wrapper_context = WrapperContext {
             protocol_version: 2,
-            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+            wrapper_suite_id: recipient.suite_id().to_owned(),
             purpose: WrapperPurpose::ReasonDek,
             scope: descriptor.scope.clone(),
             resource_revision: 1,
             wrapped_key_version: 1,
             member_key_generation: Some(4),
-            recipient_key_kind: RecipientKeyKind::VaultMessageX25519,
+            recipient_key_kind: RecipientKeyKind::VaultAgentMessage,
             recipient_key_version: 4,
             recipient_fingerprint: context.recipient_agent_message_key_fingerprint,
             parent_descriptor_hash: Some(parent_hash),
         };
-        let wrapped = SealedWrappedKey::from_bytes(
-            URL_SAFE_NO_PAD
-                .decode(&envelope.wrapped_reason_dek.encoded_sealed_key_package)
-                .unwrap(),
-        )
-        .unwrap();
-        let dek = X25519SealedBoxSuite::unwrap(&wrapped, &recipient, &wrapper_context).unwrap();
+        let wrapped = URL_SAFE_NO_PAD
+            .decode(&envelope.wrapped_reason_dek.encoded_sealed_key_package)
+            .unwrap();
+        let dek = wrapper_context.open(&wrapped, recipient).unwrap();
         let payload = EncodedSuitePayload::from_bytes(
             URL_SAFE_NO_PAD
                 .decode(&envelope.encoded_suite_payload)
@@ -356,7 +355,13 @@ mod tests {
         let plaintext_matches = plaintext.expose_secret() == expected_bytes;
         assert!(plaintext_matches, "decrypted reason fixture diverged");
 
-        let transcript = signature_transcript(&descriptor_bytes, &payload, &wrapped).unwrap();
+        let mut transcript = ENCRYPTED_REASON_SIGNATURE_PREFIX.to_vec();
+        transcript.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+        transcript.extend_from_slice(&descriptor_bytes);
+        transcript.extend_from_slice(payload.as_bytes());
+        transcript.extend_from_slice(&(recipient.suite_id().len() as u16).to_be_bytes());
+        transcript.extend_from_slice(recipient.suite_id().as_bytes());
+        transcript.extend_from_slice(&wrapped);
         let signature =
             Signature::from_slice(&URL_SAFE_NO_PAD.decode(envelope.agent_signature).unwrap())
                 .unwrap();
@@ -368,7 +373,7 @@ mod tests {
 
     #[test]
     fn current_reason_contract_rejects_wrong_recipient_and_oversize_reason() {
-        let recipient = X25519Identity::from_private_bytes(vec![7; 32]).unwrap();
+        let recipient = EncryptionIdentity::generate().unwrap();
         let signer = Ed25519Identity::from_seed(vec![9; 32]).unwrap();
         let mut invalid = context(&recipient);
         invalid.recipient_agent_message_key_fingerprint = [1; 32];

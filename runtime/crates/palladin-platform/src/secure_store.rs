@@ -25,7 +25,10 @@ pub enum SecretSlot {
     /// Random integrity token rotated whenever browser-host sessions are revoked.
     BrowserHostLifecycleTokenV1,
     OrganizationApiKey,
+    /// Pre-suite Agent encryption key, kept only until nothing addresses it after rotation.
     X25519PrivateKey,
+    /// Suite-tagged Agent encryption key seed.
+    EncryptionKeyV4,
     Ed25519SecretKey,
     /// Random per-identity capability root, private to hardened macOS.
     #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
@@ -47,6 +50,7 @@ impl SecretSlot {
             Self::BrowserHostLifecycleTokenV1 => "browser-host-lifecycle-token-v1",
             Self::OrganizationApiKey => "organization-api-key-v3",
             Self::X25519PrivateKey => "x25519-private-key-v3",
+            Self::EncryptionKeyV4 => "encryption-key-v4",
             Self::Ed25519SecretKey => "ed25519-secret-key-v3",
             #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
             Self::InvocationAuthorizationSeedV2 => "invocation-authorization-seed-v2",
@@ -62,6 +66,7 @@ impl SecretSlot {
             self,
             Self::OrganizationApiKey
                 | Self::X25519PrivateKey
+                | Self::EncryptionKeyV4
                 | Self::Ed25519SecretKey
                 | Self::InvocationAuthorizationSeedV2
                 | Self::LegacyOrganizationApiKeyV2
@@ -79,6 +84,7 @@ impl SecretSlot {
             Self::BrowserHostLifecycleTokenV1 => "Palladin browser host lifecycle token",
             Self::OrganizationApiKey => "Palladin organization credential",
             Self::X25519PrivateKey => "Palladin Agent encryption identity",
+            Self::EncryptionKeyV4 => "Palladin Agent encryption key",
             Self::Ed25519SecretKey => "Palladin Agent signing identity",
             Self::InvocationAuthorizationSeedV2 => "Palladin operation authorization",
             Self::LegacyOrganizationApiKeyV2 => "Legacy Palladin organization credential",
@@ -139,9 +145,9 @@ impl OperationScope {
 
     fn allows(&self, owner_id: &str, slot: SecretSlot) -> bool {
         match slot {
-            SecretSlot::X25519PrivateKey | SecretSlot::Ed25519SecretKey => {
-                owner_id == self.identity_owner
-            }
+            SecretSlot::X25519PrivateKey
+            | SecretSlot::EncryptionKeyV4
+            | SecretSlot::Ed25519SecretKey => owner_id == self.identity_owner,
             SecretSlot::OrganizationApiKey => self
                 .organization_owners
                 .binary_search_by(|candidate| candidate.as_str().cmp(owner_id))
@@ -622,6 +628,7 @@ impl SecretStore for OsSecretStore {
 
 pub fn delete_identity<S: SecretStore>(store: &S, identity_id: &str) -> Result<(), StoreError> {
     store.delete(identity_id, SecretSlot::X25519PrivateKey)?;
+    store.delete(identity_id, SecretSlot::EncryptionKeyV4)?;
     store.delete(identity_id, SecretSlot::Ed25519SecretKey)?;
     #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
     store.delete(identity_id, SecretSlot::InvocationAuthorizationSeedV2)?;

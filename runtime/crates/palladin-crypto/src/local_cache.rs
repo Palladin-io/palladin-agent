@@ -1,20 +1,22 @@
-use rand_core::OsRng;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
-use crate::{CryptoError, SecretBytes, X25519Identity};
+use crate::{
+    AgentEncryptionKeys, CryptoError, RecipientPublicKey, SecretBytes,
+    key_wrapper::{MAX_SELF_SEAL_OVERHEAD_BYTES, SELF_SEAL_OVERHEAD_BYTES, seal_to_self},
+};
 
 const CACHE_MAGIC: &[u8; 8] = b"PLDNCCH1";
 const CACHE_BINDING_DOMAIN: &[u8] = b"palladin.local-discovery-cache.v1\0";
 const BINDING_DIGEST_BYTES: usize = 32;
-const SEALED_BOX_OVERHEAD: usize = 48;
 const MAX_BINDING_BYTES: usize = 4 * 1024;
 const MAX_CACHE_PLAINTEXT_BYTES: usize = 68 * 1024 * 1024;
 const HEADER_BYTES: usize = CACHE_MAGIC.len() + BINDING_DIGEST_BYTES;
 
+/// Seals the cache to the Agent's own current public key so a write needs no private key.
 pub fn seal_local_discovery_cache(
-    recipient_public_key: &[u8; 32],
+    recipient: &RecipientPublicKey,
     binding: &[u8],
     plaintext: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
@@ -23,29 +25,28 @@ pub fn seal_local_discovery_cache(
     bound.extend_from_slice(CACHE_MAGIC);
     bound.extend_from_slice(&binding_digest(binding));
     bound.extend_from_slice(plaintext);
-    crypto_box::PublicKey::from(*recipient_public_key)
-        .seal(&mut OsRng, bound.as_ref())
-        .map_err(|_| CryptoError::AuthenticationFailed)
+    seal_to_self(recipient, bound.as_ref())
 }
 
+/// Opens a cache sealed to any held key, so a cache written before a key rotation stays
+/// readable until it is rewritten for the current key.
 pub fn open_local_discovery_cache(
-    recipient: &X25519Identity,
+    keys: &AgentEncryptionKeys,
     binding: &[u8],
     ciphertext: &[u8],
 ) -> Result<SecretBytes, CryptoError> {
     if binding.is_empty()
         || binding.len() > MAX_BINDING_BYTES
-        || ciphertext.len() < HEADER_BYTES + SEALED_BOX_OVERHEAD
-        || ciphertext.len() > MAX_CACHE_PLAINTEXT_BYTES + HEADER_BYTES + SEALED_BOX_OVERHEAD
+        || ciphertext.len() < HEADER_BYTES + SELF_SEAL_OVERHEAD_BYTES
+        || ciphertext.len()
+            > MAX_CACHE_PLAINTEXT_BYTES + HEADER_BYTES + MAX_SELF_SEAL_OVERHEAD_BYTES
     {
         return Err(CryptoError::InvalidLength);
     }
-    let secret = crypto_box::SecretKey::from_bytes(recipient.static_secret().to_bytes());
-    let opened = Zeroizing::new(
-        secret
-            .unseal(ciphertext)
-            .map_err(|_| CryptoError::AuthenticationFailed)?,
-    );
+    let opened = keys
+        .iter()
+        .find_map(|key| key.open_sealed_to_self(ciphertext).ok())
+        .ok_or(CryptoError::AuthenticationFailed)?;
     if opened.len() < HEADER_BYTES
         || opened[..CACHE_MAGIC.len()].ct_eq(CACHE_MAGIC).unwrap_u8() != 1
         || opened[CACHE_MAGIC.len()..HEADER_BYTES]
@@ -79,17 +80,34 @@ fn binding_digest(binding: &[u8]) -> [u8; BINDING_DIGEST_BYTES] {
 
 #[cfg(test)]
 mod tests {
-    use crate::{X25519Identity, open_local_discovery_cache, seal_local_discovery_cache};
+    use crate::{
+        AgentEncryptionKeys, EncryptionIdentity, open_local_discovery_cache,
+        seal_local_discovery_cache,
+    };
+
+    fn keys(
+        current: EncryptionIdentity,
+        previous: Option<EncryptionIdentity>,
+    ) -> AgentEncryptionKeys {
+        AgentEncryptionKeys::new(current, previous).expect("keys")
+    }
 
     #[test]
     fn local_discovery_cache_is_sealed_to_the_agent_identity_and_binding() {
-        let identity = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
-        let other = X25519Identity::from_private_bytes(vec![9; 32]).expect("other identity");
+        let identity = keys(EncryptionIdentity::generate().expect("identity"), None);
+        let other = keys(
+            EncryptionIdentity::generate().expect("other identity"),
+            None,
+        );
         let binding = b"profile-a\0agent-a\0generation-1";
         let plaintext = b"agent-visible discovery cache";
 
-        let sealed = seal_local_discovery_cache(identity.public_key(), binding, plaintext)
-            .expect("seal cache");
+        let sealed = seal_local_discovery_cache(
+            &identity.current().recipient_public_key(),
+            binding,
+            plaintext,
+        )
+        .expect("seal cache");
         let opened = open_local_discovery_cache(&identity, binding, &sealed).expect("open cache");
 
         assert_eq!(opened.expose_for_crypto_operation(), plaintext);
@@ -101,10 +119,28 @@ mod tests {
     }
 
     #[test]
+    fn a_cache_sealed_before_rotation_opens_with_the_previous_key() {
+        let previous = EncryptionIdentity::from_legacy_storage(vec![7; 32]).expect("previous");
+        let sealed =
+            seal_local_discovery_cache(&previous.recipient_public_key(), b"binding", b"cache")
+                .expect("seal cache");
+        let rotated = keys(
+            EncryptionIdentity::generate().expect("current"),
+            Some(previous),
+        );
+        let opened = open_local_discovery_cache(&rotated, b"binding", &sealed).expect("open");
+        assert_eq!(opened.expose_for_crypto_operation(), b"cache");
+    }
+
+    #[test]
     fn local_discovery_cache_rejects_ciphertext_tampering() {
-        let identity = X25519Identity::from_private_bytes(vec![7; 32]).expect("identity");
-        let mut sealed = seal_local_discovery_cache(identity.public_key(), b"binding", b"cache")
-            .expect("seal cache");
+        let identity = keys(EncryptionIdentity::generate().expect("identity"), None);
+        let mut sealed = seal_local_discovery_cache(
+            &identity.current().recipient_public_key(),
+            b"binding",
+            b"cache",
+        )
+        .expect("seal cache");
         let last = sealed.len() - 1;
         sealed[last] ^= 1;
 
