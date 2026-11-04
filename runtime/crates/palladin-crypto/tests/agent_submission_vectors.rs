@@ -1543,3 +1543,133 @@ fn builder_rejects_invalid_input_before_encryption() {
         "password limit",
     );
 }
+
+#[test]
+fn v2_sparse_custom_update_roundtrips_and_retains_authenticated_bindings() {
+    use palladin_crypto::{
+        SubmissionContentV2, SubmissionCustomFieldV2, build_agent_submission_v2,
+        open_agent_submission_v2,
+    };
+    let fixture = fixture();
+    let keys = keys(&fixture);
+    let signing = Ed25519Identity::from_seed(seed(&fixture, "agentEd25519Seed").to_vec()).unwrap();
+    let pin = verify_chain(
+        &fixture,
+        &fixture["approverManifests"].as_array().unwrap()[..1],
+    )
+    .unwrap();
+    let identity = SubmissionIdentity {
+        organization_id: organization(&fixture),
+        submission_id: Uuid::from_u128(100),
+        agent_id: uuid(&fixture["context"]["agentId"]),
+        entry_type: SubmissionEntryType::Credential,
+        target: SubmissionTarget::Update {
+            vault_id: Uuid::from_u128(101),
+            entry_id: Uuid::from_u128(102),
+            expected_entry_revision: 3,
+        },
+    };
+    let content = SubmissionContentV2 {
+        entry_type: SubmissionEntryType::Credential,
+        username: Some(SecretString::from("captured-user".to_owned())),
+        password: None,
+        value: None,
+        url: None,
+        notes: None,
+        custom_fields: vec![SubmissionCustomFieldV2 {
+            id: "custom:11112222-4333-8444-9555-666677778888".into(),
+            label: None,
+            field_type: "concealed".into(),
+            value: SecretString::from("captured-secret".to_owned()),
+        }],
+    };
+    let built = build_agent_submission_v2(
+        &SubmissionBuildContext {
+            identity: identity.clone(),
+            agent_access_epoch: 4,
+            agent_key_version: 3,
+            agent_encryption_public_key: keys.agent_box.public_key(),
+            agent_signing: &signing,
+            approver: &pin,
+        },
+        None,
+        Some("Description"),
+        &content,
+    )
+    .unwrap();
+    let transport = serde_json::to_string(&built.to_value()).unwrap();
+    assert!(!transport.contains("captured-"));
+    assert!(!format!("{content:?}").contains("captured-"));
+    let parsed = AgentEntrySubmission::from_value(&built.to_value()).unwrap();
+    let authority = agent_authority(&fixture, signing.public_key(), &keys.agent_box);
+    assert!(open_agent_submission(&parsed, &authority).is_err());
+    let opened = open_agent_submission_v2(&parsed, &authority).unwrap();
+    assert_eq!(opened.identity, identity);
+    assert_eq!(opened.description.as_deref(), Some("Description"));
+    assert!(opened.content.password.is_none());
+    assert!(
+        opened.content.username.unwrap().expose_secret() == "captured-user",
+        "captured value differs from synthetic fixture"
+    );
+    assert!(
+        opened.content.custom_fields[0].value.expose_secret() == "captured-secret",
+        "captured value differs from synthetic fixture"
+    );
+    assert!(opened.content.custom_fields[0].label.is_none());
+    let mut substituted = parsed.clone();
+    substituted.identity.submission_id = Uuid::from_u128(103);
+    assert!(open_agent_submission_v2(&substituted, &authority).is_err());
+    let mut corrupt_value = parsed.to_value();
+    let mut bytes = unb64(corrupt_value["encodedPayload"].as_str().unwrap());
+    bytes[24] ^= 1;
+    corrupt_value["encodedPayload"] = json!(b64(&bytes));
+    let corrupted = AgentEntrySubmission::from_value(&corrupt_value).unwrap();
+    assert!(open_agent_submission_v2(&corrupted, &authority).is_err());
+    let approver = open_agent_submission_v2(
+        &parsed,
+        &approver_authority(&fixture, signing.public_key(), 1, &keys.approver_v1_box),
+    )
+    .unwrap();
+    assert_eq!(approver.description.as_deref(), Some("Description"));
+}
+
+#[test]
+fn generated_v2_fixture_opens_cross_language_sparse_and_typed_values() {
+    use palladin_crypto::open_agent_submission_v2;
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../contracts/agent-submission/v2/fixture.json"
+    ))
+    .unwrap();
+    let keys = keys(&fixture);
+    let signing = Ed25519Identity::from_seed(seed(&fixture, "agentEd25519Seed").to_vec()).unwrap();
+    for value in fixture["submissions"].as_array().unwrap() {
+        let submission = AgentEntrySubmission::from_value(value).unwrap();
+        let opened = open_agent_submission_v2(
+            &submission,
+            &agent_authority(&fixture, signing.public_key(), &keys.agent_box),
+        )
+        .unwrap();
+        assert_eq!(
+            opened.description.as_deref(),
+            Some("Synthetic captured account description")
+        );
+        assert!(
+            opened.content.username.unwrap().expose_secret()
+                == "synthetic-captured-user@example.invalid",
+            "captured value differs from synthetic fixture"
+        );
+        assert!(opened.content.password.is_none());
+        assert!(opened.label.is_none());
+        assert!(
+            opened.content.custom_fields[0].value.expose_secret() == "synthetic-Captured-Only-9!q",
+            "captured value differs from synthetic fixture"
+        );
+        assert!(opened.content.custom_fields[0].label.is_none());
+        let totp: Value =
+            serde_json::from_str(opened.content.custom_fields[1].value.expose_secret()).unwrap();
+        assert_eq!(
+            totp,
+            json!({"secret":"JBSWY3DPEHPK3PXP","algorithm":"SHA1","digits":6,"period":30,"issuer":"Synthetic","account":null})
+        );
+    }
+}

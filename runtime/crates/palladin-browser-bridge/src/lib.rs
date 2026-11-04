@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+pub mod capture;
 pub mod discovery;
 pub mod target_probe;
 

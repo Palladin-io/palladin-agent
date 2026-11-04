@@ -41,6 +41,7 @@ async fn one_authenticated_host_session_advances_three_steps_and_rechecks_every_
         let host_checks = checks.clone();
         let host = tokio::spawn(async move {
             let prepare = OwnedPrepareRequest {
+                capture_mode: false,
                 protocol: INJECT_PROVIDER_PROTOCOL.into(),
                 message_type: "prepare".into(),
                 nonce: "a".repeat(32),

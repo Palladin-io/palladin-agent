@@ -57,12 +57,13 @@ pub use signing::{
     SignatureHeaders, body_sha256_base64, canonical_request, generate_nonce_base64, sign_request,
 };
 pub use submission::{
-    AgentEntrySubmission, OpenedSubmission, OrganizationApproverManifest, PinnedApproverTrust,
-    SubmissionAuthority, SubmissionBuildContext, SubmissionContent, SubmissionEntryType,
-    SubmissionError, SubmissionIdentity, SubmissionKind, SubmissionRecipient, SubmissionTarget,
-    approver_reintroduction_candidate, build_agent_submission, open_agent_submission,
-    reintroduce_approver_manifest, rewrap_agent_submission, verify_approver_manifest_chain,
-    verify_rewrap,
+    AgentEntrySubmission, OpenedSubmission, OpenedSubmissionV2, OrganizationApproverManifest,
+    PinnedApproverTrust, SubmissionAuthority, SubmissionBuildContext, SubmissionContent,
+    SubmissionContentV2, SubmissionCustomFieldV2, SubmissionEntryType, SubmissionError,
+    SubmissionIdentity, SubmissionKind, SubmissionRecipient, SubmissionTarget,
+    approver_reintroduction_candidate, build_agent_submission, build_agent_submission_v2,
+    open_agent_submission, open_agent_submission_v2, reintroduce_approver_manifest,
+    rewrap_agent_submission, verify_approver_manifest_chain, verify_rewrap,
 };
 pub use suite::{
     CryptoSuiteRegistry, EncodedSuitePayload, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose,

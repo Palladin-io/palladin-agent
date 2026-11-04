@@ -374,6 +374,126 @@ impl RuntimeSession<'_> {
         }
     }
 
+    /// Encrypts locally captured values; no values are returned or persisted.
+    pub async fn submit_captured_entry(
+        &self,
+        request: SubmissionRequest<'_>,
+        description: Option<&str>,
+        content: palladin_crypto::SubmissionContentV2,
+    ) -> Result<SubmissionResult, RuntimeError> {
+        self.begin_operation(RuntimeOperation::SubmitEntry)?;
+        let kind = match request.target {
+            SubmissionRequestTarget::New { .. } => SubmissionKind::New,
+            SubmissionRequestTarget::Update { .. } => SubmissionKind::Update,
+        };
+        let not_saved = |code, submission_id: Option<&Uuid>| SubmissionResult {
+            kind,
+            outcome: Err(code),
+            submission_id: submission_id.map(Uuid::to_string),
+            hints: Vec::new(),
+        };
+        if request.url.is_some()
+            || request.username.is_some()
+            || request.entry_type != Some(content.entry_type)
+        {
+            return Ok(not_saved(SubmissionNotSaved::InvalidInput, None));
+        }
+        let submission_id = random_uuid()?;
+        let approver = match self.trusted_approver().await {
+            Ok(approver) => approver,
+            Err(failure) => return failure.into_result(kind),
+        };
+        self.ensure_authorized()?;
+        // The Agent asserts the type for both kinds; for an update the approver client rejects
+        // it when it differs from the decrypted target Entry.
+        let entry_type = request
+            .entry_type
+            .ok_or(RuntimeError::Submission(SubmissionError::InvalidInput))?;
+        let target = match request.target {
+            SubmissionRequestTarget::New { suggested_vault_id } => SubmissionTarget::New {
+                suggested_vault_id: suggested_vault_id.map(parse_uuid).transpose()?,
+            },
+            SubmissionRequestTarget::Update { vault_id, entry_id } => {
+                match self.update_target(vault_id, entry_id).await? {
+                    Ok(target) => target,
+                    Err(code) => return Ok(not_saved(code, None)),
+                }
+            }
+        };
+        let label = request.label.map(normalize_label);
+        let identity = SubmissionIdentity {
+            organization_id: approver.pin.organization_id,
+            submission_id,
+            agent_id: self.agent_uuid()?,
+            entry_type,
+            target,
+        };
+        let mut approver = approver;
+        let mut rotated = false;
+        loop {
+            let submission = match self.build_captured(
+                &identity,
+                &approver,
+                label.as_deref(),
+                description,
+                &content,
+            ) {
+                Ok(submission) => submission,
+                Err(RuntimeError::Submission(SubmissionError::InvalidInput)) => {
+                    return Ok(not_saved(SubmissionNotSaved::InvalidInput, None));
+                }
+                Err(error) => return Err(error),
+            };
+            self.ensure_authorized()?;
+            let result = self.api.create_submission(&submission.to_value()).await;
+            self.ensure_authorized()?;
+            let outcome = match result {
+                Ok(accepted) if accepted.submission_id == submission_id.to_string() => {
+                    Ok(SubmissionSaved {
+                        state: accepted.state,
+                    })
+                }
+                Ok(_) => Err(RuntimeError::Api(ApiError::InvalidResponse)),
+                Err(ApiError::SubmissionRejected(SubmissionRejection::ApproverKeyRotated))
+                    if !rotated =>
+                {
+                    rotated = true;
+                    approver = match self.trusted_approver().await {
+                        Ok(next) if next.pin.key_version > approver.pin.key_version => next,
+                        Ok(_) => {
+                            return Ok(not_saved(SubmissionNotSaved::ApproverKeyUnavailable, None));
+                        }
+                        Err(failure) => return failure.into_result(kind),
+                    };
+                    continue;
+                }
+                Err(ApiError::SubmissionRejected(rejection)) => {
+                    return Ok(not_saved(rejection_code(rejection), None));
+                }
+                Err(ApiError::Http(400)) => {
+                    return Ok(not_saved(SubmissionNotSaved::InvalidInput, None));
+                }
+                Err(_) => self.reconcile(&submission_id).await,
+            };
+            let username_missing = content.entry_type == SubmissionEntryType::Credential
+                && kind == SubmissionKind::New
+                && content.username.is_none();
+            return Ok(match outcome {
+                Ok(saved) => SubmissionResult {
+                    kind,
+                    outcome: Ok(saved),
+                    submission_id: Some(submission_id.to_string()),
+                    hints: if username_missing {
+                        vec![SubmissionHint::UsernameNeededForAutofill]
+                    } else {
+                        Vec::new()
+                    },
+                },
+                Err(_) => not_saved(SubmissionNotSaved::ServiceUnavailable, Some(&submission_id)),
+            });
+        }
+    }
+
     /// Lists the Agent's own submissions and re-wraps pending ones whose approver key rotated.
     pub async fn submission_status(
         &self,
@@ -776,6 +896,33 @@ impl RuntimeSession<'_> {
                 approver: &approver.pin,
             },
             label,
+            content,
+        )?)
+    }
+
+    fn build_captured(
+        &self,
+        identity: &SubmissionIdentity,
+        approver: &TrustedApprover,
+        label: Option<&str>,
+        description: Option<&str>,
+        content: &palladin_crypto::SubmissionContentV2,
+    ) -> Result<AgentEntrySubmission, RuntimeError> {
+        let signing = self
+            .profile_signing
+            .as_ref()
+            .ok_or(RuntimeError::IntegrityViolation)?;
+        Ok(palladin_crypto::build_agent_submission_v2(
+            &SubmissionBuildContext {
+                identity: identity.clone(),
+                agent_access_epoch: approver.agent_access_epoch,
+                agent_key_version: approver.agent_key_version,
+                agent_encryption_public_key: self.encryption.public_key(),
+                agent_signing: signing,
+                approver: &approver.pin,
+            },
+            label,
+            description,
             content,
         )?)
     }

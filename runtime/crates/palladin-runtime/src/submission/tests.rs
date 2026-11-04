@@ -2577,3 +2577,222 @@ async fn rewrap_source_refusal_is_reported_once_without_retry() {
     );
     assert!(requests.iter().all(|request| !request.starts_with("PUT")));
 }
+
+fn captured_content() -> palladin_crypto::SubmissionContentV2 {
+    palladin_crypto::SubmissionContentV2 {
+        entry_type: SubmissionEntryType::Credential,
+        username: Some(SecretString::from(
+            "captured-user@example.invalid".to_owned(),
+        )),
+        password: Some(SecretString::from("captured-synthetic-password".to_owned())),
+        value: None,
+        url: Some(SecretString::from(
+            "https://example.invalid/captured".to_owned(),
+        )),
+        notes: None,
+        custom_fields: vec![palladin_crypto::SubmissionCustomFieldV2 {
+            id: "custom:11112222-4333-8444-9555-666677778888".to_owned(),
+            label: Some("Captured custom label".to_owned()),
+            field_type: "concealed".to_owned(),
+            value: SecretString::from("captured-synthetic-custom".to_owned()),
+        }],
+    }
+}
+
+fn open_captured_body(body: &Value) -> palladin_crypto::OpenedSubmissionV2 {
+    let submission = AgentEntrySubmission::from_value(body).unwrap();
+    let signing = agent_signing();
+    let approver = box_identity("approverV1X25519Seed");
+    palladin_crypto::open_agent_submission_v2(
+        &submission,
+        &SubmissionAuthority {
+            organization_id: Uuid::parse_str(ORGANIZATION_ID).unwrap(),
+            agent_id: Uuid::parse_str(AGENT_ID).unwrap(),
+            agent_signing_public_key: signing.public_key(),
+            recipient: SubmissionRecipient::ApproverGroup {
+                key_version: 1,
+                identity: &approver,
+            },
+        },
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn captured_submission_encrypts_every_value_and_description_without_returning_plaintext() {
+    let (host, requests) = server(vec![
+        respond(200, manifests_response(&[manifest(0)])),
+        accept_post(),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        None,
+        Some(ORGANIZATION_ID),
+    );
+    let request = SubmissionRequest {
+        username: None,
+        url: None,
+        ..new_credential_request()
+    };
+    let result = session
+        .submit_captured_entry(request, Some("Captured description"), captured_content())
+        .await
+        .unwrap();
+    assert!(result.outcome.is_ok());
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let opened = open_captured_body(&request_body(&requests[1]));
+    assert_eq!(opened.description.as_deref(), Some("Captured description"));
+    assert!(
+        opened.content.username.unwrap().expose_secret() == "captured-user@example.invalid",
+        "captured value differs from synthetic fixture"
+    );
+    assert!(
+        opened.content.password.unwrap().expose_secret() == "captured-synthetic-password",
+        "captured value differs from synthetic fixture"
+    );
+    assert!(
+        opened.content.custom_fields[0].value.expose_secret() == "captured-synthetic-custom",
+        "captured value differs from synthetic fixture"
+    );
+    assert_eq!(
+        opened.content.custom_fields[0].label.as_deref(),
+        Some("Captured custom label")
+    );
+    for plaintext in [
+        "captured-user@example.invalid",
+        "captured-synthetic-password",
+        "captured-synthetic-custom",
+        "Captured custom label",
+        "Captured description",
+    ] {
+        assert!(requests.iter().all(|request| !request.contains(plaintext)));
+        assert!(!format!("{result:?}").contains(plaintext));
+    }
+}
+
+#[tokio::test]
+async fn captured_sparse_update_does_not_synthesize_password_or_custom_fields() {
+    let (host, requests) = server(vec![
+        respond(200, manifests_response(&[manifest(0)])),
+        respond(200, submission_target("9")),
+        accept_post(),
+    ])
+    .await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        None,
+        None,
+    );
+    let content = palladin_crypto::SubmissionContentV2 {
+        password: None,
+        url: None,
+        custom_fields: vec![],
+        ..captured_content()
+    };
+    let result = session
+        .submit_captured_entry(
+            update_request(SubmissionEntryType::Credential, None, None, None),
+            None,
+            content,
+        )
+        .await
+        .unwrap();
+    assert!(result.outcome.is_ok());
+    let requests = requests.lock().unwrap();
+    let body = request_body(&requests[2]);
+    assert_eq!(body["target"]["expectedEntryRevision"], "9");
+    let opened = open_captured_body(&body);
+    assert!(opened.content.password.is_none());
+    assert!(opened.content.url.is_none());
+    assert!(opened.content.notes.is_none());
+    assert!(opened.content.custom_fields.is_empty());
+    assert!(opened.description.is_none());
+    assert!(opened.label.is_none());
+    assert!(
+        opened.content.username.unwrap().expose_secret() == "captured-user@example.invalid",
+        "captured value differs from synthetic fixture"
+    );
+    assert_never_requested_credential_delivery(&requests);
+}
+
+#[tokio::test]
+async fn captured_update_requires_grant_and_rejects_agent_literal_values() {
+    for literal in [false, true] {
+        let handlers = if literal {
+            Vec::new()
+        } else {
+            vec![
+                respond(200, manifests_response(&[manifest(0)])),
+                respond(403, json!({"code":"update-not-granted"}).to_string()),
+            ]
+        };
+        let (host, requests) = server(handlers).await;
+        let persistence = RecordingPersistence::default();
+        let session = test_session(
+            &host,
+            RuntimeOperation::SubmitEntry,
+            &persistence,
+            None,
+            None,
+        );
+        let request = update_request(
+            SubmissionEntryType::Credential,
+            None,
+            None,
+            literal.then_some("agent-literal"),
+        );
+        let result = session
+            .submit_captured_entry(request, None, captured_content())
+            .await
+            .unwrap();
+        assert_eq!(
+            result.outcome,
+            Err(if literal {
+                SubmissionNotSaved::InvalidInput
+            } else {
+                SubmissionNotSaved::UpdateNotGranted
+            })
+        );
+        let requests = requests.lock().unwrap();
+        assert!(requests.iter().all(|request| !request.starts_with("POST")));
+        assert_never_requested_credential_delivery(&requests);
+    }
+}
+
+#[tokio::test]
+async fn captured_submission_requires_available_trusted_approvers() {
+    let (host, requests) = server(vec![respond(200, manifests_response(&[]))]).await;
+    let persistence = RecordingPersistence::default();
+    let session = test_session(
+        &host,
+        RuntimeOperation::SubmitEntry,
+        &persistence,
+        None,
+        None,
+    );
+    let request = SubmissionRequest {
+        username: None,
+        url: None,
+        ..new_credential_request()
+    };
+    let result = session
+        .submit_captured_entry(request, None, captured_content())
+        .await
+        .unwrap();
+    assert!(result.outcome.is_err());
+    assert!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|request| !request.starts_with("POST"))
+    );
+}

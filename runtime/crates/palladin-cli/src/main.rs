@@ -1676,6 +1676,17 @@ async fn submit_entry(
     secret_args: &SubmitSecretArgs,
     json: bool,
 ) -> ExitCode {
+    if let Some(plan) = secret_args.from_browser.as_deref() {
+        return submit_browser_capture(
+            service,
+            profile,
+            request,
+            plan,
+            secret_args.description.as_deref(),
+            json,
+        )
+        .await;
+    }
     let kind = match request.target {
         SubmissionRequestTarget::New { .. } => SubmissionKind::New,
         SubmissionRequestTarget::Update { .. } => SubmissionKind::Update,
@@ -1729,6 +1740,106 @@ async fn submit_entry(
         }
         Err(error) => fail(&format!("{error}; the submission was not saved")),
     }
+}
+
+#[cfg(unix)]
+async fn submit_browser_capture(
+    service: &RuntimeService<RuntimeSecretStore>,
+    profile: Option<&str>,
+    request: SubmissionRequest<'_>,
+    plan_json: &str,
+    description: Option<&str>,
+    json: bool,
+) -> ExitCode {
+    use palladin_browser_bridge::capture::{CapturePlan, CaptureRequest};
+    use palladin_cli::native_browser::{
+        ExtensionClient, OPERATION_TIMEOUT, monotonic_not_after_ns, monotonic_now_ns,
+    };
+    let plan = match CapturePlan::parse(plan_json) {
+        Ok(plan) => plan,
+        Err(_) => return fail("invalid browser capture plan"),
+    };
+    let Some(entry_type) = request.entry_type else {
+        return fail("entry type required");
+    };
+    if let Err(error) = palladin_cli::captured_submission::validate_plan(&plan, entry_type) {
+        return fail(error);
+    }
+    if request.username.is_some() || request.url.is_some() {
+        return fail("browser submissions accept literal label and description only");
+    }
+    let hostname = match operating_system_hostname() {
+        Ok(value) => value,
+        Err(error) => return fail(error),
+    };
+    let connection = match OperationConnection::new() {
+        Ok(value) => value,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let mut digest = Sha256::new();
+    digest.update(b"palladin.browser-submission.v2\0");
+    digest.update(request.digest(false));
+    for value in [plan_json, description.unwrap_or("")] {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    let descriptor = OperationDescriptor::SubmitEntry {
+        surface: InvocationSurface::Cli,
+        request_digest: digest.finalize().into(),
+    };
+    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+        Ok(session) => session,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let identity = match service.browser_host_identity() {
+        Ok(identity) => identity,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let mut client = match ExtensionClient::connect(service.repository().root(), &identity).await {
+        Ok(client) => client,
+        Err(_) => return fail("authenticated browser extension unavailable"),
+    };
+    let mut nonce_bytes = [0u8; 32];
+    if getrandom::fill(&mut nonce_bytes).is_err() {
+        return fail("browser capture nonce unavailable");
+    }
+    let nonce = hex::encode(nonce_bytes);
+    match client.prepare_capture(&nonce, &plan).await {
+        Ok(result) if result.outcome == "ready" => {}
+        _ => return fail("exact browser target could not be prepared"),
+    };
+    let deadline =
+        match monotonic_now_ns().and_then(|now| monotonic_not_after_ns(now, OPERATION_TIMEOUT)) {
+            Ok(value) => value,
+            Err(_) => return fail("browser capture authorization unavailable"),
+        };
+    let request_capture = CaptureRequest::new(&nonce, plan);
+    let captured = match client.capture(request_capture, deadline).await {
+        Ok(result) => result,
+        Err(_) => return fail("browser capture failed; no submission saved"),
+    };
+    let content = match palladin_cli::captured_submission::into_content(captured, entry_type) {
+        Ok(content) => content,
+        Err(error) => return fail(error),
+    };
+    match session
+        .submit_captured_entry(request, description, content)
+        .await
+    {
+        Ok(result) => emit_output(render_submission_result(&result, json)),
+        Err(_) => fail("captured submission could not be saved; no field values were returned"),
+    }
+}
+#[cfg(not(unix))]
+async fn submit_browser_capture(
+    _service: &RuntimeService<RuntimeSecretStore>,
+    _profile: Option<&str>,
+    _request: SubmissionRequest<'_>,
+    _plan_json: &str,
+    _description: Option<&str>,
+    _json: bool,
+) -> ExitCode {
+    fail("browser capture is unsupported on this platform")
 }
 
 async fn submission_status(
