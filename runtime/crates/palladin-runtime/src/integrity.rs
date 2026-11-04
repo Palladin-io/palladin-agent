@@ -642,6 +642,7 @@ mod tests {
             agent_active: false,
             encryption_public_key: Some(STANDARD.encode([3_u8; 32])),
             previous_encryption_public_key: None,
+            registration_public_key: None,
             signing_public_key: Some(STANDARD.encode([4_u8; 32])),
             vault_trust_anchors: Vec::new(),
             discovery_cache: None,

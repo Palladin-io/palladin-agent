@@ -634,6 +634,9 @@ pub struct VaultManifest {
     pub manifest_signing_key_version: u32,
     pub vault_agent_message_public_key: String,
     pub vault_agent_message_key_fingerprint: String,
+    /// Present exactly on successor manifests that publish the message key's suite.
+    #[serde(default)]
+    pub vault_agent_message_key_suite_id: Option<String>,
     pub agent_message_key_version: u32,
     pub vdk_version: u32,
     pub agent_wrapped_vdk_digest: String,
@@ -759,7 +762,9 @@ pub struct AgentEncryptionKeyStatus {
     pub wrapper_suite_id: String,
     pub key_version: u32,
     pub key_fingerprint: String,
-    pub previous_key_envelope_count: u64,
+    /// Counted by the Vault replica on `GET`; the registering `POST` does not report it.
+    #[serde(default)]
+    pub previous_key_envelope_count: Option<u64>,
 }
 
 #[derive(Serialize)]

@@ -7,8 +7,9 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::{
-    CryptoError, PROTOCOL_VERSION, SecretBytes, SignatureProfile, VAULT_XCHACHA_V1, WrapperSuite,
-    decode_base64url, key_fingerprint, verify_domain_signature,
+    CryptoError, PROTOCOL_VERSION, RecipientKeyKind, RecipientPublicKey, SecretBytes,
+    SignatureProfile, VAULT_XCHACHA_V1, WrapperSuite, decode_base64url, key_fingerprint,
+    verify_domain_signature,
 };
 
 const PAIRING_DOMAIN: &[u8] = b"PLDNV2PAIR:TRANSCRIPT:";
@@ -32,6 +33,9 @@ pub struct VaultManifestV2 {
     pub manifest_signing_key_version: u32,
     pub vault_agent_message_public_key: String,
     pub vault_agent_message_key_fingerprint: String,
+    /// Signed suite of the message key; a manifest is a successor exactly when it is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_agent_message_key_suite_id: Option<String>,
     pub agent_message_key_version: u32,
     pub vdk_version: u32,
     pub agent_wrapped_vdk_digest: String,
@@ -150,6 +154,8 @@ struct UnsignedManifest<'a> {
     protocol_version: u16,
     signature_suite_id: &'a str,
     vault_agent_message_key_fingerprint: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vault_agent_message_key_suite_id: Option<&'a str>,
     vault_agent_message_public_key: &'a str,
     vault_id: &'a str,
     vault_signing_key_fingerprint: &'a str,
@@ -176,6 +182,8 @@ struct SignedManifest<'a> {
     signature: &'a str,
     signature_suite_id: &'a str,
     vault_agent_message_key_fingerprint: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vault_agent_message_key_suite_id: Option<&'a str>,
     vault_agent_message_public_key: &'a str,
     vault_id: &'a str,
     vault_signing_key_fingerprint: &'a str,
@@ -200,6 +208,7 @@ fn unsigned_manifest(manifest: &VaultManifestV2) -> UnsignedManifest<'_> {
         protocol_version: manifest.protocol_version,
         signature_suite_id: &manifest.signature_suite_id,
         vault_agent_message_key_fingerprint: &manifest.vault_agent_message_key_fingerprint,
+        vault_agent_message_key_suite_id: manifest.vault_agent_message_key_suite_id.as_deref(),
         vault_agent_message_public_key: &manifest.vault_agent_message_public_key,
         vault_id: &manifest.vault_id,
         vault_signing_key_fingerprint: &manifest.vault_signing_key_fingerprint,
@@ -227,6 +236,7 @@ fn signed_manifest(manifest: &VaultManifestV2) -> SignedManifest<'_> {
         signature: &manifest.signature,
         signature_suite_id: unsigned.signature_suite_id,
         vault_agent_message_key_fingerprint: unsigned.vault_agent_message_key_fingerprint,
+        vault_agent_message_key_suite_id: unsigned.vault_agent_message_key_suite_id,
         vault_agent_message_public_key: unsigned.vault_agent_message_public_key,
         vault_id: unsigned.vault_id,
         vault_signing_key_fingerprint: unsigned.vault_signing_key_fingerprint,
@@ -269,8 +279,27 @@ fn validate_identity(
     {
         return Err(CryptoError::InvalidProfile);
     }
+    manifest.agent_message_recipient_key()?;
     parse_revision(&manifest.manifest_revision)?;
     Ok(())
+}
+
+impl VaultManifestV2 {
+    /// The Vault message key with the suite this signed manifest publishes for it; manifests
+    /// without the suite field publish a legacy key that is opened but never sealed to.
+    pub fn agent_message_recipient_key(&self) -> Result<RecipientPublicKey, CryptoError> {
+        let key = RecipientPublicKey::from_publication(
+            self.vault_agent_message_key_suite_id.as_deref(),
+            decode_base64url(&self.vault_agent_message_public_key)?,
+        )
+        .map_err(|_| CryptoError::InvalidProfile)?;
+        if URL_SAFE_NO_PAD.encode(key.fingerprint(RecipientKeyKind::VaultAgentMessage))
+            != self.vault_agent_message_key_fingerprint
+        {
+            return Err(CryptoError::InvalidProfile);
+        }
+        Ok(key)
+    }
 }
 
 pub fn prepare_pairing(
@@ -485,8 +514,97 @@ impl TrustedVdkSet {
 
 #[cfg(test)]
 mod tests {
-    use super::TrustedVdkSet;
-    use crate::{CryptoError, SecretBytes};
+    use super::*;
+    use crate::{Ed25519Identity, EncryptionIdentity};
+
+    fn successor_manifest() -> (
+        VaultManifestV2,
+        AgentIdentityBinding,
+        PinnedVaultTrust,
+        Ed25519Identity,
+    ) {
+        let vault_signer = Ed25519Identity::from_seed(vec![3; 32]).unwrap();
+        let agent_key = EncryptionIdentity::generate().unwrap();
+        let message_key = EncryptionIdentity::generate().unwrap();
+        let identity = AgentIdentityBinding {
+            organization_id: Uuid::from_u128(1),
+            agent_id: Uuid::from_u128(2),
+            encryption_fingerprint: agent_key.fingerprint(RecipientKeyKind::AgentEncryption),
+            previous_encryption_fingerprint: None,
+            ed25519_fingerprint: [9; 32],
+        };
+        let signing_key_fingerprint = key_fingerprint(3, vault_signer.public_key()).unwrap();
+        let manifest = VaultManifestV2 {
+            protocol_version: PROTOCOL_VERSION,
+            crypto_suite_id: VAULT_XCHACHA_V1.to_owned(),
+            wrapper_suite_id: agent_key.suite_id().to_owned(),
+            signature_suite_id: ED25519_SIGNATURE_V1.to_owned(),
+            organization_id: identity.organization_id.to_string(),
+            vault_id: Uuid::from_u128(4).to_string(),
+            agent_id: identity.agent_id.to_string(),
+            agent_x25519_fingerprint: URL_SAFE_NO_PAD.encode(identity.encryption_fingerprint),
+            agent_ed25519_fingerprint: URL_SAFE_NO_PAD.encode(identity.ed25519_fingerprint),
+            vault_signing_public_key: URL_SAFE_NO_PAD.encode(vault_signer.public_key()),
+            vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(signing_key_fingerprint),
+            manifest_signing_key_version: 1,
+            vault_agent_message_public_key: URL_SAFE_NO_PAD.encode(message_key.public_key()),
+            vault_agent_message_key_fingerprint: URL_SAFE_NO_PAD
+                .encode(message_key.fingerprint(RecipientKeyKind::VaultAgentMessage)),
+            vault_agent_message_key_suite_id: Some(message_key.suite_id().to_owned()),
+            agent_message_key_version: 2,
+            vdk_version: 1,
+            agent_wrapped_vdk_digest: URL_SAFE_NO_PAD.encode([5; 32]),
+            manifest_revision: "3".to_owned(),
+            issued_at: "2026-11-04T00:00:00Z".to_owned(),
+            minimum_agent_runtime_protocol: PROTOCOL_VERSION,
+            signature: String::new(),
+        };
+        let anchor = PinnedVaultTrust {
+            vault_id: Uuid::from_u128(4),
+            signing_public_key: *vault_signer.public_key(),
+            signing_key_fingerprint,
+            manifest_revision: 3,
+            manifest_signing_key_version: 1,
+            vdk_version: 1,
+        };
+        (manifest, identity, anchor, vault_signer)
+    }
+
+    fn sign(manifest: &mut VaultManifestV2, signer: &Ed25519Identity) {
+        let mut input = SignatureProfile::VaultManifest.domain_prefix().to_vec();
+        input.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+        input.extend_from_slice(&serde_json::to_vec(&unsigned_manifest(manifest)).unwrap());
+        manifest.signature = URL_SAFE_NO_PAD.encode(signer.sign(&input));
+    }
+
+    #[test]
+    fn successor_manifest_signs_and_publishes_the_message_key_suite() {
+        let (mut manifest, identity, anchor, signer) = successor_manifest();
+        sign(&mut manifest, &signer);
+        verify_current_manifest(&manifest, &identity, &anchor).expect("signed successor");
+        let key = manifest
+            .agent_message_recipient_key()
+            .expect("published key");
+        assert!(key.can_seal());
+        assert_eq!(key.suite_id(), "palladin-xwing-v1");
+
+        let mut downgraded = manifest.clone();
+        downgraded.vault_agent_message_key_suite_id = None;
+        assert!(verify_current_manifest(&downgraded, &identity, &anchor).is_err());
+    }
+
+    #[test]
+    fn legacy_manifest_key_verifies_but_is_never_sealed_to() {
+        let (mut manifest, identity, anchor, signer) = successor_manifest();
+        let legacy = EncryptionIdentity::from_legacy_storage(vec![7; 32]).unwrap();
+        manifest.vault_agent_message_key_suite_id = None;
+        manifest.vault_agent_message_public_key = URL_SAFE_NO_PAD.encode(legacy.public_key());
+        manifest.vault_agent_message_key_fingerprint =
+            URL_SAFE_NO_PAD.encode(legacy.fingerprint(RecipientKeyKind::VaultAgentMessage));
+        sign(&mut manifest, &signer);
+        verify_current_manifest(&manifest, &identity, &anchor).expect("legacy manifest");
+        assert!(!manifest.agent_message_recipient_key().unwrap().can_seal());
+    }
 
     #[test]
     fn vdk_rotation_is_monotonic_and_deactivation_purges_both_generations() {

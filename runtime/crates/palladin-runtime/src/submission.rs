@@ -7,9 +7,9 @@ use palladin_core::public_store::PublicApproverTrustAnchor;
 use palladin_core::terminal::shorten_identifier;
 use palladin_credential::generator::{PasswordPolicy, PasswordPolicyError, generate_password};
 use palladin_crypto::{
-    AgentEntrySubmission, OrganizationApproverManifest, PinnedApproverTrust, SubmissionAuthority,
-    SubmissionBuildContext, SubmissionContent, SubmissionEntryType, SubmissionError,
-    SubmissionIdentity, SubmissionKind, SubmissionRecipient, SubmissionTarget,
+    AgentEntrySubmission, OrganizationApproverManifest, PinnedApproverTrust, RecipientPublicKey,
+    SubmissionAuthority, SubmissionBuildContext, SubmissionContent, SubmissionEntryType,
+    SubmissionError, SubmissionIdentity, SubmissionKind, SubmissionRecipient, SubmissionTarget,
     approver_reintroduction_candidate, build_agent_submission, open_agent_submission,
     reintroduce_approver_manifest, rewrap_agent_submission, verify_approver_manifest_chain,
 };
@@ -650,7 +650,12 @@ impl RuntimeSession<'_> {
             key_version: pin.key_version,
             manifest_revision: pin.manifest_revision.to_string(),
             signing_public_key: URL_SAFE_NO_PAD.encode(pin.signing_public_key),
-            message_public_key: URL_SAFE_NO_PAD.encode(pin.message_public_key),
+            message_public_key: URL_SAFE_NO_PAD.encode(pin.message_public_key.as_bytes()),
+            // v1 pins keep their original commitment; only a published current suite is recorded.
+            message_key_suite_id: pin
+                .message_public_key
+                .can_seal()
+                .then(|| pin.message_public_key.suite_id().to_owned()),
         };
         self.ensure_authorized()?;
         persistence.persist_approver_anchor(
@@ -938,7 +943,13 @@ fn pinned_approver(
             .parse()
             .map_err(|_| RuntimeError::InvalidPublicConfig)?,
         signing_public_key: decode(&anchor.signing_public_key)?,
-        message_public_key: decode(&anchor.message_public_key)?,
+        message_public_key: RecipientPublicKey::from_publication(
+            anchor.message_key_suite_id.as_deref(),
+            URL_SAFE_NO_PAD
+                .decode(&anchor.message_public_key)
+                .map_err(|_| RuntimeError::InvalidPublicConfig)?,
+        )
+        .map_err(|_| RuntimeError::InvalidPublicConfig)?,
     })
 }
 

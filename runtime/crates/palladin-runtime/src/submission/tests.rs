@@ -49,22 +49,77 @@ fn seed(name: &str) -> [u8; 32] {
         .unwrap()
 }
 
-fn box_identity(name: &str) -> EncryptionIdentity {
+/// The fixture's pre-suite X25519 key for `name`.
+fn legacy_identity(name: &str) -> EncryptionIdentity {
     EncryptionIdentity::from_legacy_storage(Sha512::digest(seed(name))[..32].to_vec()).unwrap()
+}
+
+/// A deterministic X-Wing key standing in for the fixture key `name` after migration.
+fn box_identity(name: &str) -> EncryptionIdentity {
+    let mut stored = b"PLDNEK01".to_vec();
+    stored.push(17);
+    stored.extend_from_slice(b"palladin-xwing-v1");
+    stored.extend_from_slice(&seed(name));
+    EncryptionIdentity::from_secure_storage(&stored).unwrap()
 }
 
 fn agent_signing() -> Ed25519Identity {
     Ed25519Identity::from_seed(seed("agentEd25519Seed").to_vec()).unwrap()
 }
 
+/// Fixture approver manifest `index` re-published as a v2 successor with an X-Wing message key,
+/// keeping its signing key and rotation continuity.
 fn manifest(index: usize) -> Value {
-    fixture()["approverManifests"][index].clone()
+    let mut manifest = fixture()["approverManifests"][index].clone();
+    let version = index + 1;
+    let message_key = box_identity(&format!("approverV{version}X25519Seed"));
+    let object = manifest.as_object_mut().unwrap();
+    let continuity = object.remove("continuitySignature").is_some();
+    object.remove("signature");
+    object.insert(
+        "schema".into(),
+        json!("palladin.organization-approver-manifest.v2"),
+    );
+    object.insert("messageKeySuiteId".into(), json!(message_key.suite_id()));
+    object.insert(
+        "messagePublicKey".into(),
+        json!(URL_SAFE_NO_PAD.encode(message_key.public_key())),
+    );
+    object.insert(
+        "messageKeyFingerprint".into(),
+        json!(URL_SAFE_NO_PAD.encode(
+            message_key.fingerprint(palladin_crypto::RecipientKeyKind::OrganizationApproverMessage)
+        )),
+    );
+    let canonical = serde_jcs::to_vec(&manifest).unwrap();
+    let sign = |domain: &[u8], signer: &str| {
+        let mut input = domain.to_vec();
+        input.extend_from_slice(&canonical);
+        json!(
+            URL_SAFE_NO_PAD.encode(
+                SigningKey::from_bytes(&seed(signer))
+                    .sign(&input)
+                    .to_bytes()
+            )
+        )
+    };
+    manifest["signature"] = sign(
+        b"PLDNSUB1SIG:APPROVER-MANIFEST:\x00\x02",
+        &format!("approverV{version}Ed25519Seed"),
+    );
+    if continuity {
+        manifest["continuitySignature"] = sign(
+            b"PLDNSUB1SIG:APPROVER-CONTINUITY:\x00\x02",
+            &format!("approverV{}Ed25519Seed", version - 1),
+        );
+    }
+    manifest
 }
 
 fn manifests_response(manifests: &[Value]) -> String {
     json!({
         "organizationId": ORGANIZATION_ID,
-        "agentKeyVersion": 3,
+        "agentKeyVersion": 4,
         "agentAccessEpoch": "4",
         "manifests": manifests,
     })
@@ -231,6 +286,7 @@ fn anchor_from_manifest(manifest: &Value) -> PublicApproverTrustAnchor {
         manifest_revision: manifest["manifestRevision"].as_str().unwrap().to_owned(),
         signing_public_key: manifest["signingPublicKey"].as_str().unwrap().to_owned(),
         message_public_key: manifest["messagePublicKey"].as_str().unwrap().to_owned(),
+        message_key_suite_id: manifest["messageKeySuiteId"].as_str().map(str::to_owned),
     }
 }
 
@@ -241,11 +297,19 @@ fn test_session<'a>(
     approver_anchor: Option<PublicApproverTrustAnchor>,
     vault_organization: Option<&str>,
 ) -> RuntimeSession<'a> {
-    let encryption = AgentEncryptionKeys::new(box_identity("agentX25519Seed"), None).unwrap();
+    // Migrated Agent: X-Wing current key, the fixture's X25519 key still opens v1 submissions.
+    let encryption = AgentEncryptionKeys::new(
+        box_identity("agentX25519Seed"),
+        Some(legacy_identity("agentX25519Seed")),
+    )
+    .unwrap();
     let api = ApiClient::new(
         ApiHost::parse(host).unwrap(),
         OrganizationApiKey::new("pl_submission_fixture".to_owned()),
-        encryption.current(),
+        &base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            encryption.previous().unwrap().public_key(),
+        ),
         "fixture-host",
         Some(SigningContext {
             agent_id: AGENT_ID.to_owned(),
@@ -271,6 +335,7 @@ fn test_session<'a>(
             agent_active: true,
             encryption_public_key: None,
             previous_encryption_public_key: None,
+            registration_public_key: None,
             signing_public_key: None,
             vault_trust_anchors: vault_organization
                 .map(|organization_id| PublicVaultTrustAnchor {
@@ -382,7 +447,7 @@ async fn generated_submission_is_pinned_encrypted_saved_and_never_leaks_the_secr
         result.submission_id.as_deref()
     );
     assert_eq!(body["submissionRevision"], "1");
-    assert_eq!(body["agentKeyVersion"], 3);
+    assert_eq!(body["agentKeyVersion"], 4);
     assert_eq!(body["agentAccessEpoch"], "4");
     assert_eq!(body["approverKeyVersion"], 1);
     assert_eq!(
@@ -877,7 +942,7 @@ async fn status_rewraps_pending_submissions_for_a_continuity_verified_rotated_ke
 async fn submission_inject_delivers_only_a_verified_fresh_own_submission() {
     let stored = fixture()["submissions"][0].clone();
     let (host, requests) = server(vec![
-        current_access(3, "4"),
+        current_access(4, "4"),
         respond(200, stored.to_string()),
     ])
     .await;
@@ -935,7 +1000,7 @@ async fn submission_inject_rejects_unusable_substituted_or_tampered_submissions(
         ),
     ];
     for (id, handler, expected) in cases {
-        let (host, _) = server(vec![current_access(3, "4"), handler]).await;
+        let (host, _) = server(vec![current_access(4, "4"), handler]).await;
         let persistence = RecordingPersistence::default();
         let session = test_session(
             &host,
@@ -1645,7 +1710,7 @@ async fn manifests_for_another_organization_than_the_pin_are_untrusted() {
         200,
         json!({
             "organizationId": "1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a",
-            "agentKeyVersion": 3,
+            "agentKeyVersion": 4,
             "agentAccessEpoch": "4",
             "manifests": [],
         })
@@ -1877,9 +1942,9 @@ async fn status_rewrap_failures_are_reported_without_touching_the_payload() {
 async fn every_submission_inject_fetches_the_submission_fresh() {
     let stored = fixture()["submissions"][0].clone();
     let (host, requests) = server(vec![
-        current_access(3, "4"),
+        current_access(4, "4"),
         respond(200, stored.to_string()),
-        current_access(3, "4"),
+        current_access(4, "4"),
         respond(403, json!({ "code": "submission-not-usable" }).to_string()),
     ])
     .await;
@@ -2065,7 +2130,7 @@ async fn noncanonical_server_encodings_that_bind_a_submission_are_rejected() {
             200,
             json!({
                 "organizationId": organization,
-                "agentKeyVersion": 3,
+                "agentKeyVersion": 4,
                 "agentAccessEpoch": epoch,
                 "manifests": [manifest(0)],
             })
@@ -2102,7 +2167,7 @@ async fn noncanonical_server_encodings_that_bind_a_submission_are_rejected() {
         noncanonical["agentKeyFingerprint"].as_str().unwrap()
     ));
     let (host, _) = server(vec![
-        current_access(3, "4"),
+        current_access(4, "4"),
         respond(200, noncanonical.to_string()),
     ])
     .await;
@@ -2161,7 +2226,7 @@ async fn own_submission_with_an_invalid_payload_is_never_injected() {
     tampered["agentSignature"] = json!(URL_SAFE_NO_PAD.encode(signer.sign(&input).to_bytes()));
 
     let (host, _) = server(vec![
-        current_access(3, "4"),
+        current_access(4, "4"),
         respond(200, tampered.to_string()),
     ])
     .await;
@@ -2185,8 +2250,9 @@ async fn own_submission_with_an_invalid_payload_is_never_injected() {
 async fn submission_inject_requires_the_current_access_epoch_and_agent_key() {
     let stored = fixture()["submissions"][0].clone();
     for (current, expected) in [
-        (current_access(3, "5"), "stale-access-epoch"),
-        (current_access(4, "4"), "recipient-key-mismatch"),
+        (current_access(4, "5"), "stale-access-epoch"),
+        // The previous key is valid only for submissions older than the current key version.
+        (current_access(3, "4"), "recipient-key-mismatch"),
     ] {
         let (host, _) = server(vec![current, respond(200, stored.to_string())]).await;
         let persistence = RecordingPersistence::default();
@@ -2245,7 +2311,7 @@ async fn status_never_rewraps_a_submission_from_an_earlier_access_epoch() {
             200,
             json!({
                 "organizationId": ORGANIZATION_ID,
-                "agentKeyVersion": 3,
+                "agentKeyVersion": 4,
                 "agentAccessEpoch": "5",
                 "manifests": [manifest(1)],
             })

@@ -287,7 +287,10 @@ mod tests {
         ApiClient::new_with_timeout(
             ApiHost::parse(host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &identity,
+            &base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                identity.public_key(),
+            ),
             "fixture-host",
             None,
             Duration::from_secs(2),

@@ -210,8 +210,7 @@ pub struct ApiClient {
     http: reqwest::Client,
     host: ApiHost,
     organization_api_key: OrganizationApiKey,
-    encryption_public_key_base64: String,
-    encryption_key_suite: HeaderValue,
+    agent_key_identifier: String,
     hostname: HeaderValue,
     signing: Option<SigningContext>,
 }
@@ -229,14 +228,14 @@ impl ApiClient {
     pub fn new(
         host: ApiHost,
         organization_api_key: OrganizationApiKey,
-        encryption_identity: &EncryptionIdentity,
+        agent_key_identifier: &str,
         hostname: &str,
         signing: Option<SigningContext>,
     ) -> Result<Self, ApiError> {
         Self::new_with_timeout(
             host,
             organization_api_key,
-            encryption_identity,
+            agent_key_identifier,
             hostname,
             signing,
             Duration::from_secs(30),
@@ -246,7 +245,7 @@ impl ApiClient {
     fn new_with_timeout(
         host: ApiHost,
         organization_api_key: OrganizationApiKey,
-        encryption_identity: &EncryptionIdentity,
+        agent_key_identifier: &str,
         hostname: &str,
         signing: Option<SigningContext>,
         timeout: Duration,
@@ -264,8 +263,7 @@ impl ApiClient {
             http,
             host,
             organization_api_key,
-            encryption_public_key_base64: STANDARD.encode(encryption_identity.public_key()),
-            encryption_key_suite: HeaderValue::from_static(encryption_identity.suite_id()),
+            agent_key_identifier: agent_key_identifier.to_owned(),
             hostname,
             signing,
         })
@@ -772,8 +770,7 @@ impl ApiClient {
                 .http
                 .request(method.clone(), url.clone())
                 .header("X-Api-Key", api_key)
-                .header("X-Agent-Key", &self.encryption_public_key_base64)
-                .header("X-Agent-Key-Suite", self.encryption_key_suite.clone())
+                .header("X-Agent-Key", &self.agent_key_identifier)
                 .header("X-Agent-Hostname", self.hostname.clone());
             if let Some(body) = body.as_ref() {
                 request = request
@@ -1274,7 +1271,7 @@ mod tests {
         let api = ApiClient::new_with_timeout(
             ApiHost::parse(&host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &encryption,
+            &STANDARD.encode(encryption.public_key()),
             "fixture-host",
             Some(SigningContext {
                 agent_id: "agent-123".to_owned(),
@@ -1796,7 +1793,7 @@ mod tests {
         ApiClient::new_with_timeout(
             ApiHost::parse(host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &identity,
+            &STANDARD.encode(identity.public_key()),
             "fixture-host",
             None,
             timeout,
@@ -1809,7 +1806,7 @@ mod tests {
         ApiClient::new_with_timeout(
             ApiHost::parse(host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &identity,
+            &STANDARD.encode(identity.public_key()),
             "fixture-host",
             Some(SigningContext {
                 agent_id: "agent-retry".to_owned(),

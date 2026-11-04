@@ -207,12 +207,14 @@ where
             output: CredentialOutputPolicy::TrustedInjectionProvider,
         },
     };
-    let session = service.open_session(
-        operation.profile,
-        operation.hostname,
-        operation.connection,
-        descriptor,
-    )?;
+    let session = service
+        .open_session(
+            operation.profile,
+            operation.hostname,
+            operation.connection,
+            descriptor,
+        )
+        .await?;
     let delivered = match operation.submission_id {
         Some(submission_id) => {
             let _ = heartbeat;

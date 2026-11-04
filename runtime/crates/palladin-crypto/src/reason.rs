@@ -91,7 +91,7 @@ pub struct EncryptedReasonContext {
     pub agent_message_key_version: u32,
     pub member_key_generation: u32,
     pub requested_methods: u16,
-    /// The Vault message key and its suite from the signed Vault manifest.
+    /// The Vault message key and the suite its signed Vault manifest publishes for it.
     pub recipient_agent_message_public_key: RecipientPublicKey,
     pub recipient_agent_message_key_fingerprint: [u8; 32],
 }
@@ -117,6 +117,9 @@ pub fn encrypt_reason(
         return Err(CryptoError::InvalidProfile);
     }
     let recipient = &context.recipient_agent_message_public_key;
+    if !recipient.can_seal() {
+        return Err(CryptoError::KeyMigrationPending);
+    }
     let wrapper_suite_id = recipient.suite_id();
     if recipient.fingerprint(RecipientKeyKind::VaultAgentMessage)
         != context.recipient_agent_message_key_fingerprint
@@ -176,7 +179,7 @@ pub fn encrypt_reason(
     }
     let payload_key = XChaChaVaultSuite::derive_key(dek.expose_secret(), &descriptor)?;
     let payload = XChaChaVaultSuite::seal(&payload_key, &plaintext, &descriptor_bytes)?;
-    let wrapped = wrapper_context.seal_for_frozen_contract(&dek, recipient)?;
+    let wrapped = wrapper_context.seal(&dek, recipient)?;
     let transcript = signature_transcript(&descriptor_bytes, &payload, wrapper_suite_id, &wrapped)?;
 
     let serialized_scope = EncryptedReasonScope {
@@ -281,9 +284,14 @@ mod tests {
     }
 
     #[test]
-    fn reason_seals_to_the_suite_of_the_frozen_and_the_current_vault_message_key() {
-        assert_reason_round_trips(&EncryptionIdentity::from_legacy_storage(vec![7; 32]).unwrap());
+    fn reason_seals_to_the_published_suite_and_never_to_a_legacy_key() {
         assert_reason_round_trips(&EncryptionIdentity::generate().unwrap());
+        let legacy = EncryptionIdentity::from_legacy_storage(vec![7; 32]).unwrap();
+        let signer = Ed25519Identity::from_seed(vec![9; 32]).unwrap();
+        assert_eq!(
+            encrypt_reason("reason", context(&legacy), &signer),
+            Err(CryptoError::KeyMigrationPending)
+        );
     }
 
     fn assert_reason_round_trips(recipient: &EncryptionIdentity) {

@@ -21,13 +21,18 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::{
     AgentEncryptionKeys, DecryptedCredential, Ed25519Identity, EncryptionIdentity, EnvelopeScope,
     PROTOCOL_VERSION, RecipientKeyKind, RecipientPublicKey, SignatureProfile, WrapperContext,
-    WrapperPurpose, compute_key_fingerprint, key_wrapper::OpenError, verify_domain_signature,
+    WrapperPurpose, WrapperSuite, compute_key_fingerprint, key_wrapper::OpenError,
+    verify_domain_signature,
 };
 
 const CONTRACT_VERSION: u64 = 1;
-const SUBMISSION_SCHEMA: &str = "palladin.agent-entry-submission.v1";
+const SUBMISSION_SCHEMA_V1: &str = "palladin.agent-entry-submission.v1";
+/// Successor that names the suite of each wrapped DEK (key-wrapper recipient key publication).
+const SUBMISSION_SCHEMA_V2: &str = "palladin.agent-entry-submission.v2";
 const PAYLOAD_SCHEMA: &str = "palladin.agent-submission-payload.v1";
-const MANIFEST_SCHEMA: &str = "palladin.organization-approver-manifest.v1";
+const MANIFEST_SCHEMA_V1: &str = "palladin.organization-approver-manifest.v1";
+const MANIFEST_SCHEMA_V2: &str = "palladin.organization-approver-manifest.v2";
+const SUBMISSION_SUITE_FIELDS: [&str; 2] = ["agentWrappedDekSuiteId", "approverWrappedDekSuiteId"];
 const PAYLOAD_AAD_PREFIX: &[u8] = b"PLDNSUB1AAD";
 const IDENTITY_HASH_PREFIX: &[u8] = b"PLDNSUB1ID";
 const NONCE_BYTES: usize = 24;
@@ -40,7 +45,6 @@ const KEY_VALUE_MAX_BYTES: usize = 16_384;
 const URL_MAX_BYTES: usize = 2048;
 const NOTES_MAX_BYTES: usize = 8192;
 const PAYLOAD_PLAINTEXT_MAX_BYTES: usize = 32_768;
-const WRAPPED_DEK_BYTES: usize = 120;
 /// Decoding bound for hostile input; anything above the contract limit is rejected as too large.
 const MAX_TRANSPORT_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_ENCODED_PAYLOAD_BYTES: usize = PAYLOAD_PLAINTEXT_MAX_BYTES + NONCE_BYTES + TAG_BYTES;
@@ -142,6 +146,8 @@ pub enum SubmissionError {
     RewrapChangedPayload,
     #[error("cryptographic random generation failed")]
     RandomGenerationFailed,
+    #[error("a recipient key still uses a read-only suite and must be republished first")]
+    KeyMigrationPending,
 }
 
 impl SubmissionError {
@@ -173,6 +179,7 @@ impl SubmissionError {
             Self::ManifestReintroductionRequired => "manifest-reintroduction-required",
             Self::ManifestRollback => "manifest-rollback",
             Self::RevisionReplay => "revision-replay",
+            Self::KeyMigrationPending => "key-migration-pending",
             Self::RewrapChangedPayload => "rewrap-changed-payload",
             Self::RandomGenerationFailed => "random-generation-failed",
         }
@@ -334,6 +341,9 @@ pub struct AgentEntrySubmission {
     pub approver_key_version: u32,
     pub approver_message_key_fingerprint: [u8; 32],
     pub approver_manifest_revision: u64,
+    /// Signed suites of the two wrapped DEKs; absent on v1 submissions, which use the legacy
+    /// suite for both.
+    wrapped_dek_suites: Option<(WrapperSuite, WrapperSuite)>,
     encoded_payload: Vec<u8>,
     agent_wrapped_dek: Vec<u8>,
     approver_wrapped_dek: Vec<u8>,
@@ -357,8 +367,25 @@ impl AgentEntrySubmission {
     /// non-canonical encodings are rejected before any signature or key is used.
     pub fn from_value(value: &Value) -> Result<Self, SubmissionError> {
         let object = value.as_object().ok_or(SubmissionError::InvalidField)?;
-        check_fields(object, &TRANSPORT_FIELDS, &[])?;
-        check_header(object, SUBMISSION_SCHEMA)?;
+        let successor = object.get("schema").and_then(Value::as_str) == Some(SUBMISSION_SCHEMA_V2);
+        if successor {
+            let required = [TRANSPORT_FIELDS.as_slice(), &SUBMISSION_SUITE_FIELDS].concat();
+            check_fields(object, &required, &[])?;
+            check_header(object, SUBMISSION_SCHEMA_V2)?;
+        } else {
+            check_fields(object, &TRANSPORT_FIELDS, &[])?;
+            check_header(object, SUBMISSION_SCHEMA_V1)?;
+        }
+        let wrapped_dek_suites = successor
+            .then(|| {
+                Ok::<_, SubmissionError>((
+                    suite(object, "agentWrappedDekSuiteId")?,
+                    suite(object, "approverWrappedDekSuiteId")?,
+                ))
+            })
+            .transpose()?;
+        let (agent_suite, approver_suite) =
+            wrapped_dek_suites.unwrap_or((WrapperSuite::LEGACY, WrapperSuite::LEGACY));
         let organization_id = uuid(object, "organizationId")?;
         let submission_id = uuid(object, "submissionId")?;
         let agent_id = uuid(object, "agentId")?;
@@ -370,9 +397,16 @@ impl AgentEntrySubmission {
         let agent_key_fingerprint = base64_array(object, "agentKeyFingerprint")?;
         let approver_message_key_fingerprint =
             base64_array(object, "approverMessageKeyFingerprint")?;
-        let agent_wrapped_dek = base64_exact(object, "encodedAgentWrappedDek", WRAPPED_DEK_BYTES)?;
-        let approver_wrapped_dek =
-            base64_exact(object, "encodedApproverWrappedDek", WRAPPED_DEK_BYTES)?;
+        let agent_wrapped_dek = base64_exact(
+            object,
+            "encodedAgentWrappedDek",
+            agent_suite.package_bytes(),
+        )?;
+        let approver_wrapped_dek = base64_exact(
+            object,
+            "encodedApproverWrappedDek",
+            approver_suite.package_bytes(),
+        )?;
         let agent_signature = base64_array(object, "agentSignature")?;
         let encoded_payload =
             base64_bounded(object, "encodedPayload", MAX_TRANSPORT_PAYLOAD_BYTES)?;
@@ -441,11 +475,22 @@ impl AgentEntrySubmission {
             approver_key_version,
             approver_message_key_fingerprint,
             approver_manifest_revision,
+            wrapped_dek_suites,
             encoded_payload,
             agent_wrapped_dek,
             approver_wrapped_dek,
             agent_signature,
         })
+    }
+
+    fn agent_suite(&self) -> WrapperSuite {
+        self.wrapped_dek_suites
+            .map_or(WrapperSuite::LEGACY, |(agent, _)| agent)
+    }
+
+    fn approver_suite(&self) -> WrapperSuite {
+        self.wrapped_dek_suites
+            .map_or(WrapperSuite::LEGACY, |(_, approver)| approver)
     }
 
     #[must_use]
@@ -466,7 +511,16 @@ impl AgentEntrySubmission {
             unreachable!("identity is always encoded as an object");
         };
         let encode = |bytes: &[u8]| json!(URL_SAFE_NO_PAD.encode(bytes));
-        object.insert("schema".into(), json!(SUBMISSION_SCHEMA));
+        match self.wrapped_dek_suites {
+            Some((agent, approver)) => {
+                object.insert("schema".into(), json!(SUBMISSION_SCHEMA_V2));
+                object.insert("agentWrappedDekSuiteId".into(), json!(agent.id()));
+                object.insert("approverWrappedDekSuiteId".into(), json!(approver.id()));
+            }
+            None => {
+                object.insert("schema".into(), json!(SUBMISSION_SCHEMA_V1));
+            }
+        }
         object.insert(
             "submissionRevision".into(),
             json!(self.submission_revision.to_string()),
@@ -519,24 +573,25 @@ impl AgentEntrySubmission {
         .map_err(|_| SubmissionError::InvalidAgentSignature)
     }
 
-    /// `wrapper_suite_id` is the suite registered with the recipient key: v1 carries no suite.
     fn wrapper_context(
         &self,
         recipient_key_kind: RecipientKeyKind,
-        wrapper_suite_id: &str,
     ) -> Result<WrapperContext, SubmissionError> {
-        let (recipient_key_version, recipient_fingerprint) = match recipient_key_kind {
-            RecipientKeyKind::AgentEncryption => {
-                (self.agent_key_version, self.agent_key_fingerprint)
-            }
+        let (recipient_key_version, recipient_fingerprint, suite) = match recipient_key_kind {
+            RecipientKeyKind::AgentEncryption => (
+                self.agent_key_version,
+                self.agent_key_fingerprint,
+                self.agent_suite(),
+            ),
             _ => (
                 self.approver_key_version,
                 self.approver_message_key_fingerprint,
+                self.approver_suite(),
             ),
         };
         Ok(WrapperContext {
             protocol_version: PROTOCOL_VERSION,
-            wrapper_suite_id: wrapper_suite_id.to_owned(),
+            wrapper_suite_id: suite.id().to_owned(),
             purpose: WrapperPurpose::SubmissionDek,
             scope: EnvelopeScope {
                 organization_id: *self.identity.organization_id.as_bytes(),
@@ -751,7 +806,8 @@ pub struct PinnedApproverTrust {
     pub key_version: u32,
     pub manifest_revision: u64,
     pub signing_public_key: [u8; 32],
-    pub message_public_key: [u8; 32],
+    /// The message key with the suite its signed manifest publishes.
+    pub message_public_key: RecipientPublicKey,
 }
 
 impl PinnedApproverTrust {
@@ -765,10 +821,8 @@ impl PinnedApproverTrust {
 
     #[must_use]
     pub fn message_key_fingerprint(&self) -> [u8; 32] {
-        compute_key_fingerprint(
-            &self.message_public_key,
-            RecipientKeyKind::OrganizationApproverMessage,
-        )
+        self.message_public_key
+            .fingerprint(RecipientKeyKind::OrganizationApproverMessage)
     }
 }
 
@@ -777,7 +831,7 @@ pub struct OrganizationApproverManifest {
     pub organization_id: Uuid,
     pub key_version: u32,
     pub manifest_revision: u64,
-    message_public_key: [u8; 32],
+    message_public_key: RecipientPublicKey,
     message_key_fingerprint: [u8; 32],
     signing_public_key: [u8; 32],
     signing_key_fingerprint: [u8; 32],
@@ -790,12 +844,23 @@ pub struct OrganizationApproverManifest {
 impl OrganizationApproverManifest {
     pub fn from_value(value: &Value) -> Result<Self, SubmissionError> {
         let object = value.as_object().ok_or(SubmissionError::InvalidField)?;
-        check_fields(
-            object,
-            &MANIFEST_REQUIRED_FIELDS,
-            &MANIFEST_CONDITIONAL_FIELDS,
-        )?;
-        check_header(object, MANIFEST_SCHEMA)?;
+        let successor = object.get("schema").and_then(Value::as_str) == Some(MANIFEST_SCHEMA_V2);
+        if successor {
+            let required = [MANIFEST_REQUIRED_FIELDS.as_slice(), &["messageKeySuiteId"]].concat();
+            check_fields(object, &required, &MANIFEST_CONDITIONAL_FIELDS)?;
+            check_header(object, MANIFEST_SCHEMA_V2)?;
+        } else {
+            check_fields(
+                object,
+                &MANIFEST_REQUIRED_FIELDS,
+                &MANIFEST_CONDITIONAL_FIELDS,
+            )?;
+            check_header(object, MANIFEST_SCHEMA_V1)?;
+        }
+        let message_key_suite = successor
+            .then(|| suite(object, "messageKeySuiteId"))
+            .transpose()?
+            .unwrap_or(WrapperSuite::LEGACY);
         let key_version = positive_u32(object, "keyVersion")?;
         let manifest_revision = positive_decimal(object, "manifestRevision")?;
         positive_decimal(object, "approverSetRevision")?;
@@ -811,7 +876,15 @@ impl OrganizationApproverManifest {
             organization_id: uuid(object, "organizationId")?,
             key_version,
             manifest_revision,
-            message_public_key: base64_array(object, "messagePublicKey")?,
+            message_public_key: RecipientPublicKey::new(
+                message_key_suite.id(),
+                base64_exact(
+                    object,
+                    "messagePublicKey",
+                    message_key_suite.public_key_bytes(),
+                )?,
+            )
+            .map_err(|_| SubmissionError::InvalidField)?,
             message_key_fingerprint: base64_array(object, "messageKeyFingerprint")?,
             signing_public_key: base64_array(object, "signingPublicKey")?,
             signing_key_fingerprint: base64_array(object, "signingKeyFingerprint")?,
@@ -856,7 +929,7 @@ impl OrganizationApproverManifest {
             key_version: self.key_version,
             manifest_revision: self.manifest_revision,
             signing_public_key: self.signing_public_key,
-            message_public_key: self.message_public_key,
+            message_public_key: self.message_public_key.clone(),
         }
     }
 }
@@ -883,10 +956,10 @@ pub fn verify_approver_manifest_chain(
             &manifest.signing_public_key,
             RecipientKeyKind::OrganizationApproverSigning,
         ) != manifest.signing_key_fingerprint
-            || compute_key_fingerprint(
-                &manifest.message_public_key,
-                RecipientKeyKind::OrganizationApproverMessage,
-            ) != manifest.message_key_fingerprint
+            || manifest
+                .message_public_key
+                .fingerprint(RecipientKeyKind::OrganizationApproverMessage)
+                != manifest.message_key_fingerprint
         {
             return Err(SubmissionError::ManifestFingerprintMismatch);
         }
@@ -1066,7 +1139,7 @@ pub fn rewrap_agent_submission(
             access_epoch: current_access_epoch,
         },
     };
-    let (dek, agent_key) = open_dek(stored, &authority)?;
+    let (dek, _) = open_dek(stored, &authority)?;
     let next_revision = stored
         .submission_revision
         .checked_add(1)
@@ -1077,8 +1150,8 @@ pub fn rewrap_agent_submission(
         &dek,
         next_revision,
         stored.agent_access_epoch,
-        stored.agent_key_version,
-        &agent_key.recipient_public_key(),
+        current_agent_key_version,
+        &agent_keys.current().recipient_public_key(),
         agent_signing,
         approver,
     )?;
@@ -1190,26 +1263,44 @@ fn open_dek<'a>(
     let (kind, key_version, identity, declared_version, wrapped) = match authority.recipient {
         SubmissionRecipient::Agent {
             key_version, keys, ..
-        } => (
-            RecipientKeyKind::AgentEncryption,
-            key_version,
-            keys.select_by_fingerprint(
+        } => {
+            let identity = keys
+                .select(
+                    submission.agent_suite().id(),
+                    RecipientKeyKind::AgentEncryption,
+                    &submission.agent_key_fingerprint,
+                )
+                .map_err(|_| SubmissionError::RecipientKeyMismatch)?;
+            // `key_version` is the current key's version from the authenticated state. A pending
+            // submission sealed before a rotation names the previous key, which is older.
+            let is_previous = keys
+                .previous()
+                .is_some_and(|previous| std::ptr::eq(previous, identity));
+            if is_previous && submission.agent_key_version >= key_version {
+                return Err(SubmissionError::RecipientKeyMismatch);
+            }
+            (
                 RecipientKeyKind::AgentEncryption,
-                &submission.agent_key_fingerprint,
+                if is_previous {
+                    submission.agent_key_version
+                } else {
+                    key_version
+                },
+                identity,
+                submission.agent_key_version,
+                &submission.agent_wrapped_dek,
             )
-            .map_err(|_| SubmissionError::RecipientKeyMismatch)?,
-            submission.agent_key_version,
-            &submission.agent_wrapped_dek,
-        ),
+        }
         SubmissionRecipient::ApproverGroup {
             key_version,
             identity,
         } => {
-            if identity
-                .fingerprint(RecipientKeyKind::OrganizationApproverMessage)
-                .ct_eq(&submission.approver_message_key_fingerprint)
-                .unwrap_u8()
-                != 1
+            if identity.suite_id() != submission.approver_suite().id()
+                || identity
+                    .fingerprint(RecipientKeyKind::OrganizationApproverMessage)
+                    .ct_eq(&submission.approver_message_key_fingerprint)
+                    .unwrap_u8()
+                    != 1
             {
                 return Err(SubmissionError::RecipientKeyMismatch);
             }
@@ -1232,7 +1323,7 @@ fn open_dek<'a>(
     {
         return Err(SubmissionError::StaleAccessEpoch);
     }
-    let context = submission.wrapper_context(kind, identity.suite_id())?;
+    let context = submission.wrapper_context(kind)?;
     let dek = context
         .open_classified(wrapped, identity)
         .map_err(|error| match error {
@@ -1276,6 +1367,14 @@ fn seal_revision(
     agent_signing: &Ed25519Identity,
     approver: &PinnedApproverTrust,
 ) -> Result<AgentEntrySubmission, SubmissionError> {
+    let approver_key = &approver.message_public_key;
+    // Both copies are sealed only to keys published with an active suite.
+    if !agent_encryption_key.can_seal() || !approver_key.can_seal() {
+        return Err(SubmissionError::KeyMigrationPending);
+    }
+    let suite_of = |key: &RecipientPublicKey| {
+        WrapperSuite::from_id(key.suite_id()).map_err(|_| SubmissionError::InvalidInput)
+    };
     let mut submission = AgentEntrySubmission {
         identity,
         submission_revision,
@@ -1285,6 +1384,7 @@ fn seal_revision(
         approver_key_version: approver.key_version,
         approver_message_key_fingerprint: approver.message_key_fingerprint(),
         approver_manifest_revision: approver.manifest_revision,
+        wrapped_dek_suites: Some((suite_of(agent_encryption_key)?, suite_of(approver_key)?)),
         encoded_payload,
         agent_wrapped_dek: Vec::new(),
         approver_wrapped_dek: Vec::new(),
@@ -1292,8 +1392,8 @@ fn seal_revision(
     };
     let wrap = |kind, recipient: &RecipientPublicKey, submission: &AgentEntrySubmission| {
         submission
-            .wrapper_context(kind, recipient.suite_id())?
-            .seal_for_frozen_contract(dek, recipient)
+            .wrapper_context(kind)?
+            .seal(dek, recipient)
             .map(|sealed| sealed.as_bytes().to_vec())
             .map_err(|_| SubmissionError::InvalidInput)
     };
@@ -1304,7 +1404,7 @@ fn seal_revision(
     )?;
     submission.approver_wrapped_dek = wrap(
         RecipientKeyKind::OrganizationApproverMessage,
-        &RecipientPublicKey::from_frozen_contract(approver.message_public_key),
+        approver_key,
         &submission,
     )?;
     sign_submission(&mut submission, agent_signing)?;
@@ -1447,6 +1547,10 @@ fn positive_u32(object: &Map<String, Value>, key: &str) -> Result<u32, Submissio
         0 => Err(SubmissionError::InvalidField),
         value => Ok(value),
     }
+}
+
+fn suite(object: &Map<String, Value>, field: &str) -> Result<WrapperSuite, SubmissionError> {
+    WrapperSuite::from_id(text(object, field)?).map_err(|_| SubmissionError::InvalidField)
 }
 
 fn base64_exact(

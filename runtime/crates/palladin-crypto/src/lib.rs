@@ -119,4 +119,8 @@ pub enum CryptoError {
     StaleInput,
     #[error("cryptographic input does not match its declared profile")]
     InvalidProfile,
+    /// The recipient's published key uses a read-only suite; its owner must publish a current
+    /// key before anything is sealed to it.
+    #[error("key-migration-pending")]
+    KeyMigrationPending,
 }

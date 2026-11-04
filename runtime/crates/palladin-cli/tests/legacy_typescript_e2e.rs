@@ -177,6 +177,7 @@ async fn pending_inject_does_not_prepare_expiring_browser_handles() {
     runtime
         .provision_browser_host_identity()
         .expect("isolated host identity");
+    api.enqueue(MockResponse::json(404, "{}"));
     api.enqueue(MockResponse::json(202,
         r#"{"access":"pending","grantId":"grant-inject","created":true,"pollIntervalMs":5000,"maxWaitMs":30000}"#));
     let connection = operation_connection();
@@ -359,7 +360,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
 
     let restarted = service(&root, store.clone());
     api.enqueue(MockResponse::active(AGENT_ID, "Default fresh Agent"));
-    // This scripted API predates encryption key upgrades; the attempt is deferred.
+    // This scripted API does not register keys; each upgrade attempt is deferred.
     api.enqueue(MockResponse::json(404, "{}"));
     let default_status = restarted
         .status(Some("default"), "e2e-host", &operation_connection())
@@ -381,6 +382,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
     ));
     assert_ne!(default_status.config.agent_id, build_status.config.agent_id);
 
+    api.enqueue(MockResponse::json(404, "{}"));
     api.enqueue(MockResponse::json(
         200,
         r#"{"agentAccessEpoch":1,"items":[]}"#,
@@ -397,6 +399,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
                 page_size: Some(10),
             },
         )
+        .await
         .expect("search session");
     let discovery = search_session
         .search_entries("synthetic", None, Some(10))
@@ -410,6 +413,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
         Err(RuntimeError::OperationAuthorizationConsumed)
     ));
 
+    api.enqueue(MockResponse::json(404, "{}"));
     api.enqueue(MockResponse::json(
         202,
         r#"{"access":"pending","grantId":"grant-e2e","created":true,"pollIntervalMs":5000,"maxWaitMs":30000}"#,
@@ -431,6 +435,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
                 output: CredentialOutputPolicy::CliSecretStdout,
             },
         )
+        .await
         .expect("pending credential session");
     let pending = pending_session
         .deliver_for_get(delivery_request(0), &CancellationToken::new(), |_| {})
@@ -450,6 +455,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
             .expect("default encryption key"),
         CREDENTIAL_CANARY.as_bytes(),
     );
+    api.enqueue(MockResponse::json(404, "{}"));
     api.enqueue(MockResponse::json(
         200,
         &serde_json::json!({
@@ -489,6 +495,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
                 output: CredentialOutputPolicy::CliSecretStdout,
             },
         )
+        .await
         .expect("granted credential session");
     let granted = granted_session
         .deliver_for_get(delivery_request(0), &CancellationToken::new(), |_| {})
@@ -860,7 +867,7 @@ fn assert_signed_lifecycle_requests(
         .iter()
         .filter(|request| request_header(request, "x-agent-signature").is_some())
         .collect::<Vec<_>>();
-    assert_eq!(signed.len(), 8);
+    assert_eq!(signed.len(), 11);
     let mut key_upgrade_requests = 0;
     let mut default_requests = 0;
     let mut build_requests = 0;
@@ -912,8 +919,9 @@ fn assert_signed_lifecycle_requests(
             credential_requests += 1;
         }
     }
-    assert_eq!(key_upgrade_requests, 2);
-    assert_eq!(default_requests, 6);
+    // Every authenticated session of a not yet upgraded Agent retries the key upgrade.
+    assert_eq!(key_upgrade_requests, 5);
+    assert_eq!(default_requests, 9);
     assert_eq!(build_requests, 2);
     assert_eq!(search_requests, 2);
     assert_eq!(credential_requests, 2);

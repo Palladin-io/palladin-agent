@@ -11,7 +11,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     AgentEncryptionKeys, CryptoError, EncodedSuitePayload, EnvelopeScope, RecipientKeyKind,
-    SecretBytes, SignatureProfile, WrapperContext, WrapperPurpose, XChaChaVaultSuite,
+    SecretBytes, SignatureProfile, WrapperContext, WrapperPurpose, WrapperSuite, XChaChaVaultSuite,
     compute_key_fingerprint, decode_base64url, verify_domain_signature,
 };
 
@@ -283,6 +283,9 @@ pub struct ScriptExecutionEncryptedPackage {
     pub package_revision: String,
     pub recipient_agent_key_version: u32,
     pub recipient_agent_key_fingerprint: String,
+    /// Signed suite of the package DEK wrapper; absent on packages sealed with the legacy suite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrapper_suite_id: Option<String>,
     pub vault_signing_key_version: u32,
     pub vault_signing_key_fingerprint: String,
     pub manifest_digest: String,
@@ -386,6 +389,8 @@ struct ScriptExecutionTransportBinding<'a> {
     package_revision: &'a str,
     recipient_agent_key_version: u32,
     recipient_agent_key_fingerprint: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wrapper_suite_id: Option<&'a str>,
     vault_signing_key_version: u32,
     vault_signing_key_fingerprint: &'a str,
     manifest_digest: &'a str,
@@ -406,6 +411,8 @@ struct ScriptExecutionUnsignedPackage<'a> {
     package_revision: &'a str,
     recipient_agent_key_version: u32,
     recipient_agent_key_fingerprint: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wrapper_suite_id: Option<&'a str>,
     vault_signing_key_version: u32,
     vault_signing_key_fingerprint: &'a str,
     manifest_digest: &'a str,
@@ -465,8 +472,16 @@ pub fn open_script_execution_package(
     let recipient_fingerprint = decode_base64url(&package.recipient_agent_key_fingerprint)?
         .try_into()
         .map_err(|_| CryptoError::AuthenticationFailed)?;
+    // The signed transport binding names the suite; packages without it predate suite fields.
     let recipient = keys
-        .select_by_fingerprint(RecipientKeyKind::AgentEncryption, &recipient_fingerprint)
+        .select(
+            package
+                .wrapper_suite_id
+                .as_deref()
+                .unwrap_or(WrapperSuite::LEGACY.id()),
+            RecipientKeyKind::AgentEncryption,
+            &recipient_fingerprint,
+        )
         .map_err(|_| CryptoError::AuthenticationFailed)?;
     let aad = transport_aad(&package)?;
     let mut hash = Sha256::new();
@@ -622,6 +637,7 @@ fn verify_package_producer(
         package_revision: &package.package_revision,
         recipient_agent_key_version: package.recipient_agent_key_version,
         recipient_agent_key_fingerprint: &package.recipient_agent_key_fingerprint,
+        wrapper_suite_id: package.wrapper_suite_id.as_deref(),
         vault_signing_key_version: package.vault_signing_key_version,
         vault_signing_key_fingerprint: &package.vault_signing_key_fingerprint,
         manifest_digest: &package.manifest_digest,
@@ -1038,6 +1054,7 @@ fn transport_aad(
         package_revision: &package.package_revision,
         recipient_agent_key_version: package.recipient_agent_key_version,
         recipient_agent_key_fingerprint: &package.recipient_agent_key_fingerprint,
+        wrapper_suite_id: package.wrapper_suite_id.as_deref(),
         vault_signing_key_version: package.vault_signing_key_version,
         vault_signing_key_fingerprint: &package.vault_signing_key_fingerprint,
         manifest_digest: &package.manifest_digest,
@@ -1343,6 +1360,7 @@ mod tests {
             package_revision: "8".to_owned(),
             recipient_agent_key_version: 2,
             recipient_agent_key_fingerprint: URL_SAFE_NO_PAD.encode(recipient_fingerprint),
+            wrapper_suite_id: Some(recipient.current().suite_id().to_owned()),
             vault_signing_key_version: 5,
             vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(signer_fingerprint),
             manifest_digest,
@@ -1418,6 +1436,7 @@ mod tests {
             package_revision: &package.package_revision,
             recipient_agent_key_version: package.recipient_agent_key_version,
             recipient_agent_key_fingerprint: &package.recipient_agent_key_fingerprint,
+            wrapper_suite_id: package.wrapper_suite_id.as_deref(),
             vault_signing_key_version: package.vault_signing_key_version,
             vault_signing_key_fingerprint: &package.vault_signing_key_fingerprint,
             manifest_digest: &package.manifest_digest,
@@ -1430,6 +1449,26 @@ mod tests {
         signature_input.extend_from_slice(&unsigned);
         package.producer_signature = URL_SAFE_NO_PAD.encode(signer.sign(&signature_input));
 
+        let mut suite_downgraded = package.clone();
+        suite_downgraded.wrapper_suite_id = None;
+        let expected_context = ExpectedScriptExecutionPackageContext {
+            organization_id: ORGANIZATION_ID.to_owned(),
+            vault_id: VAULT_ID.to_owned(),
+            grant_id: GRANT_ID.to_owned(),
+            agent_id: AGENT_ID.to_owned(),
+            agent_access_epoch: 3,
+            script_entry_id: SCRIPT_ID.to_owned(),
+            script_revision: "7".to_owned(),
+            package_revision: "8".to_owned(),
+            recipient_agent_key_version: 2,
+            vault_signing_key_version: 5,
+            vault_signing_key_fingerprint: URL_SAFE_NO_PAD.encode(signer_fingerprint),
+            vault_signing_public_key: *signer.public_key(),
+        };
+        assert!(
+            open_script_execution_package(suite_downgraded, &recipient, &expected_context).is_err(),
+            "the wrapper suite is covered by the producer signature"
+        );
         let mut tampered = package.clone();
         tampered.encoded_package_ciphertext.push('A');
         assert!(

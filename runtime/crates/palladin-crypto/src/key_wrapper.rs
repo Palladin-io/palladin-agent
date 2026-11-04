@@ -101,6 +101,8 @@ pub enum WrapperSuite {
 
 impl WrapperSuite {
     const REGISTERED: [Self; 2] = [Self::XWingV1, Self::X25519SealedBoxV1];
+    /// The suite of publications and envelopes that predate suite fields.
+    pub(crate) const LEGACY: Self = Self::X25519SealedBoxV1;
 
     pub fn from_id(id: &str) -> Result<Self, WrapperError> {
         Self::REGISTERED
@@ -131,7 +133,7 @@ impl WrapperSuite {
         }
     }
 
-    const fn package_bytes(self) -> usize {
+    pub(crate) const fn package_bytes(self) -> usize {
         match self {
             Self::XWingV1 => XWING_PACKAGE_BYTES,
             Self::X25519SealedBoxV1 => X25519_PACKAGE_BYTES,
@@ -484,32 +486,6 @@ impl WrapperContext {
         Ok(SealedWrappedKey(package))
     }
 
-    /// Seals to a recipient key published by a frozen signed contract (vault-v2 manifest,
-    /// agent-submission v1) that carries no suite and therefore only the legacy algorithm. It is
-    /// limited to the reason and submission DEKs and disappears with those contract versions.
-    pub fn seal_for_frozen_contract(
-        &self,
-        key: &SecretBox<[u8; KEY_BYTES]>,
-        recipient: &RecipientPublicKey,
-    ) -> Result<SealedWrappedKey, WrapperError> {
-        if !matches!(
-            self.purpose,
-            WrapperPurpose::ReasonDek | WrapperPurpose::SubmissionDek
-        ) {
-            return Err(WrapperError::SuiteNotWritable);
-        }
-        let suite = self.resolve(false)?;
-        self.bind_recipient(suite, recipient.suite, &recipient.bytes)?;
-        match suite {
-            WrapperSuite::X25519SealedBoxV1 => Ok(SealedWrappedKey(seal_x25519(
-                key,
-                &recipient.bytes,
-                &self.context_hash(),
-            )?)),
-            WrapperSuite::XWingV1 => self.seal(key, recipient),
-        }
-    }
-
     /// Opens a package with the recipient's own key after rebuilding the context from
     /// authenticated state.
     pub fn open(
@@ -631,23 +607,6 @@ fn open_xwing(
         .try_into()
         .map_err(|_| WrapperError::OpenFailed)?;
     Ok(SecretBox::new(Box::new(key)))
-}
-
-fn seal_x25519(
-    key: &SecretBox<[u8; KEY_BYTES]>,
-    public_key: &[u8],
-    context_hash: &[u8; 32],
-) -> Result<Vec<u8>, WrapperError> {
-    let public_key: [u8; 32] = public_key
-        .try_into()
-        .map_err(|_| WrapperError::RecipientMismatch)?;
-    let mut plaintext = Zeroizing::new([0_u8; X25519_PLAINTEXT_BYTES]);
-    plaintext[..8].copy_from_slice(X25519_PACKAGE_MAGIC);
-    plaintext[8..40].copy_from_slice(key.expose_secret());
-    plaintext[40..].copy_from_slice(context_hash);
-    crypto_box::PublicKey::from(public_key)
-        .seal(&mut OsRng, plaintext.as_ref())
-        .map_err(|_| WrapperError::OpenFailed)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -829,13 +788,17 @@ impl RecipientPublicKey {
         Ok(Self { suite, bytes })
     }
 
-    /// A key from a frozen contract (vault-v2 manifest, approver manifest v1) whose 32-byte
-    /// message keys predate suite identifiers.
-    pub fn from_frozen_contract(bytes: [u8; 32]) -> Self {
-        Self {
-            suite: WrapperSuite::X25519SealedBoxV1,
-            bytes: bytes.to_vec(),
-        }
+    /// A key from its signed publication. Publications that predate suite fields (vault-v2
+    /// manifests, approver manifest v1, Agent submission v1) carry the legacy suite.
+    pub fn from_publication(suite_id: Option<&str>, bytes: Vec<u8>) -> Result<Self, WrapperError> {
+        Self::new(suite_id.unwrap_or(WrapperSuite::LEGACY.id()), bytes)
+    }
+
+    /// False for a key whose suite is read-only: its owner must publish a current key before
+    /// anything can be sealed to it (`key-migration-pending`).
+    #[must_use]
+    pub fn can_seal(&self) -> bool {
+        self.suite.can_seal()
     }
 
     #[must_use]
@@ -1013,6 +976,11 @@ impl AgentEncryptionKeys {
         self.previous.as_ref()
     }
 
+    #[must_use]
+    pub fn into_parts(self) -> (EncryptionIdentity, Option<EncryptionIdentity>) {
+        (self.current, self.previous)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &EncryptionIdentity> {
         std::iter::once(&self.current).chain(self.previous.as_ref())
     }
@@ -1153,12 +1121,12 @@ mod tests {
     }
 
     #[test]
-    fn frozen_contract_seal_is_limited_to_reason_and_submission_deks() {
+    fn a_legacy_publication_is_never_sealed_to() {
         let recipient = EncryptionIdentity::from_legacy_storage(vec![7; 32]).expect("recipient");
-        let mut context = WrapperContext {
+        let context = WrapperContext {
             protocol_version: 2,
             wrapper_suite_id: WrapperSuite::X25519SealedBoxV1.id().to_owned(),
-            purpose: WrapperPurpose::GrantDek,
+            purpose: WrapperPurpose::ReasonDek,
             scope: EnvelopeScope {
                 organization_id: [1; 16],
                 vault_id: [2; 16],
@@ -1170,32 +1138,19 @@ mod tests {
             resource_revision: 1,
             wrapped_key_version: 1,
             member_key_generation: None,
-            recipient_key_kind: RecipientKeyKind::AgentEncryption,
+            recipient_key_kind: RecipientKeyKind::VaultAgentMessage,
             recipient_key_version: 1,
-            recipient_fingerprint: recipient.fingerprint(RecipientKeyKind::AgentEncryption),
+            recipient_fingerprint: recipient.fingerprint(RecipientKeyKind::VaultAgentMessage),
             parent_descriptor_hash: Some([6; 32]),
         };
-        let key = SecretBox::new(Box::new([9; 32]));
-        let public = recipient.recipient_public_key();
-        assert_eq!(
-            context.seal(&key, &public).expect_err("read-only suite"),
-            WrapperError::SuiteNotWritable
-        );
+        let public = RecipientPublicKey::from_publication(None, recipient.public_key().to_vec())
+            .expect("legacy publication");
+        assert!(!public.can_seal());
         assert_eq!(
             context
-                .seal_for_frozen_contract(&key, &public)
-                .expect_err("grant DEK is not a frozen-contract purpose"),
+                .seal(&SecretBox::new(Box::new([9; 32])), &public)
+                .expect_err("read-only suite"),
             WrapperError::SuiteNotWritable
         );
-        context.purpose = WrapperPurpose::ReasonDek;
-        context.recipient_key_kind = RecipientKeyKind::VaultAgentMessage;
-        context.recipient_fingerprint = recipient.fingerprint(RecipientKeyKind::VaultAgentMessage);
-        let sealed = context
-            .seal_for_frozen_contract(&key, &public)
-            .expect("frozen reason DEK");
-        let opened = context.open(sealed.as_bytes(), &recipient).expect("open");
-        assert!(bool::from(
-            opened.expose_secret().ct_eq(key.expose_secret())
-        ));
     }
 }
