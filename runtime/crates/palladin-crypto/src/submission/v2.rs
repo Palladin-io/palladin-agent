@@ -64,9 +64,23 @@ fn validate_totp(value: &Value) -> Result<(), SubmissionError> {
         &["issuer", "account"],
     )?;
     let secret = payload_string(&object["secret"], 1024)?;
-    if !secret
-        .bytes()
-        .all(|byte| byte.is_ascii_uppercase() || (b'2'..=b'7').contains(&byte))
+    let unused_bits = match secret.len() % 8 {
+        0 => 0,
+        2 => 2,
+        4 => 4,
+        5 => 1,
+        7 => 3,
+        _ => return Err(SubmissionError::InvalidField),
+    };
+    let mut last = 0;
+    for byte in secret.bytes() {
+        last = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'2'..=b'7' => byte - b'2' + 26,
+            _ => return Err(SubmissionError::InvalidField),
+        };
+    }
+    if last & ((1 << unused_bits) - 1) != 0
         || !matches!(
             object["algorithm"].as_str(),
             Some("SHA1" | "SHA256" | "SHA512")
@@ -389,6 +403,21 @@ mod tests {
         ] {
             let payload = json!({"schema":"palladin.agent-submission-payload.v2", "identity":identity.to_value(), "content":content});
             assert!(validate(&payload, &identity).is_err());
+        }
+    }
+
+    #[test]
+    fn custom_totp_requires_canonical_unpadded_base32() {
+        let value =
+            |secret: &str| json!({"secret":secret,"algorithm":"SHA1","digits":6,"period":30});
+        for secret in ["MY", "MZXQ", "MZXW6", "MZXW6YQ", "MZXW6YTB"] {
+            assert!(validate_totp(&value(secret)).is_ok());
+        }
+        for secret in ["A", "AAA", "AAAAAA", "MZ", "MZXR", "MZXW7", "MZXW6YR"] {
+            assert!(
+                validate_totp(&value(secret)).is_err(),
+                "noncanonical Base32"
+            );
         }
     }
 
