@@ -52,6 +52,11 @@ struct Recipient {
     private_key_hex: String,
 }
 
+/// Compares without ever formatting key bytes into a failure message.
+fn secrets_equal(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len() && bool::from(subtle::ConstantTimeEq::ct_eq(left, right))
+}
+
 fn uuid(value: Option<&str>) -> Result<Option<[u8; 16]>, WrapperError> {
     value
         .map(|value| {
@@ -235,7 +240,7 @@ fn every_positive_vector_opens_and_active_suites_round_trip() {
         let name = vector["name"].as_str().expect("name");
         let opened = open(vector).unwrap_or_else(|error| panic!("{name}: {error}"));
         let expected = hex::decode(vector["wrappedKeyHex"].as_str().expect("key")).expect("hex");
-        assert_eq!(opened.expose_secret().as_slice(), expected, "{name}");
+        assert!(secrets_equal(opened.expose_secret(), &expected), "{name}");
 
         let context = context(&vector["descriptor"]).expect("descriptor");
         assert_eq!(
@@ -259,7 +264,10 @@ fn every_positive_vector_opens_and_active_suites_round_trip() {
         {
             let sealed = sealed.unwrap_or_else(|error| panic!("{name}: {error}"));
             let reopened = context.open(sealed.as_bytes(), &identity).expect("reopen");
-            assert_eq!(reopened.expose_secret(), opened.expose_secret(), "{name}");
+            assert!(
+                secrets_equal(reopened.expose_secret(), opened.expose_secret()),
+                "{name}"
+            );
         } else {
             assert_eq!(sealed.expect_err(name), WrapperError::SuiteNotWritable);
         }

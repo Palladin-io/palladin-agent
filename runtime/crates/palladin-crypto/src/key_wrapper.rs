@@ -1194,6 +1194,8 @@ mod tests {
             .seal_for_frozen_contract(&key, &public)
             .expect("frozen reason DEK");
         let opened = context.open(sealed.as_bytes(), &recipient).expect("open");
-        assert_eq!(opened.expose_secret(), key.expose_secret());
+        assert!(bool::from(
+            opened.expose_secret().ct_eq(key.expose_secret())
+        ));
     }
 }

@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use palladin_cli::{
-    InvocationSurface, OperationConnection, OperationDescriptor, RuntimeError, RuntimeService,
+    EncryptionKeyMigration, InvocationSurface, OperationConnection, OperationDescriptor,
+    RuntimeError, RuntimeService,
 };
 use palladin_core::host::ApiHost;
 use palladin_core::profiles::ProfileRepository;
@@ -2373,5 +2374,226 @@ async fn re_bootstrapped_approver_key_needs_explicit_re_trust_that_survives_rest
             )
             .is_err(),
         "restoring the pre-re-trust pin is a detected rollback"
+    );
+}
+
+#[derive(Default)]
+struct KeyDirectory {
+    registered: Option<(String, String)>,
+    previous_key_envelope_count: u64,
+    reject_next_registration: bool,
+    registration_bodies: Vec<String>,
+}
+
+async fn key_upgrade_router(
+    agent_id: &'static str,
+) -> (String, Arc<Mutex<KeyDirectory>>, Arc<Mutex<Vec<String>>>) {
+    let directory = Arc::new(Mutex::new(KeyDirectory::default()));
+    let served = Arc::clone(&directory);
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&requests);
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).await.expect("read");
+                bytes.extend_from_slice(&buffer[..read]);
+                let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                let length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .map_or(0, |value| value.trim().parse::<usize>().expect("length"));
+                if bytes.len() >= end + 4 + length || read == 0 {
+                    break;
+                }
+            }
+            let request = String::from_utf8(bytes).expect("UTF-8 request");
+            captured.lock().expect("requests").push(request.clone());
+            let (status, body) = {
+                let mut directory = served.lock().expect("directory");
+                if request.starts_with("GET /api/agent/me ") {
+                    (
+                        200,
+                        format!(r#"{{"agentId":"{agent_id}","name":null,"status":"active"}}"#),
+                    )
+                } else if request.starts_with("POST /api/agent/encryption-key ") {
+                    let (_, body) = request.split_once("\r\n\r\n").expect("body");
+                    directory.registration_bodies.push(body.to_owned());
+                    let body: serde_json::Value = serde_json::from_str(body).expect("JSON body");
+                    let suite = body["wrapperSuiteId"].as_str().expect("suite").to_owned();
+                    let key = palladin_crypto::RecipientPublicKey::new(
+                        &suite,
+                        base64::Engine::decode(
+                            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                            body["publicKey"].as_str().expect("public key"),
+                        )
+                        .expect("public key encoding"),
+                    )
+                    .expect("registered suite");
+                    let fingerprint = base64::Engine::encode(
+                        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                        key.fingerprint(palladin_crypto::RecipientKeyKind::AgentEncryption),
+                    );
+                    let reported = if std::mem::take(&mut directory.reject_next_registration) {
+                        "A".repeat(43)
+                    } else {
+                        directory.registered = Some((suite.clone(), fingerprint.clone()));
+                        fingerprint
+                    };
+                    (
+                        200,
+                        serde_json::json!({
+                            "wrapperSuiteId": suite,
+                            "keyVersion": 2,
+                            "keyFingerprint": reported,
+                            "previousKeyEnvelopeCount": directory.previous_key_envelope_count,
+                        })
+                        .to_string(),
+                    )
+                } else if request.starts_with("GET /api/agent/encryption-key ") {
+                    let (suite, fingerprint) =
+                        directory.registered.clone().expect("registered key");
+                    (
+                        200,
+                        serde_json::json!({
+                            "wrapperSuiteId": suite,
+                            "keyVersion": 2,
+                            "keyFingerprint": fingerprint,
+                            "previousKeyEnvelopeCount": directory.previous_key_envelope_count,
+                        })
+                        .to_string(),
+                    )
+                } else {
+                    (404, String::new())
+                }
+            };
+            let wire = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(wire.as_bytes()).await.expect("write");
+        }
+    });
+    (format!("http://{address}"), directory, requests)
+}
+
+#[tokio::test]
+async fn active_agent_upgrades_to_x_wing_and_deletes_the_previous_key_only_when_unused() {
+    const AGENT: &str = "0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c";
+    let root = tempfile::tempdir().expect("root");
+    let store = MemoryStore::default();
+    let service = service(root.path(), store.clone());
+    let created = service.create_profile("build", None).expect("profile");
+    let (host, directory, requests) = key_upgrade_router(AGENT).await;
+    directory
+        .lock()
+        .expect("directory")
+        .reject_next_registration = true;
+    service
+        .connect(
+            Some("build"),
+            OrganizationApiKey::new("pl_key_upgrade_fixture".to_owned()),
+            ApiHost::parse(&host).expect("host"),
+            None,
+            None,
+            "fixture-host",
+            &operation_connection(),
+        )
+        .await
+        .expect("connect");
+    let connection = operation_connection();
+    let status = || service.status(Some("build"), "fixture-host", &connection);
+    let legacy_key = status().await.expect("first status");
+    assert_eq!(legacy_key.encryption_key, EncryptionKeyMigration::Deferred);
+    // The connect-time profile still names the pre-suite key; the rejected registration is
+    // deferred without changing it, and the stored candidate is reused on retry.
+    assert_eq!(
+        legacy_key.config.encryption_public_key.as_deref(),
+        Some(created.encryption_public_key.as_str())
+    );
+    assert!(store.contains(&created.identity_id, SecretSlot::EncryptionKeyV4));
+
+    let upgraded = status().await.expect("upgrade status");
+    assert_eq!(
+        upgraded.encryption_key,
+        EncryptionKeyMigration::AwaitingRewrap {
+            remaining_envelopes: None
+        }
+    );
+    let bodies = directory
+        .lock()
+        .expect("directory")
+        .registration_bodies
+        .clone();
+    assert_eq!(bodies.len(), 2);
+    let public_key = |body: &str| {
+        serde_json::from_str::<serde_json::Value>(body).expect("body")["publicKey"].clone()
+    };
+    assert_eq!(public_key(&bodies[0]), public_key(&bodies[1]));
+    assert_eq!(
+        upgraded.config.previous_encryption_public_key.as_deref(),
+        Some(created.encryption_public_key.as_str())
+    );
+    let current = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        upgraded
+            .config
+            .encryption_public_key
+            .as_deref()
+            .expect("current key"),
+    )
+    .expect("current key encoding");
+    assert_eq!(current.len(), 1216);
+    assert!(store.contains(&created.identity_id, SecretSlot::X25519PrivateKey));
+
+    directory
+        .lock()
+        .expect("directory")
+        .previous_key_envelope_count = 1;
+    let waiting = status().await.expect("waiting status");
+    assert_eq!(
+        waiting.encryption_key,
+        EncryptionKeyMigration::AwaitingRewrap {
+            remaining_envelopes: Some(1)
+        }
+    );
+    assert!(store.contains(&created.identity_id, SecretSlot::X25519PrivateKey));
+
+    directory
+        .lock()
+        .expect("directory")
+        .previous_key_envelope_count = 0;
+    let completed = status().await.expect("completed status");
+    assert_eq!(
+        completed.encryption_key,
+        EncryptionKeyMigration::PreviousKeyDeleted
+    );
+    assert_eq!(completed.config.previous_encryption_public_key, None);
+    assert!(!store.contains(&created.identity_id, SecretSlot::X25519PrivateKey));
+    assert!(store.contains(&created.identity_id, SecretSlot::EncryptionKeyV4));
+
+    let before = requests.lock().expect("requests").len();
+    let current = status().await.expect("current status");
+    assert_eq!(current.encryption_key, EncryptionKeyMigration::Current);
+    let after = requests.lock().expect("requests").clone();
+    assert!(
+        after[before..]
+            .iter()
+            .all(|request| !request.contains("/api/agent/encryption-key")),
+        "a current key needs no further upgrade requests"
+    );
+    assert!(
+        after
+            .iter()
+            .filter(|request| request.contains("/api/agent/encryption-key"))
+            .all(|request| request.to_ascii_lowercase().contains("x-agent-signature: ")),
+        "every key directory request is signed by the Agent"
     );
 }
