@@ -1,0 +1,30 @@
+{
+  "id": "palladin-x25519-sealed-box-v1",
+  "summary": "libsodium crypto_box_seal (X25519 + XSalsa20-Poly1305) of a context-bound 72-byte package. Frozen; the bytes are identical to the wrapper used by vault-v2, script-execution/v1 and agent-submission/v1.",
+  "quantumResistant": false,
+  "recipientKey": {
+    "algorithm": "X25519",
+    "publicKeyBytes": 32,
+    "publicKeyEncoding": "RFC7748-32-byte-little-endian-u-coordinate",
+    "privateKeyBytes": 32
+  },
+  "fingerprint": {
+    "algorithm": "SHA-256",
+    "input": "ASCII(PLDNV2FP) || u16be(protocolVersion) || u16be(recipientKeyKind) || rawPublicKey[32]",
+    "bytes": 32,
+    "suiteBound": false,
+    "note": "Legacy input without the suite id. It stays unchanged to keep existing fingerprints valid."
+  },
+  "package": {
+    "plaintext": "ASCII(PLDNX2K1)[8] || wrappedKey[32] || contextHash[32]",
+    "plaintextBytes": 72,
+    "seal": "crypto_box_seal(plaintext, recipientPublicKey) = ephemeralPublicKey[32] || crypto_box_easy(plaintext, nonce = BLAKE2b-192(ephemeralPublicKey || recipientPublicKey), recipientPublicKey, ephemeralPrivateKey)",
+    "packageBytes": 120,
+    "open": "Reject any package that is not exactly 120 bytes before calling crypto_box_seal_open. After opening, require the exact 72-byte length, the PLDNX2K1 magic and a constant-time match of the context hash of the independently built descriptor."
+  },
+  "wrappedKeyBytes": 32,
+  "implementationNotes": [
+    "Generate the ephemeral key pair with the platform CSPRNG; the deterministic ephemeral seed exists only in the fixture generator.",
+    "Wipe the opened plaintext and the context hash after use."
+  ]
+}

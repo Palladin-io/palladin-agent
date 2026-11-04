@@ -1,10 +1,9 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use palladin_crypto::{
-    EncodedSuitePayload, EnvelopeScope, ExpectedScriptExecutionPackageContext, RecipientKeyKind,
-    ScriptExecutionEncryptedPackage, SealedWrappedKey, SignatureProfile, WrapperContext,
-    WrapperPurpose, X25519_WRAPPER_V1, X25519Identity, X25519SealedBoxSuite, XChaChaVaultSuite,
-    compute_key_fingerprint, decode_base64url, open_script_execution_package,
-    verify_domain_signature,
+    AgentEncryptionKeys, EncodedSuitePayload, EncryptionIdentity, EnvelopeScope,
+    ExpectedScriptExecutionPackageContext, RecipientKeyKind, ScriptExecutionEncryptedPackage,
+    SignatureProfile, WrapperContext, WrapperPurpose, XChaChaVaultSuite, decode_base64url,
+    open_script_execution_package, verify_domain_signature,
 };
 use secrecy::ExposeSecret;
 use serde_json::Value;
@@ -39,17 +38,14 @@ fn public_script_execution_fixture_verifies_and_opens_byte_exactly() {
             .expect("synthetic recipient private key"),
     )
     .expect("recipient key encoding");
-    let recipient =
-        X25519Identity::from_private_bytes(recipient_private_key).expect("synthetic recipient key");
+    let recipient = EncryptionIdentity::from_legacy_storage(recipient_private_key)
+        .expect("synthetic recipient key");
     assert_eq!(
         URL_SAFE_NO_PAD.encode(recipient.public_key()),
         fixture["publicKeys"]["recipientAgentX25519"],
     );
     assert_eq!(
-        URL_SAFE_NO_PAD.encode(compute_key_fingerprint(
-            recipient.public_key(),
-            RecipientKeyKind::AgentX25519,
-        )),
+        URL_SAFE_NO_PAD.encode(recipient.fingerprint(RecipientKeyKind::AgentEncryption)),
         expected["encryptedPackage"]["recipientAgentKeyFingerprint"],
     );
     let mut unsigned = expected["encryptedPackage"].clone();
@@ -87,57 +83,50 @@ fn public_script_execution_fixture_verifies_and_opens_byte_exactly() {
     let mut parent_hash = Sha256::new();
     parent_hash.update(b"PLDNSCRIPTAAD1");
     parent_hash.update(&aad);
-    let recipient_fingerprint =
-        compute_key_fingerprint(recipient.public_key(), RecipientKeyKind::AgentX25519);
-    let wrapped = SealedWrappedKey::from_bytes(
-        decode_base64url(
-            container["encodedSealedPackageDek"]
-                .as_str()
-                .expect("sealed DEK"),
-        )
-        .expect("sealed DEK encoding"),
+    let recipient_fingerprint = recipient.fingerprint(RecipientKeyKind::AgentEncryption);
+    let wrapped = decode_base64url(
+        container["encodedSealedPackageDek"]
+            .as_str()
+            .expect("sealed DEK"),
     )
-    .expect("sealed DEK shape");
-    let package_dek = X25519SealedBoxSuite::unwrap(
-        &wrapped,
-        &recipient,
-        &WrapperContext {
-            protocol_version: 2,
-            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
-            purpose: WrapperPurpose::ScriptExecutionDek,
-            scope: EnvelopeScope {
-                organization_id: uuid::Uuid::parse_str("66666666-6666-4666-8666-666666666666")
-                    .expect("organization")
+    .expect("sealed DEK encoding");
+    let package_dek = WrapperContext {
+        protocol_version: 2,
+        wrapper_suite_id: recipient.suite_id().to_owned(),
+        purpose: WrapperPurpose::ScriptExecutionDek,
+        scope: EnvelopeScope {
+            organization_id: uuid::Uuid::parse_str("66666666-6666-4666-8666-666666666666")
+                .expect("organization")
+                .into_bytes(),
+            vault_id: uuid::Uuid::parse_str("11111111-1111-4111-8111-111111111111")
+                .expect("Vault")
+                .into_bytes(),
+            entry_id: Some(
+                uuid::Uuid::parse_str("22222222-2222-4222-8222-222222222222")
+                    .expect("Script")
                     .into_bytes(),
-                vault_id: uuid::Uuid::parse_str("11111111-1111-4111-8111-111111111111")
-                    .expect("Vault")
+            ),
+            grant_or_request_id: Some(
+                uuid::Uuid::parse_str("44444444-4444-4444-8444-444444444444")
+                    .expect("Grant")
                     .into_bytes(),
-                entry_id: Some(
-                    uuid::Uuid::parse_str("22222222-2222-4222-8222-222222222222")
-                        .expect("Script")
-                        .into_bytes(),
-                ),
-                grant_or_request_id: Some(
-                    uuid::Uuid::parse_str("44444444-4444-4444-8444-444444444444")
-                        .expect("Grant")
-                        .into_bytes(),
-                ),
-                agent_id: Some(
-                    uuid::Uuid::parse_str("77777777-7777-4777-8777-777777777777")
-                        .expect("Agent")
-                        .into_bytes(),
-                ),
-                member_id: None,
-            },
-            resource_revision: 8,
-            wrapped_key_version: 1,
-            member_key_generation: None,
-            recipient_key_kind: RecipientKeyKind::AgentX25519,
-            recipient_key_version: 2,
-            recipient_fingerprint,
-            parent_descriptor_hash: Some(parent_hash.finalize().into()),
+            ),
+            agent_id: Some(
+                uuid::Uuid::parse_str("77777777-7777-4777-8777-777777777777")
+                    .expect("Agent")
+                    .into_bytes(),
+            ),
+            member_id: None,
         },
-    )
+        resource_revision: 8,
+        wrapped_key_version: 1,
+        member_key_generation: None,
+        recipient_key_kind: RecipientKeyKind::AgentEncryption,
+        recipient_key_version: 2,
+        recipient_fingerprint,
+        parent_descriptor_hash: Some(parent_hash.finalize().into()),
+    }
+    .open(&wrapped, &recipient)
     .expect("sealed package DEK");
     let suite_payload = EncodedSuitePayload::from_bytes(
         decode_base64url(
@@ -154,9 +143,15 @@ fn public_script_execution_fixture_verifies_and_opens_byte_exactly() {
     let payload_matches = payload == expected["decryptedPayload"];
     assert!(payload_matches, "decrypted public fixture payload diverged");
 
+    // The frozen fixture predates X-Wing: a migrating Agent opens it with its previous key.
+    let keys = AgentEncryptionKeys::new(
+        EncryptionIdentity::generate().expect("current"),
+        Some(recipient),
+    )
+    .expect("keys");
     let opened = open_script_execution_package(
         package,
-        &recipient,
+        &keys,
         &ExpectedScriptExecutionPackageContext {
             organization_id: "66666666-6666-4666-8666-666666666666".to_owned(),
             vault_id: "11111111-1111-4111-8111-111111111111".to_owned(),

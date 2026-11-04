@@ -5,12 +5,13 @@ use chacha20poly1305::{
 };
 use ed25519_dalek::{Signer, SigningKey};
 use palladin_crypto::{
-    AgentEntrySubmission, Ed25519Identity, EnvelopeScope, OrganizationApproverManifest,
-    PinnedApproverTrust, RecipientKeyKind, SubmissionAuthority, SubmissionBuildContext,
-    SubmissionContent, SubmissionEntryType, SubmissionError, SubmissionIdentity,
-    SubmissionRecipient, SubmissionTarget, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1,
-    X25519Identity, build_agent_submission, compute_key_fingerprint, open_agent_submission,
-    open_sealed_box, rewrap_agent_submission, verify_approver_manifest_chain, verify_rewrap,
+    AgentEncryptionKeys, AgentEntrySubmission, Ed25519Identity, EncryptionIdentity, EnvelopeScope,
+    OrganizationApproverManifest, PinnedApproverTrust, RecipientKeyKind, RecipientPublicKey,
+    SubmissionAuthority, SubmissionBuildContext, SubmissionContent, SubmissionEntryType,
+    SubmissionError, SubmissionIdentity, SubmissionRecipient, SubmissionTarget, WrapperContext,
+    WrapperPurpose, X25519Identity, build_agent_submission, compute_key_fingerprint,
+    open_agent_submission, open_sealed_box, rewrap_agent_submission,
+    verify_approver_manifest_chain, verify_rewrap,
 };
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
@@ -44,6 +45,10 @@ fn box_identity(seed: [u8; 32]) -> X25519Identity {
     X25519Identity::from_private_bytes(Sha512::digest(seed)[..32].to_vec()).expect("X25519")
 }
 
+fn wrapper_identity(seed: [u8; 32]) -> EncryptionIdentity {
+    EncryptionIdentity::from_legacy_storage(Sha512::digest(seed)[..32].to_vec()).expect("X25519")
+}
+
 fn b64(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
@@ -63,6 +68,10 @@ struct Keys {
     approver_v1_sign: SigningKey,
     approver_v2_box: X25519Identity,
     approver_v2_sign: SigningKey,
+    agent_keys: AgentEncryptionKeys,
+    agent_public: RecipientPublicKey,
+    approver_v1_key: EncryptionIdentity,
+    approver_v2_key: EncryptionIdentity,
 }
 
 fn keys(fixture: &Value) -> Keys {
@@ -73,6 +82,14 @@ fn keys(fixture: &Value) -> Keys {
         approver_v1_sign: SigningKey::from_bytes(&seed(fixture, "approverV1Ed25519Seed")),
         approver_v2_box: box_identity(seed(fixture, "approverV2X25519Seed")),
         approver_v2_sign: SigningKey::from_bytes(&seed(fixture, "approverV2Ed25519Seed")),
+        agent_keys: AgentEncryptionKeys::new(
+            wrapper_identity(seed(fixture, "agentX25519Seed")),
+            None,
+        )
+        .expect("Agent keys"),
+        agent_public: wrapper_identity(seed(fixture, "agentX25519Seed")).recipient_public_key(),
+        approver_v1_key: wrapper_identity(seed(fixture, "approverV1X25519Seed")),
+        approver_v2_key: wrapper_identity(seed(fixture, "approverV2X25519Seed")),
     }
 }
 
@@ -149,7 +166,7 @@ fn approver_authority<'a>(
     fixture: &Value,
     agent_key: &'a [u8; 32],
     key_version: u32,
-    identity: &'a X25519Identity,
+    identity: &'a EncryptionIdentity,
 ) -> SubmissionAuthority<'a> {
     SubmissionAuthority {
         organization_id: organization(fixture),
@@ -165,7 +182,7 @@ fn approver_authority<'a>(
 fn agent_authority<'a>(
     fixture: &Value,
     agent_key: &'a [u8; 32],
-    identity: &'a X25519Identity,
+    keys: &'a AgentEncryptionKeys,
 ) -> SubmissionAuthority<'a> {
     SubmissionAuthority {
         organization_id: organization(fixture),
@@ -174,7 +191,7 @@ fn agent_authority<'a>(
         recipient: SubmissionRecipient::Agent {
             key_version: u32::try_from(fixture["context"]["agentKeyVersion"].as_u64().unwrap())
                 .unwrap(),
-            identity,
+            keys,
             access_epoch: fixture["context"]["agentAccessEpoch"]
                 .as_str()
                 .unwrap()
@@ -259,7 +276,10 @@ fn approver_manifest_chain_is_accepted_and_pins_the_rotated_key() {
     let pin = verify_chain(&fixture, values).expect("valid chain");
     assert_eq!(pin.key_version, 2);
     assert_eq!(pin.manifest_revision, 2);
-    assert_eq!(&pin.message_public_key, keys.approver_v2_box.public_key());
+    assert_eq!(
+        pin.message_public_key.as_bytes(),
+        keys.approver_v2_box.public_key()
+    );
     assert_eq!(
         b64(&pin.message_key_fingerprint()),
         values[1]["messageKeyFingerprint"]
@@ -316,14 +336,14 @@ fn wrapper_context_hashes_and_identity_aad_are_byte_identical() {
         for (field, kind, identity, version, fingerprint) in [
             (
                 "encodedAgentWrappedDek",
-                RecipientKeyKind::AgentX25519,
+                RecipientKeyKind::AgentEncryption,
                 &keys.agent_box,
                 &value["agentKeyVersion"],
                 &value["agentKeyFingerprint"],
             ),
             (
                 "encodedApproverWrappedDek",
-                RecipientKeyKind::OrganizationApproverX25519,
+                RecipientKeyKind::OrganizationApproverMessage,
                 approver,
                 &value["approverKeyVersion"],
                 &value["approverMessageKeyFingerprint"],
@@ -335,7 +355,7 @@ fn wrapper_context_hashes_and_identity_aad_are_byte_identical() {
             );
             let context = WrapperContext {
                 protocol_version: 2,
-                wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                wrapper_suite_id: "palladin-x25519-sealed-box-v1".to_owned(),
                 purpose: WrapperPurpose::SubmissionDek,
                 scope: EnvelopeScope {
                     organization_id: *organization(&fixture).as_bytes(),
@@ -411,26 +431,26 @@ fn fixture_submissions_round_trip_and_open_for_agent_and_approver() {
     for submission in [&first, &second] {
         let opened = open_agent_submission(
             submission,
-            &agent_authority(&fixture, &agent_key, &keys.agent_box),
+            &agent_authority(&fixture, &agent_key, &keys.agent_keys),
         )
         .expect("Agent opens its own submission");
         assert_eq!(opened_as_value(&opened), fixture["expectedPlaintext"]);
     }
     let opened = open_agent_submission(
         &first,
-        &approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_box),
+        &approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_key),
     )
     .unwrap();
     assert_eq!(opened_as_value(&opened), fixture["expectedPlaintext"]);
     let opened = open_agent_submission(
         &second,
-        &approver_authority(&fixture, &agent_key, 2, &keys.approver_v2_box),
+        &approver_authority(&fixture, &agent_key, 2, &keys.approver_v2_key),
     )
     .unwrap();
     assert_eq!(opened_as_value(&opened), fixture["expectedPlaintext"]);
 
     verify_rewrap(&first, &second, 2).expect("fixture re-wrap is accepted");
-    let mut stale_epoch = agent_authority(&fixture, &agent_key, &keys.agent_box);
+    let mut stale_epoch = agent_authority(&fixture, &agent_key, &keys.agent_keys);
     if let SubmissionRecipient::Agent { access_epoch, .. } = &mut stale_epoch.recipient {
         *access_epoch = 5;
     }
@@ -442,7 +462,7 @@ fn fixture_submissions_round_trip_and_open_for_agent_and_approver() {
     expect_error(
         open_agent_submission(
             &second,
-            &approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_box),
+            &approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_key),
         ),
         "recipient-key-mismatch",
         "rotated submission is not openable with the previous approver key",
@@ -541,7 +561,7 @@ fn every_contract_negative_submission_case_fails_closed_with_its_code() {
         (
             "unknown transport schema",
             resign(
-                with("schema", json!("palladin.agent-entry-submission.v2")),
+                with("schema", json!("palladin.agent-entry-submission.v3")),
                 &keys,
             ),
             "unsupported-version",
@@ -671,7 +691,7 @@ fn every_contract_negative_submission_case_fails_closed_with_its_code() {
         let opened = parse(&candidate).and_then(|parsed| {
             open_agent_submission(
                 &parsed,
-                &approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_box),
+                &approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_key),
             )
         });
         expect_error(opened, code, case);
@@ -840,8 +860,8 @@ fn every_contract_negative_submission_case_fails_closed_with_its_code() {
         ),
     ] {
         for recipient in [
-            approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_box),
-            agent_authority(&fixture, &agent_key, &keys.agent_box),
+            approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_key),
+            agent_authority(&fixture, &agent_key, &keys.agent_keys),
         ] {
             expect_error(
                 parse(&candidate).and_then(|parsed| open_agent_submission(&parsed, &recipient)),
@@ -880,7 +900,7 @@ fn update_payload_may_carry_only_the_changed_password() {
     let submission = parse(&resign(submission, &keys)).unwrap();
     let opened = open_agent_submission(
         &submission,
-        &approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_box),
+        &approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_key),
     )
     .expect("a password-only update is valid");
     assert!(opened.label.is_none());
@@ -918,7 +938,7 @@ fn every_contract_negative_manifest_case_fails_closed_with_its_code() {
             resign_v1(&|m| {
                 m.insert(
                     "schema".into(),
-                    json!("palladin.organization-approver-manifest.v2"),
+                    json!("palladin.organization-approver-manifest.v3"),
                 );
             }),
             "unsupported-version",
@@ -1013,7 +1033,7 @@ fn every_contract_negative_manifest_case_fails_closed_with_its_code() {
     forged["signingPublicKey"] = json!(b64(attacker.verifying_key().as_bytes()));
     forged["signingKeyFingerprint"] = json!(b64(&compute_key_fingerprint(
         attacker.verifying_key().as_bytes(),
-        RecipientKeyKind::OrganizationApproverEd25519
+        RecipientKeyKind::OrganizationApproverSigning
     )));
     let forged = sign_manifest(forged, &attacker, Some(&attacker));
     let mut without_continuity = v2.clone();
@@ -1161,7 +1181,7 @@ fn every_contract_negative_manifest_case_fails_closed_with_its_code() {
     .expect("confirmed re-bootstrap re-pins");
     assert_eq!(re_pinned.key_version, 2);
     assert_eq!(
-        &re_pinned.message_public_key,
+        re_pinned.message_public_key.as_bytes(),
         keys.approver_v2_box.public_key()
     );
     for (case, chain, fingerprint) in [
@@ -1262,8 +1282,22 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
         .expect("Agent signing identity");
     let agent_key = *agent_signing.public_key();
     let values = fixture["approverManifests"].as_array().unwrap();
-    let pin_v1 = verify_chain(&fixture, &values[..1]).unwrap();
-    let pin_v2 = verify_chain(&fixture, values).unwrap();
+    let legacy_pin_v1 = verify_chain(&fixture, &values[..1]).unwrap();
+    let legacy_pin_v2 = verify_chain(&fixture, values).unwrap();
+    // New submissions are sealed only to keys published with the active suite.
+    let agent_keys =
+        AgentEncryptionKeys::new(EncryptionIdentity::generate().unwrap(), None).unwrap();
+    let agent_public = agent_keys.current().recipient_public_key();
+    let approver_v1 = EncryptionIdentity::generate().unwrap();
+    let approver_v2 = EncryptionIdentity::generate().unwrap();
+    let pin_v1 = PinnedApproverTrust {
+        message_public_key: approver_v1.recipient_public_key(),
+        ..legacy_pin_v1.clone()
+    };
+    let pin_v2 = PinnedApproverTrust {
+        message_public_key: approver_v2.recipient_public_key(),
+        ..legacy_pin_v2
+    };
     let identity = SubmissionIdentity {
         organization_id: organization(&fixture),
         submission_id: Uuid::from_u128(0x1111_2222_4333_8444_9555_6666_7777_8888),
@@ -1284,7 +1318,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
             identity: identity.clone(),
             agent_access_epoch: 4,
             agent_key_version: 3,
-            agent_encryption_public_key: keys.agent_box.public_key(),
+            agent_encryption_key: &agent_public,
             agent_signing: &agent_signing,
             approver: &pin_v1,
         },
@@ -1292,6 +1326,39 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
         &content,
     )
     .expect("build");
+    assert_eq!(
+        built.to_value()["schema"],
+        "palladin.agent-entry-submission.v2"
+    );
+    assert_eq!(
+        built.to_value()["agentWrappedDekSuiteId"],
+        "palladin-xwing-v1"
+    );
+    assert_eq!(
+        built.to_value()["approverWrappedDekSuiteId"],
+        "palladin-xwing-v1"
+    );
+    for (agent_encryption_key, approver) in [
+        (&agent_public, &legacy_pin_v1),
+        (&keys.agent_public, &pin_v1),
+    ] {
+        expect_error(
+            build_agent_submission(
+                &SubmissionBuildContext {
+                    identity: identity.clone(),
+                    agent_access_epoch: 4,
+                    agent_key_version: 3,
+                    agent_encryption_key,
+                    agent_signing: &agent_signing,
+                    approver,
+                },
+                Some("Builder Account"),
+                &content,
+            ),
+            "key-migration-pending",
+            "a legacy-suite recipient key is never sealed to",
+        );
+    }
     let reparsed = parse(&built.to_value()).expect("built transport is strictly valid");
     assert_eq!(reparsed, built);
     assert_eq!(built.submission_revision, 1);
@@ -1303,14 +1370,11 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
             .contains("builder-Synthetic")
     );
 
-    let agent = open_agent_submission(
-        &built,
-        &agent_authority(&fixture, &agent_key, &keys.agent_box),
-    )
-    .expect("Agent opens");
+    let agent = open_agent_submission(&built, &agent_authority(&fixture, &agent_key, &agent_keys))
+        .expect("Agent opens");
     let approver = open_agent_submission(
         &built,
-        &approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_box),
+        &approver_authority(&fixture, &agent_key, 1, &approver_v1),
     )
     .expect("approver opens");
     for opened in [&agent, &approver] {
@@ -1325,7 +1389,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
             identity.agent_id,
             5,
             3,
-            &keys.agent_box,
+            &agent_keys,
             &agent_signing,
             &pin_v2,
         ),
@@ -1338,7 +1402,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
             identity.agent_id,
             4,
             4,
-            &keys.agent_box,
+            &agent_keys,
             &agent_signing,
             &pin_v2,
         ),
@@ -1350,7 +1414,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
         identity.agent_id,
         4,
         3,
-        &keys.agent_box,
+        &agent_keys,
         &agent_signing,
         &pin_v2,
     )
@@ -1368,13 +1432,13 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
     );
     open_agent_submission(
         &rewrapped,
-        &approver_authority(&fixture, &agent_key, 2, &keys.approver_v2_box),
+        &approver_authority(&fixture, &agent_key, 2, &approver_v2),
     )
     .expect("rotated approver opens the re-wrap");
     expect_error(
         open_agent_submission(
             &rewrapped,
-            &approver_authority(&fixture, &agent_key, 1, &keys.approver_v1_box),
+            &approver_authority(&fixture, &agent_key, 1, &approver_v1),
         ),
         "recipient-key-mismatch",
         "previous approver key cannot open the re-wrap",
@@ -1385,7 +1449,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
             identity.agent_id,
             4,
             3,
-            &keys.agent_box,
+            &agent_keys,
             &agent_signing,
             &pin_v2,
         ),
@@ -1398,7 +1462,7 @@ fn built_submission_opens_for_agent_and_approver_and_rewraps_without_touching_th
             identity: identity.clone(),
             agent_access_epoch: 4,
             agent_key_version: 3,
-            agent_encryption_public_key: keys.agent_box.public_key(),
+            agent_encryption_key: &agent_public,
             agent_signing: &agent_signing,
             approver: &pin_v1,
         },
@@ -1445,7 +1509,7 @@ fn builder_rejects_invalid_input_before_encryption() {
                 identity,
                 agent_access_epoch: 4,
                 agent_key_version: 3,
-                agent_encryption_public_key: keys.agent_box.public_key(),
+                agent_encryption_key: &keys.agent_public,
                 agent_signing: &agent_signing,
                 approver: &pin,
             },
@@ -1541,5 +1605,131 @@ fn builder_rejects_invalid_input_before_encryption() {
         build(identity(org, cred), Some("Label"), &oversized),
         "invalid-input",
         "password limit",
+    );
+}
+
+#[test]
+fn a_pending_v1_submission_opens_with_the_previous_key_and_rewraps_as_v2() {
+    let fixture = fixture();
+    let agent_signing =
+        Ed25519Identity::from_seed(seed(&fixture, "agentEd25519Seed").to_vec()).unwrap();
+    let pending = parse(&fixture["submissions"][0]).unwrap();
+    let rotated = AgentEncryptionKeys::new(
+        EncryptionIdentity::generate().unwrap(),
+        Some(wrapper_identity(seed(&fixture, "agentX25519Seed"))),
+    )
+    .unwrap();
+    let pending_version =
+        u32::try_from(fixture["context"]["agentKeyVersion"].as_u64().unwrap()).unwrap();
+    let current_version = pending_version + 1;
+    let epoch: u64 = fixture["context"]["agentAccessEpoch"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let approver_v2 = EncryptionIdentity::generate().unwrap();
+    let pin_v2 = PinnedApproverTrust {
+        message_public_key: approver_v2.recipient_public_key(),
+        ..verify_chain(&fixture, fixture["approverManifests"].as_array().unwrap()).unwrap()
+    };
+    let rewrapped = rewrap_agent_submission(
+        &pending,
+        pending.identity.agent_id,
+        epoch,
+        current_version,
+        &rotated,
+        &agent_signing,
+        &pin_v2,
+    )
+    .expect("the previous key opens the pending v1 submission");
+    let value = rewrapped.to_value();
+    assert_eq!(value["schema"], "palladin.agent-entry-submission.v2");
+    assert_eq!(value["agentWrappedDekSuiteId"], "palladin-xwing-v1");
+    assert_eq!(rewrapped.agent_key_version, current_version);
+    assert_eq!(parse(&value).unwrap(), rewrapped);
+    let agent = SubmissionAuthority {
+        organization_id: organization(&fixture),
+        agent_id: pending.identity.agent_id,
+        agent_signing_public_key: agent_signing.public_key(),
+        recipient: SubmissionRecipient::Agent {
+            key_version: current_version,
+            keys: &rotated,
+            access_epoch: epoch,
+        },
+    };
+    open_agent_submission(&rewrapped, &agent).expect("the current key opens the re-wrap");
+    open_agent_submission(
+        &rewrapped,
+        &approver_authority(&fixture, agent_signing.public_key(), 2, &approver_v2),
+    )
+    .expect("the X-Wing approver key opens the re-wrap");
+
+    // A previous-key copy may not claim the current key version.
+    expect_error(
+        open_agent_submission(
+            &pending,
+            &SubmissionAuthority {
+                recipient: SubmissionRecipient::Agent {
+                    key_version: pending_version,
+                    keys: &rotated,
+                    access_epoch: epoch,
+                },
+                ..agent
+            },
+        ),
+        "recipient-key-mismatch",
+        "previous key with a non-older version",
+    );
+}
+
+#[test]
+fn successor_approver_manifest_publishes_its_message_key_suite() {
+    let fixture = fixture();
+    let keys = keys(&fixture);
+    let message_key = EncryptionIdentity::generate().unwrap();
+    let mut successor = fixture["approverManifests"][0].clone();
+    let object = successor.as_object_mut().unwrap();
+    object.insert(
+        "schema".into(),
+        json!("palladin.organization-approver-manifest.v2"),
+    );
+    object.insert("messageKeySuiteId".into(), json!("palladin-xwing-v1"));
+    object.insert(
+        "messagePublicKey".into(),
+        json!(b64(message_key.public_key())),
+    );
+    object.insert(
+        "messageKeyFingerprint".into(),
+        json!(b64(
+            &message_key.fingerprint(RecipientKeyKind::OrganizationApproverMessage)
+        )),
+    );
+    let signed = sign_manifest(successor.clone(), &keys.approver_v1_sign, None);
+    let pin = verify_chain(&fixture, std::slice::from_ref(&signed)).expect("successor verifies");
+    assert_eq!(pin.message_public_key, message_key.recipient_public_key());
+
+    let mut suite_less = signed.clone();
+    suite_less
+        .as_object_mut()
+        .unwrap()
+        .remove("messageKeySuiteId");
+    expect_error(
+        OrganizationApproverManifest::from_value(&suite_less),
+        "missing-field",
+        "a successor without its suite",
+    );
+    let mut legacy_suite = successor;
+    legacy_suite.as_object_mut().unwrap().insert(
+        "messageKeySuiteId".into(),
+        json!("palladin-x25519-sealed-box-v1"),
+    );
+    expect_error(
+        OrganizationApproverManifest::from_value(&sign_manifest(
+            legacy_suite,
+            &keys.approver_v1_sign,
+            None,
+        )),
+        "invalid-field",
+        "an X-Wing key length under the legacy suite",
     );
 }

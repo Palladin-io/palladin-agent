@@ -3,16 +3,13 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
 };
 use hkdf::Hkdf;
-use rand_core::OsRng;
 use secrecy::{ExposeSecret, SecretBox, SecretSlice};
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
-use crate::{CryptoError, SecretBytes, X25519Identity};
+use crate::{CryptoError, WrapperSuite};
 
 pub const VAULT_XCHACHA_V1: &str = "palladin-vault-xchacha-v1";
-pub const X25519_WRAPPER_V1: &str = "palladin-x25519-sealed-box-v1";
 
 const MAX_SUITE_PAYLOAD_BYTES: usize = 1024 * 1024;
 const XCHACHA_NONCE_BYTES: usize = 24;
@@ -23,19 +20,12 @@ const KDF_MAGIC: &[u8; 8] = b"PLDNKDF2";
 const PROTOCOL_VERSION: u16 = 2;
 const MAX_SUITE_ID_BYTES: usize = 64;
 
-const SCOPE_ORGANIZATION: u16 = 1 << 0;
-const SCOPE_VAULT: u16 = 1 << 1;
-const SCOPE_ENTRY: u16 = 1 << 2;
-const SCOPE_GRANT_OR_REQUEST: u16 = 1 << 3;
-const SCOPE_AGENT: u16 = 1 << 4;
-const SCOPE_MEMBER: u16 = 1 << 5;
-const WRAPPER_CONTEXT_MAGIC: &[u8; 8] = b"PLDNX2W1";
-const WRAPPED_KEY_MAGIC: &[u8; 8] = b"PLDNX2K1";
-const WRAPPER_HASH_DOMAIN: &[u8; 9] = b"PLDNX2CTX";
-const FINGERPRINT_DOMAIN: &[u8; 8] = b"PLDNV2FP";
-const SEALED_BOX_OVERHEAD: usize = 48;
-const WRAPPED_KEY_PLAINTEXT_BYTES: usize = 72;
-const SEALED_WRAPPED_KEY_BYTES: usize = WRAPPED_KEY_PLAINTEXT_BYTES + SEALED_BOX_OVERHEAD;
+pub(crate) const SCOPE_ORGANIZATION: u16 = 1 << 0;
+pub(crate) const SCOPE_VAULT: u16 = 1 << 1;
+pub(crate) const SCOPE_ENTRY: u16 = 1 << 2;
+pub(crate) const SCOPE_GRANT_OR_REQUEST: u16 = 1 << 3;
+pub(crate) const SCOPE_AGENT: u16 = 1 << 4;
+pub(crate) const SCOPE_MEMBER: u16 = 1 << 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
@@ -94,197 +84,6 @@ pub enum EnvelopeBinding {
         expires_at: Option<InstantBinding>,
         remaining_uses: Option<u32>,
     },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u16)]
-pub enum WrapperPurpose {
-    MemberVaultKey = 1,
-    AgentVdk = 2,
-    ReasonDek = 3,
-    GrantDek = 4,
-    AgentVaultKey = 5,
-    ScriptExecutionDek = 6,
-    SubmissionDek = 7,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u16)]
-pub enum RecipientKeyKind {
-    AgentX25519 = 1,
-    AgentEd25519 = 2,
-    VaultSigningEd25519 = 3,
-    VaultMessageX25519 = 4,
-    MemberX25519 = 5,
-    OrganizationApproverX25519 = 6,
-    OrganizationApproverEd25519 = 7,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WrapperContext {
-    pub protocol_version: u16,
-    pub wrapper_suite_id: String,
-    pub purpose: WrapperPurpose,
-    pub scope: EnvelopeScope,
-    pub resource_revision: u64,
-    pub wrapped_key_version: u32,
-    pub member_key_generation: Option<u32>,
-    pub recipient_key_kind: RecipientKeyKind,
-    pub recipient_key_version: u32,
-    pub recipient_fingerprint: [u8; 32],
-    pub parent_descriptor_hash: Option<[u8; 32]>,
-}
-
-impl WrapperContext {
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, CryptoError> {
-        validate_wrapper_context(self)?;
-        let suite = self.wrapper_suite_id.as_bytes();
-        let bitmap = wrapper_scope_bitmap(self);
-        let mut encoded = Vec::with_capacity(192);
-        encoded.extend_from_slice(WRAPPER_CONTEXT_MAGIC);
-        push_u16(&mut encoded, self.protocol_version);
-        push_u16(
-            &mut encoded,
-            u16::try_from(suite.len()).map_err(|_| CryptoError::InvalidLength)?,
-        );
-        encoded.extend_from_slice(suite);
-        push_u16(&mut encoded, self.purpose as u16);
-        push_u16(&mut encoded, bitmap);
-        push_scope_id(
-            &mut encoded,
-            bitmap,
-            SCOPE_ORGANIZATION,
-            self.scope.organization_id,
-        );
-        push_scope_id(&mut encoded, bitmap, SCOPE_VAULT, self.scope.vault_id);
-        push_optional_scope_id(&mut encoded, bitmap, SCOPE_ENTRY, self.scope.entry_id);
-        push_optional_scope_id(
-            &mut encoded,
-            bitmap,
-            SCOPE_GRANT_OR_REQUEST,
-            self.scope.grant_or_request_id,
-        );
-        push_optional_scope_id(&mut encoded, bitmap, SCOPE_AGENT, self.scope.agent_id);
-        push_optional_scope_id(&mut encoded, bitmap, SCOPE_MEMBER, self.scope.member_id);
-        push_u64(&mut encoded, self.resource_revision);
-        push_u32(&mut encoded, self.wrapped_key_version);
-        push_optional_u32(&mut encoded, self.member_key_generation);
-        push_u16(&mut encoded, self.recipient_key_kind as u16);
-        push_u32(&mut encoded, self.recipient_key_version);
-        encoded.extend_from_slice(&self.recipient_fingerprint);
-        match self.parent_descriptor_hash {
-            Some(hash) => {
-                encoded.push(1);
-                encoded.extend_from_slice(&hash);
-            }
-            None => encoded.push(0),
-        }
-        Ok(encoded)
-    }
-}
-
-#[derive(Clone, Eq, PartialEq)]
-pub struct SealedWrappedKey(Vec<u8>);
-
-impl SealedWrappedKey {
-    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, CryptoError> {
-        CryptoSuiteRegistry::validate_wrapper(X25519_WRAPPER_V1, &bytes)?;
-        Ok(Self(bytes))
-    }
-
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for SealedWrappedKey {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("SealedWrappedKey")
-            .field("length", &self.0.len())
-            .finish_non_exhaustive()
-    }
-}
-
-pub struct X25519SealedBoxSuite;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum WrapperOpenError {
-    Descriptor(CryptoError),
-    Open,
-    ContextMismatch,
-}
-
-impl X25519SealedBoxSuite {
-    pub fn wrap(
-        key: &SecretBox<[u8; KEY_BYTES]>,
-        recipient_public_key: [u8; 32],
-        context: &WrapperContext,
-    ) -> Result<SealedWrappedKey, CryptoError> {
-        verify_recipient(&recipient_public_key, context)?;
-        let context_hash = wrapper_context_hash(context)?;
-        let mut plaintext = Zeroizing::new([0_u8; WRAPPED_KEY_PLAINTEXT_BYTES]);
-        plaintext[..8].copy_from_slice(WRAPPED_KEY_MAGIC);
-        plaintext[8..40].copy_from_slice(key.expose_secret());
-        plaintext[40..].copy_from_slice(&context_hash);
-        let recipient = crypto_box::PublicKey::from(recipient_public_key);
-        let sealed = recipient
-            .seal(&mut OsRng, plaintext.as_ref())
-            .map_err(|_| CryptoError::AuthenticationFailed)?;
-        SealedWrappedKey::from_bytes(sealed)
-    }
-
-    pub fn unwrap(
-        wrapped: &SealedWrappedKey,
-        recipient: &X25519Identity,
-        context: &WrapperContext,
-    ) -> Result<SecretBox<[u8; KEY_BYTES]>, CryptoError> {
-        Self::unwrap_classified(wrapped, recipient, context).map_err(|error| match error {
-            WrapperOpenError::Descriptor(error) => error,
-            WrapperOpenError::Open | WrapperOpenError::ContextMismatch => {
-                CryptoError::AuthenticationFailed
-            }
-        })
-    }
-
-    /// Same checks as `unwrap`, but distinguishes a package that cannot be opened from one
-    /// that opened under a different wrapper context, as required by contract error codes.
-    pub(crate) fn unwrap_classified(
-        wrapped: &SealedWrappedKey,
-        recipient: &X25519Identity,
-        context: &WrapperContext,
-    ) -> Result<SecretBox<[u8; KEY_BYTES]>, WrapperOpenError> {
-        verify_recipient(recipient.public_key(), context).map_err(WrapperOpenError::Descriptor)?;
-        let expected_hash = wrapper_context_hash(context).map_err(WrapperOpenError::Descriptor)?;
-        let secret = crypto_box::SecretKey::from_bytes(recipient.static_secret().to_bytes());
-        let plaintext = Zeroizing::new(
-            secret
-                .unseal(wrapped.as_bytes())
-                .map_err(|_| WrapperOpenError::Open)?,
-        );
-        if plaintext.len() != WRAPPED_KEY_PLAINTEXT_BYTES
-            || plaintext[..8].ct_eq(WRAPPED_KEY_MAGIC).unwrap_u8() != 1
-        {
-            return Err(WrapperOpenError::Open);
-        }
-        if plaintext[40..].ct_eq(&expected_hash).unwrap_u8() != 1 {
-            return Err(WrapperOpenError::ContextMismatch);
-        }
-        let key: [u8; KEY_BYTES] = plaintext[8..40]
-            .try_into()
-            .map_err(|_| WrapperOpenError::Open)?;
-        Ok(SecretBox::new(Box::new(key)))
-    }
-
-    pub fn unwrap_secret(
-        wrapped: &SealedWrappedKey,
-        recipient: &X25519Identity,
-        context: &WrapperContext,
-    ) -> Result<SecretBytes, CryptoError> {
-        let key = Self::unwrap(wrapped, recipient, context)?;
-        Ok(SecretBytes::new(key.expose_secret().to_vec()))
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -379,117 +178,6 @@ impl CryptoSuiteRegistry {
             _ => Err(CryptoError::UnsupportedSuite),
         }
     }
-
-    pub fn validate_wrapper(suite_id: &str, payload: &[u8]) -> Result<(), CryptoError> {
-        match suite_id {
-            X25519_WRAPPER_V1 if payload.len() == SEALED_WRAPPED_KEY_BYTES => Ok(()),
-            X25519_WRAPPER_V1 => Err(CryptoError::InvalidLength),
-            _ => Err(CryptoError::UnsupportedSuite),
-        }
-    }
-}
-
-fn validate_wrapper_context(context: &WrapperContext) -> Result<(), CryptoError> {
-    let suite = context.wrapper_suite_id.as_bytes();
-    // Agent Submission wrappers are organization-scoped: they have no Vault until a human decides.
-    let vault_less = context.purpose == WrapperPurpose::SubmissionDek;
-    if context.protocol_version != PROTOCOL_VERSION
-        || suite != X25519_WRAPPER_V1.as_bytes()
-        || context.resource_revision == 0
-        || context.wrapped_key_version == 0
-        || context.recipient_key_version == 0
-        || context.recipient_fingerprint == [0; 32]
-        || context.scope.organization_id == [0; 16]
-        || (context.scope.vault_id == [0; 16]) != vault_less
-    {
-        return Err(CryptoError::InvalidDescriptor);
-    }
-    let vault_scope = SCOPE_ORGANIZATION | SCOPE_VAULT;
-    let entry_agent_scope = vault_scope | SCOPE_ENTRY | SCOPE_GRANT_OR_REQUEST | SCOPE_AGENT;
-    let actual_scope = wrapper_scope_bitmap(context);
-    let valid = match context.purpose {
-        WrapperPurpose::MemberVaultKey => {
-            actual_scope == vault_scope | SCOPE_MEMBER
-                && context.recipient_key_kind == RecipientKeyKind::MemberX25519
-                && context.member_key_generation.is_some()
-                && context.parent_descriptor_hash.is_none()
-        }
-        WrapperPurpose::AgentVdk => {
-            actual_scope == vault_scope | SCOPE_AGENT
-                && context.recipient_key_kind == RecipientKeyKind::AgentX25519
-                && context.member_key_generation.is_none()
-                && context.parent_descriptor_hash.is_none()
-        }
-        WrapperPurpose::ReasonDek => {
-            actual_scope == entry_agent_scope
-                && context.recipient_key_kind == RecipientKeyKind::VaultMessageX25519
-                && context.member_key_generation.is_some()
-                && context.parent_descriptor_hash.is_some()
-        }
-        WrapperPurpose::GrantDek => {
-            actual_scope == entry_agent_scope
-                && context.recipient_key_kind == RecipientKeyKind::AgentX25519
-                && context.member_key_generation.is_some()
-                && context.parent_descriptor_hash.is_some()
-        }
-        WrapperPurpose::AgentVaultKey => {
-            actual_scope == vault_scope | SCOPE_GRANT_OR_REQUEST | SCOPE_AGENT
-                && context.recipient_key_kind == RecipientKeyKind::AgentX25519
-                && context.member_key_generation.is_none()
-                && context.parent_descriptor_hash.is_none()
-        }
-        WrapperPurpose::ScriptExecutionDek => {
-            actual_scope == entry_agent_scope
-                && context.recipient_key_kind == RecipientKeyKind::AgentX25519
-                && context.member_key_generation.is_none()
-                && context.parent_descriptor_hash.is_some()
-        }
-        WrapperPurpose::SubmissionDek => {
-            actual_scope == SCOPE_ORGANIZATION | SCOPE_GRANT_OR_REQUEST | SCOPE_AGENT
-                && matches!(
-                    context.recipient_key_kind,
-                    RecipientKeyKind::AgentX25519 | RecipientKeyKind::OrganizationApproverX25519
-                )
-                && context.member_key_generation.is_none()
-                && context.parent_descriptor_hash.is_some()
-        }
-    };
-    if !valid {
-        return Err(CryptoError::InvalidDescriptor);
-    }
-    Ok(())
-}
-
-fn wrapper_context_hash(context: &WrapperContext) -> Result<[u8; 32], CryptoError> {
-    let context_bytes = context.canonical_bytes()?;
-    let mut hasher = Sha256::new();
-    hasher.update(WRAPPER_HASH_DOMAIN);
-    hasher.update(context_bytes);
-    Ok(hasher.finalize().into())
-}
-
-fn verify_recipient(
-    recipient_public_key: &[u8; 32],
-    context: &WrapperContext,
-) -> Result<(), CryptoError> {
-    let fingerprint = compute_key_fingerprint(recipient_public_key, context.recipient_key_kind);
-    if fingerprint
-        .ct_eq(&context.recipient_fingerprint)
-        .unwrap_u8()
-        != 1
-    {
-        return Err(CryptoError::AuthenticationFailed);
-    }
-    Ok(())
-}
-
-pub fn compute_key_fingerprint(public_key: &[u8; 32], key_kind: RecipientKeyKind) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(FINGERPRINT_DOMAIN);
-    hasher.update(PROTOCOL_VERSION.to_be_bytes());
-    hasher.update((key_kind as u16).to_be_bytes());
-    hasher.update(public_key);
-    hasher.finalize().into()
 }
 
 pub struct XChaChaVaultSuite;
@@ -678,7 +366,7 @@ fn validate_descriptor(descriptor: &EnvelopeDescriptor) -> Result<(), CryptoErro
             agent_message_key_version,
             recipient_vault_message_key_fingerprint,
             ..
-        } if wrapper_suite_id != X25519_WRAPPER_V1
+        } if WrapperSuite::from_id(wrapper_suite_id).is_err()
             || *agent_message_key_version == 0
             || *recipient_vault_message_key_fingerprint == [0; 32] =>
         {
@@ -690,7 +378,7 @@ fn validate_descriptor(descriptor: &EnvelopeDescriptor) -> Result<(), CryptoErro
             recipient_agent_key_fingerprint,
             delivery_policy,
             ..
-        } if wrapper_suite_id != X25519_WRAPPER_V1
+        } if WrapperSuite::from_id(wrapper_suite_id).is_err()
             || *recipient_agent_key_version == 0
             || *recipient_agent_key_fingerprint == [0; 32]
             || *delivery_policy > 2 =>
@@ -708,15 +396,6 @@ fn validate_descriptor(descriptor: &EnvelopeDescriptor) -> Result<(), CryptoErro
         return Err(CryptoError::InvalidDescriptor);
     }
     Ok(())
-}
-
-fn wrapper_scope_bitmap(context: &WrapperContext) -> u16 {
-    let bitmap = scope_bitmap(&context.scope);
-    if context.purpose == WrapperPurpose::SubmissionDek {
-        bitmap & !SCOPE_VAULT
-    } else {
-        bitmap
-    }
 }
 
 fn scope_bitmap(scope: &EnvelopeScope) -> u16 {
@@ -742,15 +421,15 @@ fn push_optional_scope_id(output: &mut Vec<u8>, bitmap: u16, bit: u16, id: Optio
     }
 }
 
-fn push_u16(output: &mut Vec<u8>, value: u16) {
+pub(crate) fn push_u16(output: &mut Vec<u8>, value: u16) {
     output.extend_from_slice(&value.to_be_bytes());
 }
 
-fn push_u32(output: &mut Vec<u8>, value: u32) {
+pub(crate) fn push_u32(output: &mut Vec<u8>, value: u32) {
     output.extend_from_slice(&value.to_be_bytes());
 }
 
-fn push_u64(output: &mut Vec<u8>, value: u64) {
+pub(crate) fn push_u64(output: &mut Vec<u8>, value: u64) {
     output.extend_from_slice(&value.to_be_bytes());
 }
 
@@ -861,6 +540,7 @@ fn is_canonical_field_id(value: &str) -> bool {
 mod tests {
     use super::*;
     use serde::Deserialize;
+    use subtle::ConstantTimeEq;
 
     fn secrets_equal(left: &[u8], right: &[u8]) -> bool {
         left.len() == right.len() && bool::from(left.ct_eq(right))
@@ -923,7 +603,7 @@ mod tests {
             member_key_generation: Some(9),
             binding: EnvelopeBinding::Grant {
                 entry_revision: 6,
-                wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                wrapper_suite_id: "palladin-x25519-sealed-box-v1".to_owned(),
                 recipient_agent_key_version: 4,
                 recipient_agent_key_fingerprint: [0x5a; 32],
                 approved_methods: 3,
@@ -1012,104 +692,6 @@ mod tests {
             compute_field_set_commitment(["username", "username"]),
             Err(CryptoError::InvalidDescriptor)
         );
-    }
-
-    #[test]
-    fn sealed_box_wrapper_binds_recipient_and_parent_descriptor() {
-        let recipient = X25519Identity::from_private_bytes(vec![0x44; 32]).expect("identity");
-        let descriptor = descriptor(VAULT_XCHACHA_V1);
-        let parent_hash: [u8; 32] =
-            Sha256::digest(descriptor.canonical_aad().expect("parent descriptor")).into();
-        let context = WrapperContext {
-            protocol_version: 2,
-            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
-            purpose: WrapperPurpose::GrantDek,
-            scope: descriptor.scope.clone(),
-            resource_revision: 7,
-            wrapped_key_version: 3,
-            member_key_generation: Some(9),
-            recipient_key_kind: RecipientKeyKind::AgentX25519,
-            recipient_key_version: 4,
-            recipient_fingerprint: compute_key_fingerprint(
-                recipient.public_key(),
-                RecipientKeyKind::AgentX25519,
-            ),
-            parent_descriptor_hash: Some(parent_hash),
-        };
-        let key = SecretBox::new(Box::new([0x77; 32]));
-        let wrapped =
-            X25519SealedBoxSuite::wrap(&key, *recipient.public_key(), &context).expect("wrap");
-        assert_eq!(wrapped.as_bytes().len(), 120);
-        let opened = X25519SealedBoxSuite::unwrap(&wrapped, &recipient, &context).expect("unwrap");
-        assert!(secrets_equal(opened.expose_secret(), key.expose_secret()));
-
-        let mut changed = context;
-        changed.parent_descriptor_hash = Some([0x99; 32]);
-        assert_eq!(
-            X25519SealedBoxSuite::unwrap(&wrapped, &recipient, &changed)
-                .expect_err("changed parent must fail"),
-            CryptoError::AuthenticationFailed
-        );
-    }
-
-    #[test]
-    fn opens_frozen_libsodium_sealed_box_vector() {
-        let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../../../contracts/v2/x25519-sealed-box.json"))
-                .expect("wrapper fixture");
-        let private = hex::decode(
-            fixture["recipientPrivateKeyHex"]
-                .as_str()
-                .expect("private key"),
-        )
-        .expect("private key hex");
-        let recipient = X25519Identity::from_private_bytes(private).expect("identity");
-        assert_eq!(
-            hex::encode(recipient.public_key()),
-            fixture["recipientPublicKeyHex"]
-                .as_str()
-                .expect("public key")
-        );
-        let descriptor = descriptor(VAULT_XCHACHA_V1);
-        let context = WrapperContext {
-            protocol_version: 2,
-            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
-            purpose: WrapperPurpose::GrantDek,
-            scope: descriptor.scope,
-            resource_revision: 7,
-            wrapped_key_version: 3,
-            member_key_generation: Some(9),
-            recipient_key_kind: RecipientKeyKind::AgentX25519,
-            recipient_key_version: 4,
-            recipient_fingerprint: compute_key_fingerprint(
-                recipient.public_key(),
-                RecipientKeyKind::AgentX25519,
-            ),
-            parent_descriptor_hash: Some(
-                hex::decode(
-                    fixture["context"]["parentDescriptorHashHex"]
-                        .as_str()
-                        .expect("parent hash"),
-                )
-                .expect("parent hash hex")
-                .try_into()
-                .expect("parent hash length"),
-            ),
-        };
-        assert_eq!(
-            hex::encode(context.canonical_bytes().expect("context")),
-            fixture["expectedContextHex"].as_str().expect("context hex")
-        );
-        let package = SealedWrappedKey::from_bytes(
-            hex::decode(fixture["sealedPackageHex"].as_str().expect("package"))
-                .expect("package hex"),
-        )
-        .expect("package");
-        let opened = X25519SealedBoxSuite::unwrap(&package, &recipient, &context).expect("unwrap");
-        let expected_wrapped_key =
-            hex::decode(fixture["wrappedKeyHex"].as_str().expect("wrapped key"))
-                .expect("wrapped key hex");
-        assert!(secrets_equal(opened.expose_secret(), &expected_wrapped_key));
     }
 
     #[test]

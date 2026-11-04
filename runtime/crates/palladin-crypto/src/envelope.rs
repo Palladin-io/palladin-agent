@@ -9,11 +9,11 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
-    CryptoError, EncodedSuitePayload, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose,
-    EnvelopeScope, InstantBinding, RecipientKeyKind, SealedWrappedKey, SecretBytes,
-    SignatureProfile, VAULT_XCHACHA_V1, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1,
-    X25519Identity, X25519SealedBoxSuite, XChaChaVaultSuite, compute_field_set_commitment,
-    compute_key_fingerprint, verify_domain_signature,
+    AgentEncryptionKeys, CryptoError, EncodedSuitePayload, EnvelopeBinding, EnvelopeDescriptor,
+    EnvelopePurpose, EnvelopeScope, InstantBinding, RecipientKeyKind, SecretBytes,
+    SignatureProfile, VAULT_XCHACHA_V1, WrapperContext, WrapperPurpose, WrapperSuite,
+    XChaChaVaultSuite, compute_field_set_commitment, compute_key_fingerprint,
+    verify_domain_signature,
 };
 
 const GRANT_PAYLOAD_PURPOSE: u16 = 10;
@@ -112,8 +112,8 @@ where
 {
     deserialize_protocol_code(
         deserializer,
-        "agentX25519",
-        RecipientKeyKind::AgentX25519 as u16,
+        "agentEncryption",
+        RecipientKeyKind::AgentEncryption as u16,
     )
 }
 
@@ -150,7 +150,7 @@ pub fn verify_agent_wrapped_vault_key_producer(
     signing_public_key: &[u8; 32],
 ) -> Result<(), CryptoError> {
     let computed_fingerprint =
-        compute_key_fingerprint(signing_public_key, RecipientKeyKind::VaultSigningEd25519);
+        compute_key_fingerprint(signing_public_key, RecipientKeyKind::VaultSigning);
     if value.vault_signing_key_version != expected_signing_key_version
         || value.vault_signing_key_fingerprint != expected_signing_key_fingerprint
         || URL_SAFE_NO_PAD.encode(computed_fingerprint) != expected_signing_key_fingerprint
@@ -309,7 +309,7 @@ pub struct WrappedGrantDekDescriptor {
 }
 
 impl WrappedGrantDek {
-    pub fn from_context(context: &WrapperContext, wrapped: &SealedWrappedKey) -> Self {
+    pub fn from_context(context: &WrapperContext, sealed_key_package: &[u8]) -> Self {
         Self {
             descriptor: WrappedGrantDekDescriptor {
                 protocol_version: context.protocol_version,
@@ -333,7 +333,7 @@ impl WrappedGrantDek {
                     .parent_descriptor_hash
                     .map(|hash| URL_SAFE_NO_PAD.encode(hash)),
             },
-            encoded_sealed_key_package: URL_SAFE_NO_PAD.encode(wrapped.as_bytes()),
+            encoded_sealed_key_package: URL_SAFE_NO_PAD.encode(sealed_key_package),
         }
     }
 }
@@ -469,24 +469,24 @@ impl std::fmt::Debug for DecryptedCredential {
 
 pub fn decrypt_credential(
     envelope: &EncryptedCredential,
-    identity: &X25519Identity,
+    keys: &AgentEncryptionKeys,
     outer: &CredentialEnvelopeContext<'_>,
 ) -> Result<DecryptedCredential, CryptoError> {
-    decrypt_credential_at(envelope, identity, outer, OffsetDateTime::now_utc())
+    decrypt_credential_at(envelope, keys, outer, OffsetDateTime::now_utc())
 }
 
 pub fn decrypt_full_credential(
     wrapped_vault_key: &AgentWrappedVaultKey,
     entry_key: &VaultEntryKeyEnvelope,
     member_secret: &MemberSecretEnvelope,
-    identity: &X25519Identity,
+    keys: &AgentEncryptionKeys,
     outer: &FullCredentialEnvelopeContext<'_>,
 ) -> Result<DecryptedCredential, CryptoError> {
     decrypt_full_credential_at(
         wrapped_vault_key,
         entry_key,
         member_secret,
-        identity,
+        keys,
         outer,
         OffsetDateTime::now_utc(),
     )
@@ -496,7 +496,7 @@ pub fn decrypt_full_script_member_secret(
     wrapped_vault_key: &AgentWrappedVaultKey,
     entry_key: &VaultEntryKeyEnvelope,
     member_secret: &MemberSecretEnvelope,
-    identity: &X25519Identity,
+    keys: &AgentEncryptionKeys,
     outer: &FullScriptMemberSecretContext<'_>,
 ) -> Result<SecretBytes, CryptoError> {
     let grant_expires_at = outer.expires_at.map(parse_instant).transpose()?;
@@ -530,21 +530,25 @@ pub fn decrypt_full_script_member_secret(
     };
     let recipient_fingerprint = decode_fixed::<32>(&wire_wrapper.recipient_fingerprint)?;
     if wire_wrapper.protocol_version != 2
-        || wire_wrapper.wrapper_suite_id != X25519_WRAPPER_V1
         || wire_wrapper.purpose != WrapperPurpose::AgentVaultKey as u16
         || wrapper_scope != expected_wrapper_scope
         || parse_nonzero_u64(&wire_wrapper.resource_revision)?
             != u64::from(outer.agent_access_epoch)
         || wire_wrapper.wrapped_key_version == 0
         || wire_wrapper.member_key_generation.is_some()
-        || wire_wrapper.recipient_key_kind != RecipientKeyKind::AgentX25519 as u16
+        || wire_wrapper.recipient_key_kind != RecipientKeyKind::AgentEncryption as u16
         || wire_wrapper.recipient_key_version == 0
-        || recipient_fingerprint
-            != crate::compute_key_fingerprint(identity.public_key(), RecipientKeyKind::AgentX25519)
         || wire_wrapper.parent_descriptor_hash.is_some()
     {
         return Err(CryptoError::InvalidDescriptor);
     }
+    let recipient = keys
+        .select(
+            &wire_wrapper.wrapper_suite_id,
+            RecipientKeyKind::AgentEncryption,
+            &recipient_fingerprint,
+        )
+        .map_err(|_| CryptoError::InvalidDescriptor)?;
     let wrapper_context = WrapperContext {
         protocol_version: wire_wrapper.protocol_version,
         wrapper_suite_id: wire_wrapper.wrapper_suite_id.clone(),
@@ -553,14 +557,15 @@ pub fn decrypt_full_script_member_secret(
         resource_revision: u64::from(outer.agent_access_epoch),
         wrapped_key_version: wire_wrapper.wrapped_key_version,
         member_key_generation: None,
-        recipient_key_kind: RecipientKeyKind::AgentX25519,
+        recipient_key_kind: RecipientKeyKind::AgentEncryption,
         recipient_key_version: wire_wrapper.recipient_key_version,
         recipient_fingerprint,
         parent_descriptor_hash: None,
     };
-    let sealed_vault_key =
-        SealedWrappedKey::from_bytes(decode_base64url(&wrapper.encoded_sealed_key_package)?)?;
-    let vault_key = X25519SealedBoxSuite::unwrap(&sealed_vault_key, identity, &wrapper_context)?;
+    let vault_key = wrapper_context.open(
+        &decode_base64url(&wrapper.encoded_sealed_key_package)?,
+        recipient,
+    )?;
 
     let entry_descriptor =
         vault_entry_key_descriptor(entry_key, organization_id, vault_id, entry_id)?;
@@ -603,7 +608,7 @@ pub fn decrypt_full_credential_at(
     wrapped_vault_key: &AgentWrappedVaultKey,
     entry_key: &VaultEntryKeyEnvelope,
     member_secret: &MemberSecretEnvelope,
-    identity: &X25519Identity,
+    keys: &AgentEncryptionKeys,
     outer: &FullCredentialEnvelopeContext<'_>,
     now: OffsetDateTime,
 ) -> Result<DecryptedCredential, CryptoError> {
@@ -646,21 +651,25 @@ pub fn decrypt_full_credential_at(
     let recipient_fingerprint = decode_fixed::<32>(&wire_wrapper.recipient_fingerprint)
         .map_err(full_grant_vault_key_error)?;
     if wire_wrapper.protocol_version != 2
-        || wire_wrapper.wrapper_suite_id != X25519_WRAPPER_V1
         || wire_wrapper.purpose != WrapperPurpose::AgentVaultKey as u16
         || wrapper_scope != expected_wrapper_scope
         || parse_nonzero_u64(&wire_wrapper.resource_revision).map_err(full_grant_binding_error)?
             != u64::from(outer.agent_access_epoch)
         || wire_wrapper.wrapped_key_version == 0
         || wire_wrapper.member_key_generation.is_some()
-        || wire_wrapper.recipient_key_kind != RecipientKeyKind::AgentX25519 as u16
+        || wire_wrapper.recipient_key_kind != RecipientKeyKind::AgentEncryption as u16
         || wire_wrapper.recipient_key_version == 0
-        || recipient_fingerprint
-            != crate::compute_key_fingerprint(identity.public_key(), RecipientKeyKind::AgentX25519)
         || wire_wrapper.parent_descriptor_hash.is_some()
     {
         return Err(CryptoError::InvalidDescriptor);
     }
+    let recipient = keys
+        .select(
+            &wire_wrapper.wrapper_suite_id,
+            RecipientKeyKind::AgentEncryption,
+            &recipient_fingerprint,
+        )
+        .map_err(|_| CryptoError::InvalidDescriptor)?;
     let wrapper_context = WrapperContext {
         protocol_version: wire_wrapper.protocol_version,
         wrapper_suite_id: wire_wrapper.wrapper_suite_id.clone(),
@@ -669,18 +678,16 @@ pub fn decrypt_full_credential_at(
         resource_revision: u64::from(outer.agent_access_epoch),
         wrapped_key_version: wire_wrapper.wrapped_key_version,
         member_key_generation: None,
-        recipient_key_kind: RecipientKeyKind::AgentX25519,
+        recipient_key_kind: RecipientKeyKind::AgentEncryption,
         recipient_key_version: wire_wrapper.recipient_key_version,
         recipient_fingerprint,
         parent_descriptor_hash: None,
     };
-    let sealed_vault_key = SealedWrappedKey::from_bytes(
-        decode_base64url(&wrapper.encoded_sealed_key_package)
-            .map_err(full_grant_vault_key_error)?,
-    )
-    .map_err(full_grant_vault_key_error)?;
-    let vault_key = X25519SealedBoxSuite::unwrap(&sealed_vault_key, identity, &wrapper_context)
+    let sealed_vault_key = decode_base64url(&wrapper.encoded_sealed_key_package)
         .map_err(full_grant_vault_key_error)?;
+    let vault_key = wrapper_context
+        .open(&sealed_vault_key, recipient)
+        .map_err(|error| full_grant_vault_key_error(error.into()))?;
 
     let entry_descriptor =
         vault_entry_key_descriptor(entry_key, organization_id, vault_id, entry_id)
@@ -871,7 +878,7 @@ fn member_secret_descriptor(
 
 pub fn decrypt_credential_at(
     envelope: &EncryptedCredential,
-    identity: &X25519Identity,
+    keys: &AgentEncryptionKeys,
     outer: &CredentialEnvelopeContext<'_>,
     now: OffsetDateTime,
 ) -> Result<DecryptedCredential, CryptoError> {
@@ -888,13 +895,13 @@ pub fn decrypt_credential_at(
         .map(decode_fixed::<32>)
         .transpose()?;
     if wrapped_descriptor.protocol_version != descriptor.protocol_version
-        || wrapped_descriptor.wrapper_suite_id != X25519_WRAPPER_V1
+        || wrapped_descriptor.wrapper_suite_id != envelope.descriptor.binding.wrapper_suite_id
         || wrapped_descriptor.purpose != WrapperPurpose::GrantDek as u16
         || wrapper_scope != descriptor.scope
         || parse_nonzero_u64(&wrapped_descriptor.resource_revision)? != descriptor.resource_revision
         || wrapped_descriptor.wrapped_key_version != descriptor.key_version
         || wrapped_descriptor.member_key_generation != descriptor.member_key_generation
-        || wrapped_descriptor.recipient_key_kind != RecipientKeyKind::AgentX25519 as u16
+        || wrapped_descriptor.recipient_key_kind != RecipientKeyKind::AgentEncryption as u16
         || wrapped_descriptor.recipient_key_version
             != envelope.descriptor.binding.recipient_key_version
         || wrapper_fingerprint != fingerprint
@@ -902,23 +909,30 @@ pub fn decrypt_credential_at(
     {
         return Err(CryptoError::InvalidDescriptor);
     }
-    let wrapped = SealedWrappedKey::from_bytes(decode_base64url(
-        &envelope.wrapped_grant_dek.encoded_sealed_key_package,
-    )?)?;
+    let recipient = keys
+        .select(
+            &wrapped_descriptor.wrapper_suite_id,
+            RecipientKeyKind::AgentEncryption,
+            &fingerprint,
+        )
+        .map_err(|_| CryptoError::InvalidDescriptor)?;
     let wrapper_context = WrapperContext {
         protocol_version: descriptor.protocol_version,
-        wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+        wrapper_suite_id: wrapped_descriptor.wrapper_suite_id.clone(),
         purpose: WrapperPurpose::GrantDek,
         scope: descriptor.scope.clone(),
         resource_revision: descriptor.resource_revision,
         wrapped_key_version: descriptor.key_version,
         member_key_generation: descriptor.member_key_generation,
-        recipient_key_kind: RecipientKeyKind::AgentX25519,
+        recipient_key_kind: RecipientKeyKind::AgentEncryption,
         recipient_key_version: envelope.descriptor.binding.recipient_key_version,
         recipient_fingerprint: fingerprint,
         parent_descriptor_hash: Some(parent_descriptor_hash),
     };
-    let grant_dek = X25519SealedBoxSuite::unwrap(&wrapped, identity, &wrapper_context)?;
+    let grant_dek = wrapper_context.open(
+        &decode_base64url(&envelope.wrapped_grant_dek.encoded_sealed_key_package)?,
+        recipient,
+    )?;
     let payload =
         EncodedSuitePayload::from_bytes(decode_base64url(&envelope.encoded_suite_payload)?)?;
     let payload_key = XChaChaVaultSuite::derive_key(grant_dek.expose_secret(), &descriptor)?;
@@ -2444,7 +2458,7 @@ fn to_descriptor(
     if wire.protocol_version != 2
         || wire.crypto_suite_id != VAULT_XCHACHA_V1
         || wire.purpose != GRANT_PAYLOAD_PURPOSE
-        || binding.wrapper_suite_id != X25519_WRAPPER_V1
+        || WrapperSuite::from_id(&binding.wrapper_suite_id).is_err()
         || binding.approved_methods != outer.approved_methods
         || outer.requested_method == 0
         || binding.approved_methods & outer.requested_method != outer.requested_method
@@ -2656,9 +2670,9 @@ mod tests {
         to_descriptor, verify_agent_wrapped_vault_key_producer,
     };
     use crate::{
-        Ed25519Identity, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose, EnvelopeScope,
-        RecipientKeyKind, VAULT_XCHACHA_V1, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1,
-        X25519Identity, X25519SealedBoxSuite, XChaChaVaultSuite, compute_field_set_commitment,
+        AgentEncryptionKeys, Ed25519Identity, EncryptionIdentity, EnvelopeBinding,
+        EnvelopeDescriptor, EnvelopePurpose, EnvelopeScope, RecipientKeyKind, VAULT_XCHACHA_V1,
+        WrapperContext, WrapperPurpose, XChaChaVaultSuite, compute_field_set_commitment,
         compute_key_fingerprint,
     };
 
@@ -2666,12 +2680,12 @@ mod tests {
     fn full_wrapper_producer_signature_is_verified_before_unwrap() {
         let signer = Ed25519Identity::from_seed(vec![0x51; 32]).expect("signer");
         let fingerprint =
-            compute_key_fingerprint(signer.public_key(), RecipientKeyKind::VaultSigningEd25519);
+            compute_key_fingerprint(signer.public_key(), RecipientKeyKind::VaultSigning);
         let mut wrapped = AgentWrappedVaultKey {
             wrapped_vault_key: AgentVaultKeyWrapper {
                 descriptor: AgentVaultKeyWrapperDescriptor {
                     protocol_version: 2,
-                    wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                    wrapper_suite_id: "palladin-xwing-v1".to_owned(),
                     purpose: 5,
                     scope: GrantEnvelopeScope {
                         organization_id: "00112233-4455-4677-8899-aabbccddeeff".to_owned(),
@@ -2736,14 +2750,17 @@ mod tests {
         const AGENT_ID: &str = "fedcba98-7654-4321-8765-abcdefabcdef";
         const ENTRY_ID: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 
-        let identity = X25519Identity::from_private_bytes(vec![0x41; 32]).expect("identity");
+        let identity =
+            AgentEncryptionKeys::new(EncryptionIdentity::generate().expect("identity"), None)
+                .expect("keys");
         let organization_id = parse_uuid(ORGANIZATION_ID).expect("organization");
         let vault_id = parse_uuid(VAULT_ID).expect("vault");
         let grant_id = parse_uuid(GRANT_ID).expect("grant");
         let agent_id = parse_uuid(AGENT_ID).expect("agent");
         let entry_id = parse_uuid(ENTRY_ID).expect("entry");
-        let fingerprint =
-            compute_key_fingerprint(identity.public_key(), RecipientKeyKind::AgentX25519);
+        let fingerprint = identity
+            .current()
+            .fingerprint(RecipientKeyKind::AgentEncryption);
         let vault_key = SecretBox::new(Box::new([0x21; 32]));
         let wrapper_scope = EnvelopeScope {
             organization_id,
@@ -2755,20 +2772,20 @@ mod tests {
         };
         let wrapper_context = WrapperContext {
             protocol_version: 2,
-            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+            wrapper_suite_id: identity.current().suite_id().to_owned(),
             purpose: WrapperPurpose::AgentVaultKey,
             scope: wrapper_scope,
             resource_revision: 7,
             wrapped_key_version: 3,
             member_key_generation: None,
-            recipient_key_kind: RecipientKeyKind::AgentX25519,
+            recipient_key_kind: RecipientKeyKind::AgentEncryption,
             recipient_key_version: 2,
             recipient_fingerprint: fingerprint,
             parent_descriptor_hash: None,
         };
-        let sealed_vault_key =
-            X25519SealedBoxSuite::wrap(&vault_key, *identity.public_key(), &wrapper_context)
-                .expect("wrapped vault key");
+        let sealed_vault_key = wrapper_context
+            .seal(&vault_key, &identity.current().recipient_public_key())
+            .expect("wrapped vault key");
         let wire_scope = GrantEnvelopeScope {
             organization_id: ORGANIZATION_ID.to_owned(),
             vault_id: VAULT_ID.to_owned(),
@@ -2781,7 +2798,7 @@ mod tests {
             wrapped_vault_key: AgentVaultKeyWrapper {
                 descriptor: AgentVaultKeyWrapperDescriptor {
                     protocol_version: 2,
-                    wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                    wrapper_suite_id: identity.current().suite_id().to_owned(),
                     purpose: 5,
                     scope: wire_scope,
                     resource_revision: "7".to_owned(),
@@ -3641,7 +3658,7 @@ mod tests {
         value["wrappedGrantDek"]["descriptor"]["purpose"] =
             serde_json::Value::String("grantDek".to_owned());
         value["wrappedGrantDek"]["descriptor"]["recipientKeyKind"] =
-            serde_json::Value::String("agentX25519".to_owned());
+            serde_json::Value::String("agentEncryption".to_owned());
 
         let decoded: EncryptedCredential =
             serde_json::from_value(value.clone()).expect("current backend contract");
@@ -3652,8 +3669,13 @@ mod tests {
         );
         assert_eq!(
             decoded.wrapped_grant_dek.descriptor.recipient_key_kind,
-            RecipientKeyKind::AgentX25519 as u16
+            RecipientKeyKind::AgentEncryption as u16
         );
+
+        let mut algorithm_named = value.clone();
+        algorithm_named["wrappedGrantDek"]["descriptor"]["recipientKeyKind"] =
+            serde_json::Value::String("agentX25519".to_owned());
+        assert!(serde_json::from_value::<EncryptedCredential>(algorithm_named).is_err());
 
         value["descriptor"]["purpose"] = serde_json::Value::String("unknown".to_owned());
         assert!(serde_json::from_value::<EncryptedCredential>(value).is_err());
@@ -3683,7 +3705,7 @@ mod tests {
                 member_key_generation: Some(1),
                 binding: GrantEnvelopeBinding {
                     entry_revision: "1".to_owned(),
-                    wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                    wrapper_suite_id: "palladin-xwing-v1".to_owned(),
                     recipient_key_version: 1,
                     recipient_key_fingerprint: URL_SAFE_NO_PAD.encode([7_u8; 32]),
                     approved_methods: 1,
@@ -3697,7 +3719,7 @@ mod tests {
             wrapped_grant_dek: WrappedGrantDek {
                 descriptor: WrappedGrantDekDescriptor {
                     protocol_version: 2,
-                    wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                    wrapper_suite_id: "palladin-xwing-v1".to_owned(),
                     purpose: WrapperPurpose::GrantDek as u16,
                     scope: GrantEnvelopeScope {
                         organization_id: "00112233-4455-4677-8899-aabbccddeeff".to_owned(),
@@ -3712,7 +3734,7 @@ mod tests {
                     resource_revision: "1".to_owned(),
                     wrapped_key_version: 1,
                     member_key_generation: Some(1),
-                    recipient_key_kind: RecipientKeyKind::AgentX25519 as u16,
+                    recipient_key_kind: RecipientKeyKind::AgentEncryption as u16,
                     recipient_key_version: 1,
                     recipient_fingerprint: URL_SAFE_NO_PAD.encode([7_u8; 32]),
                     parent_descriptor_hash: Some(URL_SAFE_NO_PAD.encode([0_u8; 32])),

@@ -231,7 +231,7 @@ mod tests {
     use std::time::Duration;
 
     use palladin_core::{host::ApiHost, secret::OrganizationApiKey};
-    use palladin_crypto::X25519Identity;
+    use palladin_crypto::EncryptionIdentity;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -283,11 +283,14 @@ mod tests {
     }
 
     fn client(host: &str) -> ApiClient {
-        let identity = X25519Identity::from_private_bytes(vec![41; 32]).expect("identity");
+        let identity = EncryptionIdentity::from_legacy_storage(vec![41; 32]).expect("identity");
         ApiClient::new_with_timeout(
             ApiHost::parse(host).expect("host"),
             OrganizationApiKey::new("pl_shared_organization_fixture".to_owned()),
-            &identity,
+            &base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                identity.public_key(),
+            ),
             "fixture-host",
             None,
             Duration::from_secs(2),

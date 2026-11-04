@@ -634,6 +634,9 @@ pub struct VaultManifest {
     pub manifest_signing_key_version: u32,
     pub vault_agent_message_public_key: String,
     pub vault_agent_message_key_fingerprint: String,
+    /// Present exactly on successor manifests that publish the message key's suite.
+    #[serde(default)]
+    pub vault_agent_message_key_suite_id: Option<String>,
     pub agent_message_key_version: u32,
     pub vdk_version: u32,
     pub agent_wrapped_vdk_digest: String,
@@ -740,6 +743,28 @@ pub(crate) struct AgentDiscoveryDeltaBody<'a> {
     pub continuation_cursor: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page_size: Option<u32>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EncryptionKeyRotationBody<'a> {
+    pub wrapper_suite_id: &'a str,
+    pub public_key: &'a str,
+    pub key_binding_signature: &'a str,
+}
+
+/// Backend view of the Agent's registered encryption key. `previous_key_envelope_count` is the
+/// number of envelopes that still address the replaced key; the replaced private key is
+/// deleted locally only when it is zero.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEncryptionKeyStatus {
+    pub wrapper_suite_id: String,
+    pub key_version: u32,
+    pub key_fingerprint: String,
+    /// Counted by the Vault replica on `GET`; the registering `POST` does not report it.
+    #[serde(default)]
+    pub previous_key_envelope_count: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -988,7 +1013,7 @@ mod tests {
                         "resourceRevision": "1",
                         "wrappedKeyVersion": 1,
                         "memberKeyGeneration": 1,
-                        "recipientKeyKind": "agentX25519",
+                        "recipientKeyKind": "agentEncryption",
                         "recipientKeyVersion": 1,
                         "recipientFingerprint": "fingerprint",
                         "parentDescriptorHash": "hash"
@@ -1065,7 +1090,7 @@ mod tests {
                         "resourceRevision": "7",
                         "wrappedKeyVersion": 3,
                         "memberKeyGeneration": null,
-                        "recipientKeyKind": "agentX25519",
+                        "recipientKeyKind": "agentEncryption",
                         "recipientKeyVersion": 2,
                         "recipientFingerprint": "fingerprint",
                         "parentDescriptorHash": null
@@ -1188,7 +1213,7 @@ mod tests {
                             "resourceRevision": "1",
                             "wrappedKeyVersion": 1,
                             "memberKeyGeneration": 1,
-                            "recipientKeyKind": "agentX25519",
+                            "recipientKeyKind": "agentEncryption",
                             "recipientKeyVersion": 2,
                             "recipientFingerprint": "fingerprint",
                             "parentDescriptorHash": "hash"

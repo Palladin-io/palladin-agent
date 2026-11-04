@@ -1,0 +1,96 @@
+{
+  "contract": "palladin-key-wrapper",
+  "contractVersion": 1,
+  "protocolVersion": 2,
+  "summary": "Algorithm-neutral wrapper for a 32-byte symmetric key or seed sealed to a recipient public key. Algorithm details live only in the suite specifications listed below.",
+  "suiteLifecycle": [
+    { "status": "active", "seal": true, "open": true },
+    { "status": "read-only", "seal": false, "open": true },
+    { "status": "retired", "seal": false, "open": false }
+  ],
+  "suites": [
+    {
+      "id": "palladin-xwing-v1",
+      "status": "active",
+      "specification": "suites/palladin-xwing-v1.json",
+      "purposes": [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    },
+    {
+      "id": "palladin-x25519-sealed-box-v1",
+      "status": "read-only",
+      "specification": "suites/palladin-x25519-sealed-box-v1.json",
+      "purposes": [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    }
+  ],
+  "scopeBits": {
+    "organization": 1,
+    "vault": 2,
+    "entry": 4,
+    "grantOrRequest": 8,
+    "agent": 16,
+    "member": 32
+  },
+  "recipientKeyKinds": [
+    { "id": 1, "name": "agent-encryption", "keyDirectory": "authenticated-agent-key-directory" },
+    { "id": 4, "name": "vault-agent-message", "keyDirectory": "signed-vault-manifest" },
+    { "id": 5, "name": "member-encryption", "keyDirectory": "authenticated-member-key-directory" },
+    { "id": 6, "name": "organization-approver-message", "keyDirectory": "signed-organization-approver-manifest" }
+  ],
+  "reservedKeyKinds": [
+    { "id": 2, "name": "agent-signing", "reason": "signature key; never a wrapper recipient" },
+    { "id": 3, "name": "vault-signing", "reason": "signature key; never a wrapper recipient" },
+    { "id": 7, "name": "organization-approver-signing", "reason": "signature key; never a wrapper recipient" }
+  ],
+  "purposes": [
+    { "id": 1, "name": "member-vault-key", "owner": "vault-v2", "scopeBitmap": 35, "recipientKeyKinds": [5], "memberKeyGeneration": "required", "parentDescriptorHash": "forbidden" },
+    { "id": 2, "name": "agent-vault-discovery-key", "owner": "vault-v2", "scopeBitmap": 19, "recipientKeyKinds": [1], "memberKeyGeneration": "optional", "parentDescriptorHash": "forbidden" },
+    { "id": 3, "name": "reason-dek", "owner": "vault-v2", "scopeBitmap": 31, "recipientKeyKinds": [4], "memberKeyGeneration": "optional", "parentDescriptorHash": "required" },
+    { "id": 4, "name": "grant-dek", "owner": "vault-v2", "scopeBitmap": 31, "recipientKeyKinds": [1], "memberKeyGeneration": "optional", "parentDescriptorHash": "required" },
+    { "id": 5, "name": "agent-vault-key", "owner": "vault-v2", "scopeBitmap": 27, "recipientKeyKinds": [1], "memberKeyGeneration": "forbidden", "parentDescriptorHash": "forbidden" },
+    { "id": 6, "name": "script-execution-dek", "owner": "script-execution/v1", "scopeBitmap": 31, "recipientKeyKinds": [1], "memberKeyGeneration": "forbidden", "parentDescriptorHash": "required" },
+    { "id": 7, "name": "submission-dek", "owner": "agent-submission/v1", "scopeBitmap": 25, "recipientKeyKinds": [1, 6], "memberKeyGeneration": "forbidden", "parentDescriptorHash": "required" },
+    { "id": 8, "name": "approver-message-private-key", "owner": "agent-submission/v1", "scopeBitmap": 33, "recipientKeyKinds": [5], "memberKeyGeneration": "forbidden", "parentDescriptorHash": "forbidden" },
+    { "id": 9, "name": "approver-signing-private-key", "owner": "agent-submission/v1", "scopeBitmap": 33, "recipientKeyKinds": [5], "memberKeyGeneration": "forbidden", "parentDescriptorHash": "forbidden" }
+  ],
+  "descriptor": {
+    "fields": [
+      { "name": "protocolVersion", "type": "u16", "rule": "equals registry protocolVersion" },
+      { "name": "wrapperSuiteId", "type": "printable-ascii", "maxBytes": 64, "rule": "registered suite whose lifecycle allows the operation and whose purposes include the descriptor purpose" },
+      { "name": "purpose", "type": "u16", "rule": "registered purpose" },
+      { "name": "scope", "type": "object", "rule": "exactly the identifiers selected by the purpose scopeBitmap; lowercase RFC 4122 UUIDs" },
+      { "name": "resourceRevision", "type": "u64-decimal", "rule": "positive" },
+      { "name": "wrappedKeyVersion", "type": "u32", "rule": "positive" },
+      { "name": "memberKeyGeneration", "type": "u32", "rule": "positive when present; presence follows the purpose" },
+      { "name": "recipientKeyKind", "type": "u16", "rule": "listed in the purpose recipientKeyKinds" },
+      { "name": "recipientKeyVersion", "type": "u32", "rule": "positive" },
+      { "name": "recipientFingerprint", "type": "base64url-bytes", "bytes": 32, "rule": "computed by the suite fingerprint function over the authenticated recipient public key" },
+      { "name": "parentDescriptorHash", "type": "base64url-bytes", "bytes": 32, "rule": "presence follows the purpose" },
+      { "name": "encodedSealedKeyPackage", "type": "base64url-bytes", "rule": "exact length defined by the suite" }
+    ],
+    "unknownFields": "reject"
+  },
+  "contextEncoding": {
+    "magicAscii": "PLDNX2W1",
+    "layout": "ASCII(PLDNX2W1) || u16be(protocolVersion) || u16be(len) || ASCII(wrapperSuiteId) || u16be(purpose) || u16be(scopeBitmap) || UUID16 for each present scope in organization-vault-entry-grantOrRequest-agent-member order || u64be(resourceRevision) || u32be(wrappedKeyVersion) || u8(hasMemberKeyGeneration) [|| u32be(memberKeyGeneration)] || u16be(recipientKeyKind) || u32be(recipientKeyVersion) || recipientFingerprint[32] || u8(hasParentDescriptorHash) [|| parentDescriptorHash[32]]",
+    "contextHash": "SHA-256(ASCII(PLDNX2CTX) || encodedContext)",
+    "suiteBinding": "wrapperSuiteId is part of the encoded context, so opening a package under any other suite id fails context verification"
+  },
+  "rules": [
+    "The expected suite is the suite registered with the recipient public key in its authenticated key directory, never the wrapperSuiteId claimed by the envelope; a mismatch fails as recipient-mismatch.",
+    "The expected descriptor is built from authenticated request, Vault, Member, Agent and key state before opening; the context hash inside the opened package must equal the hash of that independent descriptor.",
+    "Implementations select a suite only from this registry at build time; there is no algorithm negotiation and no runtime registration.",
+    "Product code outside the crypto module handles only wrapperSuiteId, recipientKeyKind and opaque package bytes.",
+    "Every suite other than palladin-x25519-sealed-box-v1 must bind its suite id into its recipient fingerprint input.",
+    "A seal operation requires an active suite; an open operation requires an active or read-only suite; retired suites fail closed."
+  ],
+  "errors": [
+    "unsupported-suite",
+    "suite-not-allowed-for-purpose",
+    "suite-not-writable",
+    "unsupported-purpose",
+    "malformed-descriptor",
+    "malformed-package",
+    "recipient-mismatch",
+    "open-failed"
+  ]
+}

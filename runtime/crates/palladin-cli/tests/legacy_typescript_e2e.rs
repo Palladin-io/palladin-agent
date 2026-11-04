@@ -23,12 +23,12 @@ use palladin_core::profiles::ProfileRepository;
 use palladin_core::secret::OrganizationApiKey;
 use palladin_credential::wait::WaitOptions;
 use palladin_crypto::{
-    CredentialEnvelopeContext, CryptoError, EncodedSuitePayload, EncryptedCredential,
-    EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose, EnvelopeScope, GrantEnvelopeBinding,
-    GrantEnvelopeDescriptor, GrantEnvelopeScope, RecipientKeyKind, VAULT_XCHACHA_V1,
-    WrappedGrantDek, WrapperContext, WrapperPurpose, X25519_WRAPPER_V1, X25519Identity,
-    X25519SealedBoxSuite, XChaChaVaultSuite, canonical_request, compute_field_set_commitment,
-    compute_key_fingerprint, decrypt_credential,
+    AgentEncryptionKeys, CredentialEnvelopeContext, CryptoError, EncodedSuitePayload,
+    EncryptedCredential, EncryptionIdentity, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose,
+    EnvelopeScope, GrantEnvelopeBinding, GrantEnvelopeDescriptor, GrantEnvelopeScope,
+    RecipientKeyKind, RecipientPublicKey, VAULT_XCHACHA_V1, WrappedGrantDek, WrapperContext,
+    WrapperPurpose, XChaChaVaultSuite, canonical_request, compute_field_set_commitment,
+    compute_key_fingerprint, decrypt_credential, verify_encryption_key_rotation,
 };
 use palladin_platform::secure_store::{SecretSlot, SecretStore, StoreError};
 use secrecy::{ExposeSecret, SecretBox, SecretSlice};
@@ -177,6 +177,7 @@ async fn pending_inject_does_not_prepare_expiring_browser_handles() {
     runtime
         .provision_browser_host_identity()
         .expect("isolated host identity");
+    api.enqueue(MockResponse::json(404, "{}"));
     api.enqueue(MockResponse::json(202,
         r#"{"access":"pending","grantId":"grant-inject","created":true,"pollIntervalMs":5000,"maxWaitMs":30000}"#));
     let connection = operation_connection();
@@ -359,11 +360,14 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
 
     let restarted = service(&root, store.clone());
     api.enqueue(MockResponse::active(AGENT_ID, "Default fresh Agent"));
+    // This scripted API does not register keys; each upgrade attempt is deferred.
+    api.enqueue(MockResponse::json(404, "{}"));
     let default_status = restarted
         .status(Some("default"), "e2e-host", &operation_connection())
         .await
         .expect("default active status");
     api.enqueue(MockResponse::active(BUILD_AGENT_ID, "Build fresh Agent"));
+    api.enqueue(MockResponse::json(404, "{}"));
     let build_status = restarted
         .status(Some("build"), "e2e-host", &operation_connection())
         .await
@@ -378,6 +382,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
     ));
     assert_ne!(default_status.config.agent_id, build_status.config.agent_id);
 
+    api.enqueue(MockResponse::json(404, "{}"));
     api.enqueue(MockResponse::json(
         200,
         r#"{"agentAccessEpoch":1,"items":[]}"#,
@@ -394,6 +399,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
                 page_size: Some(10),
             },
         )
+        .await
         .expect("search session");
     let discovery = search_session
         .search_entries("synthetic", None, Some(10))
@@ -407,6 +413,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
         Err(RuntimeError::OperationAuthorizationConsumed)
     ));
 
+    api.enqueue(MockResponse::json(404, "{}"));
     api.enqueue(MockResponse::json(
         202,
         r#"{"access":"pending","grantId":"grant-e2e","created":true,"pollIntervalMs":5000,"maxWaitMs":30000}"#,
@@ -428,6 +435,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
                 output: CredentialOutputPolicy::CliSecretStdout,
             },
         )
+        .await
         .expect("pending credential session");
     let pending = pending_session
         .deliver_for_get(delivery_request(0), &CancellationToken::new(), |_| {})
@@ -447,6 +455,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
             .expect("default encryption key"),
         CREDENTIAL_CANARY.as_bytes(),
     );
+    api.enqueue(MockResponse::json(404, "{}"));
     api.enqueue(MockResponse::json(
         200,
         &serde_json::json!({
@@ -486,16 +495,21 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
                 output: CredentialOutputPolicy::CliSecretStdout,
             },
         )
+        .await
         .expect("granted credential session");
     let granted = granted_session
         .deliver_for_get(delivery_request(0), &CancellationToken::new(), |_| {})
         .await;
     assert!(matches!(granted, Err(RuntimeError::UntrustedVaultManifest)));
 
-    let build_identity = X25519Identity::from_private_bytes(
-        store.secret(&build.identity_id, SecretSlot::X25519PrivateKey),
+    let build_identity = AgentEncryptionKeys::new(
+        EncryptionIdentity::from_legacy_storage(
+            store.secret(&build.identity_id, SecretSlot::X25519PrivateKey),
+        )
+        .expect("build legacy identity"),
+        None,
     )
-    .expect("build X25519 identity");
+    .expect("build keys");
     assert_eq!(
         decrypt_credential(
             &envelope,
@@ -513,7 +527,7 @@ async fn legacy_fixture_completes_fresh_signed_lifecycle_and_purges_without_leak
             },
         )
         .expect_err("one Agent must not decrypt another Agent's envelope"),
-        CryptoError::AuthenticationFailed
+        CryptoError::InvalidDescriptor
     );
 
     let requests = api.requests();
@@ -853,7 +867,8 @@ fn assert_signed_lifecycle_requests(
         .iter()
         .filter(|request| request_header(request, "x-agent-signature").is_some())
         .collect::<Vec<_>>();
-    assert_eq!(signed.len(), 6);
+    assert_eq!(signed.len(), 11);
+    let mut key_upgrade_requests = 0;
     let mut default_requests = 0;
     let mut build_requests = 0;
     let mut credential_requests = 0;
@@ -892,7 +907,11 @@ fn assert_signed_lifecycle_requests(
                 .as_deref()
                 .expect("signing public key"),
         );
-        let (_, path, _) = request_parts(request);
+        let (_, path, body) = request_parts(request);
+        if path == "/api/agent/encryption-key" {
+            key_upgrade_requests += 1;
+            assert_key_upgrade_is_bound_to_the_agent_identity(agent_id, config, body);
+        }
         if path == "/api/agent/vault-manifests" {
             search_requests += 1;
         }
@@ -900,8 +919,10 @@ fn assert_signed_lifecycle_requests(
             credential_requests += 1;
         }
     }
-    assert_eq!(default_requests, 5);
-    assert_eq!(build_requests, 1);
+    // Every authenticated session of a not yet upgraded Agent retries the key upgrade.
+    assert_eq!(key_upgrade_requests, 5);
+    assert_eq!(default_requests, 9);
+    assert_eq!(build_requests, 2);
     assert_eq!(search_requests, 2);
     assert_eq!(credential_requests, 2);
     assert_ne!(
@@ -912,6 +933,51 @@ fn assert_signed_lifecycle_requests(
             .get(BUILD_AGENT_ID)
             .expect("build signature")
     );
+}
+
+/// The upgrade is attempted by an active migrated Agent and carries a statement signed by the
+/// Agent's pinned Ed25519 key that binds its current and new encryption keys.
+fn assert_key_upgrade_is_bound_to_the_agent_identity(
+    agent_id: &str,
+    config: &palladin_core::public_store::PublicProfileConfig,
+    body: &str,
+) {
+    let body: serde_json::Value = serde_json::from_str(body).expect("upgrade body");
+    assert_eq!(body["wrapperSuiteId"], "palladin-xwing-v1");
+    let next = RecipientPublicKey::new(
+        "palladin-xwing-v1",
+        URL_SAFE_NO_PAD
+            .decode(body["publicKey"].as_str().expect("public key"))
+            .expect("public key encoding"),
+    )
+    .expect("X-Wing public key");
+    let previous = RecipientPublicKey::new(
+        "palladin-x25519-sealed-box-v1",
+        STANDARD
+            .decode(
+                config
+                    .encryption_public_key
+                    .as_deref()
+                    .expect("current key"),
+            )
+            .expect("current key encoding"),
+    )
+    .expect("legacy public key");
+    let signing_public_key: [u8; 32] = STANDARD
+        .decode(config.signing_public_key.as_deref().expect("signing key"))
+        .expect("signing key encoding")
+        .try_into()
+        .expect("signing key length");
+    let signature: [u8; 64] = URL_SAFE_NO_PAD
+        .decode(body["keyBindingSignature"].as_str().expect("signature"))
+        .expect("signature encoding")
+        .try_into()
+        .expect("signature length");
+    let agent_id = *uuid::Uuid::parse_str(agent_id)
+        .expect("Agent ID")
+        .as_bytes();
+    verify_encryption_key_rotation(&signing_public_key, &agent_id, &previous, &next, &signature)
+        .expect("key binding signature");
 }
 
 fn verify_request_signature(request: &str, signing_public_key: &str) {
@@ -957,6 +1023,29 @@ fn request_header<'a>(request: &'a str, expected: &str) -> Option<&'a str> {
     })
 }
 
+const LEGACY_WRAPPER_SUITE: &str = "palladin-x25519-sealed-box-v1";
+
+/// A grant wrapped before the X-Wing release, when the migrated profile's legacy key was the
+/// registered one. Releases no longer seal with the read-only suite.
+fn seal_legacy_wrapper(
+    key: &SecretBox<[u8; 32]>,
+    recipient: [u8; 32],
+    context: &WrapperContext,
+) -> Vec<u8> {
+    let context_hash: [u8; 32] = Sha256::digest(
+        [
+            b"PLDNX2CTX".as_slice(),
+            &context.canonical_bytes().expect("wrapper context"),
+        ]
+        .concat(),
+    )
+    .into();
+    let plaintext = [b"PLDNX2K1".as_slice(), key.expose_secret(), &context_hash].concat();
+    crypto_box::PublicKey::from(recipient)
+        .seal(&mut crypto_box::aead::OsRng, &plaintext)
+        .expect("legacy sealed box")
+}
+
 fn encrypt_for_recipient(recipient_public_key: &str, plaintext: &[u8]) -> EncryptedCredential {
     let recipient_bytes: [u8; 32] = STANDARD
         .decode(recipient_public_key)
@@ -971,7 +1060,7 @@ fn encrypt_for_recipient(recipient_public_key: &str, plaintext: &[u8]) -> Encryp
         agent_id: Some(uuid_bytes(AGENT_ID)),
         member_id: None,
     };
-    let fingerprint = compute_key_fingerprint(&recipient_bytes, RecipientKeyKind::AgentX25519);
+    let fingerprint = compute_key_fingerprint(&recipient_bytes, RecipientKeyKind::AgentEncryption);
     let field_ids = vec!["key.value".to_owned()];
     let commitment = compute_field_set_commitment(["key.value"]).expect("field commitment");
     let descriptor = EnvelopeDescriptor {
@@ -984,7 +1073,7 @@ fn encrypt_for_recipient(recipient_public_key: &str, plaintext: &[u8]) -> Encryp
         member_key_generation: Some(1),
         binding: EnvelopeBinding::Grant {
             entry_revision: 1,
-            wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+            wrapper_suite_id: LEGACY_WRAPPER_SUITE.to_owned(),
             recipient_agent_key_version: 1,
             recipient_agent_key_fingerprint: fingerprint,
             approved_methods: 1,
@@ -1008,19 +1097,18 @@ fn encrypt_for_recipient(recipient_public_key: &str, plaintext: &[u8]) -> Encryp
             .expect("encrypt credential");
     let wrapper_context = WrapperContext {
         protocol_version: 2,
-        wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+        wrapper_suite_id: LEGACY_WRAPPER_SUITE.to_owned(),
         purpose: WrapperPurpose::GrantDek,
         scope,
         resource_revision: 1,
         wrapped_key_version: 1,
         member_key_generation: Some(1),
-        recipient_key_kind: RecipientKeyKind::AgentX25519,
+        recipient_key_kind: RecipientKeyKind::AgentEncryption,
         recipient_key_version: 1,
         recipient_fingerprint: fingerprint,
         parent_descriptor_hash: Some(Sha256::digest(aad).into()),
     };
-    let wrapped = X25519SealedBoxSuite::wrap(&grant_dek, recipient_bytes, &wrapper_context)
-        .expect("wrap grant DEK");
+    let wrapped = seal_legacy_wrapper(&grant_dek, recipient_bytes, &wrapper_context);
     EncryptedCredential {
         descriptor: GrantEnvelopeDescriptor {
             protocol_version: 2,
@@ -1039,7 +1127,7 @@ fn encrypt_for_recipient(recipient_public_key: &str, plaintext: &[u8]) -> Encryp
             member_key_generation: Some(1),
             binding: GrantEnvelopeBinding {
                 entry_revision: "1".to_owned(),
-                wrapper_suite_id: X25519_WRAPPER_V1.to_owned(),
+                wrapper_suite_id: LEGACY_WRAPPER_SUITE.to_owned(),
                 recipient_key_version: 1,
                 recipient_key_fingerprint: URL_SAFE_NO_PAD.encode(fingerprint),
                 approved_methods: 1,

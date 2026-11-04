@@ -19,10 +19,10 @@ use palladin_cli::browser::{
 };
 use palladin_cli::output::{
     CredentialOutput, FieldValueOutput, RenderedOutput, TotpOutput, render_agent_action,
-    render_agent_list, render_approver_retrust, render_connect, render_init, render_legacy_cleanup,
-    render_legacy_cutover, render_live_flow, render_profile_created, render_report_stale,
-    render_search_human, render_security_upgrade, render_status, render_submission_result,
-    render_submission_status,
+    render_agent_list, render_approver_retrust, render_connect, render_encryption_key_migration,
+    render_init, render_legacy_cleanup, render_legacy_cutover, render_live_flow,
+    render_profile_created, render_report_stale, render_search_human, render_security_upgrade,
+    render_status, render_submission_result, render_submission_status,
 };
 use palladin_cli::{
     CredentialDelivery, CredentialDeliveryRequest, CredentialExecOutcome, CredentialExecRequest,
@@ -1045,12 +1045,14 @@ async fn status(
         Ok(outcome) => outcome,
         Err(error) => return fail(&error.to_string()),
     };
-    emit_output(render_status(
+    let exit_code = emit_output(render_status(
         &outcome.profile.name,
         &outcome.config.host,
         &outcome.registration,
         runtime_storage_tier,
-    ))
+    ));
+    emit_output(render_encryption_key_migration(outcome.encryption_key));
+    exit_code
 }
 
 async fn pair(service: &RuntimeService<RuntimeSecretStore>, profile: Option<&str>) -> ExitCode {
@@ -1066,14 +1068,17 @@ async fn pair(service: &RuntimeService<RuntimeSecretStore>, profile: Option<&str
         Ok(activation_id) => activation_id,
         Err(error) => return fail(&error.to_string()),
     };
-    let mut session = match service.open_session(
-        profile,
-        &hostname,
-        &connection,
-        OperationDescriptor::PairVaults {
-            activation_id: activation_id.clone(),
-        },
-    ) {
+    let mut session = match service
+        .open_session(
+            profile,
+            &hostname,
+            &connection,
+            OperationDescriptor::PairVaults {
+                activation_id: activation_id.clone(),
+            },
+        )
+        .await
+    {
         Ok(session) => session,
         Err(error) => return fail(&error.to_string()),
     };
@@ -1097,14 +1102,17 @@ async fn pair(service: &RuntimeService<RuntimeSecretStore>, profile: Option<&str
             Ok(response) => response,
             Err(RuntimeError::OperationAuthorizationExpired) => {
                 drop(session);
-                let renewed = match service.open_session(
-                    profile,
-                    &hostname,
-                    &connection,
-                    OperationDescriptor::PairVaults {
-                        activation_id: activation_id.clone(),
-                    },
-                ) {
+                let renewed = match service
+                    .open_session(
+                        profile,
+                        &hostname,
+                        &connection,
+                        OperationDescriptor::PairVaults {
+                            activation_id: activation_id.clone(),
+                        },
+                    )
+                    .await
+                {
                     Ok(session) => session,
                     Err(error) => return fail(&error.to_string()),
                 };
@@ -1169,7 +1177,10 @@ async fn search(
         cursor: args.cursor.clone(),
         page_size: args.page_size,
     };
-    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+    let session = match service
+        .open_session(profile, &hostname, &connection, descriptor)
+        .await
+    {
         Ok(session) => session,
         Err(error) => return fail(&error.to_string()),
     };
@@ -1243,7 +1254,10 @@ async fn get(
         field_id: args.field_id.clone(),
         output: CredentialOutputPolicy::CliSecretStdout,
     };
-    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+    let session = match service
+        .open_session(profile, &hostname, &connection, descriptor)
+        .await
+    {
         Ok(session) => session,
         Err(error) => return fail(&error.to_string()),
     };
@@ -1390,7 +1404,10 @@ async fn exec(
         parameters_digest,
         output: CredentialOutputPolicy::CliChildProcess,
     };
-    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+    let session = match service
+        .open_session(profile, &hostname, &connection, descriptor)
+        .await
+    {
         Ok(session) => session,
         Err(error) => return fail(&error.to_string()),
     };
@@ -1610,7 +1627,10 @@ async fn report_stale(
         entry_id: input.entry_id.clone(),
         code: stale_reason_code_name(input.code).to_owned(),
     };
-    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+    let session = match service
+        .open_session(profile, &hostname, &connection, descriptor)
+        .await
+    {
         Ok(session) => session,
         Err(error) => return fail(&error.to_string()),
     };
@@ -1715,7 +1735,10 @@ async fn submit_entry(
         surface: InvocationSurface::Cli,
         request_digest: request.digest(secret_args.generate),
     };
-    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+    let session = match service
+        .open_session(profile, &hostname, &connection, descriptor)
+        .await
+    {
         Ok(session) => session,
         Err(error) => return fail(&error.to_string()),
     };
@@ -1749,7 +1772,10 @@ async fn submission_status(
         surface: InvocationSurface::Cli,
         submission_id: submission_id.clone(),
     };
-    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+    let session = match service
+        .open_session(profile, &hostname, &connection, descriptor)
+        .await
+    {
         Ok(session) => session,
         Err(error) => return fail(&error.to_string()),
     };
@@ -1781,7 +1807,10 @@ async fn trust_approvers(
     let descriptor = OperationDescriptor::TrustApprovers {
         signing_key_fingerprint: fingerprint.to_owned(),
     };
-    let session = match service.open_session(profile, &hostname, &connection, descriptor) {
+    let session = match service
+        .open_session(profile, &hostname, &connection, descriptor)
+        .await
+    {
         Ok(session) => session,
         Err(error) => return fail(&error.to_string()),
     };

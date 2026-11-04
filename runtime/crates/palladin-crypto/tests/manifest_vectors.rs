@@ -48,7 +48,8 @@ fn identity(vector: &PairingVector) -> AgentIdentityBinding {
     AgentIdentityBinding {
         organization_id: Uuid::parse_str(&vector.transcript.organization_id).unwrap(),
         agent_id: Uuid::parse_str(&vector.transcript.agent_id).unwrap(),
-        x25519_fingerprint: decode_32(&vector.transcript.agent_x25519_fingerprint),
+        encryption_fingerprint: decode_32(&vector.transcript.agent_x25519_fingerprint),
+        previous_encryption_fingerprint: None,
         ed25519_fingerprint: decode_32(&vector.transcript.agent_ed25519_fingerprint),
     }
 }

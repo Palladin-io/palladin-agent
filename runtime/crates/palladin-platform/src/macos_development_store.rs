@@ -359,6 +359,7 @@ fn slot_code(slot: SecretSlot) -> u8 {
         SecretSlot::LegacyOrganizationApiKeyV2 => 8,
         SecretSlot::LegacyX25519PrivateKeyV2 => 9,
         SecretSlot::LegacyEd25519SecretKeyV2 => 10,
+        SecretSlot::EncryptionKeyV4 => 11,
     }
 }
 
@@ -374,6 +375,7 @@ fn slot_from_code(code: u8) -> Result<SecretSlot, StoreError> {
         8 => Ok(SecretSlot::LegacyOrganizationApiKeyV2),
         9 => Ok(SecretSlot::LegacyX25519PrivateKeyV2),
         10 => Ok(SecretSlot::LegacyEd25519SecretKeyV2),
+        11 => Ok(SecretSlot::EncryptionKeyV4),
         _ => Err(StoreError::Unavailable),
     }
 }
@@ -443,11 +445,11 @@ mod tests {
 
     #[test]
     fn authorization_slot_codes_accept_only_the_bounded_protocol_allowlist() {
-        for code in 1..=10 {
+        for code in 1..=11 {
             assert!(slot_from_code(code).is_ok());
         }
         assert!(slot_from_code(0).is_err());
-        assert!(slot_from_code(11).is_err());
+        assert!(slot_from_code(12).is_err());
         assert!(slot_from_code(u8::MAX).is_err());
     }
 }

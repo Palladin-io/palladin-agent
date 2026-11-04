@@ -3,6 +3,7 @@
 mod envelope;
 mod grant;
 mod identity;
+mod key_wrapper;
 mod local_cache;
 mod manifest;
 mod pairing;
@@ -13,6 +14,7 @@ mod signing;
 mod submission;
 mod suite;
 mod vault_v2;
+mod xwing;
 
 pub use envelope::{
     AgentVaultKeyWrapper, AgentVaultKeyWrapperDescriptor, AgentWrappedVaultKey,
@@ -28,7 +30,13 @@ pub use grant::{
     DecryptedGrantPayload, ExpectedGrantContext, GrantEnvelopeV2, decrypt_grant_payload,
 };
 pub use identity::{
-    Ed25519Identity, X25519Identity, verify_browser_pairing_state, verify_profile_binding,
+    Ed25519Identity, X25519Identity, encryption_key_rotation_statement,
+    verify_browser_pairing_state, verify_encryption_key_rotation, verify_profile_binding,
+};
+pub use key_wrapper::{
+    AgentEncryptionKeys, EncryptionIdentity, RecipientKeyKind, RecipientPublicKey,
+    SealedWrappedKey, WrapperContext, WrapperError, WrapperPurpose, WrapperSuite,
+    compute_key_fingerprint,
 };
 pub use local_cache::{open_local_discovery_cache, seal_local_discovery_cache};
 pub use manifest::{
@@ -66,9 +74,8 @@ pub use submission::{
 };
 pub use suite::{
     CryptoSuiteRegistry, EncodedSuitePayload, EnvelopeBinding, EnvelopeDescriptor, EnvelopePurpose,
-    EnvelopeScope, InstantBinding, RecipientKeyKind, SealedWrappedKey, VAULT_XCHACHA_V1,
-    WrapperContext, WrapperPurpose, X25519_WRAPPER_V1, X25519SealedBoxSuite, XChaChaVaultSuite,
-    compute_field_set_commitment, compute_key_fingerprint,
+    EnvelopeScope, InstantBinding, VAULT_XCHACHA_V1, XChaChaVaultSuite,
+    compute_field_set_commitment,
 };
 pub use vault_v2::{
     ALGORITHM_SUITE, AadField, AadProfile, AadValue, EnvelopeHeader, HkdfContext, PROTOCOL_VERSION,
@@ -112,4 +119,8 @@ pub enum CryptoError {
     StaleInput,
     #[error("cryptographic input does not match its declared profile")]
     InvalidProfile,
+    /// The recipient's published key uses a read-only suite; its owner must publish a current
+    /// key before anything is sealed to it.
+    #[error("key-migration-pending")]
+    KeyMigrationPending,
 }

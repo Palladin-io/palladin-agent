@@ -217,12 +217,16 @@ where
                 cursor: input.cursor.clone(),
                 page_size: input.page_size,
             };
-            let session = match self.service.open_session(
-                Some(input.profile.trim()),
-                &self.hostname,
-                &self.connection,
-                descriptor,
-            ) {
+            let session = match self
+                .service
+                .open_session(
+                    Some(input.profile.trim()),
+                    &self.hostname,
+                    &self.connection,
+                    descriptor,
+                )
+                .await
+            {
                 Ok(session) => session,
                 Err(error) => return runtime_failure(&error),
             };
@@ -261,12 +265,16 @@ where
                 field_id: input.field_id.clone(),
                 output: CredentialOutputPolicy::McpSecretResponse,
             };
-            let session = match self.service.open_session(
-                Some(input.profile.trim()),
-                &self.hostname,
-                &self.connection,
-                descriptor,
-            ) {
+            let session = match self
+                .service
+                .open_session(
+                    Some(input.profile.trim()),
+                    &self.hostname,
+                    &self.connection,
+                    descriptor,
+                )
+                .await
+            {
                 Ok(session) => session,
                 Err(error) => return runtime_failure(&error),
             };
@@ -395,12 +403,16 @@ where
                 parameters_digest,
                 output: CredentialOutputPolicy::McpChildProcessWithheld,
             };
-            let session = match self.service.open_session(
-                Some(input.profile.trim()),
-                &self.hostname,
-                &self.connection,
-                descriptor,
-            ) {
+            let session = match self
+                .service
+                .open_session(
+                    Some(input.profile.trim()),
+                    &self.hostname,
+                    &self.connection,
+                    descriptor,
+                )
+                .await
+            {
                 Ok(session) => session,
                 Err(error) => return exec_failure(&error),
             };
@@ -562,12 +574,16 @@ where
                 entry_id: request.entry_id.clone(),
                 code: stale_reason_code_name(request.code).to_owned(),
             };
-            let session = match self.service.open_session(
-                Some(input.profile.trim()),
-                &self.hostname,
-                &self.connection,
-                descriptor,
-            ) {
+            let session = match self
+                .service
+                .open_session(
+                    Some(input.profile.trim()),
+                    &self.hostname,
+                    &self.connection,
+                    descriptor,
+                )
+                .await
+            {
                 Ok(session) => session,
                 Err(error) => return runtime_failure(&error),
             };

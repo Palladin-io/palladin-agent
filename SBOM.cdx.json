@@ -1173,6 +1173,30 @@
       ]
     },
     {
+      "bom-ref": "pkg:cargo/cmov@0.5.4",
+      "type": "library",
+      "name": "cmov",
+      "version": "0.5.4",
+      "purl": "pkg:cargo/cmov@0.5.4",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/RustCrypto/utils"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
       "bom-ref": "pkg:cargo/colorchoice@1.0.5",
       "type": "library",
       "name": "colorchoice",
@@ -1477,6 +1501,54 @@
       ]
     },
     {
+      "bom-ref": "pkg:cargo/crypto-common@0.2.2",
+      "type": "library",
+      "name": "crypto-common",
+      "version": "0.2.2",
+      "purl": "pkg:cargo/crypto-common@0.2.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/RustCrypto/traits"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/ctutils@0.4.8",
+      "type": "library",
+      "name": "ctutils",
+      "version": "0.4.8",
+      "purl": "pkg:cargo/ctutils@0.4.8",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/RustCrypto/utils"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
       "bom-ref": "pkg:cargo/curve25519-dalek-derive@0.1.1",
       "type": "library",
       "name": "curve25519-dalek-derive",
@@ -1586,6 +1658,30 @@
       "name": "digest",
       "version": "0.10.7",
       "purl": "pkg:cargo/digest@0.10.7",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/RustCrypto/traits"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/digest@0.11.3",
+      "type": "library",
+      "name": "digest",
+      "version": "0.11.3",
+      "purl": "pkg:cargo/digest@0.11.3",
       "licenses": [
         {
           "expression": "MIT OR Apache-2.0"
@@ -2693,6 +2789,30 @@
       ]
     },
     {
+      "bom-ref": "pkg:cargo/hybrid-array@0.4.15",
+      "type": "library",
+      "name": "hybrid-array",
+      "version": "0.4.15",
+      "purl": "pkg:cargo/hybrid-array@0.4.15",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/RustCrypto/hybrid-array"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
       "bom-ref": "pkg:cargo/hyper-rustls@0.27.9",
       "type": "library",
       "name": "hyper-rustls",
@@ -3221,6 +3341,54 @@
       ]
     },
     {
+      "bom-ref": "pkg:cargo/keccak@0.2.2",
+      "type": "library",
+      "name": "keccak",
+      "version": "0.2.2",
+      "purl": "pkg:cargo/keccak@0.2.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/RustCrypto/sponges"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/kem@0.3.0",
+      "type": "library",
+      "name": "kem",
+      "version": "0.3.0",
+      "purl": "pkg:cargo/kem@0.3.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/RustCrypto/traits"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
       "bom-ref": "pkg:cargo/keyring-core@1.0.0",
       "type": "library",
       "name": "keyring-core",
@@ -3595,6 +3763,62 @@
         {
           "type": "website",
           "url": "https://github.com/tokio-rs/mio"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/ml-kem@0.3.4",
+      "type": "library",
+      "name": "ml-kem",
+      "version": "0.3.4",
+      "purl": "pkg:cargo/ml-kem@0.3.4",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/RustCrypto/KEMs"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/RustCrypto/KEMs/tree/master/ml-kem"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/module-lattice@0.2.4",
+      "type": "library",
+      "name": "module-lattice",
+      "version": "0.2.4",
+      "purl": "pkg:cargo/module-lattice@0.2.4",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/RustCrypto/KEMs"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/RustCrypto/KEMs/tree/master/module-lattice"
         }
       ],
       "properties": [
@@ -6125,6 +6349,54 @@
       ]
     },
     {
+      "bom-ref": "pkg:cargo/sha3@0.12.0",
+      "type": "library",
+      "name": "sha3",
+      "version": "0.12.0",
+      "purl": "pkg:cargo/sha3@0.12.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/RustCrypto/hashes"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/shake@0.1.0",
+      "type": "library",
+      "name": "shake",
+      "version": "0.1.0",
+      "purl": "pkg:cargo/shake@0.1.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/RustCrypto/XOFs"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
       "bom-ref": "pkg:cargo/shlex@2.0.1",
       "type": "library",
       "name": "shlex",
@@ -6311,6 +6583,30 @@
         {
           "type": "vcs",
           "url": "https://github.com/RustCrypto/formats/tree/master/spki"
+        }
+      ],
+      "properties": [
+        {
+          "name": "palladin:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/sponge-cursor@0.1.0",
+      "type": "library",
+      "name": "sponge-cursor",
+      "version": "0.1.0",
+      "purl": "pkg:cargo/sponge-cursor@0.1.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/RustCrypto/utils"
         }
       ],
       "properties": [

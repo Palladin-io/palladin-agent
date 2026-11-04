@@ -196,6 +196,7 @@ fn slot_context(slot: SecretSlot) -> (&'static str, u8) {
         SecretSlot::LegacyOrganizationApiKeyV2 => ("organization-api-key", 5),
         SecretSlot::LegacyX25519PrivateKeyV2 => ("x25519-private-key", 6),
         SecretSlot::LegacyEd25519SecretKeyV2 => ("ed25519-secret-key", 7),
+        SecretSlot::EncryptionKeyV4 => ("encryption-key-v4", 11),
     }
 }
 
