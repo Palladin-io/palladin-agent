@@ -235,11 +235,14 @@ impl SubmissionContentV2 {
             } else {
                 json!(field.value.expose_secret())
             };
-            let mut custom = json!({"id":field.id,"type":field.field_type,"value":value});
+            let mut custom = Map::new();
+            custom.insert("id".into(), Value::String(field.id.clone()));
+            custom.insert("type".into(), Value::String(field.field_type.clone()));
+            custom.insert("value".into(), value);
             if let Some(label) = &field.label {
-                custom["label"] = json!(label);
+                custom.insert("label".into(), Value::String(label.clone()));
             }
-            fields.push(custom);
+            fields.push(Value::Object(custom));
         }
         if !fields.is_empty() {
             content.insert("customFields".into(), Value::Array(fields));
@@ -261,13 +264,17 @@ pub fn build_agent_submission_v2(
     if context.identity.organization_id != context.approver.organization_id {
         return Err(SubmissionError::ContextMismatch);
     }
-    let mut payload = json!({"schema":SCHEMA,"identity":context.identity.to_value(),"content":content.to_value()?});
+    let mut payload = Map::new();
+    payload.insert("schema".into(), Value::String(SCHEMA.into()));
+    payload.insert("identity".into(), context.identity.to_value());
+    payload.insert("content".into(), content.to_value()?);
     if let Some(label) = label {
-        payload["label"] = json!(label);
+        payload.insert("label".into(), Value::String(label.to_owned()));
     }
     if let Some(description) = description {
-        payload["description"] = json!(description);
+        payload.insert("description".into(), Value::String(description.to_owned()));
     }
+    let mut payload = Value::Object(payload);
     let valid = validate(&payload, &context.identity);
     let plaintext = canonical_json(&payload).map(Zeroizing::new);
     zeroize_json(&mut payload);
