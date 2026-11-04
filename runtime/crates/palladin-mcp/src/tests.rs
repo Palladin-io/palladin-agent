@@ -242,6 +242,30 @@ fn frozen_contract_exposes_browser_discovery_and_existing_tools() {
 }
 
 #[test]
+fn search_contract_documents_the_sign_in_provider_reference_without_new_arguments() {
+    let tools = load_tools().expect("contract");
+    let search = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "search_entries")
+        .expect("search tool");
+    let description = search.description.as_deref().expect("description");
+
+    for guidance in [
+        "signInMethod {provider, providerEntry: {vaultId, entryId} | null}",
+        "call inject_credential with providerEntry.vaultId and providerEntry.entryId",
+        "If providerEntry is null, ask the user which account to use.",
+        "Never guess or pick another provider account",
+    ] {
+        assert!(description.contains(guidance), "{guidance}");
+    }
+    assert_eq!(
+        search.input_schema.get("required"),
+        Some(&json!(["profile", "query"]))
+    );
+    assert!(search.output_schema.is_none());
+}
+
+#[test]
 fn frozen_inject_contract_requires_the_trusted_inject_method() {
     let tools = load_tools().expect("contract");
     let inject = tools

@@ -23,6 +23,25 @@ pub struct EntrySearchItem {
     pub agent_fields: Vec<AgentVisibleField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script_execution: Option<ScriptExecutionDiscovery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in_method: Option<SignInMethod>,
+}
+
+/// Federated sign-in published by the user for this Entry. `provider_entry`
+/// names the provider Credential an Agent may request through the normal grant
+/// flow; it is a reference only and never carries access by itself.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignInMethod {
+    pub provider: String,
+    pub provider_entry: Option<SignInProviderEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignInProviderEntry {
+    pub vault_id: String,
+    pub entry_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

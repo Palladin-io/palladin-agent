@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use palladin_api::{
-    AgentVisibleField, EntrySearchItem, EntrySearchResult, ScriptExecutionDiscovery,
+    AgentVisibleField, EntrySearchItem, EntrySearchResult, ScriptExecutionDiscovery, SignInMethod,
+    SignInProviderEntry,
 };
 use palladin_crypto::ScriptExecutionMetadata;
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,9 @@ const DEFAULT_PAGE_SIZE: usize = 50;
 const CURSOR_BYTES: usize = 49;
 const DURABLE_CACHE_SCHEMA_VERSION: u32 = 2;
 const MAX_DURABLE_CACHE_BYTES: usize = MAX_LOGICAL_INDEX_BYTES + 4 * 1024 * 1024;
+const SIGN_IN_DISCOVERY_FIELD_ID: &str = "signIn";
+const SIGN_IN_SCHEMA: &str = "palladin.signin.v1";
+const SIGN_IN_PROVIDERS: [&str; 5] = ["google", "apple", "microsoft", "github", "facebook"];
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -639,7 +643,13 @@ impl LocalDiscoveryIndex {
                     .script_execution
                     .as_ref()
                     .map(|execution| execution.description.clone()),
-                agent_fields: entry.approved_fields.clone(),
+                agent_fields: entry
+                    .approved_fields
+                    .iter()
+                    .filter(|field| field.label != SIGN_IN_DISCOVERY_FIELD_ID)
+                    .cloned()
+                    .collect(),
+                sign_in_method: sign_in_method(&entry.entry_type, &entry.approved_fields),
                 script_execution: entry.script_execution.as_ref().and_then(|execution| {
                     let checkpoint = self
                         .entry_checkpoints
@@ -828,6 +838,49 @@ fn searchable_text(label: &str, approved_fields: &[AgentVisibleField]) -> String
     searchable
 }
 
+/// Derived at read time from the approved Discovery fields so durable caches
+/// written before this field existed remain valid. A malformed value is
+/// dropped without failing the Entry: it only guides which Credential the
+/// Agent asks the user to approve and never grants access by itself.
+fn sign_in_method(entry_type: &str, approved_fields: &[AgentVisibleField]) -> Option<SignInMethod> {
+    if entry_type != "credential" {
+        return None;
+    }
+    let field = approved_fields
+        .iter()
+        .find(|field| field.label == SIGN_IN_DISCOVERY_FIELD_ID)?;
+    let value = serde_json::from_str::<serde_json::Value>(&field.value).ok()?;
+    let object = value.as_object()?;
+    if object.len() != 3 || object.get("schema")?.as_str()? != SIGN_IN_SCHEMA {
+        return None;
+    }
+    let provider = object.get("provider")?.as_str()?;
+    if !SIGN_IN_PROVIDERS.contains(&provider) {
+        return None;
+    }
+    let provider_entry = match object.get("entry")? {
+        serde_json::Value::Null => None,
+        serde_json::Value::Object(entry) if entry.len() == 2 => Some(SignInProviderEntry {
+            vault_id: versioned_uuid(entry.get("vaultId")?)?,
+            entry_id: versioned_uuid(entry.get("entryId")?)?,
+        }),
+        _ => return None,
+    };
+    Some(SignInMethod {
+        provider: provider.to_owned(),
+        provider_entry,
+    })
+}
+
+fn versioned_uuid(value: &serde_json::Value) -> Option<String> {
+    let value = value.as_str()?;
+    let parsed = Uuid::try_parse(value).ok()?;
+    (parsed.hyphenated().to_string() == value
+        && (1..=8).contains(&parsed.get_version_num())
+        && parsed.get_variant() == uuid::Variant::RFC4122)
+        .then(|| value.to_owned())
+}
+
 fn is_canonical_sequence(value: &str) -> bool {
     value
         .parse::<u64>()
@@ -921,6 +974,106 @@ mod tests {
             "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         );
         assert_eq!(alice.items[0].agent_fields[1].value, "alice");
+    }
+
+    fn with_sign_in(mut plaintext: DiscoveryPlaintext, value: &str) -> DiscoveryPlaintext {
+        plaintext.fields.push(DiscoveryField {
+            id: "signIn".to_owned(),
+            value: value.to_owned(),
+        });
+        plaintext
+    }
+
+    #[test]
+    fn sign_in_discovery_becomes_a_structured_provider_reference_and_survives_the_cache() {
+        let vault_id = "11111111-1111-4111-8111-111111111111";
+        let linked = r#"{"entry":{"entryId":"55555555-5555-4555-8555-555555555555","vaultId":"44444444-4444-4444-8444-444444444444"},"provider":"google","schema":"palladin.signin.v1"}"#;
+        let mut index = LocalDiscoveryIndex::new();
+        index.scope_to_identity("profile-a", "agent-a");
+        index.prepare_vault(vault_id, 1);
+        for (entry_id, plaintext) in [
+            (
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                with_sign_in(account("Linked", "alice"), linked),
+            ),
+            (
+                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                with_sign_in(
+                    account("Provider only", "bob"),
+                    r#"{"entry":null,"provider":"apple","schema":"palladin.signin.v1"}"#,
+                ),
+            ),
+        ] {
+            index
+                .upsert(vault_id, entry_id, 1, envelope_digest(1), plaintext)
+                .unwrap();
+        }
+        let encoded = index.encode_durable_cache().expect("encode cache");
+        let restored = LocalDiscoveryIndex::decode_durable_cache(&encoded, "profile-a", "agent-a")
+            .expect("decode cache");
+
+        let items = restored.search("example.com", None, None).unwrap().items;
+        let linked = items[0].sign_in_method.as_ref().expect("linked method");
+        assert_eq!(linked.provider, "google");
+        let provider_entry = linked.provider_entry.as_ref().expect("provider Entry");
+        assert_eq!(
+            provider_entry.vault_id,
+            "44444444-4444-4444-8444-444444444444"
+        );
+        assert_eq!(
+            provider_entry.entry_id,
+            "55555555-5555-4555-8555-555555555555"
+        );
+        let provider_only = items[1].sign_in_method.as_ref().expect("provider method");
+        assert_eq!(provider_only.provider, "apple");
+        assert!(provider_only.provider_entry.is_none());
+        assert!(items.iter().all(|item| {
+            item.agent_fields
+                .iter()
+                .all(|field| field.label != "signIn")
+        }));
+        let rendered = serde_json::to_value(&items[0]).unwrap();
+        assert_eq!(
+            rendered["signInMethod"]["providerEntry"]["vaultId"],
+            provider_entry.vault_id
+        );
+    }
+
+    #[test]
+    fn malformed_sign_in_discovery_is_ignored_without_failing_the_entry() {
+        let vault_id = "11111111-1111-4111-8111-111111111111";
+        let malformed = [
+            r#"{"entry":null,"provider":"myspace","schema":"palladin.signin.v1"}"#,
+            r#"{"entry":null,"provider":"google","schema":"palladin.signin.v2"}"#,
+            r#"{"provider":"google","schema":"palladin.signin.v1"}"#,
+            r#"{"account":"a@b.c","entry":null,"provider":"google","schema":"palladin.signin.v1"}"#,
+            r#"{"entry":{"entryId":"not-a-uuid","vaultId":"44444444-4444-4444-8444-444444444444"},"provider":"google","schema":"palladin.signin.v1"}"#,
+            r#"{"entry":{"entryId":"55555555-5555-4555-8555-55555555555A","vaultId":"44444444-4444-4444-8444-444444444444"},"provider":"google","schema":"palladin.signin.v1"}"#,
+            r#"{"entry":{"entryId":"55555555-5555-0555-8555-555555555555","vaultId":"44444444-4444-4444-8444-444444444444"},"provider":"google","schema":"palladin.signin.v1"}"#,
+            "google",
+        ];
+        for value in malformed {
+            let mut index = LocalDiscoveryIndex::new();
+            index
+                .upsert(
+                    vault_id,
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    1,
+                    envelope_digest(1),
+                    with_sign_in(account("Service", "alice"), value),
+                )
+                .expect("the Entry itself stays valid");
+            let items = index.search("service", None, None).unwrap().items;
+            assert_eq!(items.len(), 1, "{value}");
+            assert!(items[0].sign_in_method.is_none(), "{value}");
+            assert!(
+                items[0]
+                    .agent_fields
+                    .iter()
+                    .all(|field| field.label != "signIn"),
+                "{value}"
+            );
+        }
     }
 
     #[test]
