@@ -47,6 +47,28 @@ Other conflicts are not retried, retry exhaustion fails closed, and response
 bodies, ciphertext, credentials, and private identity material are never added
 to errors or diagnostics.
 
+### Federated sign-in alternatives
+
+Search exposes member-approved `palladin.signin.v2` projections as
+`signInMethods` (`id`, `provider`, optional `providerEntry`). Stable IDs preserve
+original UUID hex spelling and sort ordinally; multiple accounts at the same
+provider remain separate choices. Account names and raw projection JSON never
+appear in search output. Legacy-only `palladin.signin.v1` stays available as
+`signInMethod`; a collection suppresses that singleton, including when malformed.
+Unknown or malformed collections expose no alternatives.
+
+MCP contract v2.3 and the browser-login skill require the Agent to ask the user
+when alternatives are ambiguous. A provider Entry reference always requires its
+own normal grant, and injection retains its exact HTTPS origin checks. FULL
+grants recognize v2 MemberSecret fields only under Credential `never`/`discovery`
+policies; these fields never enter delivered credential projections.
+
+The collection field uses the existing AgentDiscovery encrypted-envelope budget
+(16 KiB ciphertext minus the 16-byte authentication tag). The total envelope
+crypto gate is unchanged; legacy and other fields retain their 2 KiB cap.
+Protocol conformance fixtures are copied from `palladin-protocol` under
+`runtime/contracts/federated-signin/v2`; frozen earlier MCP versions are retained.
+
 ### Security scope and explicit non-goals
 
 Palladin's hard boundary is credential confidentiality and scoped delivery. The

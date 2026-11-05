@@ -523,6 +523,7 @@ fn frozen_command_outputs_cover_every_ported_public_surface() {
             }],
             script_execution: None,
             sign_in_method: None,
+            sign_in_methods: Vec::new(),
         }],
         next_cursor: Some("cursor-1234567890abcdef".to_owned()),
     };
@@ -621,6 +622,7 @@ fn search_human_output_names_the_sign_in_provider_and_its_entry() {
         agent_fields: Vec::new(),
         script_execution: None,
         sign_in_method: Some(sign_in_method),
+        sign_in_methods: Vec::new(),
     };
     let rendered = render_search_human(&EntrySearchResult {
         items: vec![
@@ -648,6 +650,25 @@ fn search_human_output_names_the_sign_in_provider_and_its_entry() {
     assert!(rendered.stdout.contains(
         "  sign-in: apple (provider account not linked; ask the user which account to use)"
     ));
+}
+
+#[test]
+fn search_human_output_preserves_multiple_account_choices() {
+    let item: EntrySearchItem = serde_json::from_value(serde_json::json!({
+        "entryId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "vaultId":"11111111-1111-4111-8111-111111111111", "label":"Service",
+        "urlDomain":null, "description":null, "scriptExecution":null,
+        "signInMethods":[
+            {"id":"custom:11111111-1111-4111-8111-111111111111","provider":"google","providerEntry":null},
+            {"id":"custom:22222222-2222-4222-8222-222222222222","provider":"google","providerEntry":null}
+        ]
+    })).unwrap();
+    let rendered = render_search_human(&EntrySearchResult {
+        items: vec![item],
+        next_cursor: None,
+    });
+    assert_eq!(rendered.stdout.matches("sign-in choice:").count(), 2);
+    assert!(rendered.stdout.contains("ask the user to choose a method"));
 }
 
 fn assert_rendered(actual: RenderedOutput, expected: &CommandOutputSnapshot, name: &str) {
