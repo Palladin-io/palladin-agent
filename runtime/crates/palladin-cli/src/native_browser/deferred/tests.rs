@@ -101,6 +101,7 @@ async fn run_deferred_cases(cases: &[&'static str], action: &'static str) {
         let host_checks = checks.clone();
         let host = tokio::spawn(async move {
             let prepare = OwnedPrepareRequest {
+                capture_mode: false,
                 protocol: INJECT_PROVIDER_PROTOCOL.into(),
                 message_type: "prepare".into(),
                 nonce: "a".repeat(32),

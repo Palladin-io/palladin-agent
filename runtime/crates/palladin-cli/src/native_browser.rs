@@ -34,6 +34,7 @@ use crate::browser::ChromeExtensionOrigin;
 use crate::browser::local_socket_path;
 use palladin_browser_bridge::routing::{session_socket_path, single_browser_socket};
 
+mod capture;
 mod deferred;
 mod exchange;
 #[cfg(test)]
@@ -140,6 +141,8 @@ pub struct InjectResult {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OwnedPrepareRequest {
+    #[serde(default, skip_serializing)]
+    capture_mode: bool,
     protocol: String,
     #[serde(rename = "type")]
     message_type: String,
@@ -630,6 +633,10 @@ where
     if prepared.outcome != "ready" {
         return Ok(());
     }
+    if prepare.capture_mode {
+        return capture::serve_capture(local, local_session, exchange, prepare, lifecycle_guard)
+            .await;
+    }
     live_flow::serve_inject_flow_with(
         local,
         local_session,
@@ -652,6 +659,8 @@ fn validate_prepare(request: &OwnedPrepareRequest) -> Result<(), NativeBrowserEr
         || request.message_type != "prepare"
         || !valid_nonce(&request.nonce)
         || !valid_target
+        || (request.capture_mode
+            && (request.target_tab_id.is_none() || request.live_detection != Some(false)))
         || (request.live_detection == Some(true) && request.target_tab_id.is_none())
     {
         return Err(NativeBrowserError::InvalidMessage);
@@ -1223,6 +1232,7 @@ mod tests {
     #[test]
     fn old_extension_prepare_rejection_reports_incompatibility_instead_of_closing_transport() {
         let request = OwnedPrepareRequest {
+            capture_mode: false,
             protocol: INJECT_PROVIDER_PROTOCOL.to_owned(),
             message_type: "prepare".to_owned(),
             nonce: "a".repeat(64),

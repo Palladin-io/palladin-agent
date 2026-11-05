@@ -2,6 +2,7 @@
 
 pub mod args;
 pub mod browser;
+pub mod captured_submission;
 #[cfg(unix)]
 pub mod native_browser;
 pub mod output;

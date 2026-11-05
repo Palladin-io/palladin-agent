@@ -364,10 +364,16 @@ pub struct SubmitUpdateArgs {
 /// The secret is never accepted as an argument or environment variable.
 #[derive(Debug, Args)]
 pub struct SubmitSecretArgs {
+    /// Declarative browser capture plan JSON; values are read only inside the extension.
+    #[arg(long, conflicts_with_all = ["generate", "from_prompt", "username", "url", "length", "classes", "require", "symbols"])]
+    pub from_browser: Option<String>,
+    /// Proposed Entry description; reviewed with the captured changes.
+    #[arg(long, requires = "from_browser")]
+    pub description: Option<String>,
     /// Generate the secret with the native CSPRNG; it is never printed.
     #[arg(
         long,
-        required_unless_present = "from_prompt",
+        required_unless_present_any = ["from_prompt", "from_browser"],
         conflicts_with = "from_prompt"
     )]
     pub generate: bool,
@@ -729,5 +735,29 @@ mod submit_tests {
         assert!(parse(&["get", "--submission", id]).is_err());
         assert!(parse(&["get", "vault", "entry", "--submission", id]).is_err());
         assert!(parse(&["exec", "vault", "entry", "--submission", id, "--", "true"]).is_err());
+    }
+    #[test]
+    fn browser_capture_rejects_literal_values_and_other_secret_sources() {
+        let base = [
+            "submit",
+            "new",
+            "--type",
+            "credential",
+            "--label",
+            "Account",
+            "--from-browser",
+            "{}",
+        ];
+        assert!(parse(&base).is_ok());
+        assert!(parse(&[&base[..], &["--description", "For deployment"]].concat()).is_ok());
+        for flag in [
+            &["--username", "literal"][..],
+            &["--url", "https://example.test"],
+            &["--from-prompt"],
+            &["--generate"],
+            &["--length", "20"],
+        ] {
+            assert!(parse(&[&base[..], flag].concat()).is_err());
+        }
     }
 }

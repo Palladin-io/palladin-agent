@@ -18,6 +18,12 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
+mod v2;
+pub use v2::{
+    OpenedSubmissionV2, SubmissionContentV2, SubmissionCustomFieldV2, build_agent_submission_v2,
+    open_agent_submission_v2,
+};
+
 use crate::suite::WrapperOpenError;
 use crate::{
     DecryptedCredential, Ed25519Identity, EnvelopeScope, PROTOCOL_VERSION, RecipientKeyKind,
@@ -1111,6 +1117,16 @@ pub fn open_agent_submission(
     submission: &AgentEntrySubmission,
     authority: &SubmissionAuthority<'_>,
 ) -> Result<OpenedSubmission, SubmissionError> {
+    let mut payload = decrypt_submission_payload(submission, authority)?;
+    let opened = parse_payload(&payload, &submission.identity);
+    zeroize_json(&mut payload);
+    opened
+}
+
+fn decrypt_submission_payload(
+    submission: &AgentEntrySubmission,
+    authority: &SubmissionAuthority<'_>,
+) -> Result<Value, SubmissionError> {
     let dek = open_dek(submission, authority)?;
     let sealed = &submission.encoded_payload;
     if sealed.len() < NONCE_BYTES + TAG_BYTES {
@@ -1131,11 +1147,7 @@ pub fn open_agent_submission(
     if plaintext.len() > PAYLOAD_PLAINTEXT_MAX_BYTES {
         return Err(SubmissionError::FieldTooLarge);
     }
-    let mut payload: Value =
-        serde_json::from_slice(&plaintext).map_err(|_| SubmissionError::InvalidField)?;
-    let opened = parse_payload(&payload, &submission.identity);
-    zeroize_json(&mut payload);
-    opened
+    serde_json::from_slice(&plaintext).map_err(|_| SubmissionError::InvalidField)
 }
 
 /// The payload rules shared by the builder and every opener (`validationOrder`, last step).

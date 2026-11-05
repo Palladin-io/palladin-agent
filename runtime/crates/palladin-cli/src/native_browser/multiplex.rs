@@ -11,7 +11,25 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
-type Reply = oneshot::Sender<Result<Value, NativeBrowserError>>;
+/// Replies can contain captured values. Erase queued/canceled/rejected response buffers.
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct ProtectedResponse(Value);
+impl Drop for ProtectedResponse {
+    fn drop(&mut self) {
+        fn wipe(value: &mut Value) {
+            match value {
+                Value::String(text) => text.zeroize(),
+                Value::Array(values) => values.iter_mut().for_each(wipe),
+                Value::Object(values) => values.values_mut().for_each(wipe),
+                _ => {}
+            }
+        }
+        wipe(&mut self.0);
+    }
+}
+
+type Reply = oneshot::Sender<Result<ProtectedResponse, NativeBrowserError>>;
 
 enum Outbound {
     Request {
@@ -41,7 +59,7 @@ pub(super) struct OperationChannel {
     permit: Option<OwnedSemaphorePermit>,
 }
 
-pub(super) struct PendingResponse(oneshot::Receiver<Result<Value, NativeBrowserError>>);
+pub(super) struct PendingResponse(oneshot::Receiver<Result<ProtectedResponse, NativeBrowserError>>);
 
 pub(super) struct BrowserBroker {
     session: HostSecureSession,
@@ -67,7 +85,7 @@ struct ResponseEnvelope {
     #[serde(rename = "type")]
     kind: String,
     operation_id: String,
-    response: Option<Value>,
+    response: Option<ProtectedResponse>,
 }
 
 impl BrowserConnection {
@@ -173,7 +191,7 @@ impl PendingResponse {
             .await
             .map_err(|_| NativeBrowserError::Unavailable)?
             .map_err(|_| NativeBrowserError::Unavailable)??;
-        serde_json::from_value(result).map_err(|_| NativeBrowserError::InvalidMessage)
+        T::deserialize(&result.0).map_err(|_| NativeBrowserError::InvalidMessage)
     }
 }
 
