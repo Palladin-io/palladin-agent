@@ -65,6 +65,7 @@ async fn authenticated_status_query_does_not_touch_the_browser_or_consume_operat
             .as_str()
             .is_some_and(palladin_browser_bridge::routing::valid_browser_session_id)
     );
+    drop(client); // Discovery-only clients close after receiving the authenticated status.
     host.await.unwrap().unwrap();
     drop(held);
 }

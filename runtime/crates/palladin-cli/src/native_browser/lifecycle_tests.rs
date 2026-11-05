@@ -287,3 +287,360 @@ fn socket_paths(root: &Path) -> Vec<PathBuf> {
         .map(|entry| entry.path())
         .collect()
 }
+
+fn locator(path: &Path) -> String {
+    path.file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .strip_prefix("b-")
+        .unwrap()
+        .strip_suffix(".sock")
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn capture_selection_reaches_only_the_authenticated_browser_with_colliding_tab_ids() {
+    use palladin_browser_bridge::capture::{CapturePlan, CaptureRequest};
+    let root = tempfile::tempdir().unwrap();
+    let (first_host, mut first_browser, first_peer) = start_host(root.path()).await;
+    let first_id = locator(&socket_paths(root.path())[0]);
+    let (second_host, mut second_browser, second_peer) = start_host(root.path()).await;
+    let second_id = socket_paths(root.path())
+        .iter()
+        .map(|p| locator(p))
+        .find(|id| *id != first_id)
+        .unwrap();
+    let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+    assert!(
+        ExtensionClient::connect_for_session(root.path(), &identity, None)
+            .await
+            .is_err()
+    );
+    for (selected, browser, peer) in [
+        (&first_id, &mut first_browser, &first_peer),
+        (&second_id, &mut second_browser, &second_peer),
+    ] {
+        let client = async {
+            let mut client =
+                ExtensionClient::connect_for_session(root.path(), &identity, Some(selected))
+                    .await
+                    .unwrap();
+            let plan = CapturePlan::parse(&json!({"targetTabId":7,"targetUrl":"https://example.test/login","fields":[{"entryFieldId":"username","selector":"#username","read":"value"}]}).to_string()).unwrap();
+            assert_eq!(
+                client
+                    .prepare_capture(&"a".repeat(32), &plan)
+                    .await
+                    .unwrap()
+                    .outcome,
+                "ready"
+            );
+            let result = client
+                .capture(
+                    CaptureRequest::new(&"a".repeat(32), plan),
+                    monotonic_not_after_ns(monotonic_now_ns().unwrap(), Duration::from_secs(5))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                result.values.as_ref().unwrap()[0].value == *selected,
+                "synthetic captured value mismatch"
+            );
+        };
+        let extension = async {
+            let frame: SecureFrame = read_message(browser).await.unwrap();
+            let envelope = peer.open(&frame, 1);
+            let operation = envelope["operationId"].clone();
+            let prepare = &envelope["request"];
+            assert_eq!(prepare["targetTabId"], 7);
+            write_message(browser,&peer.seal(json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"operation.result","operationId":operation,"response":{"protocol":INJECT_PROVIDER_PROTOCOL,"type":"prepare.result","nonce":prepare["nonce"],"currentUrl":"https://example.test/login","outcome":"ready"}}),1)).await.unwrap();
+            let frame: SecureFrame = read_message(browser).await.unwrap();
+            let envelope = peer.open(&frame, 2);
+            assert_eq!(envelope["operationId"], operation);
+            let capture = &envelope["request"];
+            assert_eq!(capture["type"], "capture");
+            assert_eq!(capture["targetUrl"], "https://example.test/login");
+            write_message(browser,&peer.seal(json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"operation.result","operationId":operation,"response":{"protocol":INJECT_PROVIDER_PROTOCOL,"type":"capture.result","transactionId":capture["transactionId"],"outcome":"captured","values":[{"entryFieldId":"username","value":selected}]}}),2)).await.unwrap();
+            let frame: SecureFrame = read_message(browser).await.unwrap();
+            assert_eq!(peer.open(&frame, 3)["type"], "operation.close");
+            write_message(browser, &peer.seal(json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"operation.closed","operationId":operation}), 3)).await.unwrap();
+        };
+        tokio::join!(client, extension);
+    }
+    assert!(
+        timeout(
+            Duration::from_millis(30),
+            read_message::<SecureFrame>(&mut first_browser)
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(30),
+            read_message::<SecureFrame>(&mut second_browser)
+        )
+        .await
+        .is_err()
+    );
+    first_host.abort();
+    second_host.abort();
+}
+
+#[tokio::test]
+async fn capture_selection_rejects_a_socket_claiming_another_browser_session() {
+    let root = tempfile::tempdir().unwrap();
+    let (host, mut browser, _peer) = start_host(root.path()).await;
+    let path = socket_paths(root.path()).remove(0);
+    let false_id = "a".repeat(32);
+    std::fs::rename(path, root.path().join(format!("b-{false_id}.sock"))).unwrap();
+    let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+    assert!(
+        ExtensionClient::connect_for_session(root.path(), &identity, Some(&false_id))
+            .await
+            .is_err()
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(30),
+            read_message::<SecureFrame>(&mut browser)
+        )
+        .await
+        .is_err()
+    );
+    host.abort();
+}
+
+#[tokio::test]
+async fn capture_selection_does_not_follow_a_browser_reconnect_or_other_live_session() {
+    let root = tempfile::tempdir().unwrap();
+    let (first_host, first_browser, _) = start_host(root.path()).await;
+    let old_id = locator(&socket_paths(root.path())[0]);
+    let (other_host, mut other_browser, _) = start_host(root.path()).await;
+    drop(first_browser);
+    timeout(Duration::from_secs(1), first_host)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+    assert!(
+        ExtensionClient::connect_for_session(root.path(), &identity, Some(&old_id))
+            .await
+            .is_err()
+    );
+    let (replacement_host, mut replacement_browser, _) = start_host(root.path()).await;
+    let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+    assert!(
+        ExtensionClient::connect_for_session(root.path(), &identity, Some(&old_id))
+            .await
+            .is_err()
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(30),
+            read_message::<SecureFrame>(&mut other_browser)
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(30),
+            read_message::<SecureFrame>(&mut replacement_browser)
+        )
+        .await
+        .is_err()
+    );
+    other_host.abort();
+    replacement_host.abort();
+}
+
+#[tokio::test]
+async fn selected_status_rejects_wrong_nonce_type_protocol_locator_and_disconnect() {
+    for invalid in ["nonce", "type", "protocol", "locator", "disconnect"] {
+        let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+        let (open, pending) = LocalClientHandshake::start(&identity).unwrap();
+        let (ready, mut server_session) = accept_local_client(&identity, &open).unwrap();
+        let (stream, mut server) = UnixStream::pair().unwrap();
+        let mut client = ExtensionClient {
+            stream,
+            session: pending.finish(&ready).unwrap(),
+        };
+        let expected = "a".repeat(32);
+        let check = client.verify_browser_session(&expected);
+        let reply = async {
+            let frame: LocalSecureFrame = read_message(&mut server).await.unwrap();
+            let status: BrowserStatusRequest = server_session.open(&frame).unwrap();
+            if invalid == "disconnect" {
+                drop(server);
+                return;
+            }
+            let mut result = BrowserStatusResult {
+                protocol: LOCAL_TRANSPORT_PROTOCOL.into(),
+                message_type: "browser.status.result".into(),
+                nonce: status.nonce,
+                session: BrowserSessionInfo {
+                    browser_session: expected.clone(),
+                    concurrent: true,
+                },
+            };
+            match invalid {
+                "nonce" => result.nonce = "b".repeat(32),
+                "type" => result.message_type = "prepare.result".into(),
+                "protocol" => result.protocol = "invalid".into(),
+                "locator" => result.session.browser_session = "b".repeat(32),
+                _ => unreachable!(),
+            }
+            write_message(&mut server, &server_session.seal(&result).unwrap())
+                .await
+                .unwrap();
+        };
+        let (result, ()) = tokio::join!(check, reply);
+        assert!(
+            result.is_err(),
+            "invalid authenticated preflight must fail closed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn selected_capture_disconnect_after_status_never_uses_other_browser() {
+    let root = tempfile::tempdir().unwrap();
+    let (host, browser, _) = start_host(root.path()).await;
+    let selected = locator(&socket_paths(root.path())[0]);
+    let (other_host, mut other_browser, _) = start_host(root.path()).await;
+    let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+    let mut client = ExtensionClient::connect_for_session(root.path(), &identity, Some(&selected))
+        .await
+        .unwrap();
+    drop(browser);
+    timeout(Duration::from_secs(1), host)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        client
+            .prepare(&"a".repeat(32), Some(7), Some("https://example.test/login"))
+            .await
+            .is_err()
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(30),
+            read_message::<SecureFrame>(&mut other_browser)
+        )
+        .await
+        .is_err()
+    );
+    other_host.abort();
+}
+
+#[tokio::test]
+async fn repeated_status_preflight_is_rejected_before_page_operation() {
+    let root = tempfile::tempdir().unwrap();
+    let (host, mut browser, _) = start_host(root.path()).await;
+    let selected = locator(&socket_paths(root.path())[0]);
+    let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+    let mut client = ExtensionClient::connect_for_session(root.path(), &identity, Some(&selected))
+        .await
+        .unwrap();
+    assert!(
+        timeout(
+            Duration::from_secs(1),
+            client.verify_browser_session(&selected)
+        )
+        .await
+        .unwrap()
+        .is_err()
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(30),
+            read_message::<SecureFrame>(&mut browser)
+        )
+        .await
+        .is_err()
+    );
+    host.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn status_preflight_has_a_bounded_wait_for_the_next_operation() {
+    let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+    let (stream, mut server) = UnixStream::pair().unwrap();
+    let expected = "a".repeat(32);
+    let info = BrowserSessionInfo {
+        browser_session: expected.clone(),
+        concurrent: true,
+    };
+    let host = tokio::spawn(async move {
+        prepare_local_client(&mut server, &identity, &info, &|_| Ok(())).await
+    });
+    let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+    let (open, pending) = LocalClientHandshake::start(&identity).unwrap();
+    let mut stream = stream;
+    write_message(&mut stream, &open).await.unwrap();
+    let ready: LocalSessionReady = read_message(&mut stream).await.unwrap();
+    let mut client = ExtensionClient {
+        stream,
+        session: pending.finish(&ready).unwrap(),
+    };
+    client.verify_browser_session(&expected).await.unwrap();
+    tokio::time::advance(HANDSHAKE_TIMEOUT + Duration::from_millis(1)).await;
+    assert!(matches!(
+        host.await.unwrap(),
+        Err(NativeBrowserError::Unavailable)
+    ));
+}
+
+#[tokio::test]
+async fn selected_capture_disconnect_after_preparation_never_uses_other_browser() {
+    use palladin_browser_bridge::capture::{CapturePlan, CaptureRequest};
+    let root = tempfile::tempdir().unwrap();
+    let (host, mut browser, peer) = start_host(root.path()).await;
+    let selected = locator(&socket_paths(root.path())[0]);
+    let (other_host, mut other_browser, _) = start_host(root.path()).await;
+    let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+    let mut client = ExtensionClient::connect_for_session(root.path(), &identity, Some(&selected))
+        .await
+        .unwrap();
+    let plan = CapturePlan::parse(r##"{"targetTabId":7,"targetUrl":"https://example.test/login","fields":[{"entryFieldId":"username","selector":"#username","read":"value"}]}"##).unwrap();
+    let nonce = "a".repeat(32);
+    let prepare = client.prepare_capture(&nonce, &plan);
+    let reply = async {
+        let frame: SecureFrame = read_message(&mut browser).await.unwrap();
+        let envelope = peer.open(&frame, 1);
+        write_message(&mut browser, &peer.seal(json!({"protocol":INJECT_PROVIDER_PROTOCOL,"type":"operation.result","operationId":envelope["operationId"],"response":{"protocol":INJECT_PROVIDER_PROTOCOL,"type":"prepare.result","nonce":envelope["request"]["nonce"],"currentUrl":"https://example.test/login","outcome":"ready"}}),1)).await.unwrap();
+    };
+    let (prepared, ()) = tokio::join!(prepare, reply);
+    assert_eq!(prepared.unwrap().outcome, "ready");
+    drop(browser);
+    timeout(Duration::from_secs(1), host)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        client
+            .capture(
+                CaptureRequest::new(&nonce, plan),
+                monotonic_not_after_ns(monotonic_now_ns().unwrap(), Duration::from_secs(5))
+                    .unwrap()
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(30),
+            read_message::<SecureFrame>(&mut other_browser)
+        )
+        .await
+        .is_err()
+    );
+    other_host.abort();
+}

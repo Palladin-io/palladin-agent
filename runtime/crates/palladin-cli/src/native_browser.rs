@@ -10,7 +10,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use palladin_browser_bridge::discovery::{
-    BrowserSessionInfo, BrowserStatusRequest, BrowserStatusResult,
+    BrowserSessionInfo, BrowserStatusRequest, BrowserStatusRequestType, BrowserStatusResult,
 };
 use palladin_browser_bridge::framing::{read_message, write_message};
 use palladin_browser_bridge::local_transport::{
@@ -32,7 +32,9 @@ use zeroize::Zeroize;
 use crate::browser::ChromeExtensionOrigin;
 #[cfg(test)]
 use crate::browser::local_socket_path;
-use palladin_browser_bridge::routing::{session_socket_path, single_browser_socket};
+use palladin_browser_bridge::routing::{
+    BrowserRouteError, select_browser_socket, session_socket_path,
+};
 
 mod capture;
 mod deferred;
@@ -256,12 +258,33 @@ impl ExtensionClient {
         root: &Path,
         identity: &BrowserHostIdentity,
     ) -> Result<Self, NativeBrowserError> {
-        let path = single_browser_socket(root).map_err(|_| NativeBrowserError::Unavailable)?;
+        Self::connect_for_session(root, identity, None).await
+    }
+
+    pub async fn connect_for_session(
+        root: &Path,
+        identity: &BrowserHostIdentity,
+        browser_session: Option<&str>,
+    ) -> Result<Self, NativeBrowserError> {
+        let path = select_browser_socket(root, browser_session).map_err(|error| match error {
+            BrowserRouteError::Ambiguous => NativeBrowserError::AmbiguousBrowser,
+            BrowserRouteError::Unavailable if browser_session.is_some() => {
+                NativeBrowserError::SelectedBrowserUnavailable
+            }
+            BrowserRouteError::Unavailable => NativeBrowserError::Unavailable,
+        })?;
         validate_socket_path(&path)?;
+        let unavailable = || {
+            if browser_session.is_some() {
+                NativeBrowserError::SelectedBrowserUnavailable
+            } else {
+                NativeBrowserError::Unavailable
+            }
+        };
         let mut stream = timeout(HANDSHAKE_TIMEOUT, UnixStream::connect(&path))
             .await
-            .map_err(|_| NativeBrowserError::Unavailable)?
-            .map_err(|_| NativeBrowserError::Unavailable)?;
+            .map_err(|_| unavailable())?
+            .map_err(|_| unavailable())?;
         validate_peer(&stream)?;
         let (open, pending) = LocalClientHandshake::start(identity)?;
         timeout(HANDSHAKE_TIMEOUT, write_message(&mut stream, &open))
@@ -271,7 +294,37 @@ impl ExtensionClient {
             .await
             .map_err(|_| NativeBrowserError::Unavailable)??;
         let session = pending.finish(&ready)?;
-        Ok(Self { stream, session })
+        let mut client = Self { stream, session };
+        if let Some(expected) = browser_session {
+            client.verify_browser_session(expected).await?;
+        }
+        Ok(client)
+    }
+
+    async fn verify_browser_session(&mut self, expected: &str) -> Result<(), NativeBrowserError> {
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes).map_err(|_| NativeBrowserError::Unavailable)?;
+        let nonce = hex::encode(bytes);
+        let frame = self.session.seal(&BrowserStatusRequest {
+            protocol: LOCAL_TRANSPORT_PROTOCOL.into(),
+            message_type: BrowserStatusRequestType::Status,
+            nonce: nonce.clone(),
+        })?;
+        timeout(HANDSHAKE_TIMEOUT, write_message(&mut self.stream, &frame))
+            .await
+            .map_err(|_| NativeBrowserError::SelectedBrowserUnavailable)??;
+        let frame: LocalSecureFrame = timeout(HANDSHAKE_TIMEOUT, read_message(&mut self.stream))
+            .await
+            .map_err(|_| NativeBrowserError::SelectedBrowserUnavailable)??;
+        let result: BrowserStatusResult = self.session.open(&frame)?;
+        if result.protocol != LOCAL_TRANSPORT_PROTOCOL
+            || result.message_type != "browser.status.result"
+            || result.nonce != nonce
+            || result.session.browser_session != expected
+        {
+            return Err(NativeBrowserError::InvalidMessage);
+        }
+        Ok(())
     }
 
     pub async fn prepare(
@@ -590,7 +643,18 @@ where
                 .await
                 .map_err(|_| NativeBrowserError::Unavailable)??;
             drop(lifecycle);
-            return Ok(None);
+            // Exactly one authenticated status preflight may precede an operation.
+            // A second status is not a LocalRequest and cannot renew this deadline.
+            let frame: LocalSecureFrame =
+                match timeout(HANDSHAKE_TIMEOUT, read_message(local)).await {
+                    Ok(Ok(frame)) => frame,
+                    Ok(Err(palladin_browser_bridge::framing::FramingError::Transport)) => {
+                        return Ok(None);
+                    }
+                    Ok(Err(error)) => return Err(error.into()),
+                    Err(_) => return Err(NativeBrowserError::Unavailable),
+                };
+            local_session.open::<LocalRequest>(&frame)?
         }
     };
     match &prepare {
@@ -1011,6 +1075,14 @@ impl Drop for SocketGuard {
 
 #[derive(Debug, Error)]
 pub enum NativeBrowserError {
+    #[error(
+        "multiple browser sessions are connected; run browser sessions --json and pass submit --browser-session with --from-browser"
+    )]
+    AmbiguousBrowser,
+    #[error(
+        "the selected browser session is unavailable; run browser sessions --json and select its current identifier"
+    )]
+    SelectedBrowserUnavailable,
     #[error("the authenticated Palladin Chrome extension is unavailable")]
     Unavailable,
     #[error("the authenticated browser message is invalid")]

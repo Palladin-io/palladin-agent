@@ -141,3 +141,39 @@ mod tests {
         }
     }
 }
+
+/// Bind browser routing to the authorized submission, including explicit selection.
+pub fn request_digest(
+    base: [u8; 32],
+    plan: &str,
+    description: Option<&str>,
+    browser_session: Option<&str>,
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"palladin.browser-submission.v2\0");
+    digest.update(base);
+    for value in [
+        plan,
+        description.unwrap_or(""),
+        browser_session.unwrap_or(""),
+    ] {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    digest.finalize().into()
+}
+
+#[cfg(test)]
+mod routing_digest_tests {
+    use super::request_digest;
+    #[test]
+    fn selected_browser_changes_submission_authorization_even_for_identical_tabs() {
+        let plan = r#"{"targetTabId":7,"targetUrl":"https://example.test/login"}"#;
+        let first = request_digest([0; 32], plan, None, Some(&"a".repeat(32)));
+        let second = request_digest([0; 32], plan, None, Some(&"b".repeat(32)));
+        let automatic = request_digest([0; 32], plan, None, None);
+        assert_ne!(first, second);
+        assert_ne!(first, automatic);
+    }
+}
