@@ -25,6 +25,8 @@ pub struct EntrySearchItem {
     pub script_execution: Option<ScriptExecutionDiscovery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sign_in_method: Option<SignInMethod>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sign_in_methods: Vec<SignInAlternative>,
 }
 
 /// Federated sign-in published by the user for this Entry. `provider_entry`
@@ -33,6 +35,15 @@ pub struct EntrySearchItem {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SignInMethod {
+    pub provider: String,
+    pub provider_entry: Option<SignInProviderEntry>,
+}
+
+/// One explicit choice. The reference never conveys a grant or selects an account.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignInAlternative {
+    pub id: String,
     pub provider: String,
     pub provider_entry: Option<SignInProviderEntry>,
 }

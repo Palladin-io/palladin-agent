@@ -1910,7 +1910,7 @@ fn allowed_access_modes(
                 .and_then(Value::as_str)
                 .ok_or(CryptoError::InvalidDescriptor)?;
             match field_type {
-                SIGN_IN_FIELD_TYPE
+                SIGN_IN_FIELD_TYPE | "palladin.signin.v2"
                     if entry_type == "credential"
                         && is_sign_in_method_value(field.get("value")) =>
                 {
@@ -3216,6 +3216,36 @@ mod tests {
                 assert!(!projected.contains("google"));
                 assert!(!projected.contains(SIGN_IN_FIELD));
             }
+        }
+    }
+
+    #[test]
+    fn full_projection_accepts_v2_sign_in_without_delivering_it() {
+        let plaintext = sign_in_member_secret("credential", &linked_sign_in(), "discovery")
+            .replace("palladin.signin.v1", "palladin.signin.v2");
+        let normalized =
+            normalize_full_member_secret(plaintext.as_bytes(), 4, 0).expect("v2 method");
+        let projected = String::from_utf8(normalized.plaintext.to_vec()).unwrap();
+        assert!(!projected.contains("work@corp.example"));
+        assert!(!projected.contains(SIGN_IN_FIELD));
+    }
+
+    #[test]
+    fn v2_sign_in_cannot_deliver_account_or_bypass_credential_policy() {
+        for (entry_type, access, value) in [
+            ("credential", "onGrantValue", linked_sign_in()),
+            ("credential", "onGrantRuntime", linked_sign_in()),
+            ("credential", "onGrantDerived", linked_sign_in()),
+            ("key", "discovery", linked_sign_in()),
+            (
+                "credential",
+                "discovery",
+                serde_json::json!({"provider":"google","account":" untrimmed ","entry":null}),
+            ),
+        ] {
+            let plaintext = sign_in_member_secret(entry_type, &value, access)
+                .replace("palladin.signin.v1", "palladin.signin.v2");
+            assert!(normalize_full_member_secret(plaintext.as_bytes(), 4, 0).is_err());
         }
     }
 

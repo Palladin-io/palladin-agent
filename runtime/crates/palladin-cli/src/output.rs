@@ -270,6 +270,25 @@ pub fn render_search_human(result: &EntrySearchResult) -> RenderedOutput {
                     safe_terminal_text(&field.value)
                 ));
             }
+            if !item.sign_in_methods.is_empty() {
+                if item.sign_in_methods.len() > 1 {
+                    output.stdout_line("  Multiple sign-in alternatives; ask the user to choose a method. Never select by grant availability.");
+                }
+                for method in &item.sign_in_methods {
+                    output.stdout_line(format_args!(
+                        "  sign-in choice: {} {}",
+                        shorten_identifier(&method.id),
+                        safe_terminal_text(&method.provider)
+                    ));
+                    match &method.provider_entry {
+                        Some(entry) => output.stdout_line(format_args!(
+                            "    entry={} vault={} (request separate access, then inject on the provider's exact HTTPS origin)",
+                            shorten_identifier(&entry.entry_id), shorten_identifier(&entry.vault_id)
+                        )),
+                        None => output.stdout_line("    Provider account not linked; ask the user which account to use."),
+                    }
+                }
+            }
             if let Some(method) = &item.sign_in_method {
                 match &method.provider_entry {
                     Some(provider_entry) => output.stdout_line(format_args!(

@@ -1,0 +1,291 @@
+{
+  "positive": [
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        },
+        {
+          "id": "custom:33333333-3333-4333-8333-333333333333",
+          "provider": "google",
+          "entry": null
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "apple",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "microsoft",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "github",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "facebook",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    }
+  ],
+  "negative": [
+    null,
+    [],
+    {},
+    {
+      "schema": "palladin.signin.v1",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v3",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": []
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ],
+      "account": "synthetic@example.invalid"
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:33333333-3333-4333-8333-333333333333",
+          "provider": "google",
+          "entry": null
+        },
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        },
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:bad",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "CUSTOM:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "unknown",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          },
+          "account": "synthetic@example.invalid"
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555"
+          },
+          "label": "Synthetic label"
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "bad"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google",
+          "entry": {
+            "vaultId": "44444444-4444-4444-8444-444444444444",
+            "entryId": "55555555-5555-4555-8555-555555555555",
+            "token": "synthetic"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "palladin.signin.v2",
+      "methods": [
+        {
+          "id": "custom:22222222-2222-4222-8222-222222222222",
+          "provider": "google"
+        }
+      ]
+    }
+  ]
+}

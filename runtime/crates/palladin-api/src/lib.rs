@@ -19,7 +19,7 @@ pub use types::{
     CredentialMethod, EntrySearchItem, EntrySearchResult, EnvelopeScopeContract,
     GetCredentialOptions, GrantStatus, GrantStatusResponse, GrantedCredential,
     InjectDiscoveryBinding, ReportCredentialStaleInput, ScriptExecutionDiscovery,
-    ScriptExecutionPackageResponse, ScriptExecutionVaultEntry, SignInMethod, SignInProviderEntry,
-    StaleReasonCode, StartBrowserPairingResponse, VaultManifest, X25519WrappedKey,
-    X25519WrapperDescriptor,
+    ScriptExecutionPackageResponse, ScriptExecutionVaultEntry, SignInAlternative, SignInMethod,
+    SignInProviderEntry, StaleReasonCode, StartBrowserPairingResponse, VaultManifest,
+    X25519WrappedKey, X25519WrapperDescriptor,
 };

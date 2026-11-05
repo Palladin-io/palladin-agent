@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use palladin_api::{
-    AgentVisibleField, EntrySearchItem, EntrySearchResult, ScriptExecutionDiscovery, SignInMethod,
-    SignInProviderEntry,
+    AgentVisibleField, EntrySearchItem, EntrySearchResult, ScriptExecutionDiscovery,
+    SignInAlternative, SignInMethod, SignInProviderEntry,
 };
 use palladin_crypto::ScriptExecutionMetadata;
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,9 @@ const CURSOR_BYTES: usize = 49;
 const DURABLE_CACHE_SCHEMA_VERSION: u32 = 2;
 const MAX_DURABLE_CACHE_BYTES: usize = MAX_LOGICAL_INDEX_BYTES + 4 * 1024 * 1024;
 const SIGN_IN_DISCOVERY_FIELD_ID: &str = "signIn";
+// AgentDiscovery ciphertext is capped at 16 KiB by AadProfile in
+// palladin-crypto/vault_v2.rs; subtract the XChaCha20-Poly1305 tag.
+const MAX_SIGN_IN_COLLECTION_BYTES: usize = 16 * 1024 - 16;
 const SIGN_IN_SCHEMA: &str = "palladin.signin.v1";
 const SIGN_IN_PROVIDERS: [&str; 5] = ["google", "apple", "microsoft", "github", "facebook"];
 
@@ -123,7 +126,7 @@ impl DiscoveryPlaintext {
                 field.id.trim().is_empty()
                     || field.id.len() > 128
                     || !field_ids.insert(field.id.as_str())
-                    || field.value.len() > 2_048
+                    || field.value.len() > discovery_field_limit(&field.id)
             })
             || (self.entry_type == "script"
                 && (self.capabilities.as_slice() != ["exec"]
@@ -646,10 +649,11 @@ impl LocalDiscoveryIndex {
                 agent_fields: entry
                     .approved_fields
                     .iter()
-                    .filter(|field| field.label != SIGN_IN_DISCOVERY_FIELD_ID)
+                    .filter(|field| !matches!(field.label.as_str(), "signIn" | "signInMethods"))
                     .cloned()
                     .collect(),
                 sign_in_method: sign_in_method(&entry.entry_type, &entry.approved_fields),
+                sign_in_methods: sign_in_methods(&entry.entry_type, &entry.approved_fields),
                 script_execution: entry.script_execution.as_ref().and_then(|execution| {
                     let checkpoint = self
                         .entry_checkpoints
@@ -798,6 +802,14 @@ impl LocalDiscoveryIndex {
     }
 }
 
+fn discovery_field_limit(id: &str) -> usize {
+    if id == "signInMethods" {
+        MAX_SIGN_IN_COLLECTION_BYTES
+    } else {
+        2_048
+    }
+}
+
 fn valid_cache_text(value: &str, max_bytes: usize) -> bool {
     !value.trim().is_empty() && value.len() <= max_bytes && !value.contains('\0')
 }
@@ -815,7 +827,7 @@ fn valid_cache_entry(entry: &DurableIndexedEntry) -> bool {
         && entry.approved_fields.len() <= 64
         && entry.approved_fields.iter().all(|field| {
             valid_cache_text(&field.label, 128)
-                && field.value.len() <= 2_048
+                && field.value.len() <= discovery_field_limit(&field.label)
                 && !field.value.contains('\0')
         })
         && entry
@@ -843,7 +855,11 @@ fn searchable_text(label: &str, approved_fields: &[AgentVisibleField]) -> String
 /// dropped without failing the Entry: it only guides which Credential the
 /// Agent asks the user to approve and never grants access by itself.
 fn sign_in_method(entry_type: &str, approved_fields: &[AgentVisibleField]) -> Option<SignInMethod> {
-    if entry_type != "credential" {
+    if entry_type != "credential"
+        || approved_fields
+            .iter()
+            .any(|field| field.label == "signInMethods")
+    {
         return None;
     }
     let field = approved_fields
@@ -870,6 +886,63 @@ fn sign_in_method(entry_type: &str, approved_fields: &[AgentVisibleField]) -> Op
         provider: provider.to_owned(),
         provider_entry,
     })
+}
+
+/// The decrypted projection is member-authored input, not a backend domain
+/// response. Reject malformed collections as a whole so no alternative is
+/// silently hidden or replaced with a legacy singleton.
+fn sign_in_methods(entry_type: &str, fields: &[AgentVisibleField]) -> Vec<SignInAlternative> {
+    fn decode(fields: &[AgentVisibleField]) -> Option<Vec<SignInAlternative>> {
+        let field = fields.iter().find(|field| field.label == "signInMethods")?;
+        let value: serde_json::Value = serde_json::from_str(&field.value).ok()?;
+        let object = value.as_object()?;
+        if object.len() != 2 || object.get("schema")?.as_str()? != "palladin.signin.v2" {
+            return None;
+        }
+        let methods = object.get("methods")?.as_array()?;
+        if methods.is_empty() {
+            return None;
+        }
+        let mut result = Vec::with_capacity(methods.len());
+        let mut previous = "";
+        for method in methods {
+            let object = method.as_object()?;
+            if object.len() != 3 {
+                return None;
+            }
+            let id = object.get("id")?.as_str()?;
+            versioned_uuid(&serde_json::Value::String(
+                id.strip_prefix("custom:")?.to_ascii_lowercase(),
+            ))?;
+            if id <= previous {
+                return None;
+            }
+            previous = id;
+            let provider = object.get("provider")?.as_str()?;
+            if !SIGN_IN_PROVIDERS.contains(&provider) {
+                return None;
+            }
+            let provider_entry = match object.get("entry")? {
+                serde_json::Value::Null => None,
+                serde_json::Value::Object(entry) if entry.len() == 2 => Some(SignInProviderEntry {
+                    vault_id: versioned_uuid(entry.get("vaultId")?)?,
+                    entry_id: versioned_uuid(entry.get("entryId")?)?,
+                }),
+                _ => return None,
+            };
+            result.push(SignInAlternative {
+                id: id.to_owned(),
+                provider: provider.to_owned(),
+                provider_entry,
+            });
+        }
+        Some(result)
+    }
+    if entry_type == "credential" {
+        decode(fields).unwrap_or_default()
+    } else {
+        Vec::new()
+    }
 }
 
 fn versioned_uuid(value: &serde_json::Value) -> Option<String> {
@@ -1037,6 +1110,162 @@ mod tests {
             rendered["signInMethod"]["providerEntry"]["vaultId"],
             provider_entry.vault_id
         );
+    }
+
+    #[test]
+    fn collection_discovery_exposes_all_choices_without_a_singleton() {
+        let mut plaintext = account("Service", "alice");
+        plaintext.fields.push(DiscoveryField { id: "signInMethods".into(), value: serde_json::json!({
+            "schema": "palladin.signin.v2", "methods": [
+                {"id":"custom:11111111-1111-4111-8111-111111111111", "provider":"google", "entry":null},
+                {"id":"custom:22222222-2222-4222-8222-222222222222", "provider":"google", "entry":null}
+            ]
+        }).to_string() });
+        let mut index = LocalDiscoveryIndex::new();
+        index
+            .upsert(
+                "11111111-1111-4111-8111-111111111111",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                1,
+                envelope_digest(1),
+                plaintext,
+            )
+            .unwrap();
+        let result = index.search("service", None, None).unwrap();
+        let item = serde_json::to_value(&result.items[0]).unwrap();
+        assert_eq!(item["signInMethods"].as_array().map(Vec::len), Some(2));
+        assert!(item.get("signInMethod").is_none());
+        assert!(
+            result.items[0]
+                .agent_fields
+                .iter()
+                .all(|f| f.label != "signInMethods")
+        );
+    }
+
+    #[test]
+    fn collection_decoder_matches_shared_protocol_vectors() {
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/federated-signin/v2/fixtures.json"
+        ))
+        .unwrap();
+        for (kind, expected) in [("positive", true), ("negative", false)] {
+            for fixture in fixtures[kind].as_array().unwrap() {
+                let fields = [palladin_api::AgentVisibleField {
+                    label: "signInMethods".into(),
+                    value: fixture.to_string(),
+                }];
+                let methods = super::sign_in_methods("credential", &fields);
+                assert_eq!(!methods.is_empty(), expected, "{fixture}");
+                assert!(super::sign_in_methods("key", &fields).is_empty());
+                if expected {
+                    assert_eq!(methods.len(), fixture["methods"].as_array().unwrap().len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn collection_preserves_uppercase_legacy_stable_id() {
+        let fields = [palladin_api::AgentVisibleField { label:"signInMethods".into(), value:json!({
+            "schema":"palladin.signin.v2", "methods":[{
+                "id":"custom:AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", "provider":"google", "entry":null
+            }]
+        }).to_string() }];
+        let methods = super::sign_in_methods("credential", &fields);
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].id, "custom:AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA");
+    }
+
+    #[test]
+    fn collection_larger_than_a_singleton_survives_discovery_and_cache() {
+        let methods: Vec<_> = (1..=64)
+            .map(|n| {
+                json!({
+                    "id":format!("custom:{n:08x}-1111-4111-8111-111111111111"),
+                    "provider":"microsoft", "entry":{
+                        "vaultId":"44444444-4444-4444-8444-444444444444",
+                        "entryId":"55555555-5555-4555-8555-555555555555"
+                    }
+                })
+            })
+            .collect();
+        let value = json!({"schema":"palladin.signin.v2","methods":methods}).to_string();
+        assert!(value.len() > 2048);
+        let mut plaintext = account("Service", "alice");
+        plaintext.fields.push(DiscoveryField {
+            id: "signInMethods".into(),
+            value,
+        });
+        let mut index = LocalDiscoveryIndex::new();
+        index.scope_to_identity("profile-a", "agent-a");
+        index.prepare_vault("11111111-1111-4111-8111-111111111111", 1);
+        index
+            .upsert(
+                "11111111-1111-4111-8111-111111111111",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                1,
+                envelope_digest(1),
+                plaintext,
+            )
+            .unwrap();
+        let cache = index.encode_durable_cache().unwrap();
+        let restored =
+            LocalDiscoveryIndex::decode_durable_cache(&cache, "profile-a", "agent-a").unwrap();
+        assert_eq!(
+            restored.search("service", None, None).unwrap().items[0]
+                .sign_in_methods
+                .len(),
+            64
+        );
+        let mut oversized = account("Service", "alice");
+        oversized.fields.push(DiscoveryField {
+            id: "signInMethods".into(),
+            value: "x".repeat(16 * 1024),
+        });
+        assert!(oversized.validate().is_err());
+        let legacy = with_sign_in(account("Legacy", "alice"), &"x".repeat(2049));
+        assert!(legacy.validate().is_err());
+    }
+
+    #[test]
+    fn malformed_collection_never_falls_back_or_leaks_raw_fields() {
+        let id = "custom:11111111-1111-4111-8111-111111111111";
+        let method = json!({"id":id,"provider":"google","entry":null});
+        for value in [
+            json!({"schema":"palladin.signin.v3","methods":[method.clone()]}),
+            json!({"schema":"palladin.signin.v2","methods":[method.clone(),method.clone()]}),
+            json!({"schema":"palladin.signin.v2","methods":[{"id":"hidden","provider":"google","entry":null}]}),
+            json!({"schema":"palladin.signin.v2","methods":[{"id":id,"provider":"google","entry":null,"account":"private@example.test"}]}),
+            json!({"schema":"palladin.signin.v2","methods":[]}),
+        ] {
+            let mut plaintext = with_sign_in(
+                account("Service", "alice"),
+                r#"{"schema":"palladin.signin.v1","provider":"apple","entry":null}"#,
+            );
+            plaintext.fields.push(DiscoveryField {
+                id: "signInMethods".into(),
+                value: value.to_string(),
+            });
+            let mut index = LocalDiscoveryIndex::new();
+            index
+                .upsert(
+                    "11111111-1111-4111-8111-111111111111",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    1,
+                    envelope_digest(1),
+                    plaintext,
+                )
+                .unwrap();
+            let item = index.search("service", None, None).unwrap().items.remove(0);
+            assert!(item.sign_in_method.is_none());
+            assert!(item.sign_in_methods.is_empty());
+            assert!(
+                item.agent_fields
+                    .iter()
+                    .all(|f| !matches!(f.label.as_str(), "signIn" | "signInMethods"))
+            );
+        }
     }
 
     #[test]
