@@ -367,6 +367,9 @@ pub struct SubmitSecretArgs {
     /// Declarative browser capture plan JSON; values are read only inside the extension.
     #[arg(long, conflicts_with_all = ["generate", "from_prompt", "username", "url", "length", "classes", "require", "symbols"])]
     pub from_browser: Option<String>,
+    /// Exact authenticated browser session from `browser sessions --json`; never falls back.
+    #[arg(long, requires = "from_browser", conflicts_with_all = ["generate", "from_prompt"], value_parser = parse_browser_session)]
+    pub browser_session: Option<String>,
     /// Proposed Entry description; reviewed with the captured changes.
     #[arg(long, requires = "from_browser")]
     pub description: Option<String>,
@@ -736,6 +739,44 @@ mod submit_tests {
         assert!(parse(&["get", "vault", "entry", "--submission", id]).is_err());
         assert!(parse(&["exec", "vault", "entry", "--submission", id, "--", "true"]).is_err());
     }
+    #[test]
+    fn browser_capture_session_is_explicit_and_requires_capture() {
+        let id = "a".repeat(32);
+        let base = [
+            "submit",
+            "new",
+            "--type",
+            "credential",
+            "--label",
+            "Account",
+            "--from-browser",
+            "{}",
+        ];
+        assert!(parse(&[&base[..], &["--browser-session", &id]].concat()).is_ok());
+        assert!(
+            parse(&[
+                "submit",
+                "new",
+                "--type",
+                "key",
+                "--label",
+                "Account",
+                "--generate",
+                "--browser-session",
+                &id
+            ])
+            .is_err()
+        );
+        for invalid in [
+            "Browser One",
+            "../route",
+            "ABCDEF0123456789ABCDEF0123456789AB",
+            "short",
+        ] {
+            assert!(parse(&[&base[..], &["--browser-session", invalid]].concat()).is_err());
+        }
+    }
+
     #[test]
     fn browser_capture_rejects_literal_values_and_other_secret_sources() {
         let base = [

@@ -307,7 +307,7 @@ async fn browser(
                     );
                 }
                 println!(
-                    "Use --json for complete session identifiers to pass to inject --browser-session."
+                    "Use --json for complete session identifiers to pass to inject or submit --from-browser with --browser-session."
                 );
             }
             ExitCode::SUCCESS
@@ -1683,6 +1683,7 @@ async fn submit_entry(
             request,
             plan,
             secret_args.description.as_deref(),
+            secret_args.browser_session.as_deref(),
             json,
         )
         .await;
@@ -1749,6 +1750,7 @@ async fn submit_browser_capture(
     request: SubmissionRequest<'_>,
     plan_json: &str,
     description: Option<&str>,
+    browser_session: Option<&str>,
     json: bool,
 ) -> ExitCode {
     use palladin_browser_bridge::capture::{CapturePlan, CaptureRequest};
@@ -1776,16 +1778,14 @@ async fn submit_browser_capture(
         Ok(value) => value,
         Err(error) => return fail(&error.to_string()),
     };
-    let mut digest = Sha256::new();
-    digest.update(b"palladin.browser-submission.v2\0");
-    digest.update(request.digest(false));
-    for value in [plan_json, description.unwrap_or("")] {
-        digest.update((value.len() as u64).to_be_bytes());
-        digest.update(value.as_bytes());
-    }
     let descriptor = OperationDescriptor::SubmitEntry {
         surface: InvocationSurface::Cli,
-        request_digest: digest.finalize().into(),
+        request_digest: palladin_cli::captured_submission::request_digest(
+            request.digest(false),
+            plan_json,
+            description,
+            browser_session,
+        ),
     };
     let session = match service.open_session(profile, &hostname, &connection, descriptor) {
         Ok(session) => session,
@@ -1795,9 +1795,15 @@ async fn submit_browser_capture(
         Ok(identity) => identity,
         Err(error) => return fail(&error.to_string()),
     };
-    let mut client = match ExtensionClient::connect(service.repository().root(), &identity).await {
+    let mut client = match ExtensionClient::connect_for_session(
+        service.repository().root(),
+        &identity,
+        browser_session,
+    )
+    .await
+    {
         Ok(client) => client,
-        Err(_) => return fail("authenticated browser extension unavailable"),
+        Err(error) => return fail(&error.to_string()),
     };
     let mut nonce_bytes = [0u8; 32];
     if getrandom::fill(&mut nonce_bytes).is_err() {
@@ -1837,6 +1843,7 @@ async fn submit_browser_capture(
     _request: SubmissionRequest<'_>,
     _plan_json: &str,
     _description: Option<&str>,
+    _browser_session: Option<&str>,
     _json: bool,
 ) -> ExitCode {
     fail("browser capture is unsupported on this platform")
