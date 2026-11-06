@@ -35,7 +35,7 @@ describe('macOS npm platform packages', () => {
         };
         expect(manifest).toMatchObject({
           name: `@palladin/runtime-darwin-${architecture}`,
-          version: '0.0.11',
+          version: '0.0.12',
           os: ['darwin'],
           cpu: [architecture],
           files: [
