@@ -1604,7 +1604,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-api"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -1622,7 +1622,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-browser-bridge"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "base64",
  "chacha20poly1305",
@@ -1641,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-cli"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "base64",
  "chacha20poly1305",
@@ -1683,7 +1683,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-core"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "base64",
  "fs2",
@@ -1702,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-credential"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "getrandom 0.4.3",
  "hmac",
@@ -1725,7 +1725,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-crypto"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "base64",
  "blake2",
@@ -1755,7 +1755,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-exec"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "command-group",
  "palladin-core",
@@ -1773,7 +1773,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-inject"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "futures-util",
  "getrandom 0.4.3",
@@ -1795,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-linux-broker"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "crypto_secretbox",
  "getrandom 0.4.3",
@@ -1819,7 +1819,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-linux-executor"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "command-group",
  "getrandom 0.4.3",
@@ -1839,14 +1839,14 @@ dependencies = [
 
 [[package]]
 name = "palladin-macos-keychain-helper"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "palladin-platform",
 ]
 
 [[package]]
 name = "palladin-mcp"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "palladin-api",
  "palladin-browser-bridge",
@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-platform"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "block2",
  "directories",
@@ -1902,7 +1902,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-runtime"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "base64",
  "chacha20poly1305",
@@ -1938,7 +1938,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-windows-broker"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "getrandom 0.4.3",
  "palladin-core",
@@ -1956,7 +1956,7 @@ dependencies = [
 
 [[package]]
 name = "palladin-windows-executor"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "getrandom 0.4.3",
  "secrecy",
