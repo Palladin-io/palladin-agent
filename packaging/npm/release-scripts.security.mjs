@@ -382,8 +382,8 @@ test('release finalization preserves the security gates except for the documente
 });
 
 test('only authorized preview versions select preview and cannot finalize', () => {
-  const meta = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8');
-  const final = readFileSync(resolve('.github/workflows/release-finalize.yml'), 'utf8');
+  const meta = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8').replaceAll('\r\n', '\n');
+  const final = readFileSync(resolve('.github/workflows/release-finalize.yml'), 'utf8').replaceAll('\r\n', '\n');
   const channel = meta.match(/          dist_tag=latest\n([^]*?)\n          npm publish/);
   assert.ok(channel);
   const guards = [...final.matchAll(/^          test "\$VERSION" != .+$/gm)]
@@ -407,7 +407,7 @@ test('only authorized preview versions select preview and cannot finalize', () =
 });
 
 test('preview deferral never bypasses artifact gates or extends to later versions', () => {
-  const workflow = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8');
+  const workflow = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8').replaceAll('\r\n', '\n');
   const stage = workflow.slice(workflow.indexOf('\n  stage-meta:'));
   const condition = stage.match(/\n    if: >-\n([^]*?)\n    runs-on:/);
   assert.ok(condition);
