@@ -327,7 +327,7 @@ test('release workflows restrict direct publishing to protected OIDC release job
   assert.match(metaRelease, /INPUTS_VERSION: \$\{\{ inputs\.version \}\}/);
   assert.match(metaRelease, /npm publish "\$RUNNER_TEMP\/stage-assets\/palladin-cli-\$\{INPUTS_VERSION\}\.tgz" --tag "\$dist_tag"/);
   assert.match(metaRelease, /dist_tag=latest/);
-  assert.match(metaRelease, /if \[\[ "\$INPUTS_VERSION" == 0\.0\.10 \]\]; then dist_tag=preview; fi/);
+  assert.match(metaRelease, /if \[\[ "\$INPUTS_VERSION" == 0\.0\.10 \|\| "\$INPUTS_VERSION" == 0\.0\.12 \]\]; then dist_tag=preview; fi/);
   for (const [contents, job] of [[platformRelease, 'stage-platforms'], [metaRelease, 'stage-meta'], [finalRelease, 'finalize']]) {
     const publishingJob = contents.slice(contents.indexOf(`\n  ${job}:`));
     assert.match(publishingJob, /github\.triggering_actor == 'patryk-roguszewski'/);
@@ -381,7 +381,57 @@ test('release finalization preserves the security gates except for the documente
   );
 });
 
-test('meta-package staging preserves signed artifacts and limits 0.0.10 to preview', () => {
+test('only authorized preview versions select preview and cannot finalize', () => {
+  const meta = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8');
+  const final = readFileSync(resolve('.github/workflows/release-finalize.yml'), 'utf8');
+  const channel = meta.match(/          dist_tag=latest\n([^]*?)\n          npm publish/);
+  assert.ok(channel);
+  const guards = [...final.matchAll(/^          test "\$VERSION" != .+$/gm)]
+    .map(([line]) => line).join('\n');
+  assert.ok(guards);
+  for (const [version, tag, canFinalize] of [
+    ['0.0.9', 'latest', true],
+    ['0.0.10', 'preview', false],
+    ['0.0.11', 'latest', true],
+    ['0.0.12', 'preview', false],
+    ['0.0.13', 'latest', true],
+    ['0.0.120', 'latest', true],
+  ]) {
+    const env = { ...process.env, INPUTS_VERSION: version, VERSION: version };
+    const actual = execFileSync('bash', ['-eu', '-c',
+      `dist_tag=latest\n${channel[1]}\nprintf '%s' "$dist_tag"`,
+    ], { env, encoding: 'utf8' });
+    assert.equal(actual, tag, version);
+    assert.equal(spawnSync('bash', ['-eu', '-c', guards], { env }).status === 0, canFinalize, version);
+  }
+});
+
+test('preview deferral never bypasses artifact gates or extends to later versions', () => {
+  const workflow = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8');
+  const stage = workflow.slice(workflow.indexOf('\n  stage-meta:'));
+  const condition = stage.match(/\n    if: >-\n([^]*?)\n    runs-on:/);
+  assert.ok(condition);
+  const github = { actor: 'patryk-roguszewski', triggering_actor: 'patryk-roguszewski' };
+  const needs = Object.fromEntries(
+    ['authorize', 'linux-system', 'prepare-meta', 'artifact-smoke', 'approve-adversarial', 'approve-lifecycle']
+      .map((name) => [name, { result: name.startsWith('approve-') ? 'skipped' : 'success' }]),
+  );
+  // GitHub accepts hyphenated needs keys; evaluate the same condition using bracket syntax.
+  const evaluate = new Function('inputs', 'needs', 'github', 'cancelled',
+    `return (${condition[1].replace(/needs\.([a-z]+(?:-[a-z]+)+)/g, "needs['$1']")});`);
+  for (const [version, expected] of [['0.0.10', true], ['0.0.12', true], ['0.0.11', false], ['0.0.13', false], ['0.0.120', false]]) {
+    assert.equal(evaluate({ version }, needs, github, () => false), expected, version);
+  }
+  for (const gate of ['authorize', 'linux-system', 'prepare-meta', 'artifact-smoke']) {
+    assert.equal(evaluate({ version: '0.0.12' }, { ...needs, [gate]: { result: 'failure' } }, github, () => false), false, gate);
+  }
+  assert.equal(evaluate({ version: '0.0.12' }, needs, github, () => true), false);
+  assert.equal(evaluate({ version: '0.0.12' }, needs, { ...github, triggering_actor: 'another-user' }, () => false), false);
+  const approved = { ...needs, 'approve-adversarial': { result: 'success' }, 'approve-lifecycle': { result: 'success' } };
+  assert.equal(evaluate({ version: '0.0.13' }, approved, github, () => false), true);
+});
+
+test('meta-package staging preserves signed artifacts and limits authorized test versions to preview', () => {
   const workflow = readFileSync(resolve('.github/workflows/release-meta.yml'), 'utf8');
   const reportValidations = [...workflow.matchAll(/node security\/adversarial\/report\.mjs validate/g)];
   const artifactValidations = [
@@ -439,7 +489,7 @@ test('meta-package staging preserves signed artifacts and limits 0.0.10 to previ
     /\n    needs: \[authorize, prepare-meta\]\r?\n/,
   );
   assert.match(workflow, /lifecycle_ready: \$\{\{ steps\.release_set\.outputs\.lifecycle_ready \}\}/);
-  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.9' && inputs\.version != '0\.0\.10' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
+  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.9' && inputs\.version != '0\.0\.10' && inputs\.version != '0\.0\.12' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
   assert.match(workflow, /inputs\.version == '0\.0\.9' \|\| inputs\.version == '0\.0\.10'/);
   assert.match(workflow, /\[\[ \$lifecycle_count -eq 0 \|\| \$lifecycle_count -eq 2 \]\]/);
   const prepareOffset = workflow.indexOf('\n  prepare-meta:');
