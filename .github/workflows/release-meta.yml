@@ -767,7 +767,7 @@ jobs:
   approve-adversarial:
     name: KMS-sign the owner-approved adversarial evidence
     needs: [authorize, linux-system, smoke-native, smoke-musl]
-    if: inputs.version != '0.0.9' && inputs.version != '0.0.10'
+    if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && inputs.version != '0.0.12'
     runs-on: ubuntu-latest
     environment: version-policy-signing
     timeout-minutes: 10
@@ -875,7 +875,7 @@ jobs:
   approve-lifecycle:
     name: KMS-sign the owner-approved platform lifecycle evidence
     needs: [authorize, linux-system, prepare-meta]
-    if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && needs.authorize.outputs.lifecycle_ready == 'true'
+    if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && inputs.version != '0.0.12' && needs.authorize.outputs.lifecycle_ready == 'true'
     runs-on: ubuntu-latest
     environment: version-policy-signing
     timeout-minutes: 15
@@ -1181,7 +1181,7 @@ jobs:
           retention-days: 30
 
       - name: Record the deferred physical lifecycle boundary
-        if: inputs.version != '0.0.9' && inputs.version != '0.0.10'
+        if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && inputs.version != '0.0.12'
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
           The exact `@palladin/cli` candidate was attached to the draft release but was not published to npm.
@@ -1196,7 +1196,7 @@ jobs:
       !cancelled() && needs.authorize.result == 'success'
       && github.actor == 'patryk-roguszewski' && github.triggering_actor == 'patryk-roguszewski' && needs.linux-system.result == 'success' && needs.prepare-meta.result == 'success'
       && needs.artifact-smoke.result == 'success'
-      && (inputs.version == '0.0.9' || inputs.version == '0.0.10'
+      && (inputs.version == '0.0.9' || inputs.version == '0.0.10' || inputs.version == '0.0.12'
         || (needs.approve-adversarial.result == 'success' && needs.approve-lifecycle.result == 'success'))
     runs-on: ubuntu-latest
     environment: npm-release
@@ -1243,7 +1243,7 @@ jobs:
             linux-system-x64.intoto.jsonl linux-system-arm64.intoto.jsonl; do
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
           done
-          if [[ "$INPUTS_VERSION" != 0.0.9 && "$INPUTS_VERSION" != 0.0.10 ]]; then
+          if [[ "$INPUTS_VERSION" != 0.0.9 && "$INPUTS_VERSION" != 0.0.10 && "$INPUTS_VERSION" != 0.0.12 ]]; then
             for pattern in adversarial-report.json adversarial-report.md adversarial-approval.json \
               lifecycle-report.json lifecycle-report.md lifecycle-approval.json; do
               gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
@@ -1276,7 +1276,7 @@ jobs:
           node packaging/npm/verify-version-policy-build.mjs \
             --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
             --bundle "$assets/version-policy-candidate.json" --version "$VERSION"
-          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.10 ]]; then
+          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.10 && "$VERSION" != 0.0.12 ]]; then
             node security/adversarial/report.mjs validate \
               --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
               --source-sha "$SOURCE_SHA" --json "$assets/adversarial-report.json" \
@@ -1320,14 +1320,14 @@ jobs:
         run: |
           set -euo pipefail
           dist_tag=latest
-          if [[ "$INPUTS_VERSION" == 0.0.10 ]]; then dist_tag=preview; fi
+          if [[ "$INPUTS_VERSION" == 0.0.10 || "$INPUTS_VERSION" == 0.0.12 ]]; then dist_tag=preview; fi
           npm publish "$RUNNER_TEMP/stage-assets/palladin-cli-${INPUTS_VERSION}.tgz" --tag "$dist_tag" --provenance --ignore-scripts
         env:
           INPUTS_VERSION: ${{ inputs.version }}
       - name: Record meta-package publication
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          `@palladin/cli` was published through owner-authorized OIDC after artifact, signature, provenance, and native smoke checks. Version 0.0.10 is an opt-in npm `preview`; adversarial and physical lifecycle QA is pending and is not claimed as passed. Version 0.0.9 remains the documented `latest` QA deferral.
+          `@palladin/cli` was published through owner-authorized OIDC after artifact, signature, provenance, and native smoke checks. Versions 0.0.10 and 0.0.12 are opt-in npm `preview` releases; adversarial and physical lifecycle QA is pending and is not claimed as passed. Version 0.0.9 remains the documented `latest` QA deferral.
 
-          No per-package npm approval is required. Do not run `release-finalize.yml` for 0.0.10: it is a test preview, not an approved immutable release. Other versions require the exact meta-package to be public before finalization.
+          No per-package npm approval is required. Do not run `release-finalize.yml` for 0.0.10 or 0.0.12: they are test previews, not approved immutable releases. Other versions require the exact meta-package to be public before finalization.
           SUMMARY
