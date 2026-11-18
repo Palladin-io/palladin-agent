@@ -50,7 +50,7 @@ const FORWARDED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 const ELF_PREFIX_LIMIT = 1024 * 1024;
 const ELF64_PROGRAM_HEADER_BYTES = 56;
 const PT_INTERP = 3;
-const NATIVE_RUNTIME_VERSION = '0.0.12';
+const NATIVE_RUNTIME_VERSION = '0.0.13';
 
 export interface NativeDispatchHost {
   platform: NodeJS.Platform;
@@ -173,6 +173,18 @@ function resolvePackageExecutable(
   return { packageName, executable, workerExecutable };
 }
 
+/**
+ * Node host configuration belongs to the dispatcher, not the native runtime.
+ * This is not a Node-startup security boundary: host hooks have already run.
+ * Preserve every other variable so native loader/TLS/key checks still fail closed.
+ */
+function nativeChildEnvironment(platform: NodeJS.Platform): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([name]) => {
+    const normalized = platform === 'win32' ? name.toUpperCase() : name;
+    return normalized !== 'NODE_OPTIONS' && normalized !== 'NODE_EXTRA_CA_CERTS';
+  }));
+}
+
 export async function launchNativeRuntime(
   args: readonly string[],
   host: NativeDispatchHost = systemHost(),
@@ -241,8 +253,8 @@ export async function launchNativeRuntime(
       shell: false,
       stdio: 'inherit',
       windowsHide: true,
-      env: host.platform === 'win32' ? process.env : {
-        ...process.env,
+      env: host.platform === 'win32' ? nativeChildEnvironment(host.platform) : {
+        ...nativeChildEnvironment(host.platform),
         // Public, owner-signed release manifest. The process image actually
         // opened by the OS re-verifies this envelope and its own bytes before
         // any identity-bearing operation, closing the parent spawn TOCTOU.
@@ -342,8 +354,8 @@ export async function spawnNativeProviderRuntime(
     shell: false,
     stdio: ['pipe', 'pipe', 'inherit'],
     windowsHide: true,
-    env: host.platform === 'win32' ? process.env : {
-      ...process.env,
+    env: host.platform === 'win32' ? nativeChildEnvironment(host.platform) : {
+      ...nativeChildEnvironment(host.platform),
       PALLADIN_VERSION_POLICY_ENVELOPE_BASE64: binding.envelopeBase64,
     },
   };

@@ -78,6 +78,14 @@ jobs:
         run: |
           python3 -B -m unittest discover -s packaging -p test_advisory_expiry.py
           python3 -B packaging/check_advisory_expiry.py
+      - name: Enforce disabled rmcp client features
+        shell: bash
+        run: |
+          python3 -B -m unittest discover -s packaging -p test_rmcp_features.py
+          # No filter-platform: inspect the union of all target dependencies.
+          # All workspace features also cover every supported feature subset.
+          cargo metadata --manifest-path runtime/Cargo.toml --format-version 1 --locked --all-features \
+            | python3 -B packaging/check_rmcp_features.py
       - name: Enforce Cargo dependency policy
         shell: bash
         run: |
