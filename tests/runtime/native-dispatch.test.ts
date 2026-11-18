@@ -1,9 +1,11 @@
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
 import {
   detectLinuxLibcFromElf,
   launchNativeRuntime,
+  spawnNativeProviderRuntime,
   resolveNativeRuntime,
   type NativeDispatchHost,
 } from '../../src/runtime/native-dispatch.js';
@@ -95,6 +97,64 @@ function fakeWindowsLease(executablePath: string): WindowsRuntimeLease {
 }
 
 describe('native runtime dispatcher', () => {
+  it.each(['darwin', 'linux', 'win32'] as const)(
+    'isolates Node host settings for CLI and provider children on %s', async (platform) => {
+      const inherited = {
+        NODE_OPTIONS: '--max-old-space-size=256', NODE_EXTRA_CA_CERTS: '',
+        node_options: 'lowercase-host-setting', Node_Extra_Ca_Certs: 'mixed-case-host-setting',
+        NODE_PATH: 'must-still-be-rejected', SSL_CERT_FILE: 'native-tls-override',
+        LD_PRELOAD: 'native-loader-override', PALLADIN_API_KEY: 'synthetic-not-a-secret',
+        PALLADIN_HOME: 'forbidden-root', PALLADIN_HOST_TEST: 'preserved',
+      };
+      const originalEnvironment = process.env;
+      // Model each target OS independently, even when this test runs on Windows.
+      process.env = { ...originalEnvironment, ...inherited };
+      const parentValues = Object.fromEntries(Object.keys(inherited).map((name) => [name, process.env[name]]));
+      try {
+        for (const mode of ['cli', 'provider'] as const) {
+          const child = childProcess();
+          Object.assign(child, { stdin: new PassThrough(), stdout: new PassThrough() });
+          const lease = fakeWindowsLease(windowsExecutable);
+          vi.mocked(lease.spawnLocked).mockReturnValue(child);
+          const fixture = host({
+            platform, architecture: platform === 'darwin' ? 'arm64' : 'x64',
+            linuxLibc: platform === 'linux' ? 'glibc' : undefined,
+            resolvePackageJson: vi.fn(() => platform === 'win32' ? windowsPackageJson
+              : platform === 'linux' ? linuxPackageJson : packageJson),
+            hashFile: vi.fn((path) => path === linuxWorker ? 'c'.repeat(64) : 'a'.repeat(64)),
+            prepareWindowsRuntime: vi.fn(() => lease), spawnRuntime: vi.fn(() => child),
+          });
+          const pending = mode === 'cli' ? launchNativeRuntime(['mcp', 'serve'], fixture)
+            : spawnNativeProviderRuntime(['mcp', 'serve'], fixture);
+          const spawned = platform === 'win32' ? vi.mocked(lease.spawnLocked) : vi.mocked(fixture.spawnRuntime);
+          await vi.waitFor(() => expect(spawned).toHaveBeenCalledOnce());
+          // Observe the real dispatcher's OS-boundary options; only the OS process is replaced.
+          const options = platform === 'win32' ? vi.mocked(lease.spawnLocked).mock.calls[0]?.[1]
+            : vi.mocked(fixture.spawnRuntime).mock.calls[0]?.[2];
+          child.emit('exit', 0, null);
+          await pending;
+          const environment = options?.env;
+          expect(Object.keys(environment ?? {})).not.toContain('NODE_OPTIONS');
+          expect(Object.keys(environment ?? {})).not.toContain('NODE_EXTRA_CA_CERTS');
+          if (platform === 'win32') {
+            expect(Object.keys(environment ?? {})).not.toContain('node_options');
+            expect(Object.keys(environment ?? {})).not.toContain('Node_Extra_Ca_Certs');
+          } else {
+            expect(environment?.node_options).toBe(inherited.node_options);
+            expect(environment?.Node_Extra_Ca_Certs).toBe(inherited.Node_Extra_Ca_Certs);
+            expect(environment?.PALLADIN_VERSION_POLICY_ENVELOPE_BASE64).toBe('fixture');
+          }
+          for (const name of ['NODE_PATH', 'SSL_CERT_FILE', 'LD_PRELOAD', 'PALLADIN_API_KEY', 'PALLADIN_HOME', 'PALLADIN_HOST_TEST']) {
+            expect(environment?.[name]).toBe(inherited[name as keyof typeof inherited]);
+          }
+          for (const [name, value] of Object.entries(parentValues)) expect(process.env[name]).toBe(value);
+          expect(options?.shell).toBe(false);
+          expect(options?.stdio).toEqual(mode === 'cli' ? 'inherit' : ['pipe', 'pipe', 'inherit']);
+        }
+      } finally { process.env = originalEnvironment; }
+    },
+  );
+
   it.each([
     ['arm64', '@palladin/runtime-darwin-arm64/package.json', packageJson, executable],
     [
