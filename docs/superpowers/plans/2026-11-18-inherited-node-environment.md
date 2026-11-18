@@ -37,3 +37,12 @@ The broader alternative was native-startup reclassification plus browser-child s
 - Independent source review found no production blocker; fixed its Windows test-fixture aliasing finding by using a temporary plain environment map.
 - Full suite in the restricted local test sandbox was not a valid green run: initial process-limit/npm environment failures, then a 180-second timeout. Full supported Node/platform matrix must pass in hosted CI.
 - Packaged native doctor in the restricted scratch test stopped at OS account directory lookup before environment checks; no end-to-end claim, no installed package modification or profile access.
+
+## Owner-approved release preparation — 2026-11-18
+
+- The owner approved publishing and installing exact 0.0.13 preview, deferring only manual adversarial/physical lifecycle evidence. The release remains draft, latest stays 0.0.9, and all automated/signature/provenance gates remain mandatory.
+- Aligned all launcher/platform/Rust versions, exact pins, lockfiles, dispatch fixtures and SBOM; no external dependency update.
+- The owner separately approved RUSTSEC-2026-0457/0462/0543 exceptions through November 24 inclusive. CI validates the resolved all-target/all-workspace-feature graph excludes the affected rmcp clients and enforces expiry from November 25. Existing exception deadlines are unchanged.
+- Seven Python policy tests pass after red regressions; real dependency CI passed at 5396ddc. Exact-preview policy regressions observed red, then all 43 release checks passed (four platform checks skipped). Type checking and actionlint pass. Independent source review of the exception and release preparation found no blockers.
+- Local packaging staging tests hit sandbox-denied Bash heredoc temporary files (six failures); rely on the final hosted packaging matrix, not a local green claim. The full hosted Node matrix and OpenClaw compatibility passed before the version bump; final-source CI remains required.
+- Follow-up before exception expiry: upgrade rmcp past the patched client advisories and remove its transitive chrono maintenance dependency through an upstream-supported or separately reviewed migration. No automatic renewal.
