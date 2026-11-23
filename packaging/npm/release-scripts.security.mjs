@@ -327,7 +327,7 @@ test('release workflows restrict direct publishing to protected OIDC release job
   assert.match(metaRelease, /INPUTS_VERSION: \$\{\{ inputs\.version \}\}/);
   assert.match(metaRelease, /npm publish "\$RUNNER_TEMP\/stage-assets\/palladin-cli-\$\{INPUTS_VERSION\}\.tgz" --tag "\$dist_tag"/);
   assert.match(metaRelease, /dist_tag=latest/);
-  assert.match(metaRelease, /if \[\[ "\$INPUTS_VERSION" == 0\.0\.10 \|\| "\$INPUTS_VERSION" == 0\.0\.12 \|\| "\$INPUTS_VERSION" == 0\.0\.13 \]\]; then dist_tag=preview; fi/);
+  assert.match(metaRelease, /if \[\[ "\$INPUTS_VERSION" == 0\.0\.10 \|\| "\$INPUTS_VERSION" == 0\.0\.12 \|\| "\$INPUTS_VERSION" == 0\.0\.13 \|\| "\$INPUTS_VERSION" == 0\.0\.14 \]\]; then dist_tag=preview; fi/);
   for (const [contents, job] of [[platformRelease, 'stage-platforms'], [metaRelease, 'stage-meta'], [finalRelease, 'finalize']]) {
     const publishingJob = contents.slice(contents.indexOf(`\n  ${job}:`));
     assert.match(publishingJob, /github\.triggering_actor == 'patryk-roguszewski'/);
@@ -491,7 +491,7 @@ test('meta-package staging preserves signed artifacts and limits authorized test
     /\n    needs: \[authorize, prepare-meta\]\r?\n/,
   );
   assert.match(workflow, /lifecycle_ready: \$\{\{ steps\.release_set\.outputs\.lifecycle_ready \}\}/);
-  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.9' && inputs\.version != '0\.0\.10' && inputs\.version != '0\.0\.12' && inputs\.version != '0\.0\.13' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
+  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.9' && inputs\.version != '0\.0\.10' && inputs\.version != '0\.0\.12' && inputs\.version != '0\.0\.13' && inputs\.version != '0\.0\.14' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
   assert.match(workflow, /inputs\.version == '0\.0\.9' \|\| inputs\.version == '0\.0\.10'/);
   assert.match(workflow, /\[\[ \$lifecycle_count -eq 0 \|\| \$lifecycle_count -eq 2 \]\]/);
   const prepareOffset = workflow.indexOf('\n  prepare-meta:');
