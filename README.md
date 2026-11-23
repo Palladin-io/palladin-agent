@@ -512,3 +512,9 @@ Gate` are separate owner-dispatched workflows that sign only an exact commit
 already reachable from `main`, then install and execute the resulting artifacts
 on native CPU runners. They must be green for a signed release, but are not
 pull-request branch-protection contexts.
+
+### Agent-host Node environment
+
+The official npm launcher adapts the environment for its verified native child in both CLI/MCP and private-provider entry points. It does not forward `NODE_OPTIONS` or `NODE_EXTRA_CA_CERTS`, including empty values (case-insensitive names on Windows). OpenClaw, Codex and other hosts can therefore retain valid Node settings without requiring a special Palladin prompt or command prefix. The parent process environment is unchanged.
+
+This adaptation happens after Node starts; it does not prevent Node startup hooks or make an untrusted host trustworthy. Invalid Node startup options can still prevent the launcher from starting. Native signature/image verification, protected storage, grants and approval checks remain authoritative. Other prohibited variables, including `NODE_PATH`, native loader/TLS overrides and key/root overrides, are still forwarded to the native rejection checks. Direct native executable invocation retains the strict environment contract and requires a clean environment.
