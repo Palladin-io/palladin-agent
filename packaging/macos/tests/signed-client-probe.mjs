@@ -149,44 +149,39 @@ async function runBoundedCaptured(name, executable, args, options) {
   const stderrBuffer = Buffer.concat(stderr);
   if (captureOverflowed) throw new Error('signed-client output exceeded its safe capture bound');
   capture(name, stdoutBuffer, stderrBuffer);
-  if (timedOut && options.acceptBoundedDenial !== true) throw new Error('signed-client probe timed out');
+  if (timedOut) throw new Error('signed-client probe timed out');
   return { ...result, timedOut, stdout: stdoutBuffer, stderr: stderrBuffer };
 }
 
-function assertAuthorizationDenial(name, result) {
-  if (result.timedOut) {
-    if (result.signal !== 'SIGKILL' || result.stdout.length !== 0 || result.stderr.length !== 0) {
-      throw new Error(`${name} did not give a clean bounded denial`);
-    }
-    process.stderr.write(`Palladin signed-client probe result: ${name}: bounded-no-identity\n`);
+function assertUnattendedIdentityUse(name, result) {
+  if (result.code === 0) {
+    process.stderr.write(`Palladin signed-client probe result: ${name}: unattended-identity\n`);
     return;
   }
   const output = Buffer.concat([result.stdout, result.stderr]).toString('utf8');
-  if (!output.includes('fresh operating-system authorization')) {
-    const knownFailures = [
-      ['profile does not exist; run: palladin agents create', 'profile-not-found'],
-      ['Agent is not registered; run palladin status', 'agent-not-registered'],
-      ['Agent is not active; approve it in Palladin', 'agent-not-active'],
-      ['OS secure storage is unavailable; no file or environment fallback is allowed', 'secure-store-unavailable'],
-      ['signed runtime release manifest is unavailable; no identity was opened', 'manifest-unavailable'],
-      ['signed runtime release manifest verification failed; no identity was opened', 'manifest-invalid'],
-      ['macOS Keychain operation failed (OSStatus ', 'keychain-operation-failed'],
-    ];
-    const reason = knownFailures.find(([message]) => output.includes(message))?.[1] ?? 'unexpected-output';
-    process.stderr.write(`Palladin signed-client probe failure: ${name}: ${reason}\n`);
-    throw new Error(`${name} failed before reaching the authenticated identity boundary`);
-  }
+  const knownFailures = [
+    ['profile does not exist; run: palladin agents create', 'profile-not-found'],
+    ['Agent is not registered; run palladin status', 'agent-not-registered'],
+    ['Agent is not active; approve it in Palladin', 'agent-not-active'],
+    ['OS secure storage is unavailable; no file or environment fallback is allowed', 'secure-store-unavailable'],
+    ['signed runtime release manifest is unavailable; no identity was opened', 'manifest-unavailable'],
+    ['signed runtime release manifest verification failed; no identity was opened', 'manifest-invalid'],
+    ['macOS Keychain operation failed (OSStatus ', 'keychain-operation-failed'],
+  ];
+  const reason = knownFailures.find(([message]) => output.includes(message))?.[1] ?? 'unexpected-output';
+  process.stderr.write(`Palladin signed-client probe failure: ${name}: ${reason}\n`);
+  throw new Error(`${name} did not open the identity unattended`);
 }
 
 const vault = '11111111111111111111111111111111';
 const entry = '22222222222222222222222222222222';
-// A fresh profile has no server configuration. Re-running init verifies its existing
-// identity and reaches OS authorization without enrolling or contacting the API.
+// Product-owner decision 2026-11-23: an intact signed runtime, including an intact
+// copy, opens its identity without operating-system UI. Re-running init verifies the
+// existing identity without enrolling or contacting the API. A wait means a prompt.
 const blindArguments = ['init'];
 for (const [name, executable] of [['genuine', binary], ['copied', copiedBinary]]) {
-  const result = await runBounded(`blind-${name}`, executable, blindArguments, { acceptBoundedDenial: true });
-  if (result.code === 0) throw new Error('blindly spawned signed runtime unexpectedly used an identity');
-  assertAuthorizationDenial(`blind-${name}`, result);
+  const result = await runBounded(`blind-${name}`, executable, blindArguments);
+  assertUnattendedIdentityUse(`blind-${name}`, result);
 }
 
 const cancelled = await runBounded(
@@ -231,4 +226,4 @@ if (!home) throw new Error('HOME is required for the public-state canary scan');
 assertTreeDoesNotContainCanary(join(home, '.palladin'), 'public Palladin state');
 assertTreeDoesNotContainCanary(captureDirectoryInput, 'bounded probe captures');
 
-process.stdout.write('Blind signed-client, cancellation, second-connection, and public-state probes failed closed.\n');
+process.stdout.write('Signed clients opened identity unattended; cancellation, second-connection, and public-state probes failed closed.\n');

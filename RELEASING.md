@@ -4,11 +4,17 @@ Palladin Agent is a public repository and a security-sensitive credential runtim
 
 The product owner and only release approver is `@patryk-roguszewski`. A release is not complete until every verification below passes and the GitHub release is immutable.
 
+## Owner-authorized 0.0.14 test preview — 2026-11-23
+
+The product owner explicitly approved publishing and installing 0.0.14 preview, which removes per-operation operating-system prompts from macOS Hardened so remote Agents such as OpenClaw run unattended. For this exact version only, defer manual adversarial and physical lifecycle evidence. Keep all reviewed-source CI, signing/notarization, KMS artifact bindings, attestations, provenance, native artifact tests (including the unattended signed-client probe) and clean registry smoke tests mandatory. Do not claim deferred QA passed.
+
+Publish with the `preview` dist-tag, preserve `latest=0.0.9`, keep the GitHub release draft, and forbid `release-finalize.yml` for 0.0.14. Versions 0.0.15 and later receive no exception. The dependency exceptions in `deny.toml` keep their explicit deadlines; this preview does not extend them.
+
 ## Owner-authorized 0.0.13 test preview — 2026-11-18
 
 The product owner explicitly approved publishing and installing 0.0.13 preview to fix inherited Node host settings for OpenClaw and other Agent hosts. For this exact version only, defer manual adversarial and physical lifecycle evidence. Keep all reviewed-source CI, signing/notarization, KMS artifact bindings, attestations, provenance, native artifact tests and clean registry smoke tests mandatory. Do not claim deferred QA passed.
 
-Publish with the `preview` dist-tag, preserve `latest=0.0.9`, keep the GitHub release draft, and forbid `release-finalize.yml` for 0.0.13. Versions 0.0.14 and later receive no exception. The separately approved dependency exceptions retain their explicit deadlines in `deny.toml`; this preview does not extend them. Preserve local profiles when installing and do not enable the source debug runtime on the production macOS account.
+Publish with the `preview` dist-tag, preserve `latest=0.0.9`, keep the GitHub release draft, and forbid `release-finalize.yml` for 0.0.13. Later versions receive no exception from this 0.0.13 authorization. The separately approved dependency exceptions retain their explicit deadlines in `deny.toml`; this preview does not extend them. Preserve local profiles when installing and do not enable the source debug runtime on the production macOS account.
 
 ## Owner-authorized 0.0.12 test preview — 2026-11-08
 
@@ -106,7 +112,7 @@ Configure the public `PALLADIN_VERSION_POLICY_PUBLIC_KEY` variable and the prote
 1. `release-platforms.yml` builds the five macOS ARM/Linux candidates, signs and notarizes macOS, and publishes the exact platform packages under `candidate`.
 2. After those exact candidates are public, `release-meta.yml` verifies their provenance and exact bytes, hashes each client and worker, and KMS-signs the deterministic manifest.
 3. Native artifact smokes verify the signature and exact source/version/worker hash. An installed CLI smoke verifies the bundled signature without contacting release infrastructure.
-4. The same signed manifest is embedded in the CLI and attached to the draft release. Retries must reuse its byte-identical artifact bindings. For official releases after `0.0.9`, npm publication and finalization also require the owner-approved adversarial and physical lifecycle evidence. The opt-in `0.0.10`, `0.0.12` and `0.0.13` previews below are not official releases or waivers of those finalization gates.
+4. The same signed manifest is embedded in the CLI and attached to the draft release. Retries must reuse its byte-identical artifact bindings. For official releases after `0.0.9`, npm publication and finalization also require the owner-approved adversarial and physical lifecycle evidence. The opt-in `0.0.10`, `0.0.12`, `0.0.13` and `0.0.14` previews below are not official releases or waivers of those finalization gates.
 
 An already installed correctly signed version is not remotely revocable. Publish a security advisory, deprecate affected npm versions and instruct users to update explicitly. Do not promise forced upgrades or immediate revocation. Existing package-manager downgrade checks and native identity/schema integrity remain independent safeguards; a signed release is not rejected solely because a newer release exists.
 
@@ -168,21 +174,21 @@ An unresolved or accepted Critical/High finding, incomplete target, stale observ
 
 ### 5. Publish the meta package
 
-For `0.0.9`, publish `latest` after all supported platform registry smokes and the retained cryptographic/artifact gates pass. For `0.0.10`, the same retained gates permit only the opt-in `preview` channel described above. The exact `0.0.12` and `0.0.13` previews follow the same retained gates and `preview` channel. For other later versions, also require the adversarial and physical lifecycle gates:
+For `0.0.9`, publish `latest` after all supported platform registry smokes and the retained cryptographic/artifact gates pass. For `0.0.10`, the same retained gates permit only the opt-in `preview` channel described above. The exact `0.0.12`, `0.0.13` and `0.0.14` previews follow the same retained gates and `preview` channel. For other later versions, also require the adversarial and physical lifecycle gates:
 
 1. Build the meta tarball from the same tag commit.
 2. Verify its package allowlist contains only the launcher, runtime metadata, documentation, and license files. It must not contain private source, keys, build caches, test fixtures, or lifecycle scripts.
 3. Verify every supported optional dependency uses exact `X.Y.Z` and no unsupported platform fallback exists.
 4. Generate and verify its checksum, manifest entry, SBOM, provenance, and attestations.
-5. Except for the explicit `0.0.9`, `0.0.10`, `0.0.12` and `0.0.13` QA deferrals, re-download and revalidate the approved adversarial reports and KMS-signed operator approval against the tagged source and exact platform release manifest.
-6. Publish the byte-identical verified meta package through the protected OIDC workflow with `npm publish --tag preview` for `0.0.10`, `0.0.12` or `0.0.13`, otherwise `--tag latest` after its applicable gates pass. No additional npm approval follows the owner-authorized workflow.
-7. Install `@palladin/cli@X.Y.Z` from npm in clean runners for every supported platform and repeat the end-to-end smoke checks. For an official release, also verify `@palladin/cli@latest`; the `0.0.10`, `0.0.12` and `0.0.13` previews must leave `latest` on `0.0.9`.
+5. Except for the explicit `0.0.9`, `0.0.10`, `0.0.12`, `0.0.13` and `0.0.14` QA deferrals, re-download and revalidate the approved adversarial reports and KMS-signed operator approval against the tagged source and exact platform release manifest.
+6. Publish the byte-identical verified meta package through the protected OIDC workflow with `npm publish --tag preview` for `0.0.10`, `0.0.12`, `0.0.13` or `0.0.14`, otherwise `--tag latest` after its applicable gates pass. No additional npm approval follows the owner-authorized workflow.
+7. Install `@palladin/cli@X.Y.Z` from npm in clean runners for every supported platform and repeat the end-to-end smoke checks. For an official release, also verify `@palladin/cli@latest`; the `0.0.10`, `0.0.12`, `0.0.13` and `0.0.14` previews must leave `latest` on `0.0.9`.
 
 Publishing the meta package is the consumer-visible commit point. Never publish it while a platform package, registry smoke test, attestation, applicable adversarial cell, or Critical/High release blocker is missing.
 
 ### 6. Finalize the immutable GitHub release
 
-After the public meta-package smoke tests pass, Patryk approves finalization for an official release. The `0.0.10`, `0.0.12` and `0.0.13` previews remain drafts and must not enter this step. Create an official GitHub release from the existing protected tag and attach only the already verified artifacts. For `0.0.9`, omit the deferred QA artifacts and state that omission in the release notes:
+After the public meta-package smoke tests pass, Patryk approves finalization for an official release. The `0.0.10`, `0.0.12`, `0.0.13` and `0.0.14` previews remain drafts and must not enter this step. Create an official GitHub release from the existing protected tag and attach only the already verified artifacts. For `0.0.9`, omit the deferred QA artifacts and state that omission in the release notes:
 
 - all npm tarballs
 - `SHA256SUMS`
@@ -206,7 +212,7 @@ The owner-only finalizer requires the exact version-specific draft asset set. Fo
 - **A signing or publishing credential may be compromised:** stop release workflows, reject all pending stages, remove trusted publisher access, revoke tokens, rotate affected signing credentials, preserve audit evidence, and follow the security incident process before releasing again.
 - **A published package is malicious or exposes secrets:** follow npm and GitHub security incident procedures immediately. Do not use routine unpublish as a substitute for coordinated revocation, advisory, and recovery.
 
-Every retry must be reproducible and attributable to a reviewed source commit. Never bypass a failed gate, weaken a policy, use a developer-built artifact, or introduce an emergency laptop publish path. The documented one-version `0.0.9` official-release QA deferral and opt-in `0.0.10`/`0.0.12`/`0.0.13` npm previews are explicit, version-bounded product-owner decisions, not retry bypasses.
+Every retry must be reproducible and attributable to a reviewed source commit. Never bypass a failed gate, weaken a policy, use a developer-built artifact, or introduce an emergency laptop publish path. The documented one-version `0.0.9` official-release QA deferral and opt-in `0.0.10`/`0.0.12`/`0.0.13`/`0.0.14` npm previews are explicit, version-bounded product-owner decisions, not retry bypasses.
 
 ## Post-release audit
 

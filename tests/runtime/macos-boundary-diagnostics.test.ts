@@ -55,7 +55,7 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
       writeFileSync(fakeBinary, [
         '#!/bin/sh',
         'case "$1" in',
-        '  init) printf "fresh operating-system authorization is required for this operation\\nprivate-fixture-marker\\n" >&2; exit 1 ;;',
+        '  init) exit 0 ;;',
         '  connect) exit 1 ;;',
         '  mcp) IFS= read -r _; printf \'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\\n\'; IFS= read -r _; IFS= read -r _; printf \'{"jsonrpc":"2.0","id":2,"result":{"content":[]}}\\n\'; exit 0 ;;',
         'esac',
@@ -83,7 +83,7 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
       writeFileSync(fakeBinary, [
         '#!/bin/sh',
         'case "$1" in',
-        '  init) printf "fresh operating-system authorization is required for this operation\\n" >&2; exit 1 ;;',
+        '  init) exit 0 ;;',
         '  connect) exit 1 ;;',
         '  mcp) IFS= read -r _; printf \'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\\n\'; IFS= read -r _; IFS= read -r _; printf \'{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"invalid parameters"}}\\n\'; sleep 3 ;;',
         'esac',
@@ -107,7 +107,7 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
       writeFileSync(fakeBinary, [
         '#!/bin/sh',
         'case "$1" in',
-        '  init) printf "fresh operating-system authorization is required for this operation\\n" >&2; exit 1 ;;',
+        '  init) exit 0 ;;',
         '  connect) exit 1 ;;',
         '  mcp) IFS= read -r _; printf \'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\\n\'; IFS= read -r notification; IFS= read -r _; case "$notification" in *notifications/initialized*) ;; *) exit 1 ;; esac; printf \'{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"Palladin could not complete the request."}],"isError":true}}\\n\'; exit 0 ;;',
         'esac',
@@ -123,25 +123,18 @@ describe.skipIf(process.platform === 'win32')('signed boundary failure diagnosti
     }
   });
 
-  it('accepts a bounded, output-free identity wait on a headless Mac', () => {
+  it('rejects a signed client that waits for operating-system approval', () => {
     const directory = mkdtempSync(join(tmpdir(), 'palladin-headless-authorization-'));
     try {
       const fakeBinary = join(directory, 'fake-runtime');
-      writeFileSync(fakeBinary, [
-        '#!/bin/sh',
-        'case "$1" in',
-        '  init) exec sleep 20 ;;',
-        '  connect) exit 1 ;;',
-        '  mcp) IFS= read -r _; printf \'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\\n\'; IFS= read -r _; IFS= read -r _; printf \'{"jsonrpc":"2.0","id":2,"result":{"content":[],"isError":true}}\\n\'; exit 0 ;;',
-        'esac',
-      ].join('\n'));
+      writeFileSync(fakeBinary, '#!/bin/sh\nexec sleep 20\n');
       chmodSync(fakeBinary, 0o700);
       const probe = spawnSync(process.execPath, [
         'packaging/macos/tests/signed-client-probe.mjs', fakeBinary, fakeBinary, join(directory, 'captures'),
       ], { encoding: 'utf8', env: { ...process.env, HOME: directory }, timeout: 25_000 });
-      expect(probe.status).toBe(0);
-      expect(probe.stderr.match(/bounded-no-identity/g)).toHaveLength(2);
-      expect(probe.stdout.includes('failed closed')).toBe(true);
+      expect(probe.status).toBe(1);
+      const diagnostic = report(probe.stderr, 'intact-copy-and-client-authorization');
+      expect(diagnostic.stderr.includes('signed-client-blind-genuine-timeout')).toBe(true);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

@@ -104,7 +104,7 @@ fn account_home() -> Result<PathBuf, PlatformError> {
 
 #[cfg(target_os = "macos")]
 const fn hardened_candidate() -> &'static str {
-    "provisioned Data Protection Keychain bundle plus user presence"
+    "provisioned Data Protection Keychain bundle bound to the signed runtime"
 }
 
 #[cfg(target_os = "windows")]

@@ -5,10 +5,9 @@ use security_framework::item::ItemSearchOptions;
 
 /// A fresh LocalAuthentication context for exactly one Palladin operation.
 ///
-/// The context is never cached or cloned outside this module. Keychain queries
-/// within the same operation may retain it so that one explicit approval can
-/// unlock the operation seed and the organization credential without a second
-/// prompt.
+/// Current identity items carry no user-presence requirement, so they never
+/// prompt. Items written by 0.0.9-0.0.13 still require presence; binding one
+/// context per operation keeps those to a single approval until re-pairing.
 pub(crate) struct FreshLocalAuthenticationContext {
     context: Retained<LAContext>,
 }
