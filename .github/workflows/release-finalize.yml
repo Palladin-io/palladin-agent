@@ -62,6 +62,7 @@ jobs:
           test "$VERSION" != 0.0.10
           test "$VERSION" != 0.0.12
           test "$VERSION" != 0.0.13
+          test "$VERSION" != 0.0.14
           source_sha=$(git rev-parse HEAD)
           test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
           test "$GITHUB_SHA" = "$source_sha"

@@ -4,7 +4,7 @@ use security_framework::access_control::{ProtectionMode, SecAccessControl};
 use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
 use security_framework::os::macos::code_signing::{Flags, SecCode, SecRequirement, SecStaticCode};
 use security_framework::passwords::{
-    AccessControlOptions, PasswordOptions, delete_generic_password_options, generic_password,
+    PasswordOptions, delete_generic_password_options, generic_password,
     set_generic_password_options,
 };
 use security_framework_sys::base::errSecItemNotFound;
@@ -287,14 +287,12 @@ fn query(
     if include_access_control {
         options.set_label(slot.keychain_label());
         options.set_description("Palladin native Agent runtime secret");
-        let flags = if slot.requires_user_presence() {
-            AccessControlOptions::USER_PRESENCE.bits()
-        } else {
-            0
-        };
+        // Product-owner decision 2026-11-23: no per-operation user presence. The
+        // signed-runtime access group is the local boundary; backend grants and
+        // approvals gate credential delivery, so remote Agents can run unattended.
         let access_control = SecAccessControl::create_with_protection(
             Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
-            flags,
+            0,
         )
         .map_err(|error| StoreError::MacKeychainStatus(error.code()))?;
         options.set_access_control(access_control);
@@ -374,16 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn organization_credential_gates_use_with_user_presence() {
-        assert!(SecretSlot::OrganizationApiKey.requires_user_presence());
-        assert!(SecretSlot::InvocationAuthorizationSeedV2.requires_user_presence());
-        assert!(SecretSlot::LegacyOrganizationApiKeyV2.requires_user_presence());
-        assert!(!SecretSlot::IntegrityTrustStateV1.requires_user_presence());
-        assert!(!SecretSlot::VersionPolicyTrustStateV1.requires_user_presence());
-        assert!(!SecretSlot::BrowserHostEd25519SecretKeyV1.requires_user_presence());
-        assert!(!SecretSlot::BrowserHostLifecycleTokenV1.requires_user_presence());
-        assert!(SecretSlot::X25519PrivateKey.requires_user_presence());
-        assert!(SecretSlot::Ed25519SecretKey.requires_user_presence());
+    fn organization_credential_keeps_its_keychain_label() {
         assert_eq!(
             SecretSlot::OrganizationApiKey.keychain_label(),
             "Palladin organization credential"

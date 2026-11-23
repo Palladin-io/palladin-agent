@@ -26,10 +26,10 @@ Required environment:
   PALLADIN_RUNNER_ENVIRONMENT      Must equal github-hosted.
   PALLADIN_SECURITY_TEST_CONFIRM   Must equal github-hosted-ephemeral-runner.
 
-This noninteractive test creates only synthetic Palladin state on a fresh GitHub-hosted VM. Purge
-requires LocalAuthentication and cannot honestly run headlessly, so the state is destroyed only
-with the entire ephemeral VM. Interactive approval and lifecycle transitions are covered by the
-dedicated-lab procedure in packaging/macos/README.md.
+This noninteractive test creates only synthetic Palladin state on a fresh GitHub-hosted VM and
+requires intact signed clients to open it without operating-system UI. The state is destroyed with
+the entire ephemeral VM. Lock, sleep, and logout transitions are covered by the dedicated-lab
+procedure in packaging/macos/README.md.
 USAGE
   exit 64
 }
@@ -313,4 +313,4 @@ if find "$work_dir" -type f \( -name 'core' -o -name 'core.*' -o -name '*.core' 
   die "boundary probe left a core file"
 fi
 
-printf 'Verified applicable exact signed artifact storage, blind-spawn, copy, signature, task-port, debugger, cancellation, second-connection, and profile boundaries on %s; see the job summary for SIP-dependent coverage.\n' "$architecture"
+printf 'Verified applicable exact signed artifact storage, unattended signed-client, copy, signature, task-port, debugger, cancellation, second-connection, and profile boundaries on %s; see the job summary for SIP-dependent coverage.\n' "$architecture"

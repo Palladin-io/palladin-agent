@@ -45,15 +45,16 @@ environment, or captured protocol payload.
 ### macOS
 
 The public Hardened tier is the exact Developer ID signed and provisioned application using the
-`session-v2` Data Protection Keychain access group. A fresh LocalAuthentication decision is bound to
-one exact operation and connection. Unsigned development code does not claim this tier.
+`session-v2` Data Protection Keychain access group. Since the product-owner decision of 2026-11-23,
+identity items carry no user-presence requirement: an intact signed runtime opens them without
+operating-system UI, and each operation remains bound to its process, scope and connection by the
+per-identity authorization seed. Unsigned development code does not claim this tier.
 
 The source-development Convenience tier uses the current user's Login Keychain and does not isolate
 one same-user process from another. This is an expected tier limitation and must be reported as such,
 not as a passing process-isolation test.
 
-Positive LocalAuthentication replay, cancellation, lock, sleep, and logout evidence requires
-dedicated interactive Apple Silicon and Intel Macs. Hosted CI proves negative and structural
+Lock, sleep, and logout evidence requires dedicated interactive Apple Silicon and Intel Macs. Hosted CI proves negative and structural
 properties only. A release report cannot convert missing hardware evidence into `passed`.
 
 ### Windows

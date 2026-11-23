@@ -57,20 +57,6 @@ impl SecretSlot {
     }
 
     #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
-    pub(crate) const fn requires_user_presence(self) -> bool {
-        matches!(
-            self,
-            Self::OrganizationApiKey
-                | Self::X25519PrivateKey
-                | Self::Ed25519SecretKey
-                | Self::InvocationAuthorizationSeedV2
-                | Self::LegacyOrganizationApiKeyV2
-                | Self::LegacyX25519PrivateKeyV2
-                | Self::LegacyEd25519SecretKeyV2
-        )
-    }
-
-    #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
     pub(crate) const fn keychain_label(self) -> &'static str {
         match self {
             Self::IntegrityTrustStateV1 => "Palladin profile integrity root",
@@ -408,8 +394,8 @@ impl OperationLease {
 }
 
 /// Non-serializable, non-cloneable authorization for one exact native
-/// operation. On hardened macOS it owns the fresh LocalAuthentication context
-/// and a MAC derived from the per-identity authorization seed.
+/// operation. On hardened macOS it owns the per-operation LocalAuthentication
+/// context and a MAC derived from the per-identity authorization seed.
 pub struct OperationAuthorization {
     binding_digest: [u8; 32],
     scope: OperationScope,
@@ -674,7 +660,7 @@ pub fn storage_tier_description() -> &'static str {
     #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
     {
         if crate::macos_hardened_store::runtime_is_hardened() {
-            "Hardened - signed macOS Data Protection Keychain bundle; organization credential requires user presence"
+            "Hardened - signed macOS Data Protection Keychain bundle; identity is usable only by the signed runtime"
         } else {
             "Unavailable - hardened macOS code-signing requirement failed; no secure-storage fallback is allowed"
         }

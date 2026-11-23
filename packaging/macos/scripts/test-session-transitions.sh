@@ -16,10 +16,10 @@ Required environment:
   PALLADIN_SESSION_TEST_CONFIRM  Must equal dedicated-test-account.
 
 Run this only from a dedicated interactive macOS test account with a connected synthetic Agent.
-The operator must approve the first status operation and visually verify its fixed operation
-prompt. Lock and sleep then require a status operation to fail while unavailable and a fresh
-approval after unlock. logout-prepare obtains approval before logout; logout-verify requires a new
-approval after signing back in. This is a hardware-only acceptance hook, not hosted CI evidence.
+Status operations must complete without an operating-system prompt. Lock and sleep then require a
+status operation to fail while the session is unavailable and to succeed after unlock. logout-verify
+requires the identity to open again after signing back in.
+This is a hardware-only acceptance hook, not hosted CI evidence.
 USAGE
   exit 64
 }
@@ -49,14 +49,14 @@ assert_binary_session_contract "$binary"
 
 if [[ "$mode" == "logout-verify" ]]; then
   "$binary" --id "$profile" status >/dev/null
-  printf 'Completed the post-login status operation. Confirm that macOS required a new approval.\n'
+  printf 'Completed the post-login status operation. Confirm that macOS showed no approval prompt.\n'
   exit 0
 fi
 
 "$binary" --id "$profile" status >/dev/null
 
 if [[ "$mode" == "logout-prepare" ]]; then
-  printf 'Pre-logout operation approved. Log out normally, sign in, then run logout-verify with the same app and profile.\n'
+  printf 'Pre-logout operation completed. Log out normally, sign in, then run logout-verify with the same app and profile.\n'
   exit 0
 fi
 
@@ -98,4 +98,4 @@ while console_is_locked; do
   sleep 1
 done
 "$binary" --id "$profile" status >/dev/null
-printf 'Verified %s denial before unlock. Confirm that the post-unlock operation required a fresh approval.\n' "$mode"
+printf 'Verified %s denial before unlock. Confirm that the post-unlock operation showed no approval prompt.\n' "$mode"
