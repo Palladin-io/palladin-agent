@@ -17,9 +17,9 @@ class AdvisoryExpiryTests(unittest.TestCase):
             for entry in (advisory, {"id": advisory, "reason": "approved"}):
                 policy = {"advisories": {"ignore": [entry]}}
                 with self.subTest(advisory=advisory, entry=entry):
-                    self.assertEqual(expired_ignores(policy, date(2026, 11, 23)), [])
-                    self.assertEqual(expired_ignores(policy, date(2026, 11, 24)), [advisory])
-                    self.assertEqual(expired_ignores(policy, date(2026, 12, 1)), [advisory])
+                    self.assertEqual(expired_ignores(policy, date(2026, 12, 7)), [])
+                    self.assertEqual(expired_ignores(policy, date(2026, 12, 8)), [advisory])
+                    self.assertEqual(expired_ignores(policy, date(2026, 12, 15)), [advisory])
 
     def test_removing_temporary_exceptions_unblocks_future_builds(self):
         policy = {"advisories": {"ignore": [{"id": "RUSTSEC-2023-0071"}]}}

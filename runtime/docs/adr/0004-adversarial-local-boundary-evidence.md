@@ -48,7 +48,8 @@ The public Hardened tier is the exact Developer ID signed and provisioned applic
 `session-v2` Data Protection Keychain access group. Since the product-owner decision of 2026-11-23,
 identity items carry no user-presence requirement: an intact signed runtime opens them without
 operating-system UI, and each operation remains bound to its process, scope and connection by the
-per-identity authorization seed. Unsigned development code does not claim this tier.
+per-identity authorization seed. Since 2026-11-24, items use `AfterFirstUnlockThisDeviceOnly`, so a
+remote Agent keeps working while the screen is locked after the first unlock since boot. Unsigned development code does not claim this tier.
 
 The source-development Convenience tier uses the current user's Login Keychain and does not isolate
 one same-user process from another. This is an expected tier limitation and must be reported as such,

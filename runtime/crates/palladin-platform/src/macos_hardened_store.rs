@@ -287,11 +287,12 @@ fn query(
     if include_access_control {
         options.set_label(slot.keychain_label());
         options.set_description("Palladin native Agent runtime secret");
-        // Product-owner decision 2026-11-23: no per-operation user presence. The
-        // signed-runtime access group is the local boundary; backend grants and
-        // approvals gate credential delivery, so remote Agents can run unattended.
+        // Product-owner decisions 2026-11-23/24: no per-operation user presence and
+        // availability while the screen is locked. The signed-runtime access group
+        // is the local boundary; backend grants and mobile approvals gate
+        // credential delivery, so remote Agents run with nobody at the Mac.
         let access_control = SecAccessControl::create_with_protection(
-            Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
+            Some(ProtectionMode::AccessibleAfterFirstUnlockThisDeviceOnly),
             0,
         )
         .map_err(|error| StoreError::MacKeychainStatus(error.code()))?;
