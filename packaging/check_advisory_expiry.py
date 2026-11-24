@@ -5,7 +5,7 @@ import tomllib
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-EXPIRES_ON = date(2026, 11, 24)
+EXPIRES_ON = date(2026, 12, 8)
 TEMPORARY_IDS = {"RUSTSEC-2026-0370", "RUSTSEC-2026-0371", "RUSTSEC-2026-0372"}
 MCP_EXPIRES_ON = date(2026, 11, 25)
 MCP_TEMPORARY_IDS = {"RUSTSEC-2026-0457", "RUSTSEC-2026-0462", "RUSTSEC-2026-0543"}
