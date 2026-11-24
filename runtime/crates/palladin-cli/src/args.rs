@@ -92,9 +92,15 @@ pub enum Commands {
 #[derive(Debug, Subcommand)]
 pub enum BrowserCommand {
     /// Install the exact Palladin Chrome host for automatic Agent Inject.
-    Install,
+    Install {
+        #[command(flatten)]
+        profile: ChromeProfileArgs,
+    },
     /// Check the exact manifest and OS-secured host authorization.
-    Status,
+    Status {
+        #[command(flatten)]
+        profile: ChromeProfileArgs,
+    },
     /// Discover authenticated browser connections without touching a page or credential.
     Sessions {
         #[arg(long)]
@@ -105,7 +111,17 @@ pub enum BrowserCommand {
         /// Required acknowledgement because active Agent Inject sessions are invalidated.
         #[arg(long)]
         confirm: bool,
+        #[command(flatten)]
+        profile: ChromeProfileArgs,
     },
+}
+
+#[derive(Debug, Args)]
+pub struct ChromeProfileArgs {
+    /// Absolute --user-data-dir of a Chrome instance started with a custom profile
+    /// directory, such as an OpenClaw-managed browser. Defaults to the standard Chrome profile.
+    #[arg(long, value_name = "PATH")]
+    pub chrome_user_data_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Args)]

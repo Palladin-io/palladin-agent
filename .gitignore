@@ -7,3 +7,4 @@ runtime/contracts/dotnet/**/bin/
 runtime/contracts/dotnet/**/obj/
 packaging/windows/tests/**/bin/
 packaging/windows/tests/**/obj/
+__pycache__/

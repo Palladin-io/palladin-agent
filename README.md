@@ -354,6 +354,13 @@ Installation and uninstallation also remove the retired `io.palladin.browser_bri
 `io.palladin`; there is no automatic fallback to a second host.
 The extension connects automatically and stores no host key, fingerprint, or pairing state.
 `palladin browser status` reports the manifest and OS-secured host authorization.
+Chrome started with `--user-data-dir`, such as an OpenClaw-managed browser, reads Native Messaging
+manifests only from that directory. Run `palladin browser install --chrome-user-data-dir <absolute path>`
+(and pass the same option to `status` or `uninstall`) to install the identical manifest there; the
+directory must already exist, be owned by the current user, and contain no symlinks. The origin
+allowlist, host identity, exact tab/URL probe and grant approval are unchanged. Restart that browser
+after installing so the extension reconnects. `uninstall` with this option still revokes the shared
+host authorization for every Chrome profile.
 The authenticated channel is verified when Inject begins; no Palladin account or profile in the
 extension participates in that decision.
 
