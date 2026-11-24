@@ -50,7 +50,10 @@ struct NativeHostManifest {
     allowed_origins: Vec<String>,
 }
 
-pub fn install_manifest(palladin_root: &Path) -> Result<PathBuf, BrowserInstallError> {
+pub fn install_manifest(
+    palladin_root: &Path,
+    chrome_user_data_dir: Option<&Path>,
+) -> Result<PathBuf, BrowserInstallError> {
     require_macos()?;
     let executable =
         fs::canonicalize(std::env::current_exe().map_err(|_| BrowserInstallError::Executable)?)
@@ -60,7 +63,7 @@ pub fn install_manifest(palladin_root: &Path) -> Result<PathBuf, BrowserInstallE
     if !executable_metadata.file_type().is_file() || executable_metadata.file_type().is_symlink() {
         return Err(BrowserInstallError::Executable);
     }
-    let directory = manifest_directory(palladin_root)?;
+    let directory = manifest_directory(palladin_root, chrome_user_data_dir)?;
     fs::create_dir_all(&directory).map_err(|_| BrowserInstallError::Directory)?;
     validate_owner_directory(&directory)?;
     #[cfg(unix)]
@@ -107,9 +110,13 @@ pub fn install_manifest(palladin_root: &Path) -> Result<PathBuf, BrowserInstallE
     Ok(destination)
 }
 
-pub fn manifest_status(palladin_root: &Path) -> Result<bool, BrowserInstallError> {
+pub fn manifest_status(
+    palladin_root: &Path,
+    chrome_user_data_dir: Option<&Path>,
+) -> Result<bool, BrowserInstallError> {
     require_macos()?;
-    let path = manifest_directory(palladin_root)?.join(format!("{NATIVE_HOST_NAME}.json"));
+    let path = manifest_directory(palladin_root, chrome_user_data_dir)?
+        .join(format!("{NATIVE_HOST_NAME}.json"));
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -134,9 +141,12 @@ pub fn manifest_status(palladin_root: &Path) -> Result<bool, BrowserInstallError
         && Path::new(&manifest.path) == executable)
 }
 
-pub fn remove_manifest(palladin_root: &Path) -> Result<bool, BrowserInstallError> {
+pub fn remove_manifest(
+    palladin_root: &Path,
+    chrome_user_data_dir: Option<&Path>,
+) -> Result<bool, BrowserInstallError> {
     require_macos()?;
-    let directory = manifest_directory(palladin_root)?;
+    let directory = manifest_directory(palladin_root, chrome_user_data_dir)?;
     let current = remove_manifest_file(&directory.join(format!("{NATIVE_HOST_NAME}.json")))?;
     let mut removed = current;
     for name in LEGACY_NATIVE_HOST_NAMES {
@@ -162,7 +172,20 @@ pub fn local_socket_path(palladin_root: &Path) -> PathBuf {
     palladin_root.join("browser-bridge.sock")
 }
 
-fn manifest_directory(palladin_root: &Path) -> Result<PathBuf, BrowserInstallError> {
+// Chrome started with --user-data-dir reads user-level Native Messaging manifests
+// only from that directory, so an isolated profile such as OpenClaw's needs its own copy.
+fn manifest_directory(
+    palladin_root: &Path,
+    chrome_user_data_dir: Option<&Path>,
+) -> Result<PathBuf, BrowserInstallError> {
+    if let Some(user_data_dir) = chrome_user_data_dir {
+        if !user_data_dir.is_absolute() {
+            return Err(BrowserInstallError::UserDataDirectory);
+        }
+        validate_owner_directory(user_data_dir)
+            .map_err(|_| BrowserInstallError::UserDataDirectory)?;
+        return Ok(user_data_dir.join("NativeMessagingHosts"));
+    }
     let home = palladin_root
         .parent()
         .ok_or(BrowserInstallError::Directory)?;
@@ -213,6 +236,10 @@ pub enum BrowserInstallError {
     Directory,
     #[error("the Chrome Native Messaging manifest is invalid")]
     Manifest,
+    #[error(
+        "the Chrome user data directory must be an existing absolute directory owned by the current user, without symlinks"
+    )]
+    UserDataDirectory,
 }
 
 #[cfg(test)]
@@ -264,7 +291,7 @@ mod tests {
         let home = std::fs::canonicalize(temporary.path()).expect("canonical home");
         let root = home.join(".palladin");
         std::fs::create_dir(&root).expect("root");
-        let manifest_directory = manifest_directory(&root).expect("manifest directory");
+        let manifest_directory = manifest_directory(&root, None).expect("manifest directory");
         std::fs::create_dir_all(&manifest_directory).expect("create manifest directory");
         let legacy_manifests: Vec<_> = LEGACY_NATIVE_HOST_NAMES
             .iter()
@@ -273,13 +300,13 @@ mod tests {
         for path in &legacy_manifests {
             std::fs::write(path, b"legacy").expect("legacy manifest");
         }
-        let manifest = install_manifest(&root).expect("install");
+        let manifest = install_manifest(&root, None).expect("install");
         assert!(legacy_manifests.iter().all(|path| !path.exists()));
         assert_eq!(
             manifest.file_name().and_then(std::ffi::OsStr::to_str),
             Some("io.palladin.json")
         );
-        assert!(manifest_status(&root).expect("status"));
+        assert!(manifest_status(&root, None).expect("status"));
 
         let mut value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&manifest).expect("manifest"))
@@ -301,16 +328,16 @@ mod tests {
         ] {
             value["allowed_origins"] = origins.clone();
             std::fs::write(&manifest, serde_json::to_vec(&value).expect("encode")).expect("tamper");
-            assert!(!manifest_status(&root).expect("tampered status"));
+            assert!(!manifest_status(&root, None).expect("tampered status"));
         }
-        assert!(remove_manifest(&root).expect("remove"));
+        assert!(remove_manifest(&root, None).expect("remove"));
         assert!(!manifest.exists());
         for path in &legacy_manifests {
             std::fs::write(path, b"legacy").expect("legacy manifest");
         }
-        assert!(remove_manifest(&root).expect("remove legacy-only installation"));
+        assert!(remove_manifest(&root, None).expect("remove legacy-only installation"));
         assert!(legacy_manifests.iter().all(|path| !path.exists()));
-        assert!(!remove_manifest(&root).expect("already removed"));
+        assert!(!remove_manifest(&root, None).expect("already removed"));
     }
 
     #[cfg(target_os = "macos")]
@@ -327,6 +354,65 @@ mod tests {
         let target = home.join("redirected");
         std::fs::create_dir(&target).expect("target");
         symlink(&target, chrome.join("NativeMessagingHosts")).expect("symlink");
-        assert_eq!(install_manifest(&root), Err(BrowserInstallError::Directory));
+        assert_eq!(
+            install_manifest(&root, None),
+            Err(BrowserInstallError::Directory)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn custom_chrome_user_data_dir_receives_its_own_exact_manifest() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary home");
+        let home = std::fs::canonicalize(temporary.path()).expect("canonical home");
+        let root = home.join(".palladin");
+        std::fs::create_dir(&root).expect("root");
+        let user_data = home.join(".openclaw/browser/openclaw/user-data");
+        std::fs::create_dir_all(&user_data).expect("user data");
+
+        let manifest = install_manifest(&root, Some(&user_data)).expect("install");
+        assert_eq!(
+            manifest,
+            user_data.join("NativeMessagingHosts/io.palladin.json")
+        );
+        assert!(manifest_status(&root, Some(&user_data)).expect("custom status"));
+        assert!(!manifest_status(&root, None).expect("default status untouched"));
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest).expect("manifest"))
+                .expect("manifest json");
+        assert_eq!(
+            value["allowed_origins"],
+            serde_json::json!(CHROME_EXTENSION_ORIGINS)
+        );
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&manifest)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        assert!(remove_manifest(&root, Some(&user_data)).expect("remove"));
+        assert!(!manifest.exists());
+
+        let redirected = home.join("redirected-profile");
+        std::fs::create_dir(&redirected).expect("redirected");
+        let linked = home.join("linked-profile");
+        symlink(&redirected, &linked).expect("symlink");
+        for rejected in [
+            linked.as_path(),
+            Path::new("relative/user-data"),
+            &home.join("missing-profile"),
+        ] {
+            assert_eq!(
+                install_manifest(&root, Some(rejected)),
+                Err(BrowserInstallError::UserDataDirectory),
+                "must reject {}",
+                rejected.display()
+            );
+        }
+        assert!(!redirected.join("NativeMessagingHosts").exists());
     }
 }

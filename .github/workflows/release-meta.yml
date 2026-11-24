@@ -767,7 +767,7 @@ jobs:
   approve-adversarial:
     name: KMS-sign the owner-approved adversarial evidence
     needs: [authorize, linux-system, smoke-native, smoke-musl]
-    if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && inputs.version != '0.0.12' && inputs.version != '0.0.13' && inputs.version != '0.0.14' && inputs.version != '0.0.15'
+    if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && inputs.version != '0.0.12' && inputs.version != '0.0.13' && inputs.version != '0.0.14' && inputs.version != '0.0.15' && inputs.version != '0.0.16'
     runs-on: ubuntu-latest
     environment: version-policy-signing
     timeout-minutes: 10
@@ -875,7 +875,7 @@ jobs:
   approve-lifecycle:
     name: KMS-sign the owner-approved platform lifecycle evidence
     needs: [authorize, linux-system, prepare-meta]
-    if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && inputs.version != '0.0.12' && inputs.version != '0.0.13' && inputs.version != '0.0.14' && inputs.version != '0.0.15' && needs.authorize.outputs.lifecycle_ready == 'true'
+    if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && inputs.version != '0.0.12' && inputs.version != '0.0.13' && inputs.version != '0.0.14' && inputs.version != '0.0.15' && inputs.version != '0.0.16' && needs.authorize.outputs.lifecycle_ready == 'true'
     runs-on: ubuntu-latest
     environment: version-policy-signing
     timeout-minutes: 15
@@ -1181,7 +1181,7 @@ jobs:
           retention-days: 30
 
       - name: Record the deferred physical lifecycle boundary
-        if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && inputs.version != '0.0.12' && inputs.version != '0.0.13' && inputs.version != '0.0.14' && inputs.version != '0.0.15'
+        if: inputs.version != '0.0.9' && inputs.version != '0.0.10' && inputs.version != '0.0.12' && inputs.version != '0.0.13' && inputs.version != '0.0.14' && inputs.version != '0.0.15' && inputs.version != '0.0.16'
         run: |
           cat >>"$GITHUB_STEP_SUMMARY" <<'SUMMARY'
           The exact `@palladin/cli` candidate was attached to the draft release but was not published to npm.
@@ -1196,7 +1196,7 @@ jobs:
       !cancelled() && needs.authorize.result == 'success'
       && github.actor == 'patryk-roguszewski' && github.triggering_actor == 'patryk-roguszewski' && needs.linux-system.result == 'success' && needs.prepare-meta.result == 'success'
       && needs.artifact-smoke.result == 'success'
-      && (inputs.version == '0.0.9' || inputs.version == '0.0.10' || inputs.version == '0.0.12' || inputs.version == '0.0.13' || inputs.version == '0.0.14' || inputs.version == '0.0.15'
+      && (inputs.version == '0.0.9' || inputs.version == '0.0.10' || inputs.version == '0.0.12' || inputs.version == '0.0.13' || inputs.version == '0.0.14' || inputs.version == '0.0.15' || inputs.version == '0.0.16'
         || (needs.approve-adversarial.result == 'success' && needs.approve-lifecycle.result == 'success'))
     runs-on: ubuntu-latest
     environment: npm-release
@@ -1243,7 +1243,7 @@ jobs:
             linux-system-x64.intoto.jsonl linux-system-arm64.intoto.jsonl; do
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
           done
-          if [[ "$INPUTS_VERSION" != 0.0.9 && "$INPUTS_VERSION" != 0.0.10 && "$INPUTS_VERSION" != 0.0.12 && "$INPUTS_VERSION" != 0.0.13 && "$INPUTS_VERSION" != 0.0.14 && "$INPUTS_VERSION" != 0.0.15 ]]; then
+          if [[ "$INPUTS_VERSION" != 0.0.9 && "$INPUTS_VERSION" != 0.0.10 && "$INPUTS_VERSION" != 0.0.12 && "$INPUTS_VERSION" != 0.0.13 && "$INPUTS_VERSION" != 0.0.14 && "$INPUTS_VERSION" != 0.0.15 && "$INPUTS_VERSION" != 0.0.16 ]]; then
             for pattern in adversarial-report.json adversarial-report.md adversarial-approval.json \
               lifecycle-report.json lifecycle-report.md lifecycle-approval.json; do
               gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$assets"
@@ -1276,7 +1276,7 @@ jobs:
           node packaging/npm/verify-version-policy-build.mjs \
             --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
             --bundle "$assets/version-policy-candidate.json" --version "$VERSION"
-          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.10 && "$VERSION" != 0.0.12 && "$VERSION" != 0.0.13 && "$VERSION" != 0.0.14 && "$VERSION" != 0.0.15 ]]; then
+          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.10 && "$VERSION" != 0.0.12 && "$VERSION" != 0.0.13 && "$VERSION" != 0.0.14 && "$VERSION" != 0.0.15 && "$VERSION" != 0.0.16 ]]; then
             node security/adversarial/report.mjs validate \
               --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
               --source-sha "$SOURCE_SHA" --json "$assets/adversarial-report.json" \
@@ -1320,7 +1320,7 @@ jobs:
         run: |
           set -euo pipefail
           dist_tag=latest
-          if [[ "$INPUTS_VERSION" == 0.0.10 || "$INPUTS_VERSION" == 0.0.12 || "$INPUTS_VERSION" == 0.0.13 || "$INPUTS_VERSION" == 0.0.14 || "$INPUTS_VERSION" == 0.0.15 ]]; then dist_tag=preview; fi
+          if [[ "$INPUTS_VERSION" == 0.0.10 || "$INPUTS_VERSION" == 0.0.12 || "$INPUTS_VERSION" == 0.0.13 || "$INPUTS_VERSION" == 0.0.14 || "$INPUTS_VERSION" == 0.0.15 || "$INPUTS_VERSION" == 0.0.16 ]]; then dist_tag=preview; fi
           npm publish "$RUNNER_TEMP/stage-assets/palladin-cli-${INPUTS_VERSION}.tgz" --tag "$dist_tag" --provenance --ignore-scripts
         env:
           INPUTS_VERSION: ${{ inputs.version }}

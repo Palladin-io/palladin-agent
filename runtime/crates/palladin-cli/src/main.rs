@@ -312,12 +312,15 @@ async fn browser(
             }
             ExitCode::SUCCESS
         }
-        BrowserCommand::Install => {
+        BrowserCommand::Install { profile } => {
             let provisioning = match service.provision_browser_host_authorization_locked() {
                 Ok(authorization) => authorization,
                 Err(error) => return fail(&error.to_string()),
             };
-            let path = match install_manifest(service.repository().root()) {
+            let path = match install_manifest(
+                service.repository().root(),
+                profile.chrome_user_data_dir.as_deref(),
+            ) {
                 Ok(path) => path,
                 Err(error) => return fail(&error.to_string()),
             };
@@ -328,8 +331,11 @@ async fn browser(
             drop(provisioning);
             ExitCode::SUCCESS
         }
-        BrowserCommand::Status => {
-            let installed = match manifest_status(service.repository().root()) {
+        BrowserCommand::Status { profile } => {
+            let installed = match manifest_status(
+                service.repository().root(),
+                profile.chrome_user_data_dir.as_deref(),
+            ) {
                 Ok(installed) => installed,
                 Err(error) => return fail(&error.to_string()),
             };
@@ -364,7 +370,7 @@ async fn browser(
                 ExitCode::from(EXIT_FAILURE)
             }
         }
-        BrowserCommand::Uninstall { confirm } => {
+        BrowserCommand::Uninstall { confirm, profile } => {
             if !confirm {
                 return fail("browser uninstall requires --confirm");
             }
@@ -372,7 +378,10 @@ async fn browser(
                 Ok(revocation) => revocation,
                 Err(error) => return fail(&error.to_string()),
             };
-            if let Err(error) = remove_manifest(service.repository().root()) {
+            if let Err(error) = remove_manifest(
+                service.repository().root(),
+                profile.chrome_user_data_dir.as_deref(),
+            ) {
                 return fail(&error.to_string());
             }
             drop(revocation);
@@ -387,8 +396,8 @@ const fn browser_command_unsupported_on_platform(command: &Commands) -> bool {
         && matches!(
             command,
             Commands::Browser {
-                command: BrowserCommand::Install
-                    | BrowserCommand::Status
+                command: BrowserCommand::Install { .. }
+                    | BrowserCommand::Status { .. }
                     | BrowserCommand::Sessions { .. },
             }
         )

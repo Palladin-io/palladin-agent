@@ -327,7 +327,7 @@ test('release workflows restrict direct publishing to protected OIDC release job
   assert.match(metaRelease, /INPUTS_VERSION: \$\{\{ inputs\.version \}\}/);
   assert.match(metaRelease, /npm publish "\$RUNNER_TEMP\/stage-assets\/palladin-cli-\$\{INPUTS_VERSION\}\.tgz" --tag "\$dist_tag"/);
   assert.match(metaRelease, /dist_tag=latest/);
-  assert.match(metaRelease, /if \[\[ "\$INPUTS_VERSION" == 0\.0\.10 \|\| "\$INPUTS_VERSION" == 0\.0\.12 \|\| "\$INPUTS_VERSION" == 0\.0\.13 \|\| "\$INPUTS_VERSION" == 0\.0\.14 \|\| "\$INPUTS_VERSION" == 0\.0\.15 \]\]; then dist_tag=preview; fi/);
+  assert.match(metaRelease, /if \[\[ "\$INPUTS_VERSION" == 0\.0\.10 \|\| "\$INPUTS_VERSION" == 0\.0\.12 \|\| "\$INPUTS_VERSION" == 0\.0\.13 \|\| "\$INPUTS_VERSION" == 0\.0\.14 \|\| "\$INPUTS_VERSION" == 0\.0\.15 \|\| "\$INPUTS_VERSION" == 0\.0\.16 \]\]; then dist_tag=preview; fi/);
   for (const [contents, job] of [[platformRelease, 'stage-platforms'], [metaRelease, 'stage-meta'], [finalRelease, 'finalize']]) {
     const publishingJob = contents.slice(contents.indexOf(`\n  ${job}:`));
     assert.match(publishingJob, /github\.triggering_actor == 'patryk-roguszewski'/);
@@ -397,7 +397,8 @@ test('only authorized preview versions select preview and cannot finalize', () =
     ['0.0.13', 'preview', false],
     ['0.0.14', 'preview', false],
     ['0.0.15', 'preview', false],
-    ['0.0.16', 'latest', true],
+    ['0.0.16', 'preview', false],
+    ['0.0.17', 'latest', true],
     ['0.0.120', 'latest', true],
   ]) {
     const env = { ...process.env, INPUTS_VERSION: version, VERSION: version };
@@ -422,16 +423,16 @@ test('preview deferral never bypasses artifact gates or extends to later version
   // GitHub accepts hyphenated needs keys; evaluate the same condition using bracket syntax.
   const evaluate = new Function('inputs', 'needs', 'github', 'cancelled',
     `return (${condition[1].replace(/needs\.([a-z]+(?:-[a-z]+)+)/g, "needs['$1']")});`);
-  for (const [version, expected] of [['0.0.10', true], ['0.0.12', true], ['0.0.11', false], ['0.0.13', true], ['0.0.14', true], ['0.0.15', true], ['0.0.16', false], ['0.0.150', false], ['0.0.140', false], ['0.0.130', false], ['0.0.120', false]]) {
+  for (const [version, expected] of [['0.0.10', true], ['0.0.12', true], ['0.0.11', false], ['0.0.13', true], ['0.0.14', true], ['0.0.15', true], ['0.0.16', true], ['0.0.17', false], ['0.0.160', false], ['0.0.150', false], ['0.0.140', false], ['0.0.130', false], ['0.0.120', false]]) {
     assert.equal(evaluate({ version }, needs, github, () => false), expected, version);
   }
   for (const gate of ['authorize', 'linux-system', 'prepare-meta', 'artifact-smoke']) {
-    assert.equal(evaluate({ version: '0.0.15' }, { ...needs, [gate]: { result: 'failure' } }, github, () => false), false, gate);
+    assert.equal(evaluate({ version: '0.0.16' }, { ...needs, [gate]: { result: 'failure' } }, github, () => false), false, gate);
   }
-  assert.equal(evaluate({ version: '0.0.15' }, needs, github, () => true), false);
-  assert.equal(evaluate({ version: '0.0.15' }, needs, { ...github, triggering_actor: 'another-user' }, () => false), false);
+  assert.equal(evaluate({ version: '0.0.16' }, needs, github, () => true), false);
+  assert.equal(evaluate({ version: '0.0.16' }, needs, { ...github, triggering_actor: 'another-user' }, () => false), false);
   const approved = { ...needs, 'approve-adversarial': { result: 'success' }, 'approve-lifecycle': { result: 'success' } };
-  assert.equal(evaluate({ version: '0.0.16' }, approved, github, () => false), true);
+  assert.equal(evaluate({ version: '0.0.17' }, approved, github, () => false), true);
 });
 
 test('meta-package staging preserves signed artifacts and limits authorized test versions to preview', () => {
@@ -492,7 +493,7 @@ test('meta-package staging preserves signed artifacts and limits authorized test
     /\n    needs: \[authorize, prepare-meta\]\r?\n/,
   );
   assert.match(workflow, /lifecycle_ready: \$\{\{ steps\.release_set\.outputs\.lifecycle_ready \}\}/);
-  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.9' && inputs\.version != '0\.0\.10' && inputs\.version != '0\.0\.12' && inputs\.version != '0\.0\.13' && inputs\.version != '0\.0\.14' && inputs\.version != '0\.0\.15' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
+  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.9' && inputs\.version != '0\.0\.10' && inputs\.version != '0\.0\.12' && inputs\.version != '0\.0\.13' && inputs\.version != '0\.0\.14' && inputs\.version != '0\.0\.15' && inputs\.version != '0\.0\.16' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
   assert.match(workflow, /inputs\.version == '0\.0\.9' \|\| inputs\.version == '0\.0\.10'/);
   assert.match(workflow, /\[\[ \$lifecycle_count -eq 0 \|\| \$lifecycle_count -eq 2 \]\]/);
   const prepareOffset = workflow.indexOf('\n  prepare-meta:');
