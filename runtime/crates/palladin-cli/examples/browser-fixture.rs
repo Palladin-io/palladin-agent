@@ -47,6 +47,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hold_ms: u64 = args.next().unwrap_or_else(|| "0".into()).parse()?;
     let count: usize = args.next().unwrap_or_else(|| "1".into()).parse()?;
     let browser_session = args.next();
+    if mode == "prepare-live" {
+        let (_, prepared) = transport::ExtensionClient::connect_prepared(
+            &root,
+            &identity,
+            &"a".repeat(64),
+            Some(BrowserTarget {
+                tab_id,
+                page_url: &page_url,
+                browser_session: browser_session.as_deref(),
+            }),
+            true,
+        )
+        .await?;
+        println!("prepared:{}", prepared.outcome);
+        return Ok(());
+    }
     let form: InjectionFormDefinition = serde_json::from_value(serde_json::json!({
         "version": 1, "steps": [{"fields": [
             {"entryFieldId":"credential.username", "selector":"#username", "control":"text"},

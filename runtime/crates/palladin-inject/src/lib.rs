@@ -252,13 +252,8 @@ where
         },
     };
     drop(lifecycle);
-    match prepared.outcome.as_str() {
-        "ready" => {}
-        "unsupported-live-detection" => return Err(InjectServiceError::LiveDiscoveryUnsupported),
-        "target-tab-unavailable" => return Err(InjectServiceError::TargetTabUnavailable),
-        "target-tab-busy" => return Err(InjectServiceError::TargetTabBusy),
-        "target-url-mismatch" => return Err(InjectServiceError::TargetUrlMismatch),
-        _ => return Err(InjectServiceError::ProviderNotReady),
+    if let Some(error) = preparation_failure(&prepared.outcome, live_forms) {
+        return Err(error);
     }
     let current_url = prepared
         .current_url
@@ -823,6 +818,47 @@ fn resolve_selected_field(
     Ok((selected.expose_for_authorized_operation().to_owned(), kind))
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn preparation_failure(outcome: &str, live_forms: bool) -> Option<InjectServiceError> {
+    Some(match outcome {
+        "ready" => return None,
+        "unsupported-live-detection" => InjectServiceError::LiveDiscoveryUnsupported,
+        "target-tab-unavailable" => InjectServiceError::TargetTabUnavailable,
+        "target-tab-busy" => InjectServiceError::TargetTabBusy,
+        "target-url-mismatch" => InjectServiceError::TargetUrlMismatch,
+        "provider-unavailable" if live_forms => InjectServiceError::LiveTargetNotPrepared,
+        _ => InjectServiceError::ProviderNotReady,
+    })
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::{InjectServiceError, preparation_failure};
+
+    #[test]
+    fn live_target_without_a_login_step_is_not_reported_as_a_lost_connection() {
+        assert!(preparation_failure("ready", true).is_none());
+        assert!(matches!(
+            preparation_failure("provider-unavailable", true),
+            Some(InjectServiceError::LiveTargetNotPrepared)
+        ));
+        for (outcome, live) in [("provider-unavailable", false), ("invalid-request", true)] {
+            assert!(matches!(
+                preparation_failure(outcome, live),
+                Some(InjectServiceError::ProviderNotReady)
+            ));
+        }
+        assert!(matches!(
+            preparation_failure("target-tab-unavailable", true),
+            Some(InjectServiceError::TargetTabUnavailable)
+        ));
+        assert!(matches!(
+            preparation_failure("target-url-mismatch", true),
+            Some(InjectServiceError::TargetUrlMismatch)
+        ));
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum InjectServiceError {
     #[error("PALLADIN_EXPERIMENTAL_LIVE_FORMS must be 0 or 1")]
@@ -853,6 +889,10 @@ pub enum InjectServiceError {
     Randomness,
     #[error("the authenticated Palladin extension is not ready for Inject")]
     ProviderNotReady,
+    #[error(
+        "the connected Palladin extension could not prepare a supported login step on the exact target; inspect the page and refresh its exact tab and URL; no credential was sent to the page"
+    )]
+    LiveTargetNotPrepared,
     #[error("the browser framework target tab is unavailable to the Palladin extension")]
     TargetTabUnavailable,
     #[error("the target tab is busy with another Palladin operation; retry after it finishes")]
