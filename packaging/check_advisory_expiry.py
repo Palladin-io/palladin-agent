@@ -8,7 +8,9 @@ from pathlib import Path
 EXPIRES_ON = date(2026, 12, 8)
 TEMPORARY_IDS = {"RUSTSEC-2026-0370", "RUSTSEC-2026-0371", "RUSTSEC-2026-0372"}
 MCP_EXPIRES_ON = date(2026, 11, 25)
-MCP_TEMPORARY_IDS = {"RUSTSEC-2026-0457", "RUSTSEC-2026-0462", "RUSTSEC-2026-0543"}
+MCP_TEMPORARY_IDS = {"RUSTSEC-2026-0457", "RUSTSEC-2026-0462"}
+CHRONO_EXPIRES_ON = date(2026, 12, 8)
+CHRONO_TEMPORARY_IDS = {"RUSTSEC-2026-0543"}
 
 
 def expired_ignores(policy, today):
@@ -19,6 +21,8 @@ def expired_ignores(policy, today):
     expired = ignored & TEMPORARY_IDS if today >= EXPIRES_ON else set()
     if today >= MCP_EXPIRES_ON:
         expired |= ignored & MCP_TEMPORARY_IDS
+    if today >= CHRONO_EXPIRES_ON:
+        expired |= ignored & CHRONO_TEMPORARY_IDS
     return sorted(expired)
 
 
