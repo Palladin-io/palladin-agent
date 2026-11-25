@@ -32,8 +32,9 @@ use palladin_runtime::{
     open_system_browser,
 };
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
-    PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerConfig,
+    Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
@@ -727,8 +728,8 @@ impl<A: McpApplication> PalladinMcpServer<A> {
 }
 
 impl<A: McpApplication> ServerHandler for PalladinMcpServer<A> {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
             .with_server_info(
                 Implementation::new("Palladin Agents", env!("CARGO_PKG_VERSION"))
@@ -762,8 +763,8 @@ impl<A: McpApplication> ServerHandler for PalladinMcpServer<A> {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        self.invoke(request, context).await
+    ) -> Result<CallToolResponse, McpError> {
+        self.invoke(request, context).await.map(Into::into)
     }
 }
 

@@ -1,6 +1,5 @@
 use hmac::{Hmac, Mac};
 use secrecy::{ExposeSecret, SecretSlice};
-use security_framework::access_control::{ProtectionMode, SecAccessControl};
 use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
 use security_framework::os::macos::code_signing::{Flags, SecCode, SecRequirement, SecStaticCode};
 use security_framework::passwords::{
@@ -13,11 +12,15 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
 use crate::macos_local_authentication::FreshLocalAuthenticationContext;
+use crate::macos_protection_migration;
 use crate::secure_store::{
-    AuthorizationPrompt, OperationAuthorization, OperationLease, OperationScope, SecretSlot,
-    SecretStore, StoreError, account_name, valid_opaque_id,
+    AuthorizationPrompt, BROWSER_HOST_IDENTITY_OWNER_ID, OperationAuthorization, OperationLease,
+    OperationScope, SecretSlot, SecretStore, StoreError, TRUST_STATE_OWNER_ID, account_name,
+    valid_opaque_id,
 };
 
+#[allow(non_upper_case_globals)]
+const errSecInteractionNotAllowed: i32 = -25308;
 const LEGACY_SERVICE: &str = "io.palladin.runtime";
 const IDENTITY_SERVICE_V2: &str = "io.palladin.runtime.session-v2.identity";
 const STATE_SERVICE_V2: &str = "io.palladin.runtime.session-v2.state";
@@ -115,7 +118,10 @@ impl SecretStore for MacHardenedSecretStore {
         }
         let options = query(owner_id, slot, false)?;
         match generic_password(options) {
-            Ok(secret) => Ok(Some(secret.into())),
+            Ok(secret) => {
+                macos_protection_migration::run_once(shared_state_queries);
+                Ok(Some(secret.into()))
+            }
             Err(error) if error.code() == errSecItemNotFound => Ok(None),
             Err(error) => Err(StoreError::MacKeychainStatus(error.code())),
         }
@@ -204,6 +210,24 @@ impl SecretStore for MacHardenedSecretStore {
     }
 }
 
+fn shared_state_queries() -> Vec<PasswordOptions> {
+    [
+        (TRUST_STATE_OWNER_ID, SecretSlot::IntegrityTrustStateV1),
+        (TRUST_STATE_OWNER_ID, SecretSlot::VersionPolicyTrustStateV1),
+        (
+            BROWSER_HOST_IDENTITY_OWNER_ID,
+            SecretSlot::BrowserHostEd25519SecretKeyV1,
+        ),
+        (
+            BROWSER_HOST_IDENTITY_OWNER_ID,
+            SecretSlot::BrowserHostLifecycleTokenV1,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(owner, slot)| query(owner, slot, false).ok())
+    .collect()
+}
+
 fn direct_read_allowed(slot: SecretSlot) -> bool {
     matches!(
         slot,
@@ -262,11 +286,17 @@ fn authorized_password(
     context.bind(&mut options);
     match options.search() {
         Ok(mut results) if results.len() == 1 => match results.pop() {
-            Some(SearchResult::Data(secret)) if !secret.is_empty() => Ok(Some(secret.into())),
+            Some(SearchResult::Data(secret)) if !secret.is_empty() => {
+                macos_protection_migration::upgrade_item(query(owner_id, slot, false)?);
+                Ok(Some(secret.into()))
+            }
             _ => Err(StoreError::Unavailable),
         },
         Ok(_) => Err(StoreError::Unavailable),
         Err(error) if error.code() == errSecItemNotFound => Ok(None),
+        Err(error) if error.code() == errSecInteractionNotAllowed => {
+            Err(StoreError::MacKeychainStatus(error.code()))
+        }
         Err(_) => Err(StoreError::AuthorizationFailed),
     }
 }
@@ -291,11 +321,8 @@ fn query(
         // availability while the screen is locked. The signed-runtime access group
         // is the local boundary; backend grants and mobile approvals gate
         // credential delivery, so remote Agents run with nobody at the Mac.
-        let access_control = SecAccessControl::create_with_protection(
-            Some(ProtectionMode::AccessibleAfterFirstUnlockThisDeviceOnly),
-            0,
-        )
-        .map_err(|error| StoreError::MacKeychainStatus(error.code()))?;
+        let access_control = macos_protection_migration::current_protection()
+            .map_err(|error| StoreError::MacKeychainStatus(error.code()))?;
         options.set_access_control(access_control);
     }
     Ok(options)

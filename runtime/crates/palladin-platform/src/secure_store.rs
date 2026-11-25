@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 const SERVICE: &str = "io.palladin.agent";
 
 /// Fixed non-profile owner for the single installation-scoped browser host identity.
+pub const TRUST_STATE_OWNER_ID: &str = "00000000000000000000000000000000";
 pub const BROWSER_HOST_IDENTITY_OWNER_ID: &str = "64fbf85296544aed42010aa8584007a5";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -703,12 +704,26 @@ pub(crate) fn valid_opaque_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+#[cfg(target_os = "macos")]
+const fn keychain_hint(status: i32) -> &'static str {
+    match status {
+        // errSecInteractionNotAllowed
+        -25308 => {
+            ". The item is unavailable while this Mac is locked or before the first login since \
+             boot. If Palladin was upgraded from 0.0.14 or earlier, unlock the Mac once and run \
+             `palladin agents list` in the same login session to upgrade the stored items in \
+             place; re-pairing is not needed for that"
+        }
+        _ => "",
+    }
+}
+
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum StoreError {
     #[error("OS secure storage is unavailable; no file or environment fallback is allowed")]
     Unavailable,
     #[cfg(target_os = "macos")]
-    #[error("macOS Keychain operation failed (OSStatus {0}); no fallback is allowed")]
+    #[error("macOS Keychain operation failed (OSStatus {0}); no fallback is allowed{hint}", hint = keychain_hint(*.0))]
     MacKeychainStatus(i32),
     #[error("secret material is empty")]
     InvalidSecret,

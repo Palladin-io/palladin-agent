@@ -29,6 +29,10 @@ pub use macos_browser::authenticate_chrome_native_messaging_parent;
 
 #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
 #[allow(unsafe_code)]
+mod macos_protection_migration;
+
+#[cfg(all(target_os = "macos", feature = "macos-hardened"))]
+#[allow(unsafe_code)]
 mod macos_lifecycle;
 
 #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
@@ -120,6 +124,16 @@ const fn hardened_candidate() -> &'static str {
 #[cfg(all(target_os = "linux", target_env = "musl"))]
 const fn hardened_candidate() -> &'static str {
     "unsupported - Alpine/OpenRC Hardened is not available in the MVP"
+}
+
+/// Shared Keychain items whose protection class was `(upgraded, failed)` by this process.
+/// `None` when the store needs no upgrade or no item could be read.
+#[must_use]
+pub fn keychain_protection_upgrade() -> Option<(usize, usize)> {
+    #[cfg(all(target_os = "macos", feature = "macos-hardened"))]
+    return macos_protection_migration::summary();
+    #[cfg(not(all(target_os = "macos", feature = "macos-hardened")))]
+    None
 }
 
 #[cfg(test)]

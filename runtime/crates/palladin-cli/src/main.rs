@@ -853,6 +853,9 @@ fn doctor(
         Ok(()) => println!("public-metadata-chain: valid"),
         Err(_) => println!("public-metadata-chain: invalid"),
     }
+    if let Some((upgraded, failed)) = palladin_platform::keychain_protection_upgrade() {
+        println!("keychain-protection-upgrade: upgraded={upgraded}, failed={failed}");
+    }
     println!("project-runtime-dependencies: disabled");
     println!("palladin-home-override: rejected");
     let legacy_status = if hardened_runtime {
