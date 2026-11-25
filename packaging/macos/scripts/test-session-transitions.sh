@@ -16,8 +16,8 @@ Required environment:
   PALLADIN_SESSION_TEST_CONFIRM  Must equal dedicated-test-account.
 
 Run this only from a dedicated interactive macOS test account with a connected synthetic Agent.
-Status operations must complete without an operating-system prompt. Lock and sleep then require a
-status operation to fail while the session is unavailable and to succeed after unlock. logout-verify
+Status operations must complete without an operating-system prompt. Lock and sleep require a status
+operation to succeed while the screen is locked (owner decision 2026-11-24). logout-verify
 requires the identity to open again after signing back in.
 This is a hardware-only acceptance hook, not hosted CI evidence.
 USAGE
@@ -71,20 +71,24 @@ console_is_locked() {
 }
 
 (
-  sleep 8
   set +e
+  for _ in {1..120}; do
+    console_is_locked && break
+    sleep 1
+  done
+  sleep 5
+  console_is_locked && printf 'locked\n' >"$work_dir/probe.before"
   "$binary" --id "$profile" status >"$work_dir/probe.out" 2>&1
-  printf '%s\n' "$?" >"$work_dir/probe.status"
+  probe_result=$?
+  console_is_locked && printf 'locked\n' >"$work_dir/probe.after"
+  printf '%s\n' "$probe_result" >"$work_dir/probe.status"
 ) &
 probe_pid=$!
 
 if [[ "$mode" == "lock" ]]; then
-  lock_tool='/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession'
-  require_regular_file "$lock_tool" "macOS lock tool"
-  printf 'Locking now. Stay on the lock screen for at least 15 seconds before unlocking.\n'
-  "$lock_tool" -suspend
+  printf 'Lock the screen now (Control-Command-Q) and stay on the lock screen for at least 30 seconds.\n'
 else
-  printf 'Sleeping now. Wake the Mac after at least 15 seconds, then unlock it.\n'
+  printf 'Sleeping now. Wake the Mac after at least 15 seconds and stay on the lock screen for at least 30 seconds before unlocking.\n'
   /usr/bin/pmset sleepnow
 fi
 
@@ -92,10 +96,11 @@ wait "$probe_pid"
 require_regular_file "$work_dir/probe.status" "locked-state probe status"
 probe_status="$(tr -d '[:space:]' <"$work_dir/probe.status")"
 [[ "$probe_status" =~ ^[0-9]+$ ]] || die "locked-state probe status is invalid"
-(( probe_status != 0 )) || die "identity was readable while the session should have been locked"
-console_is_locked || die "the session was unlocked before the locked-state probe completed"
+[[ -s "$work_dir/probe.before" && -s "$work_dir/probe.after" ]] ||
+  die "the screen was not locked for the whole locked-state probe"
+(( probe_status == 0 )) || die "the Agent status operation failed while the screen was locked"
 while console_is_locked; do
   sleep 1
 done
 "$binary" --id "$profile" status >/dev/null
-printf 'Verified %s denial before unlock. Confirm that the post-unlock operation showed no approval prompt.\n' "$mode"
+printf 'Verified unattended %s operation before unlock. Confirm that macOS showed no approval prompt.\n' "$mode"

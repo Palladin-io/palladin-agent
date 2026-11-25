@@ -1001,6 +1001,13 @@ impl<S: SecretStore + Sync> RuntimeService<S> {
     }
 
     #[must_use]
+    pub fn shared_state_available(&self) -> bool {
+        self.secrets
+            .get(TRUST_OWNER_ID, SecretSlot::IntegrityTrustStateV1)
+            .is_ok()
+    }
+
+    #[must_use]
     pub fn integrity_recovery_pending(&self) -> bool {
         journal_path(self.repository.root()).exists()
             || self.read_trust_state().is_ok_and(|state| {
