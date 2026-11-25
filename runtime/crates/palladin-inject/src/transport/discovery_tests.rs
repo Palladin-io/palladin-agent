@@ -23,7 +23,7 @@ async fn discovery_does_not_treat_a_socket_named_regular_file_as_a_browser() {
 }
 
 #[tokio::test]
-async fn discovery_authenticates_each_live_session_and_reports_crashed_routes_separately() {
+async fn discovery_authenticates_each_live_session_and_ignores_sockets_left_by_exited_hosts() {
     let root = tempfile::tempdir().unwrap();
     let mut hosts = Vec::new();
     for (id, concurrent) in [("a".repeat(32), true), ("b".repeat(32), false)] {
@@ -80,7 +80,8 @@ async fn discovery_authenticates_each_live_session_and_reports_crashed_routes_se
             }
         ]
     );
-    assert_eq!(report.unavailable_connections, 1);
+    assert_eq!(report.unavailable_connections, 0);
+    assert!(stale.exists(), "discovery never unlinks a route");
     assert!(!report.legacy_socket_present);
     for host in hosts {
         host.await.unwrap();
@@ -155,4 +156,22 @@ async fn status_requires_both_the_request_nonce_and_the_selected_socket_session(
         }
         server.await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn discovery_still_reports_a_live_host_that_drops_the_handshake() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join(format!("b-{}.sock", "a".repeat(32)));
+    let listener = UnixListener::bind(&path).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let host = tokio::spawn(async move { drop(listener.accept().await.unwrap()) });
+    let report = discover_browser_sessions(
+        root.path(),
+        &BrowserHostIdentity::from_secret_bytes([41; 32]),
+    )
+    .await
+    .unwrap();
+    assert!(report.sessions.is_empty());
+    assert_eq!(report.unavailable_connections, 1);
+    host.await.unwrap();
 }

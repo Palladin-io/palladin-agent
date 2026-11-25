@@ -58,11 +58,11 @@ pub(crate) async fn discover_browser_sessions(
     let mut queries = stream::iter(candidates)
         .map(|(path, id)| async move {
             timeout(HANDSHAKE_TIMEOUT, async {
-                let stream = UnixStream::connect(&path)
-                    .await
-                    .map_err(|_| NativeBrowserError::Unavailable)?;
+                let Some(stream) = connect_live_host(&path).await? else {
+                    return Ok(None);
+                };
                 let mut client = ExtensionClient::authenticate(stream, identity).await?;
-                client.browser_status(&id).await
+                client.browser_status(&id).await.map(Some)
             })
             .await
             .map_err(|_| NativeBrowserError::Unavailable)?
@@ -70,7 +70,8 @@ pub(crate) async fn discover_browser_sessions(
         .buffer_unordered(8);
     while let Some(result) = queries.next().await {
         match result {
-            Ok(session) => report.sessions.push(session),
+            Ok(Some(session)) => report.sessions.push(session),
+            Ok(None) => {}
             Err(
                 NativeBrowserError::Unavailable
                 | NativeBrowserError::Framing(
@@ -516,19 +517,8 @@ async fn browser_connections(
     let mut connected = Vec::new();
     for path in paths {
         validate_socket_path(&path)?;
-        let stream = match timeout(HANDSHAKE_TIMEOUT, UnixStream::connect(&path)).await {
-            Ok(Ok(stream)) => stream,
-            // A crashed host leaves its socket behind. Ignore only definite
-            // absence; never unlink a path that a restarted host may now own.
-            Ok(Err(error))
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-                ) =>
-            {
-                continue;
-            }
-            _ => return Err(NativeBrowserError::Unavailable),
+        let Some(stream) = connect_live_host(&path).await? else {
+            continue;
         };
         validate_peer(&stream)?;
         connected.push((path, stream));
@@ -539,6 +529,23 @@ async fn browser_connections(
         return Err(NativeBrowserError::Unavailable);
     }
     Ok(connected)
+}
+
+/// `None` means no process listens here: a crashed host leaves its socket behind.
+/// Never unlink it because a restarted host may now own the path.
+async fn connect_live_host(path: &Path) -> Result<Option<UnixStream>, NativeBrowserError> {
+    match timeout(HANDSHAKE_TIMEOUT, UnixStream::connect(path)).await {
+        Ok(Ok(stream)) => Ok(Some(stream)),
+        Ok(Err(error))
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            Ok(None)
+        }
+        _ => Err(NativeBrowserError::Unavailable),
+    }
 }
 
 fn inject_timeout_error(authorization_remaining: Duration) -> NativeBrowserError {

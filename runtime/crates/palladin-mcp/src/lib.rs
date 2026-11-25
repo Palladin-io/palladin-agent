@@ -1938,6 +1938,9 @@ fn inject_failure(error: &InjectServiceError) -> ToolOutcome {
         InjectServiceError::ProviderNotReady => {
             "The authenticated Palladin extension is not ready for Inject."
         }
+        InjectServiceError::LiveTargetNotPrepared => {
+            "The connected Palladin extension could not prepare a supported login step on the exact target. Inspect the page and refresh its exact tab and URL; no credential was sent to the page."
+        }
         InjectServiceError::TargetTabUnavailable => {
             "The browser framework target tab is unavailable to the Palladin extension."
         }
