@@ -37,7 +37,10 @@ impl ExtensionPeer {
         (session, peer)
     }
 
-    pub(super) async fn connect(stream: &mut tokio::io::DuplexStream) -> Self {
+    pub(super) async fn connect<S>(stream: &mut S) -> Self
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
         let offer: Value = read_message(stream).await.expect("session offer");
         let secret = StaticSecret::from([23; 32]);
         let open = ExtensionSessionOpen {

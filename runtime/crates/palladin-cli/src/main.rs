@@ -247,7 +247,7 @@ async fn chrome_native_host_main(
         Ok(authorization) => authorization,
         Err(_) => return ExitCode::from(EXIT_FAILURE),
     };
-    match palladin_cli::native_browser::serve_native_host(
+    let result = palladin_cli::native_browser::serve_native_host(
         &root,
         authorization.identity(),
         extension_origin,
@@ -255,13 +255,23 @@ async fn chrome_native_host_main(
         |max_wait| {
             service
                 .browser_host_lifecycle_guard_within(authorization.lifecycle_token(), max_wait)
-                .map_err(|_| palladin_cli::native_browser::NativeBrowserError::Revoked)
+                .map_err(|error| lifecycle_failure(&error))
         },
     )
-    .await
-    {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(_) => ExitCode::from(EXIT_FAILURE),
+    .await;
+    drop(authorization);
+    drop(service);
+    palladin_cli::native_browser::exit_native_host(result)
+}
+
+/// Only a definite revocation may end the host. A busy lock or unavailable secure storage
+/// denies the current request but keeps the browser connection.
+#[cfg(target_os = "macos")]
+fn lifecycle_failure(error: &RuntimeError) -> palladin_cli::native_browser::NativeBrowserError {
+    use palladin_cli::native_browser::NativeBrowserError;
+    match error {
+        RuntimeError::BrowserHostRevoked => NativeBrowserError::Revoked,
+        _ => NativeBrowserError::Unavailable,
     }
 }
 

@@ -9,6 +9,17 @@ async fn start_host(
     tokio::io::DuplexStream,
     ExtensionPeer,
 ) {
+    start_host_with(root, |_| Ok(())).await
+}
+
+async fn start_host_with(
+    root: &Path,
+    lifecycle_guard: impl Fn(Duration) -> Result<(), NativeBrowserError> + Send + Sync + 'static,
+) -> (
+    tokio::task::JoinHandle<Result<(), NativeBrowserError>>,
+    tokio::io::DuplexStream,
+    ExtensionPeer,
+) {
     let existing_sockets = socket_paths(root).len();
     let observed_root = root.to_owned();
     let root = root.to_owned();
@@ -22,9 +33,13 @@ async fn start_host(
             .into_iter(),
         )
         .unwrap();
-        serve_native_host(&root, &identity, origin, tokio::io::split(host_io), |_| {
-            Ok(())
-        })
+        serve_native_host(
+            &root,
+            &identity,
+            origin,
+            tokio::io::split(host_io),
+            lifecycle_guard,
+        )
         .await
     });
     let peer = ExtensionPeer::connect(&mut extension_io).await;
@@ -162,6 +177,158 @@ async fn wrong_local_identity_does_not_disconnect_the_browser() {
     let (host, mut extension, peer) = start_host(root.path()).await;
     let wrong = BrowserHostIdentity::from_secret_bytes([43; 32]);
     assert!(ExtensionClient::connect(root.path(), &wrong).await.is_err());
+    inject_once(root.path(), &mut extension, &peer, 1).await;
+    host.abort();
+    let _ = host.await;
+}
+
+#[tokio::test]
+async fn reset_authorization_ends_the_old_host_when_a_new_identity_connects() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let root = tempfile::tempdir().unwrap();
+    let revoked = Arc::new(AtomicBool::new(false));
+    let guard = Arc::clone(&revoked);
+    let (host, _extension, _) = start_host_with(root.path(), move |_| {
+        if guard.load(Ordering::SeqCst) {
+            Err(NativeBrowserError::Revoked)
+        } else {
+            Ok(())
+        }
+    })
+    .await;
+    revoked.store(true, Ordering::SeqCst);
+    let replacement = BrowserHostIdentity::from_secret_bytes([43; 32]);
+    assert!(
+        ExtensionClient::connect(root.path(), &replacement)
+            .await
+            .is_err()
+    );
+    let result = timeout(Duration::from_secs(1), host)
+        .await
+        .expect("a revoked host must exit so the browser can start a current one")
+        .unwrap();
+    assert!(matches!(result, Err(NativeBrowserError::Revoked)));
+    assert!(socket_paths(root.path()).is_empty());
+}
+
+const HOST_PROCESS_ROOT: &str = "PALLADIN_REVOKED_HOST_TEST_ROOT";
+
+/// The browser keeps its end of stdin open, so a pending read must not keep the process alive.
+#[tokio::test]
+async fn revoked_host_process_exits_while_the_browser_keeps_its_port_open() {
+    use std::os::fd::OwnedFd;
+    use std::process::{Command, Stdio};
+
+    let root = tempfile::tempdir().unwrap();
+    let (browser, host) = std::os::unix::net::UnixStream::pair().unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "native_browser::lifecycle_tests::revoked_host_process_helper",
+            "--nocapture",
+        ])
+        .env(HOST_PROCESS_ROOT, root.path())
+        .stdin(Stdio::from(OwnedFd::from(host.try_clone().unwrap())))
+        .stdout(Stdio::null())
+        // The test harness writes to stdout, so stderr carries the host frames.
+        .stderr(Stdio::from(OwnedFd::from(host)))
+        .spawn()
+        .unwrap();
+    browser.set_nonblocking(true).unwrap();
+    let mut browser = UnixStream::from_std(browser).unwrap();
+    let _peer = timeout(
+        Duration::from_secs(10),
+        ExtensionPeer::connect(&mut browser),
+    )
+    .await
+    .expect("host process handshake");
+    timeout(Duration::from_secs(5), async {
+        while socket_paths(root.path()).is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("host process publishes its socket");
+    std::fs::write(root.path().join("revoked"), b"").unwrap();
+    let replacement = BrowserHostIdentity::from_secret_bytes([43; 32]);
+    assert!(
+        ExtensionClient::connect(root.path(), &replacement)
+            .await
+            .is_err()
+    );
+    let exited = timeout(Duration::from_secs(5), async {
+        while child.try_wait().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if exited.is_err() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    exited.expect("a revoked host process must exit to close the browser port");
+    assert!(socket_paths(root.path()).is_empty());
+}
+
+#[tokio::test]
+#[ignore = "subprocess helper"]
+async fn revoked_host_process_helper() {
+    let root = PathBuf::from(std::env::var_os(HOST_PROCESS_ROOT).expect("test root"));
+    let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+    let origin = ChromeExtensionOrigin::from_native_arguments(
+        [std::ffi::OsString::from(
+            "chrome-extension://hmljnknogdeonphikmeofcbkikmpokba/",
+        )]
+        .into_iter(),
+    )
+    .unwrap();
+    let revoked = root.join("revoked");
+    let result = serve_native_host(
+        &root,
+        &identity,
+        origin,
+        (tokio::io::stdin(), tokio::io::stderr()),
+        |_| {
+            if revoked.exists() {
+                Err(NativeBrowserError::Revoked)
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .await;
+    exit_native_host(result);
+}
+
+#[tokio::test]
+async fn unverifiable_authorization_denies_the_client_but_keeps_the_connection() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let root = tempfile::tempdir().unwrap();
+    let unavailable = Arc::new(AtomicBool::new(false));
+    let guard = Arc::clone(&unavailable);
+    let (host, mut extension, peer) = start_host_with(root.path(), move |_| {
+        if guard.load(Ordering::SeqCst) {
+            Err(NativeBrowserError::Unavailable)
+        } else {
+            Ok(())
+        }
+    })
+    .await;
+    unavailable.store(true, Ordering::SeqCst);
+    for secret in [41, 43] {
+        let identity = BrowserHostIdentity::from_secret_bytes([secret; 32]);
+        assert!(
+            ExtensionClient::connect(root.path(), &identity)
+                .await
+                .is_err()
+        );
+    }
+    unavailable.store(false, Ordering::SeqCst);
     inject_once(root.path(), &mut extension, &peer, 1).await;
     host.abort();
     let _ = host.await;

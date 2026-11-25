@@ -10,12 +10,12 @@
       }
     ],
     "component": {
-      "bom-ref": "pkg:npm/%40palladin/cli@0.0.17",
+      "bom-ref": "pkg:npm/%40palladin/cli@0.0.18",
       "type": "application",
       "group": "@palladin",
       "name": "cli",
-      "version": "0.0.17",
-      "purl": "pkg:npm/%40palladin/cli@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:npm/%40palladin/cli@0.0.18",
       "licenses": [
         {
           "license": {
@@ -4293,11 +4293,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-api@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-api@0.0.18",
       "type": "library",
       "name": "palladin-api",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-api@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-api@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4311,11 +4311,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-browser-bridge@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-browser-bridge@0.0.18",
       "type": "library",
       "name": "palladin-browser-bridge",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-browser-bridge@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-browser-bridge@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4329,11 +4329,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-cli@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-cli@0.0.18",
       "type": "library",
       "name": "palladin-cli",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-cli@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-cli@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4347,11 +4347,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-core@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-core@0.0.18",
       "type": "library",
       "name": "palladin-core",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-core@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-core@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4365,11 +4365,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-credential@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-credential@0.0.18",
       "type": "library",
       "name": "palladin-credential",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-credential@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-credential@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4383,11 +4383,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-crypto@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-crypto@0.0.18",
       "type": "library",
       "name": "palladin-crypto",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-crypto@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-crypto@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4401,11 +4401,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-exec@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-exec@0.0.18",
       "type": "library",
       "name": "palladin-exec",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-exec@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-exec@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4419,11 +4419,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-inject@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-inject@0.0.18",
       "type": "library",
       "name": "palladin-inject",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-inject@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-inject@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4437,11 +4437,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-linux-broker@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-linux-broker@0.0.18",
       "type": "library",
       "name": "palladin-linux-broker",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-linux-broker@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-linux-broker@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4455,11 +4455,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-linux-executor@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-linux-executor@0.0.18",
       "type": "library",
       "name": "palladin-linux-executor",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-linux-executor@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-linux-executor@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4473,11 +4473,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-macos-keychain-helper@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-macos-keychain-helper@0.0.18",
       "type": "library",
       "name": "palladin-macos-keychain-helper",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-macos-keychain-helper@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-macos-keychain-helper@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4491,11 +4491,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-mcp@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-mcp@0.0.18",
       "type": "library",
       "name": "palladin-mcp",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-mcp@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-mcp@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4509,11 +4509,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-platform@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-platform@0.0.18",
       "type": "library",
       "name": "palladin-platform",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-platform@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-platform@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4527,11 +4527,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-runtime@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-runtime@0.0.18",
       "type": "library",
       "name": "palladin-runtime",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-runtime@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-runtime@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4545,11 +4545,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-windows-broker@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-windows-broker@0.0.18",
       "type": "library",
       "name": "palladin-windows-broker",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-windows-broker@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-windows-broker@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -4563,11 +4563,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:cargo/palladin-windows-executor@0.0.17",
+      "bom-ref": "pkg:cargo/palladin-windows-executor@0.0.18",
       "type": "library",
       "name": "palladin-windows-executor",
-      "version": "0.0.17",
-      "purl": "pkg:cargo/palladin-windows-executor@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:cargo/palladin-windows-executor@0.0.18",
       "licenses": [
         {
           "expression": "Apache-2.0"
@@ -9093,11 +9093,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:npm/%40palladin%2Fruntime-darwin-arm64@0.0.17",
+      "bom-ref": "pkg:npm/%40palladin%2Fruntime-darwin-arm64@0.0.18",
       "type": "application",
       "name": "@palladin/runtime-darwin-arm64",
-      "version": "0.0.17",
-      "purl": "pkg:npm/%40palladin%2Fruntime-darwin-arm64@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:npm/%40palladin%2Fruntime-darwin-arm64@0.0.18",
       "licenses": [
         {
           "license": {
@@ -9107,11 +9107,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:npm/%40palladin%2Fruntime-linux-arm64-gnu@0.0.17",
+      "bom-ref": "pkg:npm/%40palladin%2Fruntime-linux-arm64-gnu@0.0.18",
       "type": "application",
       "name": "@palladin/runtime-linux-arm64-gnu",
-      "version": "0.0.17",
-      "purl": "pkg:npm/%40palladin%2Fruntime-linux-arm64-gnu@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:npm/%40palladin%2Fruntime-linux-arm64-gnu@0.0.18",
       "licenses": [
         {
           "license": {
@@ -9121,11 +9121,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:npm/%40palladin%2Fruntime-linux-arm64-musl@0.0.17",
+      "bom-ref": "pkg:npm/%40palladin%2Fruntime-linux-arm64-musl@0.0.18",
       "type": "application",
       "name": "@palladin/runtime-linux-arm64-musl",
-      "version": "0.0.17",
-      "purl": "pkg:npm/%40palladin%2Fruntime-linux-arm64-musl@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:npm/%40palladin%2Fruntime-linux-arm64-musl@0.0.18",
       "licenses": [
         {
           "license": {
@@ -9135,11 +9135,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:npm/%40palladin%2Fruntime-linux-x64-gnu@0.0.17",
+      "bom-ref": "pkg:npm/%40palladin%2Fruntime-linux-x64-gnu@0.0.18",
       "type": "application",
       "name": "@palladin/runtime-linux-x64-gnu",
-      "version": "0.0.17",
-      "purl": "pkg:npm/%40palladin%2Fruntime-linux-x64-gnu@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:npm/%40palladin%2Fruntime-linux-x64-gnu@0.0.18",
       "licenses": [
         {
           "license": {
@@ -9149,11 +9149,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:npm/%40palladin%2Fruntime-linux-x64-musl@0.0.17",
+      "bom-ref": "pkg:npm/%40palladin%2Fruntime-linux-x64-musl@0.0.18",
       "type": "application",
       "name": "@palladin/runtime-linux-x64-musl",
-      "version": "0.0.17",
-      "purl": "pkg:npm/%40palladin%2Fruntime-linux-x64-musl@0.0.17",
+      "version": "0.0.18",
+      "purl": "pkg:npm/%40palladin%2Fruntime-linux-x64-musl@0.0.18",
       "licenses": [
         {
           "license": {
