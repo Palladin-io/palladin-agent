@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::RuntimeError;
 
-pub(crate) const TRUST_OWNER_ID: &str = palladin_platform::secure_store::TRUST_STATE_OWNER_ID;
+pub(crate) const TRUST_OWNER_ID: &str = "00000000000000000000000000000000";
 // Secure trust metadata follows an N/N-1 reader contract. Version 2 is the first
 // production-ready contract; version 1 is accepted only as its immediate predecessor.
 // Every write normalizes to N. A previous runtime that supports only version 1 rejects

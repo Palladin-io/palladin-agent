@@ -7,15 +7,20 @@
 
 use std::sync::OnceLock;
 
+use core_foundation::array::{CFArray, CFArrayRef};
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::boolean::CFBoolean;
-use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+use core_foundation::dictionary::CFDictionary;
 use core_foundation::string::{CFString, CFStringRef};
 use security_framework::access_control::{ProtectionMode, SecAccessControl};
 use security_framework::base::Error;
-use security_framework::passwords::PasswordOptions;
+use security_framework_sys::access_control::kSecAttrAccessibleWhenUnlockedThisDeviceOnly as LEGACY_CLASS;
 use security_framework_sys::base::errSecItemNotFound;
-use security_framework_sys::item::{kSecAttrAccessControl, kSecReturnAttributes};
+use security_framework_sys::item::{
+    kSecAttrAccessControl, kSecAttrAccessGroup, kSecAttrAccount, kSecAttrService,
+    kSecAttrSynchronizable, kSecClass, kSecClassGenericPassword, kSecMatchLimit, kSecMatchLimitAll,
+    kSecReturnAttributes, kSecUseDataProtectionKeychain,
+};
 use security_framework_sys::keychain_item::{SecItemCopyMatching, SecItemUpdate};
 
 // Not exposed by security-framework-sys.
@@ -32,22 +37,40 @@ pub(crate) struct MigrationReport {
 
 static COMPLETED: OnceLock<MigrationReport> = OnceLock::new();
 
-/// Runs once per process. The caller must have just read an item successfully,
-/// which proves that this login session can currently decrypt old items.
-pub(crate) fn run_once(queries: impl FnOnce() -> Vec<PasswordOptions>) {
-    COMPLETED.get_or_init(|| upgrade_all(queries(), access_control, upgrade));
+struct StoredItem {
+    service: &'static str,
+    account: String,
+    protection: Option<SecAccessControl>,
 }
 
-/// `(upgraded, failed)` shared items in this process, or `None` if nothing was readable.
+/// Runs once per process over every stored item. The caller must have just read an
+/// item successfully, which proves that this session can currently decrypt old items.
+pub(crate) fn run_once(access_group: &str, services: &[&'static str]) {
+    COMPLETED.get_or_init(|| {
+        let mut report = MigrationReport::default();
+        for service in services {
+            match list(access_group, service) {
+                Ok(items) => {
+                    let outcome = upgrade_all(
+                        items,
+                        |item| Ok(item.protection.clone()),
+                        |item| upgrade(access_group, item),
+                    );
+                    report.upgraded += outcome.upgraded;
+                    report.failed += outcome.failed;
+                }
+                Err(_) => report.failed += 1,
+            }
+        }
+        report
+    });
+}
+
+/// `(upgraded, failed)` items in this process, or `None` if nothing was readable.
 pub(crate) fn summary() -> Option<(usize, usize)> {
     COMPLETED
         .get()
         .map(|report| (report.upgraded, report.failed))
-}
-
-/// Upgrades one identity item that was just read successfully.
-pub(crate) fn upgrade_item(query: PasswordOptions) {
-    upgrade_all(vec![query], access_control, upgrade);
 }
 
 fn upgrade_all<Q>(
@@ -84,40 +107,95 @@ fn is_legacy(current: &SecAccessControl) -> bool {
     .is_ok_and(|legacy| legacy.as_CFType() == current.as_CFType())
 }
 
-#[allow(deprecated)]
-fn access_control(options: &PasswordOptions) -> Result<Option<SecAccessControl>, Error> {
-    let mut pairs = options.query.clone();
+fn scope(access_group: &str, service: &str, account: Option<&str>) -> Vec<(CFString, CFType)> {
     // SAFETY: immutable Security.framework constants.
-    pairs.push(unsafe {
-        (
+    unsafe {
+        let mut pairs = vec![
+            (
+                CFString::wrap_under_get_rule(kSecClass),
+                CFString::wrap_under_get_rule(kSecClassGenericPassword).into_CFType(),
+            ),
+            (
+                CFString::wrap_under_get_rule(kSecUseDataProtectionKeychain),
+                CFBoolean::true_value().into_CFType(),
+            ),
+            (
+                CFString::wrap_under_get_rule(kSecAttrAccessGroup),
+                CFString::new(access_group).into_CFType(),
+            ),
+            (
+                CFString::wrap_under_get_rule(kSecAttrSynchronizable),
+                CFBoolean::false_value().into_CFType(),
+            ),
+            (
+                CFString::wrap_under_get_rule(kSecAttrService),
+                CFString::new(service).into_CFType(),
+            ),
+        ];
+        if let Some(account) = account {
+            pairs.push((
+                CFString::wrap_under_get_rule(kSecAttrAccount),
+                CFString::new(account).into_CFType(),
+            ));
+        }
+        pairs
+    }
+}
+
+/// Attributes only: no secret data is requested, so presence items cannot prompt.
+fn list(access_group: &str, service: &'static str) -> Result<Vec<StoredItem>, Error> {
+    let mut pairs = scope(access_group, service, None);
+    // SAFETY: immutable Security.framework constants.
+    unsafe {
+        pairs.push((
             CFString::wrap_under_get_rule(kSecReturnAttributes),
             CFBoolean::true_value().into_CFType(),
-        )
-    });
+        ));
+        pairs.push((
+            CFString::wrap_under_get_rule(kSecMatchLimit),
+            CFString::wrap_under_get_rule(kSecMatchLimitAll).into_CFType(),
+        ));
+    }
     let query = CFDictionary::from_CFType_pairs(&pairs);
     let mut raw = std::ptr::null();
-    // SAFETY: `query` outlives the call; a successful attributes-only query
-    // returns one owned CFDictionary.
+    // SAFETY: `query` outlives the call; success returns one owned CFArray of
+    // attribute dictionaries because of kSecMatchLimitAll.
     let status = unsafe { SecItemCopyMatching(query.as_concrete_TypeRef(), &mut raw) };
     if status == errSecItemNotFound {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     if status != 0 || raw.is_null() {
         return Err(Error::from_code(status));
     }
-    let attributes: CFDictionary<CFString, CFType> =
-        unsafe { CFDictionary::wrap_under_create_rule(raw as CFDictionaryRef) };
+    let found: CFArray<CFDictionary<CFString, CFType>> =
+        unsafe { CFArray::wrap_under_create_rule(raw as CFArrayRef) };
+    found
+        .iter()
+        .map(|attributes| {
+            let account = unsafe { CFString::wrap_under_get_rule(kSecAttrAccount) };
+            Ok(StoredItem {
+                service,
+                account: attributes
+                    .find(&account)
+                    .and_then(|value| value.downcast::<CFString>())
+                    .ok_or_else(|| Error::from_code(errSecItemNotFound))?
+                    .to_string(),
+                protection: protection(&attributes)?,
+            })
+        })
+        .collect()
+}
+
+fn protection(
+    attributes: &CFDictionary<CFString, CFType>,
+) -> Result<Option<SecAccessControl>, Error> {
     let key = unsafe { CFString::wrap_under_get_rule(kSecAttrAccessControl) };
     if let Some(value) = attributes.find(&key) {
         return Ok(value.downcast::<SecAccessControl>());
     }
     // An item without constraints may report only its accessibility class.
     let key = unsafe { CFString::wrap_under_get_rule(kSecAttrAccessible) };
-    let legacy = unsafe {
-        CFString::wrap_under_get_rule(
-            security_framework_sys::access_control::kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-        )
-    };
+    let legacy = unsafe { CFString::wrap_under_get_rule(LEGACY_CLASS) };
     match attributes
         .find(&key)
         .and_then(|value| value.downcast::<CFString>())
@@ -131,9 +209,9 @@ fn access_control(options: &PasswordOptions) -> Result<Option<SecAccessControl>,
     }
 }
 
-#[allow(deprecated)]
-fn upgrade(options: &PasswordOptions) -> Result<(), Error> {
-    let query = CFDictionary::from_CFType_pairs(&options.query);
+fn upgrade(access_group: &str, item: &StoredItem) -> Result<(), Error> {
+    let query =
+        CFDictionary::from_CFType_pairs(&scope(access_group, item.service, Some(&item.account)));
     let key = unsafe { CFString::wrap_under_get_rule(kSecAttrAccessControl) };
     let update = CFDictionary::from_CFType_pairs(&[(key, current_protection()?.into_CFType())]);
     // SAFETY: both dictionaries outlive the call.

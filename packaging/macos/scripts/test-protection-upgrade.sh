@@ -29,7 +29,8 @@ expect_report() {
 
 "$old" agents create upgrade-fixture >/dev/null
 "$old" browser install >/dev/null
-expect_report "upgrade of older shared items" '[1-9][0-9]*'
+# Three shared items plus the profile's two identity keys and its operation seed.
+expect_report "upgrade of older shared and identity items" '([6-9]|[1-9][0-9]+)'
 expect_report "repeated run is a no-op" 0
 "$candidate" agents list | grep -F -q upgrade-fixture || die "profile was lost by the upgrade"
 "$candidate" browser install >/dev/null

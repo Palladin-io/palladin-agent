@@ -12,7 +12,6 @@ use tokio_util::sync::CancellationToken;
 const SERVICE: &str = "io.palladin.agent";
 
 /// Fixed non-profile owner for the single installation-scoped browser host identity.
-pub const TRUST_STATE_OWNER_ID: &str = "00000000000000000000000000000000";
 pub const BROWSER_HOST_IDENTITY_OWNER_ID: &str = "64fbf85296544aed42010aa8584007a5";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

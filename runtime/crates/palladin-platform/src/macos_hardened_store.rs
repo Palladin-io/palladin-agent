@@ -14,9 +14,8 @@ use zeroize::Zeroize;
 use crate::macos_local_authentication::FreshLocalAuthenticationContext;
 use crate::macos_protection_migration;
 use crate::secure_store::{
-    AuthorizationPrompt, BROWSER_HOST_IDENTITY_OWNER_ID, OperationAuthorization, OperationLease,
-    OperationScope, SecretSlot, SecretStore, StoreError, TRUST_STATE_OWNER_ID, account_name,
-    valid_opaque_id,
+    AuthorizationPrompt, OperationAuthorization, OperationLease, OperationScope, SecretSlot,
+    SecretStore, StoreError, account_name, valid_opaque_id,
 };
 
 #[allow(non_upper_case_globals)]
@@ -119,7 +118,10 @@ impl SecretStore for MacHardenedSecretStore {
         let options = query(owner_id, slot, false)?;
         match generic_password(options) {
             Ok(secret) => {
-                macos_protection_migration::run_once(shared_state_queries);
+                macos_protection_migration::run_once(
+                    ACCESS_GROUP,
+                    &[STATE_SERVICE_V2, IDENTITY_SERVICE_V2],
+                );
                 Ok(Some(secret.into()))
             }
             Err(error) if error.code() == errSecItemNotFound => Ok(None),
@@ -210,24 +212,6 @@ impl SecretStore for MacHardenedSecretStore {
     }
 }
 
-fn shared_state_queries() -> Vec<PasswordOptions> {
-    [
-        (TRUST_STATE_OWNER_ID, SecretSlot::IntegrityTrustStateV1),
-        (TRUST_STATE_OWNER_ID, SecretSlot::VersionPolicyTrustStateV1),
-        (
-            BROWSER_HOST_IDENTITY_OWNER_ID,
-            SecretSlot::BrowserHostEd25519SecretKeyV1,
-        ),
-        (
-            BROWSER_HOST_IDENTITY_OWNER_ID,
-            SecretSlot::BrowserHostLifecycleTokenV1,
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(owner, slot)| query(owner, slot, false).ok())
-    .collect()
-}
-
 fn direct_read_allowed(slot: SecretSlot) -> bool {
     matches!(
         slot,
@@ -286,10 +270,7 @@ fn authorized_password(
     context.bind(&mut options);
     match options.search() {
         Ok(mut results) if results.len() == 1 => match results.pop() {
-            Some(SearchResult::Data(secret)) if !secret.is_empty() => {
-                macos_protection_migration::upgrade_item(query(owner_id, slot, false)?);
-                Ok(Some(secret.into()))
-            }
+            Some(SearchResult::Data(secret)) if !secret.is_empty() => Ok(Some(secret.into())),
             _ => Err(StoreError::Unavailable),
         },
         Ok(_) => Err(StoreError::Unavailable),

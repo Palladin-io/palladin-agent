@@ -126,7 +126,7 @@ const fn hardened_candidate() -> &'static str {
     "unsupported - Alpine/OpenRC Hardened is not available in the MVP"
 }
 
-/// Shared Keychain items whose protection class was `(upgraded, failed)` by this process.
+/// Keychain items whose protection class was `(upgraded, failed)` by this process.
 /// `None` when the store needs no upgrade or no item could be read.
 #[must_use]
 pub fn keychain_protection_upgrade() -> Option<(usize, usize)> {
