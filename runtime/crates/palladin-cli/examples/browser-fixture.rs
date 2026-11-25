@@ -8,6 +8,14 @@ use palladin_inject::BrowserTarget;
 mod transport;
 
 #[cfg(unix)]
+fn read_generation(path: &std::path::Path) -> u8 {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(41)
+}
+
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use palladin_browser_bridge::InjectionFormDefinition;
@@ -18,21 +26,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let mode = args.next().ok_or("mode missing")?;
     let root = PathBuf::from(args.next().ok_or("root missing")?);
-    let identity = BrowserHostIdentity::from_secret_bytes([41; 32]);
+    // Changing this file models `browser uninstall` followed by `browser install`.
+    let generation_path = root.join("generation");
+    let generation = read_generation(&generation_path);
+    let identity = BrowserHostIdentity::from_secret_bytes([generation; 32]);
     if mode == "host" {
         let origin = palladin_cli::browser::ChromeExtensionOrigin::from_native_arguments(
             args.map(Into::into),
         )
         .ok_or("invalid extension origin")?;
-        palladin_cli::native_browser::serve_native_host(
+        let result = palladin_cli::native_browser::serve_native_host(
             &root,
             &identity,
             origin,
             (tokio::io::stdin(), tokio::io::stdout()),
-            |_| Ok(()),
+            |_| {
+                if read_generation(&generation_path) == generation {
+                    Ok(())
+                } else {
+                    Err(palladin_cli::native_browser::NativeBrowserError::Revoked)
+                }
+            },
         )
-        .await?;
-        return Ok(());
+        .await;
+        drop(identity);
+        palladin_cli::native_browser::exit_native_host(result);
     }
     if mode == "discover" {
         let report = transport::discover_browser_sessions(&root, &identity).await?;

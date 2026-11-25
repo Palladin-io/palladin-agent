@@ -423,6 +423,13 @@ where
     }
 }
 
+/// Ends the host process without waiting for Tokio's blocking stdin read. The browser closes
+/// stdin only after the process exits, so waiting would leave a dead host holding the port.
+/// Drop secret owners before calling: destructors do not run.
+pub fn exit_native_host(result: Result<(), NativeBrowserError>) -> ! {
+    std::process::exit(i32::from(result.is_err()))
+}
+
 async fn serve_legacy_clients<R, W, F, G>(
     listener: &UnixListener,
     identity: &BrowserHostIdentity,
@@ -556,7 +563,15 @@ where
     let local_open: LocalSessionOpen = timeout(HANDSHAKE_TIMEOUT, read_message(local))
         .await
         .map_err(|_| NativeBrowserError::Unavailable)??;
-    let (local_ready, mut local_session) = accept_local_client(identity, &local_open)?;
+    let (local_ready, mut local_session) = match accept_local_client(identity, &local_open) {
+        Ok(accepted) => accepted,
+        Err(error) => {
+            // A reset replaces the identity, so current clients can no longer authenticate here.
+            // Surface the revocation; a wrong client alone must not end a valid host.
+            drop(lifecycle_guard(HANDSHAKE_TIMEOUT)?);
+            return Err(error.into());
+        }
+    };
     let _lifecycle = lifecycle_guard(HANDSHAKE_TIMEOUT)?;
     timeout(HANDSHAKE_TIMEOUT, write_message(local, &local_ready))
         .await
