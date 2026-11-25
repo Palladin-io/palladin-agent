@@ -1,6 +1,5 @@
 use hmac::{Hmac, Mac};
 use secrecy::{ExposeSecret, SecretSlice};
-use security_framework::access_control::{ProtectionMode, SecAccessControl};
 use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
 use security_framework::os::macos::code_signing::{Flags, SecCode, SecRequirement, SecStaticCode};
 use security_framework::passwords::{
@@ -13,11 +12,14 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
 use crate::macos_local_authentication::FreshLocalAuthenticationContext;
+use crate::macos_protection_migration;
 use crate::secure_store::{
     AuthorizationPrompt, OperationAuthorization, OperationLease, OperationScope, SecretSlot,
     SecretStore, StoreError, account_name, valid_opaque_id,
 };
 
+#[allow(non_upper_case_globals)]
+const errSecInteractionNotAllowed: i32 = -25308;
 const LEGACY_SERVICE: &str = "io.palladin.runtime";
 const IDENTITY_SERVICE_V2: &str = "io.palladin.runtime.session-v2.identity";
 const STATE_SERVICE_V2: &str = "io.palladin.runtime.session-v2.state";
@@ -115,7 +117,13 @@ impl SecretStore for MacHardenedSecretStore {
         }
         let options = query(owner_id, slot, false)?;
         match generic_password(options) {
-            Ok(secret) => Ok(Some(secret.into())),
+            Ok(secret) => {
+                macos_protection_migration::run_once(
+                    ACCESS_GROUP,
+                    &[STATE_SERVICE_V2, IDENTITY_SERVICE_V2],
+                );
+                Ok(Some(secret.into()))
+            }
             Err(error) if error.code() == errSecItemNotFound => Ok(None),
             Err(error) => Err(StoreError::MacKeychainStatus(error.code())),
         }
@@ -267,6 +275,9 @@ fn authorized_password(
         },
         Ok(_) => Err(StoreError::Unavailable),
         Err(error) if error.code() == errSecItemNotFound => Ok(None),
+        Err(error) if error.code() == errSecInteractionNotAllowed => {
+            Err(StoreError::MacKeychainStatus(error.code()))
+        }
         Err(_) => Err(StoreError::AuthorizationFailed),
     }
 }
@@ -291,11 +302,8 @@ fn query(
         // availability while the screen is locked. The signed-runtime access group
         // is the local boundary; backend grants and mobile approvals gate
         // credential delivery, so remote Agents run with nobody at the Mac.
-        let access_control = SecAccessControl::create_with_protection(
-            Some(ProtectionMode::AccessibleAfterFirstUnlockThisDeviceOnly),
-            0,
-        )
-        .map_err(|error| StoreError::MacKeychainStatus(error.code()))?;
+        let access_control = macos_protection_migration::current_protection()
+            .map_err(|error| StoreError::MacKeychainStatus(error.code()))?;
         options.set_access_control(access_control);
     }
     Ok(options)

@@ -16,10 +16,11 @@ artifact-specific SPDX SBOM for every published native package.
 
 ## Apache-2.0
 
-- [rmcp 2.2.0](https://github.com/modelcontextprotocol/rust-sdk/)
+- [rmcp 3.11.0](https://github.com/modelcontextprotocol/rust-sdk/)
 - [rpassword 7.5.4](https://github.com/conradkleinespel/rpassword)
 - [rtoolbox 0.0.5](https://github.com/conradkleinespel/rtoolbox)
 - [sync_wrapper 1.0.2](https://github.com/Actyx/sync_wrapper)
+- [unicode-general-category 1.1.0](https://github.com/yeslogic/unicode-general-category)
 
 ## Apache-2.0 AND ISC
 
@@ -52,6 +53,7 @@ artifact-specific SPDX SBOM for every published native package.
 - [chacha20poly1305 0.10.1](https://github.com/RustCrypto/AEADs/tree/master/chacha20poly1305)
 - [command-group 5.0.1](https://github.com/watchexec/command-group)
 - [concurrent-queue 2.5.0](https://github.com/smol-rs/concurrent-queue)
+- [const-oid 0.10.3](https://github.com/RustCrypto/formats)
 - [const-oid 0.9.6](https://github.com/RustCrypto/formats/tree/master/const-oid)
 - [crypto_box 0.9.1](https://github.com/RustCrypto/nacl-compat/tree/master/crypto_box)
 - [crypto_secretbox 0.1.1](https://github.com/RustCrypto/nacl-compat/tree/master/crypto_secretbox)
@@ -176,6 +178,7 @@ artifact-specific SPDX SBOM for every published native package.
 - [bitflags 2.13.1](https://github.com/bitflags/bitflags)
 - [blake2 0.10.6](https://github.com/RustCrypto/hashes)
 - [block-buffer 0.10.4](https://github.com/RustCrypto/utils)
+- [block-buffer 0.12.1](https://github.com/RustCrypto/utils)
 - [block-padding 0.3.3](https://github.com/RustCrypto/utils)
 - [bumpalo 3.20.3](https://github.com/fitzgen/bumpalo)
 - [cbc 0.1.2](https://github.com/RustCrypto/block-modes)
@@ -195,8 +198,10 @@ artifact-specific SPDX SBOM for every published native package.
 - [cpufeatures 0.3.0](https://github.com/RustCrypto/utils)
 - [crossbeam-utils 0.8.22](https://github.com/crossbeam-rs/crossbeam)
 - [crypto-common 0.1.7](https://github.com/RustCrypto/traits)
+- [crypto-common 0.2.2](https://github.com/RustCrypto/traits)
 - [deranged 0.5.8](https://github.com/jhpratt/deranged)
 - [digest 0.10.7](https://github.com/RustCrypto/traits)
+- [digest 0.11.3](https://github.com/RustCrypto/traits)
 - [directories 6.0.0](https://github.com/soc/directories-rs)
 - [dirs-sys 0.5.0](https://github.com/dirs-dev/dirs-sys-rs)
 - [displaydoc 0.2.6](https://github.com/yaahc/displaydoc)
@@ -225,6 +230,7 @@ artifact-specific SPDX SBOM for every published native package.
 - [hmac 0.12.1](https://github.com/RustCrypto/MACs)
 - [http 1.4.2](https://github.com/hyperium/http)
 - [httparse 1.10.1](https://github.com/seanmonstar/httparse)
+- [hybrid-array 0.4.15](https://github.com/RustCrypto/hybrid-array)
 - [iana-time-zone-haiku 0.1.2](https://github.com/strawlab/iana-time-zone)
 - [iana-time-zone 0.1.65](https://github.com/strawlab/iana-time-zone)
 - [idna 1.1.0](https://github.com/servo/rust-url/)
@@ -292,6 +298,7 @@ artifact-specific SPDX SBOM for every published native package.
 - [serde 1.0.229](https://github.com/serde-rs/serde)
 - [sha1 0.10.7](https://github.com/RustCrypto/hashes)
 - [sha2 0.10.9](https://github.com/RustCrypto/hashes)
+- [sha2 0.11.1](https://github.com/RustCrypto/hashes)
 - [shlex 2.0.1](https://github.com/comex/rust-shlex)
 - [signal-hook-registry 1.4.8](https://github.com/vorner/signal-hook)
 - [smallvec 1.15.2](https://github.com/servo/rust-smallvec)

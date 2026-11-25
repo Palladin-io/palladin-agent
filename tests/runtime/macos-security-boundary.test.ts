@@ -37,9 +37,10 @@ describe('macOS authenticated signed-runtime boundary', () => {
     expect(signedJob).toContain('test-security-boundary.sh');
     expect(signedJob).toContain("--architecture '${{ matrix.architecture }}'");
     expect(workflow.match(/test-security-boundary\.sh/g)).toHaveLength(1);
-    expect(workflow).toContain('needs: [authorize, build-native, sign-arm64, smoke-signed]');
+    expect(workflow).toContain('needs: [authorize, build-native, sign-arm64, upgrade-signed, smoke-signed]');
     expect(workflow).toContain('SIGNED_BOUNDARY: ${{ needs.smoke-signed.result }}');
     expect(workflow).toContain('test "$SIGNED_BOUNDARY" = success');
+    expect(workflow).toContain('test "$SIGNED_UPGRADE" = success');
   });
 
   it('keeps packaging probes in lockstep with the Rust session-v2 storage contract', () => {

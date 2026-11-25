@@ -853,6 +853,15 @@ fn doctor(
         Ok(()) => println!("public-metadata-chain: valid"),
         Err(_) => println!("public-metadata-chain: invalid"),
     }
+    // Reads only the shared trust state, which also performs any pending protection upgrade.
+    if service.shared_state_available() {
+        println!("shared-keychain-state: readable");
+    } else {
+        println!("shared-keychain-state: unavailable");
+    }
+    if let Some((upgraded, failed)) = palladin_platform::keychain_protection_upgrade() {
+        println!("keychain-protection-upgrade: upgraded={upgraded}, failed={failed}");
+    }
     println!("project-runtime-dependencies: disabled");
     println!("palladin-home-override: rejected");
     let legacy_status = if hardened_runtime {

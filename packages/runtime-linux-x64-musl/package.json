@@ -1,6 +1,6 @@
 {
   "name": "@palladin/runtime-linux-x64-musl",
-  "version": "0.0.16",
+  "version": "0.0.17",
   "description": "Native musl Linux x64 client and runtime for Palladin Agent",
   "private": true,
   "license": "Apache-2.0",
