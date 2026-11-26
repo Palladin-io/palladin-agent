@@ -389,6 +389,11 @@ test('only authorized preview versions select preview and cannot finalize', () =
   const guards = [...final.matchAll(/^          test "\$VERSION" != .+$/gm)]
     .map(([line]) => line).join('\n');
   assert.ok(guards);
+  const finalizeCondition = final.match(/\n  finalize:\n(?:    #.*\n)?    if: (.+)\n/);
+  assert.ok(finalizeCondition);
+  const finalizeAllowed = new Function('inputs', 'github',
+    `return (${finalizeCondition[1]});`);
+  const owner = { actor: 'patryk-roguszewski', triggering_actor: 'patryk-roguszewski' };
   for (const [version, tag, canFinalize] of [
     ['0.0.9', 'latest', true],
     ['0.0.10', 'preview', false],
@@ -400,6 +405,7 @@ test('only authorized preview versions select preview and cannot finalize', () =
     ['0.0.16', 'preview', false],
     ['0.0.17', 'latest', true],
     ['0.0.18', 'latest', false],
+    ['0.0.180', 'latest', true],
     ['0.0.19', 'latest', true],
     ['0.0.120', 'latest', true],
   ]) {
@@ -408,8 +414,11 @@ test('only authorized preview versions select preview and cannot finalize', () =
       `dist_tag=latest\n${channel[1]}\nprintf '%s' "$dist_tag"`,
     ], { env, encoding: 'utf8' });
     assert.equal(actual, tag, version);
-    assert.equal(spawnSync('bash', ['-eu', '-c', guards], { env }).status === 0, canFinalize, version);
+    assert.equal(spawnSync('bash', ['-eu', '-c', guards], { env }).status === 0
+      && finalizeAllowed({ version }, owner), canFinalize, version);
   }
+  // QA-deferred 0.0.18 still passes authorize, so its public meta and `latest` smokes run.
+  assert.equal(spawnSync('bash', ['-eu', '-c', guards], { env: { ...process.env, VERSION: '0.0.18' } }).status, 0);
 });
 
 test('preview deferral never bypasses artifact gates or extends to later versions', () => {

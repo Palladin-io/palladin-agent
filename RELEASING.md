@@ -6,7 +6,7 @@ The product owner and only release approver is `@patryk-roguszewski`. A release 
 
 ## Owner-authorized 0.0.18 official release with deferred manual QA — 2026-11-26
 
-The product owner explicitly approved publishing 0.0.18 on the normal `latest` channel, not as a preview, and deferred the manual adversarial and physical lifecycle evidence for this exact version; the owner will test the published package. 0.0.18 contains the macOS Keychain protection upgrade for locked screens (0.0.17), exact Inject routing across browser profiles and the exit of revoked browser hosts so extensions reconnect. Keep all reviewed-source CI, signing/notarization, KMS artifact bindings, attestations, provenance, native artifact tests and clean registry smoke tests mandatory, including verification of `@palladin/cli@latest`. Keep the GitHub release draft and forbid `release-finalize.yml` for 0.0.18, because finalization requires the deferred reports. Do not claim deferred QA passed. Versions 0.0.19 and later receive no exception.
+The product owner explicitly approved publishing 0.0.18 on the normal `latest` channel, not as a preview, and deferred the manual adversarial and physical lifecycle evidence for this exact version; the owner will test the published package. 0.0.18 contains the macOS Keychain protection upgrade for locked screens (0.0.17), exact Inject routing across browser profiles and the exit of revoked browser hosts so extensions reconnect. Keep all reviewed-source CI, signing/notarization, KMS artifact bindings, attestations, provenance, native artifact tests and clean registry smoke tests mandatory, including verification of `@palladin/cli@latest`. Run `release-finalize.yml` for 0.0.18 only for its public meta-package and `latest` registry smokes; its `finalize` job is skipped, so the GitHub release stays a draft, because finalization requires the deferred reports. Do not claim deferred QA passed. Versions 0.0.19 and later receive no exception.
 
 ## Owner-authorized 0.0.16 test preview — 2026-11-24
 
@@ -202,7 +202,7 @@ Publishing the meta package is the consumer-visible commit point. Never publish 
 
 ### 6. Finalize the immutable GitHub release
 
-After the public meta-package smoke tests pass, Patryk approves finalization for an official release. The `0.0.10`, `0.0.12`, `0.0.13`, `0.0.14`, `0.0.15` and `0.0.16` previews and the QA-deferred `0.0.18` release remain drafts and must not enter this step. Create an official GitHub release from the existing protected tag and attach only the already verified artifacts. For `0.0.9`, omit the deferred QA artifacts and state that omission in the release notes:
+After the public meta-package smoke tests pass, Patryk approves finalization for an official release. The `0.0.10`, `0.0.12`, `0.0.13`, `0.0.14`, `0.0.15` and `0.0.16` previews remain drafts and must not enter this step; the QA-deferred `0.0.18` release runs only the public smokes and also remains a draft. Create an official GitHub release from the existing protected tag and attach only the already verified artifacts. For `0.0.9`, omit the deferred QA artifacts and state that omission in the release notes:
 
 - all npm tarballs
 - `SHA256SUMS`
