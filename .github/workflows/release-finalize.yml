@@ -174,7 +174,8 @@ jobs:
             "
 
   finalize:
-    if: github.actor == 'patryk-roguszewski' && github.triggering_actor == 'patryk-roguszewski'
+    # 0.0.18 deferred manual QA: its public smokes run, but its release stays a draft.
+    if: github.actor == 'patryk-roguszewski' && github.triggering_actor == 'patryk-roguszewski' && inputs.version != '0.0.18'
     name: Verify assets and publish the draft release
     needs: [authorize, compatibility, smoke-native, smoke-musl]
     runs-on: ubuntu-latest
