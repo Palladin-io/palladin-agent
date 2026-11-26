@@ -353,7 +353,13 @@ test('release finalization preserves the security gates except for the documente
   assert.match(workflow, /test -f "\$assets\/lifecycle-report\.json"/);
   assert.match(workflow, /test -f "\$assets\/lifecycle-report\.md"/);
   assert.match(workflow, /test -f "\$assets\/lifecycle-approval\.json"/);
-  assert.match(workflow, /if \[\[ "\$VERSION" != 0\.0\.9 \]\]; then/);
+  const qaCondition = 'if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.19 ]]; then';
+  assert.equal(workflow.split(qaCondition).length - 1, 2);
+  assert.match(workflow, /if \(process\.env\.VERSION !== '0\.0\.9' && process\.env\.VERSION !== '0\.0\.19'\) \{/);
+  for (const [version, requiresQa] of [['0.0.9', false], ['0.0.19', false], ['0.0.18', true], ['0.0.20', true], ['0.0.190', true]]) {
+    const status = spawnSync('bash', ['-eu', '-c', `${qaCondition} exit 0; fi; exit 1`], { env: { ...process.env, VERSION: version } }).status;
+    assert.equal(status === 0, requiresQa, version);
+  }
   assert.match(workflow, /QA remains pending and is not claimed as passed/);
   assert.match(workflow, /--directory "\$platform_packages" --version "\$VERSION"/);
   assert.match(workflow, /expected-release-assets\.txt/);
@@ -407,6 +413,7 @@ test('only authorized preview versions select preview and cannot finalize', () =
     ['0.0.18', 'latest', false],
     ['0.0.180', 'latest', true],
     ['0.0.19', 'latest', true],
+    ['0.0.20', 'latest', true],
     ['0.0.120', 'latest', true],
   ]) {
     const env = { ...process.env, INPUTS_VERSION: version, VERSION: version };
@@ -434,7 +441,7 @@ test('preview deferral never bypasses artifact gates or extends to later version
   // GitHub accepts hyphenated needs keys; evaluate the same condition using bracket syntax.
   const evaluate = new Function('inputs', 'needs', 'github', 'cancelled',
     `return (${condition[1].replace(/needs\.([a-z]+(?:-[a-z]+)+)/g, "needs['$1']")});`);
-  for (const [version, expected] of [['0.0.10', true], ['0.0.12', true], ['0.0.11', false], ['0.0.13', true], ['0.0.14', true], ['0.0.15', true], ['0.0.16', true], ['0.0.17', false], ['0.0.18', true], ['0.0.19', false], ['0.0.180', false], ['0.0.160', false], ['0.0.150', false], ['0.0.140', false], ['0.0.130', false], ['0.0.120', false]]) {
+  for (const [version, expected] of [['0.0.10', true], ['0.0.12', true], ['0.0.11', false], ['0.0.13', true], ['0.0.14', true], ['0.0.15', true], ['0.0.16', true], ['0.0.17', false], ['0.0.18', true], ['0.0.19', true], ['0.0.20', false], ['0.0.180', false], ['0.0.190', false], ['0.0.160', false], ['0.0.150', false], ['0.0.140', false], ['0.0.130', false], ['0.0.120', false]]) {
     assert.equal(evaluate({ version }, needs, github, () => false), expected, version);
   }
   for (const gate of ['authorize', 'linux-system', 'prepare-meta', 'artifact-smoke']) {
@@ -505,7 +512,7 @@ test('meta-package staging preserves signed artifacts and limits authorized test
     /\n    needs: \[authorize, prepare-meta\]\r?\n/,
   );
   assert.match(workflow, /lifecycle_ready: \$\{\{ steps\.release_set\.outputs\.lifecycle_ready \}\}/);
-  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.9' && inputs\.version != '0\.0\.10' && inputs\.version != '0\.0\.12' && inputs\.version != '0\.0\.13' && inputs\.version != '0\.0\.14' && inputs\.version != '0\.0\.15' && inputs\.version != '0\.0\.16' && inputs\.version != '0\.0\.18' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
+  assert.match(workflow, /approve-lifecycle:[^]*if: inputs\.version != '0\.0\.9' && inputs\.version != '0\.0\.10' && inputs\.version != '0\.0\.12' && inputs\.version != '0\.0\.13' && inputs\.version != '0\.0\.14' && inputs\.version != '0\.0\.15' && inputs\.version != '0\.0\.16' && inputs\.version != '0\.0\.18' && inputs\.version != '0\.0\.19' && needs\.authorize\.outputs\.lifecycle_ready == 'true'/);
   assert.match(workflow, /inputs\.version == '0\.0\.9' \|\| inputs\.version == '0\.0\.10'/);
   assert.match(workflow, /\[\[ \$lifecycle_count -eq 0 \|\| \$lifecycle_count -eq 2 \]\]/);
   const prepareOffset = workflow.indexOf('\n  prepare-meta:');

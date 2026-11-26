@@ -5,12 +5,13 @@ its broker and one-shot executor, and one dedicated system account per Agent.
 npm remains an unprivileged launcher: it never runs sudo, installs a service,
 reads keys, or silently falls back to Secret Service.
 
-**Release status:** this distribution is being prepared for a subsequent release.
+**Release status:** 0.0.19 is the first release that publishes the signed DEB/RPM
+packages in its public GitHub release. Its manual adversarial and physical
+lifecycle QA is deferred by the product owner and is not claimed as passed.
 The previously published npm-only Linux releases provide Convenience and do not
 satisfy this installation contract. Do not substitute those artifacts for the
-system packages below. Implementation, native-host acceptance and publication
-are separate release gates; the presence of this runbook is not evidence that a
-Hardened release has been published.
+system packages below. Publication is not native-host acceptance: installation
+acceptance on the supported matrix below is still pending.
 
 ## 0.0.11 AWS acceptance status
 
