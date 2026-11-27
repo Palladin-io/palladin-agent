@@ -4,6 +4,10 @@ This unreleased feature proposes browser fields for human Inbox review. It never
 
 ## CLI
 
+Run `palladin --id agent-profile browser sessions --json` to discover current authenticated browser session identifiers. With two or more browsers, pass the intended opaque `browserSession` identifier as `--browser-session <identifier>` alongside `--from-browser`. Display names and tab IDs do not select a browser. The same tab ID and URL can exist in several browsers.
+
+Selection is verified against authenticated `browser.status` on the same connection used for preparation and capture. A missing, stale, disconnected, or mismatched selected session fails closed; it never falls back to another browser. Reconnects require rediscovery and a new selection. Omitting the selector is supported only when exactly one browser connection is available.
+
 ```sh
 palladin --id agent-profile submit new --type credential \
   --label 'Deployment account' --description 'Used by the release service' \
@@ -29,7 +33,7 @@ The CLI prints only the usual submission status/reference. Actual values are enc
 
 ## Current platform and release limits
 
-- Native capture currently uses the existing Unix local socket implementation and requires exactly one connected authenticated browser session. Ambiguous sessions fail closed.
+- Native capture currently uses the existing Unix local socket implementation and supports explicit authenticated browser session selection. Without `--browser-session`, ambiguous sessions fail closed.
 - Windows capture, Script/CreditCard, built-in TOTP fields, and deletion are not added.
 - Existing v1 pending-submission injection does not open v2 payloads; that optional capability is a follow-up, not a plaintext fallback.
 - The additive payload v2 uses the unchanged signed/encrypted v1 envelope. Older panels reject it. Publish the versioned contract and cross-client fixture with coordinated runtime/extension/panel releases.
