@@ -73,8 +73,10 @@ taken outside the login flow.
 3. If access is still `pending` when the wait ends, stop and tell the user the
    approval is pending. Do not call Inject again in a loop. When the user says
    it is approved, repeat step 1 and call Inject once; a request that is still
-   pending is reused, not duplicated. If the result is `expired`, a new call
-   creates a new approval request, so ask the user first.
+   pending or approved is reused, not duplicated. Pending requests expire ten
+   minutes after creation and a later call silently creates a new one, so if
+   more than ten minutes have passed since `pending` was first reported, ask the
+   user before calling Inject again.
 4. If the browser rejects the target after approval (tab unavailable, URL
    mismatch, ambiguous or missing connection), do not retry automatically.
    Report it; a retry needs a refreshed preflight and the user's request.
@@ -89,6 +91,7 @@ taken outside the login flow.
 | Page redirected to `https://login.example.com/password` after preflight | Re-list, take the new URL from the same item, then Inject. |
 | Relay reconnected; same handle now reports `webExtensionTabId: 418` | Use 418 from that item. If the handle no longer resolves, stop. |
 | Approval wait ended while `pending` | Report "approval pending", wait for the user, then refresh routing and Inject once. |
+| User returns 15 minutes after `pending` was first reported | The request has expired; ask before Inject creates a new approval request. |
 | `injected` returned, page still shows the login form | Report "credential delivered; login not verified". |
 
 ## Out of scope for this skill

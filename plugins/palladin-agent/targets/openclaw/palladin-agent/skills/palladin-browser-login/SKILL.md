@@ -92,8 +92,10 @@ only the user's explicit selection can change it.
 6. Interpret the returned structured status as value-free. If access is still `pending` after the
    wait, tell the user that approval is pending and stop; never call Inject in a loop. After the
    user says it is approved, refresh the same tab's routing and call Inject once for the same
-   Entry; Palladin returns the existing pending request instead of creating another. If the request
-   has `expired`, ask the user before a new call creates a new request. A completed flow
+   Entry; while that request is still pending or approved, Palladin returns it instead of creating
+   another. Pending requests expire ten minutes after they are created, and a call after expiry
+   silently creates a new request. Note when the request was first reported pending; if more than
+   ten minutes have passed, ask the user before calling Inject again. A completed flow
    (`injected`, `no-form`, or `origin-changed`) is not proof of authentication. A `timeout` may have
    reached a human challenge: inspect the public page before classifying the result.
 7. Verify success only through public page state in the same tab, such as a changed HTTPS URL or a
