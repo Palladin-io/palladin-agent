@@ -4,6 +4,10 @@ Palladin Agent is a public repository and a security-sensitive credential runtim
 
 The product owner and only release approver is `@patryk-roguszewski`. A release is not complete until every verification below passes and the GitHub release is immutable.
 
+## Owner-authorized 0.0.19 official release with deferred manual QA — 2026-11-26
+
+0.0.19 carries the same runtime source as 0.0.18. The product owner approved publishing it on `latest` and making its signed Linux Hardened DEB/RPM packages publicly downloadable through the normal workflows, because the 0.0.18 tag forbids finalization and its packages remain in a draft release. As for 0.0.18, only the manual adversarial and physical lifecycle evidence is deferred for this exact version. Keep all other gates mandatory. Unlike 0.0.18, `release-finalize.yml` publishes the 0.0.19 GitHub release like 0.0.9: it verifies the complete asset set without the deferred reports and states in the release notes that this QA remains pending. Do not claim deferred QA passed. Versions 0.0.20 and later receive no exception.
+
 ## Owner-authorized 0.0.18 official release with deferred manual QA — 2026-11-26
 
 The product owner explicitly approved publishing 0.0.18 on the normal `latest` channel, not as a preview, and deferred the manual adversarial and physical lifecycle evidence for this exact version; the owner will test the published package. 0.0.18 contains the macOS Keychain protection upgrade for locked screens (0.0.17), exact Inject routing across browser profiles and the exit of revoked browser hosts so extensions reconnect. Keep all reviewed-source CI, signing/notarization, KMS artifact bindings, attestations, provenance, native artifact tests and clean registry smoke tests mandatory, including verification of `@palladin/cli@latest`. Run `release-finalize.yml` for 0.0.18 only for its public meta-package and `latest` registry smokes; its `finalize` job is skipped, so the GitHub release stays a draft, because finalization requires the deferred reports. Do not claim deferred QA passed. Versions 0.0.19 and later receive no exception.
@@ -126,7 +130,7 @@ Configure the public `PALLADIN_VERSION_POLICY_PUBLIC_KEY` variable and the prote
 1. `release-platforms.yml` builds the five macOS ARM/Linux candidates, signs and notarizes macOS, and publishes the exact platform packages under `candidate`.
 2. After those exact candidates are public, `release-meta.yml` verifies their provenance and exact bytes, hashes each client and worker, and KMS-signs the deterministic manifest.
 3. Native artifact smokes verify the signature and exact source/version/worker hash. An installed CLI smoke verifies the bundled signature without contacting release infrastructure.
-4. The same signed manifest is embedded in the CLI and attached to the draft release. Retries must reuse its byte-identical artifact bindings. For official releases after `0.0.9`, npm publication and finalization also require the owner-approved adversarial and physical lifecycle evidence. The opt-in `0.0.10`, `0.0.12`, `0.0.13`, `0.0.14`, `0.0.15` and `0.0.16` previews below are not official releases or waivers of those finalization gates. The `0.0.18` deferral above permits npm publication only; it is not a finalization waiver.
+4. The same signed manifest is embedded in the CLI and attached to the draft release. Retries must reuse its byte-identical artifact bindings. For official releases after `0.0.9`, npm publication and finalization also require the owner-approved adversarial and physical lifecycle evidence. The opt-in `0.0.10`, `0.0.12`, `0.0.13`, `0.0.14`, `0.0.15` and `0.0.16` previews below are not official releases or waivers of those finalization gates. The `0.0.18` deferral above permits npm publication only; it is not a finalization waiver. The `0.0.19` deferral also permits finalization without the deferred reports, as for `0.0.9`.
 
 An already installed correctly signed version is not remotely revocable. Publish a security advisory, deprecate affected npm versions and instruct users to update explicitly. Do not promise forced upgrades or immediate revocation. Existing package-manager downgrade checks and native identity/schema integrity remain independent safeguards; a signed release is not rejected solely because a newer release exists.
 
@@ -188,13 +192,13 @@ An unresolved or accepted Critical/High finding, incomplete target, stale observ
 
 ### 5. Publish the meta package
 
-For `0.0.9`, publish `latest` after all supported platform registry smokes and the retained cryptographic/artifact gates pass. For `0.0.10`, the same retained gates permit only the opt-in `preview` channel described above. The exact `0.0.12`, `0.0.13`, `0.0.14`, `0.0.15` and `0.0.16` previews follow the same retained gates and `preview` channel; `0.0.18` follows them on `latest`. For other later versions, also require the adversarial and physical lifecycle gates:
+For `0.0.9`, publish `latest` after all supported platform registry smokes and the retained cryptographic/artifact gates pass. For `0.0.10`, the same retained gates permit only the opt-in `preview` channel described above. The exact `0.0.12`, `0.0.13`, `0.0.14`, `0.0.15` and `0.0.16` previews follow the same retained gates and `preview` channel; `0.0.18` and `0.0.19` follow them on `latest`. For other later versions, also require the adversarial and physical lifecycle gates:
 
 1. Build the meta tarball from the same tag commit.
 2. Verify its package allowlist contains only the launcher, runtime metadata, documentation, and license files. It must not contain private source, keys, build caches, test fixtures, or lifecycle scripts.
 3. Verify every supported optional dependency uses exact `X.Y.Z` and no unsupported platform fallback exists.
 4. Generate and verify its checksum, manifest entry, SBOM, provenance, and attestations.
-5. Except for the explicit `0.0.9`, `0.0.10`, `0.0.12`, `0.0.13`, `0.0.14`, `0.0.15`, `0.0.16` and `0.0.18` QA deferrals, re-download and revalidate the approved adversarial reports and KMS-signed operator approval against the tagged source and exact platform release manifest.
+5. Except for the explicit `0.0.9`, `0.0.10`, `0.0.12`, `0.0.13`, `0.0.14`, `0.0.15`, `0.0.16`, `0.0.18` and `0.0.19` QA deferrals, re-download and revalidate the approved adversarial reports and KMS-signed operator approval against the tagged source and exact platform release manifest.
 6. Publish the byte-identical verified meta package through the protected OIDC workflow with `npm publish --tag preview` for `0.0.10`, `0.0.12`, `0.0.13`, `0.0.14`, `0.0.15` or `0.0.16`, otherwise `--tag latest` after its applicable gates pass. No additional npm approval follows the owner-authorized workflow.
 7. Install `@palladin/cli@X.Y.Z` from npm in clean runners for every supported platform and repeat the end-to-end smoke checks. For an official release, also verify `@palladin/cli@latest`; the `0.0.10`, `0.0.12`, `0.0.13`, `0.0.14`, `0.0.15` and `0.0.16` previews must leave `latest` on `0.0.9`.
 
@@ -226,7 +230,7 @@ The owner-only finalizer requires the exact version-specific draft asset set. Fo
 - **A signing or publishing credential may be compromised:** stop release workflows, reject all pending stages, remove trusted publisher access, revoke tokens, rotate affected signing credentials, preserve audit evidence, and follow the security incident process before releasing again.
 - **A published package is malicious or exposes secrets:** follow npm and GitHub security incident procedures immediately. Do not use routine unpublish as a substitute for coordinated revocation, advisory, and recovery.
 
-Every retry must be reproducible and attributable to a reviewed source commit. Never bypass a failed gate, weaken a policy, use a developer-built artifact, or introduce an emergency laptop publish path. The documented one-version `0.0.9` and `0.0.18` official-release QA deferrals and opt-in `0.0.10`/`0.0.12`/`0.0.13`/`0.0.14`/`0.0.15`/`0.0.16` npm previews are explicit, version-bounded product-owner decisions, not retry bypasses.
+Every retry must be reproducible and attributable to a reviewed source commit. Never bypass a failed gate, weaken a policy, use a developer-built artifact, or introduce an emergency laptop publish path. The documented one-version `0.0.9`, `0.0.18` and `0.0.19` official-release QA deferrals and opt-in `0.0.10`/`0.0.12`/`0.0.13`/`0.0.14`/`0.0.15`/`0.0.16` npm previews are explicit, version-bounded product-owner decisions, not retry bypasses.
 
 ## Post-release audit
 
