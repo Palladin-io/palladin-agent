@@ -232,7 +232,7 @@ jobs:
           test -f "$assets/SHA256SUMS"
           test -f "$assets/release-manifest-agent.json"
           test -f "$assets/SHA256SUMS-agent"
-          if [[ "$VERSION" != 0.0.9 ]]; then
+          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.19 ]]; then
             test -f "$assets/adversarial-report.json"
             test -f "$assets/adversarial-report.md"
             test -f "$assets/adversarial-approval.json"
@@ -298,7 +298,7 @@ jobs:
               `linux-system-${architecture}.intoto.jsonl`,
             ]),
           ]);
-          if (process.env.VERSION !== '0.0.9') {
+          if (process.env.VERSION !== '0.0.9' && process.env.VERSION !== '0.0.19') {
             for (const name of [
               'adversarial-report.json', 'adversarial-report.md', 'adversarial-approval.json',
               'lifecycle-report.json', 'lifecycle-report.md', 'lifecycle-approval.json',
@@ -325,7 +325,7 @@ jobs:
             --public-key "$PUBLIC_KEY" --source-sha "$SOURCE_SHA" \
             --bundle "$assets/version-policy-candidate.json" --version "$VERSION"
 
-          if [[ "$VERSION" != 0.0.9 ]]; then
+          if [[ "$VERSION" != 0.0.9 && "$VERSION" != 0.0.19 ]]; then
             node security/adversarial/report.mjs validate \
               --manifest "$PALLADIN_ADVERSARIAL_MANIFEST" \
               --source-sha "$SOURCE_SHA" \
@@ -386,6 +386,10 @@ jobs:
           if [[ "$VERSION" = 0.0.9 ]]; then
             gh release edit "${INPUTS_RELEASE_TAG}" --repo "$GITHUB_REPOSITORY" \
               --notes 'Official macOS ARM and Linux CLI release. Signed and notarized macOS, artifact integrity, provenance, compatibility, and clean npm registry smokes passed. Product-owner-directed adversarial and physical lifecycle QA remains pending and is not claimed as passed.'
+          fi
+          if [[ "$VERSION" = 0.0.19 ]]; then
+            gh release edit "${INPUTS_RELEASE_TAG}" --repo "$GITHUB_REPOSITORY" \
+              --notes 'macOS ARM and Linux CLI release with the Linux Hardened DEB/RPM system packages. Signed and notarized macOS, artifact integrity, provenance, compatibility, and clean npm registry smokes passed. Product-owner-deferred adversarial and physical lifecycle QA remains pending and is not claimed as passed.'
           fi
           gh release edit "${INPUTS_RELEASE_TAG}" \
             --repo "$GITHUB_REPOSITORY" --draft=false --latest
