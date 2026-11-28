@@ -58,8 +58,10 @@ page URLs, browser-profile names, or credential values. Unavailable connections
 and the presence of an unprobed legacy socket are reported separately; neither
 is proof of an authenticated live connection.
 
-An explicit browser session requires both the exact tab ID and URL from the
-trusted browser adapter. Without `browserSession`, the runtime asks connected
+Both surfaces still accept Inject without `targetTabId` and `targetUrl` for
+legacy manual use; the extension then uses the browser's active tab. This skill
+never sends a targetless Inject. An explicit browser session requires both the
+exact tab ID and URL from the trusted browser adapter. Without `browserSession`, the runtime asks connected
 browsers to verify that exact target before requesting credentials. One matching
 connection is selected automatically; multiple matches are ambiguous. No match
 or an unavailable/invalid probe returns an actionable error. A probe does not

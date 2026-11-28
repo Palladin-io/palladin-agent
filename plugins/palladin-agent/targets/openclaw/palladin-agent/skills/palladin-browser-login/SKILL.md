@@ -11,8 +11,10 @@ but credential values stay inside the native Palladin runtime and the paired bro
 Before browser work, read [the provider contract](references/provider-contract.md) and
 [the host browser handoff](references/host-browser.md). The provider contract maps the shared
 operation to MCP and CLI. The host handoff defines how this target obtains a WebExtensions tab ID
-and an exact URL from one controlled external-browser tab. If either contract is unavailable, stop
-before requesting a grant.
+and an exact URL from one controlled external-browser tab, and which browser profiles cannot. If
+either contract is unavailable, or the host handoff preflight fails, stop before Search and before
+requesting a grant. Palladin requests approval before it binds the browser tab, so reaching an
+approval request is not evidence that routing works.
 
 ## Select or pair the Palladin Agent
 
@@ -51,7 +53,10 @@ only the user's explicit selection can change it.
 ## Workflow
 
 1. Derive the intended service and account only from the user's request and prior trusted
-   conversation context. Open or claim the exact external-browser tab using the host adapter.
+   conversation context. Open or claim the exact external-browser tab using the host adapter and
+   run its routing preflight. If the browser profile cannot supply a WebExtensions tab ID, report
+   that limitation and stop; do not search, request a grant, restart browsers, or try another
+   browser profile without the user's decision.
 2. Navigate to the HTTPS login surface and prepare only public state. Dismiss ordinary public
    overlays when needed. Do not inspect existing input values, cookies, browser storage, hidden
    fields, password-manager state, or autofill data.
@@ -79,17 +84,25 @@ only the user's explicit selection can change it.
    - its positive, safe-integer WebExtensions tab ID as `targetTabId`;
    - its current, exact HTTPS URL as `targetUrl`.
    If either value is missing, stale, ambiguous, or comes from a different browser operation, stop.
+   Never call Inject without both values: a targetless request uses the browser's active tab.
 5. Run the selected surface's Inject operation once with the selected `vaultId`, `entryId`, the
    runtime-supported browser provider ID, a concise user-facing reason, `targetTabId`, and
-   `targetUrl`. Waiting for a pending approval is allowed within the bounded wait contract. Do not
-   replace a denial, expiry, timeout, or transport failure with a secret-bearing workaround.
-6. Interpret the returned structured status as value-free. Pending access means await grant
-   approval, then refresh the same tab's routing before continuing with the same Entry. A completed
-   flow (`injected`, `no-form`, or `origin-changed`) is not proof of authentication. A `timeout`
-   may have reached a human challenge: inspect the public page before classifying the result.
+   `targetUrl`, and an approval `wait` of at most five minutes. Do not replace a denial, expiry,
+   timeout, or transport failure with a secret-bearing workaround.
+6. Interpret the returned structured status as value-free. If access is still `pending` after the
+   wait, tell the user that approval is pending and stop; never call Inject in a loop. After the
+   user says it is approved, refresh the same tab's routing and call Inject once for the same
+   Entry; while that request is still pending or approved, Palladin returns it instead of creating
+   another. Pending requests expire ten minutes after they are created, and a call after expiry
+   silently creates a new request. Note when the request was first reported pending; if more than
+   ten minutes have passed, ask the user before calling Inject again. A completed flow
+   (`injected`, `no-form`, or `origin-changed`) is not proof of authentication. A `timeout` may have
+   reached a human challenge: inspect the public page before classifying the result.
 7. Verify success only through public page state in the same tab, such as a changed HTTPS URL or a
    visible authenticated navigation control. Do not read populated inputs, cookies, tokens,
-   storage, network authorization headers, or hidden DOM values.
+   storage, network authorization headers, or hidden DOM values. Report "signed in" only after that
+   check; otherwise report what happened, for example "credential delivered; login not verified"
+   or "approval pending".
 8. If the site presents CAPTCHA, passkey, 2FA, recovery, or another human challenge, preserve the
    tab and follow the host's approval policy for that challenge. Native TOTP delivered by Palladin
    may complete inside Inject; never request its value. After a human challenge is resolved and

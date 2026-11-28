@@ -54,7 +54,9 @@ plugin defaults.
 
 OpenClaw's `extension` browser driver exposes `webExtensionTabId`; the adapter
 requires this field and the exact URL from the same retained tab. Other driver
-IDs are not interchangeable. This documents the supported routing preconditions,
+IDs are not interchangeable. The default managed `openclaw` profile, existing-session
+and CDP profiles never report it, so the adapter's preflight stops there before
+Search or an approval request. This documents the supported routing preconditions,
 not completed production E2E acceptance or a release of the disabled native fixture.
 
 ## Install from the local marketplace
